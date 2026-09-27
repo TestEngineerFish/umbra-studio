@@ -80,6 +80,31 @@ if (started) {
   ok(!!r.write?.startsWith("被拦"), "② 插件一个字节都写不了盘（没给 --allow-fs-write）", r.write);
   ok(!!r.exec?.startsWith("被拦"), "③ **插件起不了子进程**（P1 的落点）", r.exec);
   ok(!!r.offWhitelist?.startsWith("被拦"), "④ 白名单外的宿主能力调不到（write_draft 不在白名单里）", r.offWhitelist);
+  /* ⑤ 联网（issue #24）。⚠️ **判据是 `ERR_ACCESS_DENIED`，不是「连不上」** ——
+     `ECONNREFUSED` 也是连不上，这一件当初就是这么被漏掉的：
+     四件攻击样本里没有联网，而注释写着「（不给 --allow-net）不许联网」。
+     Node 24.x 的权限模型根本不拦网络（实测 24.11 / 24.21 都是 ECONNREFUSED）。 */
+  ok(r.net === "被拦 ERR_ACCESS_DENIED", "⑤ **插件联不出去**（判据是 ERR_ACCESS_DENIED，不是「连不上」）", r.net);
+  /* ⚠️ 这一条判据我第一版写成了 `startsWith("被拦")`，**撤掉桩之后它照样通过** ——
+     因为 `fetch` 连不上关着的端口时消息是 `fetch failed`，也以「被拦」开头。
+     反向验证当场抓住的（纪律④）。和 ⑤ 同一个道理：**要的是错误码，不是「失败了」**。 */
+  ok(r.fetch === "被拦 ERR_ACCESS_DENIED", "⑤b fetch 也封了（undici 那一套不经 net.connect）", r.fetch);
+  /* ⑥ env 白名单：原来 `...process.env` 把宿主 93 个变量整份交过去 */
+  {
+    const keys = (r.envKeys ?? "").split(",").filter(Boolean);
+    /* `NODE_CHANNEL_*` 是 `fork` 自己为 IPC 加的（不加就没有 `process.send`）。
+       `__CF_USER_TEXT_ENCODING` 是 **macOS 往每个进程注入的** ——
+       实测「只传 PATH 起一个子进程」它照样出现，所以不是我们漏传。
+       写进允许列表并注明，免得下一个人以为白名单漏了一项而去"修"它。 */
+    const allowed = ["ELECTRON_RUN_AS_NODE", "NODE_CHANNEL_FD", "NODE_CHANNEL_SERIALIZATION_MODE",
+                     "PATH", "UD_PLUGIN_DIR", "UD_PLUGIN_ENTRY", "__CF_USER_TEXT_ENCODING"];
+    const extra = keys.filter((k) => !allowed.includes(k));
+    ok(extra.length === 0, "⑥ **插件只看得到白名单里那几个环境变量**（原来是宿主的全部）", extra.length ? "多出来：" + extra.join(",") : `${keys.length} 个`);
+    /* 再钉一条"意图判据"：宿主一定有、插件一定不该有的那几个。
+       上面那条会随平台注入项变化，这一条不会 —— 两条一起才说得清"要防的是什么"。 */
+    const hostOnly = ["HOME", "USER", "SHELL", "TMPDIR"].filter((k) => k in process.env && keys.includes(k));
+    ok(hostOnly.length === 0, "⑥b 宿主的 HOME / USER / SHELL / TMPDIR 一个都没传过去", hostOnly.join(",") || "一个都没有");
+  }
   sb.stop();
 }
 
@@ -263,7 +288,14 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
 
     /* 包里的路径带反斜杠：包格式约定用 `/` 分隔，`a\..\..\x` 在 posix 上是**一个文件名**，
        拷到 win 上就变成三级路径。收下它等于把逃逸推迟到别人的机器上发生。 */
-    const evil2 = { ...pkg, files: { ...pkg.files, "a\\..\\..\\pwned.txt": Buffer.from("x").toString("base64") } };
+    /* ⚠️ **版本号要用一个别处不用的**（0.9.9）：`installPackage` 的顺序是
+       先 `rm(target)` 再逐个查路径，所以拿 `0.1.0` 来试会把**真装着的那一版清空** ——
+       我第一版就是这么写的，结果 `uitest` 里依赖演示插件的 9 条整块没跑到，
+       而 `plugintest` 自己全绿。判据不许破坏别的判据要用的东西（同 M11-9b 那条）。 */
+    const mfEvil = { ...JSON.parse(Buffer.from(pkg.files["manifest.json"]!, "base64").toString("utf8")) as object, version: "0.9.9" };
+    const evil2 = { ...pkg, manifest: { ...pkg.manifest, version: "0.9.9" },
+      files: { ...pkg.files, "manifest.json": Buffer.from(JSON.stringify(mfEvil), "utf8").toString("base64"),
+               "a\\..\\..\\pwned.txt": Buffer.from("x").toString("base64") } };
     evil2.signature = edSign(null, canonical(evil2), privateKey).toString("base64");
     let t2 = ""; try { await installPackage(evil2 as typeof pkg); } catch (e) { t2 = (e as Error).message; }
     ok(t2.includes("逃出插件目录"), "**包里带反斜杠的路径被拦**（posix 上是一个文件名，到 win 上就是三级路径）", t2.slice(0, 32));
@@ -272,7 +304,18 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   /* 收尾：公钥是这一节临时造的，删掉；插件留着给 uitest 用 */
   await rmp(KEYS, { recursive: true, force: true });
   await rmp(join(PLUGINS_DIR, "com.umbra.demo", "0.2.0"), { recursive: true, force: true });
+  await rmp(join(PLUGINS_DIR, "com.umbra.demo", "0.9.9"), { recursive: true, force: true });
   await wf(join(PLUGINS_DIR, "com.umbra.demo", "current"), "0.1.0", "utf8");
+  /* ⚠️ **收尾自检**：`uitest` 的插件端到端那一组（9 条）靠这个目录存在。
+     不检的话，本文件里任何一条把它删掉的改动都表现成「plugintest 全绿、
+     uitest 少 9 条」——而"少跑 9 条"和"9 条都过了"在输出里长得一样。
+     实测栽过一次（加反斜杠那条判据时）。 */
+  {
+    const { pluginDirOf: pdo } = await import("./plugin/store.js");
+    const d = pdo("com.umbra.demo");
+    const { existsSync: ex2 } = await import("node:fs");
+    ok(!!d && ex2(join(d, "index.html")), "收尾后演示插件还在（uitest 那 9 条靠它）", d ?? "没了");
+  }
   void decodePackage; void encodePackage;
 }
 

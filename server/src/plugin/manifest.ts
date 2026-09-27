@@ -38,7 +38,12 @@ export interface PluginManifest {
     files?: Array<"read" | "write">;
     /** 看得到什么范围。`project` = 只有当前项目目录。**第一期只有这一种** */
     scope?: "project";
-    /** 允许联网的域名。**空数组 = 完全不许**（CSP 会把 iframe 那半也锁死） */
+    /** 允许联网的域名。**空数组 = 完全不许**。
+     *  A 面（iframe）靠 CSP 响应头锁死；B 面（工具进程）靠 `net-block.cjs` 这个
+     *  **同进程的桩**顶着 —— ⚠️ 不是 Node 权限模型：它在 24.x 上**不拦网络**
+     *  （issue #24，实测 `ECONNREFUSED` 而非 `ERR_ACCESS_DENIED`）。
+     *  所以 B 面这一侧是防呆强度，别在界面上把它说成隔离。
+     *  ⚠️ 第一期**非空的 net 还没实现**：现在任何值都当"不许"处理。 */
     net?: string[];
   };
   /** UI 面的入口 HTML（相对插件目录）。`surfaces` 含 `ui` 时必须有 */

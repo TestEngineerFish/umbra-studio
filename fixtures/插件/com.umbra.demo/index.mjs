@@ -17,7 +17,7 @@ export default function register(host) {
     },
   });
 
-  /* ── 攻击样本：这四件插件都不该做成 ── */
+  /* ── 攻击样本：这六件插件都不该做成 ── */
   host.defineCap({
     name: "com.umbra.demo.probe",
     title: "（测试用）试着越界",
@@ -37,6 +37,23 @@ export default function register(host) {
       /* ④ 调一件白名单外的宿主能力 */
       const out = await host.call("write_draft", { path: "x.dc.html", content: "<x-dc></x-dc>" });
       r.offWhitelist = out.ok ? "**调到了**" : "被拦 " + (out.errors?.[0]?.message ?? "").slice(0, 26);
+      /* ⑤ 联网（issue #24 漏掉的那一件）。
+         ⚠️ **判据是错误码，不是「连上没连上」**：连一个关着的本机端口
+         得到的 `ECONNREFUSED` 也是「连不上」—— 这一件当初就是这样被漏过去的。
+         只有 `ERR_ACCESS_DENIED` 才说明那个包根本没发出去。
+         只碰 127.0.0.1，不产生外部流量。 */
+      try {
+        const net = await import("node:net");
+        await new Promise((res, rej) => {
+          const s = net.connect(1, "127.0.0.1");
+          s.on("error", rej); s.on("connect", () => { s.destroy(); res(); });
+        });
+        r.net = "连出去了";
+      } catch (e) { r.net = "被拦 " + (e.code ?? e.message?.slice(0, 30)); }
+      try { await globalThis.fetch("http://127.0.0.1:1/"); r.fetch = "发出去了"; }
+      catch (e) { r.fetch = "被拦 " + (e.code ?? e.message?.slice(0, 30)); }
+      /* ⑥ 环境变量：宿主的 env 不该整份交过来 */
+      r.envKeys = Object.keys(process.env).sort().join(",");
       return r;
     },
   });
