@@ -177,6 +177,36 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   vs = await pluginVersions("com.umbra.demo");
   ok(vs.current === "0.1.0", "**切回上一版只改指针**（回退很便宜）", `→ ${vs.current}`);
 
+  /* ⚠️ **绕过安装流程放进去的目录要认出来是未签名**（M11-6 接线实测踩到）。
+     原来存的是一个 `.unsigned` 结论文件 —— 手动 `cp` 进去的目录没有它，
+     于是被当成「已签名」，界面上一点提示都没有。
+     判据改成「**现在有没有 `.sig`**」之后这一条才成立。 */
+  {
+    const { cp } = await import("node:fs/promises");
+    const hand = join(PLUGINS_DIR, "com.umbra.handcopy");
+    await rmp(hand, { recursive: true, force: true });
+    await cp(DIR, join(hand, "0.1.0"), { recursive: true });
+    /* id 和目录名要一致，否则被判成「装错地方」而不是「未签名」 */
+    const mf = JSON.parse(await readFile(join(hand, "0.1.0", "manifest.json"), "utf8")) as { id: string };
+    mf.id = "com.umbra.handcopy";
+    await wf(join(hand, "0.1.0", "manifest.json"), JSON.stringify(mf), "utf8");
+    const { listInstalled } = await import("./plugin/store.js");
+    const row = (await listInstalled()).find((x) => x.manifest.id === "com.umbra.handcopy");
+    ok(!!row && row.unsigned === true, "**手动拷进去的目录被认出是未签名**（判据是「现在有没有签名」，不是「装的时候标过没有」）");
+
+    /* ⚠️ **随便写一个 `.sig` 不能冒充已签名**。
+       判据挪过两次，第二版（「目录里有没有 .sig」）就是被这一手绕过的 ——
+       「有签名」和「签名验得过」是两件事。 */
+    await wf(join(hand, "0.1.0", ".sig"), "这不是签名，只是一串字", "utf8");
+    const fake = (await listInstalled()).find((x) => x.manifest.id === "com.umbra.handcopy");
+    ok(!!fake && fake.unsigned === true, "**随便写一个 `.sig` 冒充不了已签名**（真验一次，不是看文件在不在）");
+    await rmp(hand, { recursive: true, force: true });
+  }
+  {
+    const row2 = (await (await import("./plugin/store.js")).listInstalled()).find((x) => x.manifest.id === "com.umbra.markdown");
+    ok(!!row2 && row2.unsigned === false, "内置插件不算未签名（跟主程序一起发，主程序的签名就是它的）");
+  }
+
   /* 收尾：公钥是这一节临时造的，删掉；插件留着给 uitest 用 */
   await rmp(KEYS, { recursive: true, force: true });
   await rmp(join(PLUGINS_DIR, "com.umbra.demo", "0.2.0"), { recursive: true, force: true });

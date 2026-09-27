@@ -342,6 +342,39 @@ await pg.waitForTimeout(400);
      bx && mx ? `⋯ 右缘 ${Math.round(mx.x + mx.width)} · Tab 条右缘 ${Math.round(bx.x + bx.width)}` : "量不到");
 }
 
+/* ── 插件市场四屏（M11-6 接线，形制 S17）──
+   ⚠️ 判据钉在**结构标记**上（`data-ud`），不钉文案 —— 这一轮已经因为钉文案栽过一次
+   （packtest 等的「N 份稿」在重画时被移走了，§九十七）。 */
+console.log("\n插件市场四屏（M11-6）");
+{
+  await pg.locator('header button[aria-haspopup="menu"]').first().click(); await pg.waitForTimeout(500);
+  const entry = pg.locator("button").filter({ hasText: "插件市场" }).first();
+  ok(await entry.count() === 1, "项目菜单里有「插件市场…」入口");
+  await entry.click(); await pg.waitForTimeout(1500);
+  ok(await pg.locator('[data-ud="market"]').count() === 1, "**市场在详情区当页签打开**（不单开窗口）");
+  ok(await pg.locator('[data-ud="market-card"]').count() >= 1, "市场里列出了插件");
+
+  /* 详情：权限那一块是这一屏最要紧的 */
+  await pg.locator('[data-ud="market-card"]').first().click(); await pg.waitForTimeout(900);
+  ok(await pg.locator('[data-ud="market-detail"]').count() === 1, "点卡片进详情");
+  const detail = await pg.locator('[data-ud="market-detail"]').innerText();
+  /* **不允许的两行也要列** —— 设计侧：「让人敢装的是它做不了什么」 */
+  ok(/联网 · 不允许/.test(detail) && /启动外部程序 · 不允许/.test(detail),
+    "**权限里把「不允许」的也列出来了**（让人敢装的是它做不了什么）");
+  ok(/它能碰什么/.test(detail), "权限卡在按钮那一侧");
+
+  /* 已装：未签名三处 */
+  await pg.locator('[data-ud="market"] button').filter({ hasText: "已装" }).first().click(); await pg.waitForTimeout(1200);
+  const rows = await pg.locator('[data-ud="installed-row"]').count();
+  ok(rows >= 1, "已装列表有内容", `${rows} 行`);
+  const bad = await pg.locator('[data-ud="installed-row"][data-unsigned]').count();
+  if (bad) {
+    ok(await pg.locator('[data-ud="unsigned-banner"]').count() === 1, "**未签名：顶部有横幅**（不打开这一页也要知道）");
+  } else ok(true, "（本机没有未签名插件，横幅这条跳过）");
+  await pg.locator('[data-ud="market"] button[title="关闭"]').click().catch(() => {});
+  await pg.waitForTimeout(500);
+}
+
 /* ── ✎ 永远显示（M11-6，用户 2026-09-26 定的模型）──
    原来是「没有编辑能力就不画」，而**「不画」和「这个格式本来就不能编辑」长得一模一样**。
    新模型：✎ 始终是「编辑这份文件」，变的只是你有没有这个能力 —— 那是一道闸。

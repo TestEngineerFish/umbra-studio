@@ -102,3 +102,42 @@ export function verifyPackage(pkg: PluginPackage): VerifyResult {
     return { ok: false, why: `验签出错：${(e as Error).message}` };
   }
 }
+
+/** 一个**已经装在盘上**的插件目录，它的签名现在验不验得过。
+ *
+ *  ⚠️ **不能只看 `.sig` 在不在**（M11-6 接线时判据只挪了半步）：
+ *  随便写一个 `.sig` 文件就能让插件显示成「已签名」，而那个文件的内容根本没人看。
+ *  「有签名」和「签名验得过」是两件事 —— 这和 §96.3 是同一族：
+ *  **签名只证明「是谁给的」，而一个没被验过的签名连这个都不证明。**
+ *
+ *  所以这里按目录内容重算一遍 canonical 再验。
+ *  代价是列插件时要读一遍它的文件；插件不多，可以接受。
+ */
+export async function verifyInstalled(dir: string): Promise<VerifyResult> {
+  const sigPath = join(dir, ".sig");
+  if (!existsSync(sigPath)) return { ok: false, why: "没有签名" };
+  if (!existsSync(PUBKEY)) return { ok: false, why: "本机没有发布方公钥，验不了" };
+  try {
+    const files: Record<string, string> = {};
+    const walk = async (d: string, base: string): Promise<void> => {
+      for (const e of await readdir(d, { withFileTypes: true })) {
+        if (e.name.startsWith(".")) continue;     // `.sig` 自己不在签名范围内
+        const abs = join(d, e.name);
+        const rel = base ? `${base}/${e.name}` : e.name;
+        if (e.isDirectory()) { await walk(abs, rel); continue; }
+        files[rel] = (await readFile(abs)).toString("base64");
+      }
+    };
+    await walk(dir, "");
+    const raw = files["manifest.json"];
+    if (!raw) return { ok: false, why: "目录里没有 manifest.json" };
+    const manifest = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as PluginManifest;
+    const sig = (await readFile(sigPath, "utf8")).trim();
+    const key = createPublicKey(readFileSync(PUBKEY));
+    return edVerify(null, canonical({ format: 1, manifest, files }), key, Buffer.from(sig, "base64"))
+      ? { ok: true }
+      : { ok: false, why: "签名验不过 —— 装上之后被改过，或者不是我们签的" };
+  } catch (e) {
+    return { ok: false, why: `验签出错：${(e as Error).message}` };
+  }
+}

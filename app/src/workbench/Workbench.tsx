@@ -22,6 +22,7 @@ import { FileTree } from "./FileTree";
 import { moduleFor, type ViewContext, useKindRegistry } from "../kinds";
 import { FileMore, ToolbarBar } from "../kinds/toolbar";
 import { makeActions } from "./ctxmenu";
+import { Market } from "../market/Market";
 import { TabBar } from "./TabBar";
 import { normalize, openTab, type Tab } from "./tabs";
 
@@ -37,6 +38,11 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   const setTabs = useCallback((next: Tab[]) => { setTabsRaw(next); mem.set(`us.tabs.${project.dir}`, next); }, [project.dir]);
   /** 当前打开的是目录时，file 是目录路径（"" = 项目根），dirMode 为真 */
   const [dirMode, setDirMode] = useState(false);
+  /** 插件市场**在详情区当一个页签打开**（设计侧第十轮：不单开窗口 ——
+   *  「用户买完装完，要立刻回到刚才那份文件里看效果」）。
+   *  ⚠️ 它**不走 `kinds/` 注册表** —— 市场不是一种文件格式，
+   *  塞进注册表会让「有哪些格式」这张表里混进一个不是格式的东西。 */
+  const [market, setMarket] = useState(false);
   /* 曾经在这里的三样 state 已经搬进各自的格式模块：
      `dirSel` → `kinds/dir.tsx`（只有目录用）、`outline` → `kinds/md.tsx`（只有 Markdown 用）、
      `mode`（预览模式）→ `kinds/dc.tsx`（只有设计稿用）。
@@ -82,8 +88,10 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
           toast(`还没有能编辑 ${ext} 的插件`, "有了会出现在插件市场里，不用更新 Umbra", "ok");
           return;
         }
+        /* 市场里有 → **直接带他去**，别只弹一句让他自己找（设计侧：按这个扩展名筛好） */
         const one = hits[0]!;
-        toast(`「${one.name}」能编辑 ${ext}`, one.price ? `${one.price} 积分 · 在插件市场里` : "在插件市场里", "ok");
+        toast(`「${one.name}」能编辑 ${ext}`, one.price ? `${one.price} 积分 —— 已为你打开插件市场` : "已为你打开插件市场", "ok");
+        setMarket(true);
       }, () => toast("问不到市场", "本地服务没响应", "error"));
   }, [file, core]);
   const panels = [...(mod.panels ?? [])];
@@ -355,6 +363,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
                 { label: "在访达中显示", run: () => void host.revealInFinder(project.dir).catch((e: Error) => toast("打开目录失败", e.message, "error")) },
                 { label: "重建索引", run: () => void store.rebuildIndex() },
                 { sep: true as const },
+                { label: "插件市场…", run: () => setMarket(true) },
                 { label: "项目设置…", hint: "⌘,", run: onSettings },
                 { sep: true as const },
                 { label: "关闭项目", run: onHome },
@@ -488,7 +497,8 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               </div>
             )}
             <div className="flex-1 min-h-0 flex relative">
-              {!dirMode && !file ? (
+              {market ? <Market core={core} onClose={() => setMarket(false)} />
+                : !dirMode && !file ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted text-xs text-center px-6 leading-relaxed bg-canvas">
                   <Glyph icon="file" size={28} className="opacity-25" />
                   <div><b className="text-text2">从左边的目录里选一个文件</b></div>

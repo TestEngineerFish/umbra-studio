@@ -71,9 +71,15 @@ export async function installPackage(pkg: PluginPackage): Promise<InstallResult>
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, Buffer.from(b64, "base64"));
   }
-  /* 未签名的留个记号 —— 界面按它显示「未签名」。放文件里而不是只放内存，
-     因为重启之后这件事仍然成立。 */
-  if (v.dev) await writeFile(join(target, ".unsigned"), v.why ?? "开发模式安装");
+  /* ⚠️ **存的是签名本身，不是「未签名」这个结论**（M11-6 接线时改的）。
+     原来写的是一个 `.unsigned` 标记文件 —— 那等于把结论缓存下来，
+     而任何**绕过安装流程**放进去的目录（手动 `cp`、同步盘、以后的开发者模式）
+     都不会有这个标记，于是被当成「已签名」。实测踩到：演示插件是 `cp` 进去的，
+     界面上一点提示都没有。
+
+     现在存签名，列的时候**当场验**：没有 `.sig` 就是未签名，有但验不过也是。
+     判据从「装的时候有没有人写过标记」变成「**现在有没有签名可验**」。 */
+  if (pkg.signature) await writeFile(join(target, ".sig"), pkg.signature, "utf8");
 
   const versions = (await readdir(idDir)).filter((x) => x !== "current").sort();
   const previous = versions.filter((x) => x !== man.version).slice(-1)[0] ?? null;
