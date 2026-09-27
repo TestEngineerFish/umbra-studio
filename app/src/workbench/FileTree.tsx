@@ -266,13 +266,33 @@ function GotoFile({ q, setQ, drafts, indexed, current, onPick, onClose, anchor }
   q: string; setQ: (v: string) => void; drafts: Draft[]; indexed: boolean; current: string | null;
   onPick: (file: string) => void; onClose: () => void; anchor: { x: number; y: number; w: number };
 }) {
-  const kw = q.trim().toLowerCase();
-  const rows = drafts.filter((d) => !kw || `${d.title} ${d.file}`.toLowerCase().includes(kw));
+  /* ═══ 打字才出结果、防抖、只列前 10（用户 tmp.txt 第 2 条，2026-09-27）═══
+     他的原话：「点击搜索后……搜索框内容为空时不要显示全部结果，只有有内容才去匹配，
+     而且匹配也需要防抖，最多显示匹配的 10 个结果之类」。
+
+     为什么空串不列全部：**打开这个浮层的动作本身不表达「我要看全部稿」** ——
+     要看全部，目录列一直在左边。空着就列全部只有两个效果：
+     首次打开要渲染上百行（他说的「需要等待一会儿」），以及把真正的入口埋在噪音里。
+
+     防抖 120ms：筛选本身是内存里的，不花钱；**花钱的是渲染** ——
+     每敲一个字重排一次列表，在大项目上就是掉帧。 */
+  const [dq, setDq] = useState(q);
+  useEffect(() => { const t = setTimeout(() => setDq(q), 120); return () => clearTimeout(t); }, [q]);
+  const kw = dq.trim().toLowerCase();
+  const all = kw ? drafts.filter((d) => `${d.title} ${d.file}`.toLowerCase().includes(kw)) : [];
+  /* 只列前 10，**但要说出总共有几条** —— 不说的话用户以为就这 10 个，
+     而他要找的那一份可能在第 11 位（「静静截断」和「没有匹配」在界面上长得一样）。 */
+  const MAX = 10;
+  const rows = all.slice(0, MAX);
+  const more = all.length - rows.length;
   /* ═══ 带搜索框的选择器：**焦点不离开输入框**（设计侧第九轮回复 §二.1）═══
      浮层通用的那套漫游焦点在这里不能用 —— 它会把焦点挪到行按钮上，
      用户接着打字就打不进去了。所以 `keys="off"`，这里自己走「高亮行」：
      焦点始终在框里，`aria-activedescendant` 指到当前行，读屏才知道选到哪了。 */
   const [act, setAct] = useState(0);
+  /* 挂载后一帧再置 true —— 同一帧里设初值的话浏览器不会插值，动画不会跑 */
+  const [grown, setGrown] = useState(false);
+  useEffect(() => { const r = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(r); }, []);
   const hit = Math.min(act, Math.max(0, rows.length - 1));
   /* 关键词一变，候选就全换了 —— 高亮必须回到第一条，不然会停在一个已经不在列表里的位置 */
   useEffect(() => { setAct(0); }, [kw]);
@@ -281,10 +301,13 @@ function GotoFile({ q, setQ, drafts, indexed, current, onPick, onClose, anchor }
   return (
       <PopoverAt x={anchor.x} y={anchor.y} onClose={onClose} width={anchor.w} pad="0" keys="off">
       <div className="max-h-[60vh] flex flex-col">
+        {/* 横向展开（用户 tmp.txt 第 2 条）：浮层一开，框从 0 拉到满宽。
+            用的是既有的 `anim-col`（慢档 240ms，第九轮定的三档之一），不新造一种动画。 */}
+        <div className="anim-col m-1.5" style={{ width: grown ? "auto" : 0, opacity: grown ? 1 : 0 }}>
         <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="转到文件…"
           role="combobox" aria-expanded aria-controls="goto-list"
           aria-activedescendant={rows.length ? rowId(hit) : undefined}
-          className="m-1.5 h-7 px-2 rounded border border-borderStrong bg-bg outline-none focus:border-accent text-xs"
+          className="w-full h-7 px-2 rounded border border-borderStrong bg-bg outline-none focus:border-accent text-xs"
           onKeyDown={(e) => {
             if (e.key === "Escape") { if (q) setQ(""); else onClose(); return; }
             if (!rows.length) return;
@@ -297,8 +320,10 @@ function GotoFile({ q, setQ, drafts, indexed, current, onPick, onClose, anchor }
             e.preventDefault(); setAct(to);
             document.getElementById(rowId(to))?.scrollIntoView({ block: "nearest" });
           }} />
+        </div>
         <div id="goto-list" role="listbox" className="flex-1 overflow-auto pb-1">
-          {rows.length ? rows.map((d, i) => (
+          {!kw ? <div className="px-2 py-3 text-muted text-[11px] text-center">打几个字开始找 —— 名字或路径都行</div>
+            : rows.length ? rows.map((d, i) => (
             <button key={d.file} id={rowId(i)} role="option" aria-selected={i === hit} tabIndex={-1}
               onMouseEnter={() => setAct(i)}
               className={`w-full px-2 py-1 flex items-center gap-2 text-left ${i === hit ? "bg-hover" : ""} ${d.file === current ? "bg-accentSoft" : ""}`} onClick={() => onPick(d.file)}>
@@ -308,6 +333,8 @@ function GotoFile({ q, setQ, drafts, indexed, current, onPick, onClose, anchor }
             </button>
           )) : <div className="px-2 py-3 text-muted text-[11px] text-center">没有匹配的稿</div>}
         </div>
+        {/* 截断要说出来 —— 「只列了前 10」和「一共就这 10 条」不是一回事 */}
+        {more > 0 && <div className="px-2 h-6 flex items-center border-t border-border text-[11px] text-muted">还有 {more} 条 —— 再多打几个字缩小范围</div>}
         {!indexed && <div className="px-2 h-7 flex items-center border-t border-border text-[11px] text-muted">还没建索引 —— 项目菜单里「重建索引」</div>}
       </div>
       </PopoverAt>

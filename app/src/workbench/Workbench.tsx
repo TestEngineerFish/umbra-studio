@@ -407,8 +407,22 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
 
   return (
     <div ref={rootRef} className="h-full flex flex-col">
-      {/* Provider 要同时包住详情区和状态行（目录的「已选 3 项」在状态行读模块内部的勾选） */}
-      {/* Provider 包住详情、工具栏、状态读数三处 —— 它们都要读格式模块内部的状态 */}
+      {/* ⚠️ **格式模块的 Provider 不包在这一层**（tmp.txt 第 1 条，2026-09-27）。
+          原来这里是 `<Wrap ctx={ctx} key={kind}>` 包住整个 `Frame` ——
+          于是**换一种文件类型，目录列和聊天栏跟着整棵卸载重挂**，
+          用户的原话是「点击查看不同的文件，目录列表不应刷新（能感觉到明显闪烁了一下）」。
+
+          实测（body 上挂 MutationObserver，给每行盖标记）：
+          dc → dc 祖先链保留 6/6；**dc → md 保留 0/6，body 增删 69 个节点**。
+          ⚠️ 第一版仪器把 observer 挂在目录列容器上，量到「DOM 增删 0 次」——
+          因为那个容器**自己**被换掉了，observer 跟着失效。
+          和 `CLAUDE.md` §9 记的 `ResizeObserver` 绑在已卸载节点上是同一个坑。
+
+          为什么不能靠「让 Wrap 身份稳定」解决：`mod.Provider` 换一种格式就是
+          **另一个组件类型**，React 见类型变必然重挂子树 —— 这一条躲不掉。
+          能做的是**缩小它罩住的范围**：Provider 挪进详情区（见 `detail` 那一项），
+          目录列与聊天栏留在外面。它们本来和"当前文件是什么格式"无关
+          —— 第七轮那条判据：「点了它，变的是什么」。 */}
       {/* ═══ 三列的顺序、宽度、让位**全在这个数组里**（M8-26）═══
           用户说「产品总是要迭代的，所以要模块化处理，方便调整」——
           两轮之内布局已经改过三次形态，每次都要翻找嵌套的 div。
@@ -417,8 +431,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
           ⚠️ 第九轮用户要的是「目录 | 详情 | 聊天」（聊天换到右边），
           等设计侧的形制回来一起改：到时候只要把 `chat` 挪到数组末尾、
           `resize.edge` 从 `right` 换成 `left`。 */}
-      <Wrap ctx={ctx} key={kind}>
-        <Frame
+      <Frame
           top={topBar}
           regions={[
             {
@@ -431,7 +444,11 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
             },
             {
               id: "detail", show: true,
+              /* Provider 就罩在这一块：详情区里的编辑栏、正文、属性区、`⋯` 都要读
+                 格式模块内部的状态。`key={kind}` 留着 —— 换格式时这一块本来就要换内容，
+                 上一个格式的 Provider 状态不该泄漏过来。重挂范围到此为止。 */
               node: (
+                <Wrap ctx={ctx} key={kind}>
                 <div className="flex-1 min-w-0 flex flex-col">
             <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file}
               onPick={(p) => open(p)} onOpen={(p) => open(p, false, "open")}
@@ -534,6 +551,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               )}
             </div>
                 </div>
+                </Wrap>
               ),
             },
             {
@@ -554,7 +572,6 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
             spans: ["nav", "detail", "chat"],
           } : undefined}
         />
-      </Wrap>
       {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
     </div>
   );

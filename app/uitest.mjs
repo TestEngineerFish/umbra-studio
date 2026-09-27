@@ -197,6 +197,28 @@ if ((await pg.locator('header [data-ud="region-left"]').getAttribute("aria-press
    在这一步之前测过它单独可用；放在这里测快捷键会被前面几步留下的浮层状态干扰。 */
 await pg.locator('button[title="转到文件（⌘P）"]').click(); await pg.waitForTimeout(700);
 ok(await pg.locator('input[placeholder="转到文件…"]').count() === 1, "列头的 ⌕ 打开「转到文件」");
+/* ── 搜索：打字才出结果 · 只列前 10 · 防抖（用户 tmp.txt 第 2 条，2026-09-27）──
+   他的原话：「搜索框内容为空时不要显示全部结果，只有有内容才去匹配，
+   而且匹配也需要防抖，最多显示匹配的 10 个结果之类」。
+   为什么空着不列全部：打开这个浮层不等于「我要看全部稿」—— 要看全部，目录列一直在左边。 */
+{
+  ok(await pg.locator('#goto-list [role="option"]').count() === 0, "**空着不列任何结果**（原来一打开就把全部稿铺出来）");
+  const inp = pg.locator('input[placeholder="转到文件…"]');
+  await inp.fill("."); await pg.waitForTimeout(400);
+  const n = await pg.locator('#goto-list [role="option"]').count();
+  ok(n > 0 && n <= 10, "有关键词才出结果，且**最多 10 条**", `${n} 条`);
+  /* ⚠️ 截断必须说出来 —— 「只列了前 10」和「一共就这 10 条」在界面上长得一样，
+     不说的话用户以为没有第 11 条，而他要找的那份可能正在第 11 位。 */
+  ok(await pg.locator('text=/还有 \\d+ 条/').count() === 1, "截断了就说「还有 N 条」，不静静截掉");
+  /* 防抖：连敲 5 个字，列表只该重排一次 */
+  await inp.fill("");
+  await pg.waitForTimeout(300);
+  await pg.evaluate(() => { window.__gl = 0; new MutationObserver(() => window.__gl++).observe(document.getElementById("goto-list"), { childList: true, subtree: true }); });
+  for (const ch of ["d", "c", ".", "h", "t"]) { await inp.type(ch); await pg.waitForTimeout(30); }
+  await pg.waitForTimeout(500);
+  const rerenders = await pg.evaluate(() => window.__gl);
+  ok(rerenders <= 2, "连敲 5 个字只重排一两次（120ms 防抖）", `${rerenders} 次`);
+}
 await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
 
 /* ── 格式注册表（M8-14）──
@@ -662,6 +684,41 @@ console.log("\n页签：状态点 / 溢出 / 当前态（M8-22）");
   /* 体检状态**不该**上页签（它在树、诊断角标、诊断面板三处）。
      旧实现是每个页签都挂一颗 hdot —— 用户把它读成了「未保存」。 */
   ok(await pg.locator('[data-ud="tab"] .hdot').count() === 0, "页签上没有体检点了（只留未保存）");
+}
+
+/* ── 换格式不许动目录列（用户 tmp.txt 第 1 条，2026-09-27）──
+   他的原话：「点击查看不同的文件，目录列表不应刷新（能感觉到明显闪烁了一下）」。
+   根因：格式模块的 Provider 原来包着整个 `Frame`，`key={kind}` 一变
+   **目录列和聊天栏跟着整棵卸载重挂**。实测 dc → md 祖先链保留 0/6、body 增删 69 个节点。
+
+   ⚠️ **判据必须挂在不会被卸载的东西上。** 第一版把 MutationObserver 挂在目录列容器上，
+   量到「DOM 增删 0 次」—— 因为那个容器自己被换掉了，observer 跟着失效：
+   量到零的是仪器，不是世界（`doc/04` §2.7 · `CLAUDE.md` §9 的 ResizeObserver 同族）。
+   所以判据改成**盖标记**：切格式后标记还在 = 这些节点没被换过。 */
+console.log("\n换格式不动目录列（用户 tmp.txt 第 1 条）");
+{
+  if (await openByName(".dc.html")) {
+    await pg.waitForTimeout(600);
+    const stamped = await pg.evaluate(() => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')];
+      if (!rows.length) return 0;
+      for (const r of rows) r.dataset.keep = "1";
+      let el = rows[0];
+      for (let i = 0; i < 6 && el; i++) { el.dataset.keep = "1"; el = el.parentElement; }
+      return rows.length;
+    });
+    if (stamped && await openByName(".md")) {
+      await pg.waitForTimeout(1200);
+      const r = await pg.evaluate(() => {
+        const rows = [...document.querySelectorAll('[role="treeitem"]')];
+        let anc = 0, el = rows[0];
+        for (let i = 0; i < 6 && el; i++) { if (el.dataset?.keep) anc++; el = el.parentElement; }
+        return { kept: rows.filter((x) => x.dataset.keep).length, total: rows.length, anc };
+      });
+      ok(r.total > 0 && r.kept === r.total, "**dc → md 之后目录列每一行都还是原来那个节点**（原来整列跟着重挂）", `${r.kept}/${r.total} 行`);
+      ok(r.anc === 6, "目录列的祖先容器也没被换掉（Provider 只罩详情区）", `${r.anc}/6`);
+    } else ok(false, "项目里缺 .dc.html 或 .md，这一组测不了");
+  } else ok(false, "项目里没有 .dc.html，这一组测不了");
 }
 
 /* ── 引擎是会话的属性（M8-16，用户实测第 7 条）──
