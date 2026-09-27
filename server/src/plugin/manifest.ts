@@ -1,4 +1,5 @@
 import { PLUGIN_DEFAULT_PRIORITY } from "../shared/kinds.js";
+import { PLUGIN_ID_RE, PLUGIN_VERSION_RE } from "./paths.js";
 
 /** 插件清单（M11-4，需求见 `doc/20`）。
  *
@@ -67,11 +68,19 @@ export function checkManifest(m: unknown): { ok: boolean; problems: ManifestProb
   const x = m as Record<string, unknown>;
 
   /* id 兼做能力名前缀和目录名，所以字符集要卡死：
-     允许点和横杠混进路径分隔符或 `..` 的话，装的时候就能写到别处去。 */
-  if (typeof x.id !== "string" || !/^[a-z0-9]+(\.[a-z0-9-]+){1,4}$/.test(x.id)) {
+     允许点和横杠混进路径分隔符或 `..` 的话，装的时候就能写到别处去。
+     ⚠️ 正则定义在 `paths.ts`，**和拼路径的地方共用一份** —— 分成两份的话，
+     放宽了这一份而另一份没跟上，就正好在信任边界上开一条缝。 */
+  if (typeof x.id !== "string" || !PLUGIN_ID_RE.test(x.id)) {
     bad("id", "要是反写域名式的小写 id，比如 com.umbra.video（只许小写字母数字和点、横杠）");
   }
   for (const k of ["name", "version"]) if (typeof x[k] !== "string" || !x[k]) bad(k, "必填");
+  /* ⚠️ version **也兼做目录名**（issue #23）：原来这里只查「非空」，
+     而 `installPackage` 拿它拼 target 后先 `rm -rf`。`"../../.."` 就是删 `STATE_ROOT`。
+     这一项本来漏在「后面所有环节都假设清单是干净的」这句注释的覆盖范围外。 */
+  if (typeof x.version === "string" && x.version && !PLUGIN_VERSION_RE.test(x.version)) {
+    bad("version", "要像 1.0.0 / 0.2 / 1.0.0-beta.1（只许数字、点，和一段横杠后缀）—— 它兼做目录名");
+  }
 
   if (typeof x.hostApi !== "string") bad("hostApi", "必填，比如 \"^1\"");
   else {

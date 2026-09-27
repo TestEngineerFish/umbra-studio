@@ -207,6 +207,68 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
     ok(!!row2 && row2.unsigned === false, "内置插件不算未签名（跟主程序一起发，主程序的签名就是它的）");
   }
 
+  /* ── ⑦ **调用方给的 id / version 逃不出插件目录**（issue #23，p0；#25）──
+     这一组和上面四件攻击样本的区别：上面攻的是**包里的内容**，这里攻的是**参数**。
+     `uninstall_plugin` / `list_plugin_versions` / `switch_plugin_version` 都在 MCP 面上，
+     id 来自调用方而**不来自清单**，所以 `checkManifest` 那道正则根本护不到它们。
+     原来 `uninstall("../..")` 会 `rm -rf` 掉 `STATE_ROOT`（开发模式下就是整个仓库）。
+
+     ⚠️ **判据本身不许有破坏力**：这里一律用「指向不存在的目录」的逃逸 id 当探针 ——
+     闸生效就抛，闸万一失效也只是无害地返回 false。
+     绝不写一个「修得不对就删掉仓库」的用例：回归自己不能是那把刀。 */
+  {
+    const { uninstall, pluginDirOf, PLUGINS_DIR: PD } = await import("./plugin/store.js");
+    const { isInside, pluginIdDir } = await import("./plugin/paths.js");
+    const path = await import("node:path");
+    const { existsSync: ex } = await import("node:fs");
+
+    for (const evilId of ["../..", "../../不存在的目录-xyz", "com.umbra.demo/../../x", "..\\..\\x", ""]) {
+      let t = "";
+      try { await uninstall(evilId); } catch (e) { t = (e as Error).message; }
+      ok(t.includes("形状不对") || t.includes("外面"), `卸载拒绝逃逸的 id：${JSON.stringify(evilId)}`, t.slice(0, 28));
+    }
+    ok(ex(PD), "拒绝之后插件目录还在（判据自己没造成破坏）");
+
+    /* `pluginDirOf` 走的是另一条路（同步、在 http 静态路径上，不抛）。
+       ⚠️ 原来这里唯一的判据是 `pluginDirOf("../../etc") === null` —— 它通过
+       **只是因为那个目录正好不存在**。换成一个真实存在的目录就穿了：
+       `../../projects` 拼出来是用户的项目目录。判据要盯形状，不能靠运气。 */
+    ok(pluginDirOf("../../projects") === null, "**查目录拒绝逃逸的 id，哪怕目标真的存在**（原判据靠「那个目录不存在」侥幸通过）");
+    ok(pluginDirOf("../../etc") === null, "id 逃不出插件目录");
+
+    const { pluginVersions: pv, switchVersion: sw } = await import("./plugin/install.js");
+    let tv = ""; try { await pv("../.."); } catch (e) { tv = (e as Error).message; }
+    ok(tv.includes("形状不对"), "列版本拒绝逃逸的 id（原来它能列出任意目录的文件名）", tv.slice(0, 28));
+    let tw = ""; try { await sw("../..", "0.1.0"); } catch (e) { tw = (e as Error).message; }
+    ok(tw.includes("形状不对"), "切版本拒绝逃逸的 id", tw.slice(0, 28));
+
+    /* version 也兼做目录名 —— 原来 `checkManifest` 只查它非空 */
+    const badV = checkManifest({ ...raw as object, version: "../../.." });
+    ok(!badV.ok && badV.problems.some((x) => x.field === "version"), "**清单拒绝逃逸的版本号**（它兼做目录名，原来只查非空）");
+    let ti = ""; try { pluginIdDir(PD, "com.umbra.ok"); } catch (e) { ti = (e as Error).message; }
+    ok(ti === "", "正常 id 照过（闸不许误伤）", ti);
+
+    /* ── #25：逃逸判据必须平台无关 ──
+       原判据 `abs.startsWith(target + "/")` 在 Windows 上把**每一个正常文件**
+       都判成逃逸，于是 win 上任何插件都装不上。
+       这两条用 `path.win32` 跑同一个函数：**在 mac 上验 win 的行为，不需要真机**。 */
+    const tgt = path.win32.join("C:\\S\\plugins\\com.a.b", "1.0.0");
+    ok(isInside(tgt, path.win32.join(tgt, "manifest.json"), path.win32),
+       "**win 规则下正常文件不算逃逸**（原判据硬编码 posix 的 /，win 上装不了任何插件）");
+    ok(!isInside(tgt, path.win32.join(tgt, "..\\..\\pwned.txt"), path.win32), "win 规则下逃逸路径判得出来");
+    const ptgt = "/s/plugins/com.a.b/1.0.0";
+    ok(isInside(ptgt, ptgt + "/manifest.json", path.posix), "posix 规则下正常文件不算逃逸");
+    ok(!isInside(ptgt, path.posix.join(ptgt, "../../pwned.txt"), path.posix), "posix 规则下逃逸路径判得出来");
+    ok(!isInside(ptgt, ptgt, path.posix), "目录自己不算「在里面」（写到目录身上没有意义）");
+
+    /* 包里的路径带反斜杠：包格式约定用 `/` 分隔，`a\..\..\x` 在 posix 上是**一个文件名**，
+       拷到 win 上就变成三级路径。收下它等于把逃逸推迟到别人的机器上发生。 */
+    const evil2 = { ...pkg, files: { ...pkg.files, "a\\..\\..\\pwned.txt": Buffer.from("x").toString("base64") } };
+    evil2.signature = edSign(null, canonical(evil2), privateKey).toString("base64");
+    let t2 = ""; try { await installPackage(evil2 as typeof pkg); } catch (e) { t2 = (e as Error).message; }
+    ok(t2.includes("逃出插件目录"), "**包里带反斜杠的路径被拦**（posix 上是一个文件名，到 win 上就是三级路径）", t2.slice(0, 32));
+  }
+
   /* 收尾：公钥是这一节临时造的，删掉；插件留着给 uitest 用 */
   await rmp(KEYS, { recursive: true, force: true });
   await rmp(join(PLUGINS_DIR, "com.umbra.demo", "0.2.0"), { recursive: true, force: true });

@@ -5,6 +5,7 @@ import { STATE_ROOT, TOOL_ROOT } from "../project.js";
 import { checkManifest, type PluginManifest } from "./manifest.js";
 import { verifyInstalled } from "./pack.js";
 import { PLUGIN_DEFAULT_PRIORITY, isBuiltinKind, registerKind, unregisterKindsFrom } from "../shared/kinds.js";
+import { PLUGIN_ID_RE, pluginIdDir } from "./paths.js";
 
 /** 插件在盘上住哪、怎么列（M11-4）。
  *
@@ -83,7 +84,11 @@ async function scanRoot(root: string, bundled: boolean, out: InstalledPlugin[]):
 export async function uninstall(id: string): Promise<boolean> {
   /* 内置的卸不掉。**这里要挡住** —— 不挡的话打包后它会去删 `.app` 里的目录，
      在 macOS 上那会毁掉签名，应用下次打开就「已损坏」（`00` §六十三 栽过同类的）。 */
-  const dir = join(PLUGINS_DIR, id);
+  /* ⚠️ **这个 id 来自调用方，不来自清单**（issue #23，p0）：`uninstall("../..")`
+     原来直接 `join` 出 `STATE_ROOT` 再 `rm -rf`，开发模式下就是整个仓库。
+     `uninstall_plugin` 在 MCP 面上 —— 任何接入的模型客户端都能调，没确认、没回收站。
+     所以这里必须过 `pluginIdDir` 的两道闸（形状 + 结果在内），形状不对就抛。 */
+  const dir = pluginIdDir(PLUGINS_DIR, id);
   if (!existsSync(dir)) return false;
   /* 只删插件自己的目录。**插件改过的文件不动** —— 那是用户的东西（`doc/20` §6.4） */
   await rm(dir, { recursive: true, force: true });
@@ -107,6 +112,11 @@ async function pickVersion(idDir: string): Promise<string | null> {
 export function pluginDirOf(id: string): string | null {
   /* 用户装的优先 —— 和 `listInstalled` 的覆盖顺序保持一致。
      不一致的话会出现「列表里显示新版，实际加载的是内置旧版」这种最难查的错。 */
+  /* 形状不对直接说找不到 —— 这个函数的语义是「找得到吗」，它在 http 静态路径上，
+     不抛异常。⚠️ 但**不能只靠 `existsSync` 偶然拦住** ——
+     原来 `pluginDirOf("../../etc")` 返回 null 是因为那个目录正好不存在，
+     换成一个存在的目录（`../../projects`）就能列出它下面的文件名。 */
+  if (!PLUGIN_ID_RE.test(id)) return null;
   for (const root of [PLUGINS_DIR, BUNDLED_DIR]) {
     const idDir = join(root, id);
     if (!existsSync(idDir)) continue;

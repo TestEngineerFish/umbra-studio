@@ -4,6 +4,7 @@ import { dirname, join, normalize } from "node:path";
 import { decodePackage, verifyPackage, type PluginPackage } from "./pack.js";
 import { checkManifest } from "./manifest.js";
 import { BUNDLED_DIR, PLUGINS_DIR, registerPluginKinds } from "./store.js";
+import { isInside, pluginIdDir, pluginVersionDir } from "./paths.js";
 
 /** 装 / 更新 / 切版本 / 卸（M11-6）。
  *
@@ -53,8 +54,13 @@ export async function installPackage(pkg: PluginPackage): Promise<InstallResult>
     throw new Error(`${man.id} 是内置插件，不能用装包的方式覆盖它`);
   }
 
-  const idDir = join(PLUGINS_DIR, man.id);
-  const target = join(idDir, man.version);
+  /* ⚠️ id 和 version **都**兼做目录名，两段都要过闸（issue #23）：
+     `version = "../../.."` 拼出来就是 `STATE_ROOT`，而下面那个 `rm(target, recursive)`
+     会把它整个删掉 —— 而且之后逐个文件查逃逸时是以这个**已经逃出去的** target 为基准，
+     等于那道检查在护着一个错误的地方。`checkManifest` 现在也卡 version 形状，
+     这里再算一遍：**信任边界上不复用别处的结论**。 */
+  const idDir = pluginIdDir(PLUGINS_DIR, man.id);
+  const target = pluginVersionDir(PLUGINS_DIR, man.id, man.version);
   /* 同一版重装 = 先清掉再写，不做增量 —— 增量会让「删掉的文件还在」 */
   await rm(target, { recursive: true, force: true });
   await mkdir(target, { recursive: true });
@@ -62,9 +68,18 @@ export async function installPackage(pkg: PluginPackage): Promise<InstallResult>
   for (const [rel, b64] of Object.entries(pkg.files)) {
     /* ⚠️ **路径逃逸**：包里的路径是攻击者可控的。`a/../../../../etc/x` 这种
        `join` 出来会落到插件目录外面。判据是「拼完还在不在 target 里」，
-       不是「字符串里有没有 ..」—— 后者漏掉编码变体。 */
+       不是「字符串里有没有 ..」—— 后者漏掉编码变体。
+
+       ⚠️ 判据从 `startsWith(target + "/")` 换成 `isInside`（issue #25）：
+       前者硬编码了 posix 分隔符，**Windows 上 `join` 产出 `\`，于是每一个正常文件
+       都被判成逃逸，win 上任何插件都装不上**，报的还是「包里有逃出插件目录的路径」，
+       会让人以为是包坏了。`packtest` 对 win 产物只验结构，测不出这一条。 */
+    if (rel.includes("\\") || rel.startsWith("/")) {
+      await rm(target, { recursive: true, force: true });
+      throw new Error(`包里有逃出插件目录的路径：${rel}`);   /* 包格式约定用 `/` 分隔（pack.ts） */
+    }
     const abs = join(target, normalize(rel));
-    if (!abs.startsWith(target + "/") && abs !== target) {
+    if (!isInside(target, abs)) {
       await rm(target, { recursive: true, force: true });
       throw new Error(`包里有逃出插件目录的路径：${rel}`);
     }
@@ -103,7 +118,9 @@ export async function installPackage(pkg: PluginPackage): Promise<InstallResult>
 
 /** 一个插件装了哪几版，当前用哪一版 */
 export async function pluginVersions(id: string): Promise<{ versions: string[]; current: string | null }> {
-  const idDir = join(PLUGINS_DIR, id);
+  /* 同 `uninstall`：id 来自调用方。原来 `readdir(join(PLUGINS_DIR, id))` 能列出
+     任意目录的文件名（`list_plugin_versions` 在 MCP 面上，issue #23 的同族一处）。 */
+  const idDir = pluginIdDir(PLUGINS_DIR, id);
   if (!existsSync(idDir)) return { versions: [], current: null };
   const versions = (await readdir(idDir)).filter((x) => x !== "current").sort();
   let current: string | null = null;
@@ -115,7 +132,9 @@ export async function pluginVersions(id: string): Promise<{ versions: string[]; 
 export async function switchVersion(id: string, version: string): Promise<{ id: string; version: string; kinds: string[] }> {
   const { versions } = await pluginVersions(id);
   if (!versions.includes(version)) throw new Error(`${id} 没有装过 ${version}（装了：${versions.join(" / ") || "无"}）`);
-  await writeFile(join(PLUGINS_DIR, id, "current"), version, "utf8");
+  /* `versions.includes(version)` 已经把 version 限死在「真装过的那几个目录名」里，
+     但指针文件的路径还是要过闸 —— 两道独立的闸，不靠对方成立。 */
+  await writeFile(join(pluginIdDir(PLUGINS_DIR, id), "current"), version, "utf8");
   const registered = await registerPluginKinds();
   return { id, version, kinds: registered.find((x) => x.id === id)?.kinds ?? [] };
 }
