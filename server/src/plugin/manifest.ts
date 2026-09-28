@@ -1,5 +1,6 @@
 import { PLUGIN_DEFAULT_PRIORITY } from "../shared/kinds.js";
 import { PLUGIN_ID_RE, PLUGIN_VERSION_RE } from "./paths.js";
+import { isBuiltinKind } from "../shared/kinds.js";
 
 /** 插件清单（M11-4，需求见 `doc/20`）。
  *
@@ -124,7 +125,14 @@ export function checkManifest(m: unknown): { ok: boolean; problems: ManifestProb
     if (typeof k.id !== "string" || !/^[a-z0-9_-]+$/.test(k.id)) bad(at + ".id", "小写字母数字下划线横杠");
     for (const f of ["label", "icon"]) if (typeof k[f] !== "string" || !k[f]) bad(`${at}.${f}`, "必填");
     const ext = Array.isArray(k.ext) ? k.ext : [];
-    if (!ext.length) bad(at + ".ext", "至少要认一个扩展名");
+    /* ⚠️ **认领内置类型时不要求 `ext`**（M10-2，2026-09-28）。
+       「认领」和「定义」是两件事（`loader.ts` 那段注释）：
+       定义一个新类型要说清它认哪些扩展名；而**认领 `code` / `md` 这种已有类型时，
+       扩展名由 `shared/kinds.ts` 说了算，清单里这份根本不生效**。
+       原来这里一律要求至少一个，逼着认领型插件填一份**永远不生效、
+       而且迟早和 `kinds.ts` 对不上**的假清单 —— 读的人会以为清单说了算。
+       `code` 那几十个扩展名尤其不该在两处各写一遍。 */
+    if (!ext.length && !isBuiltinKind(String(k.id))) bad(at + ".ext", "至少要认一个扩展名（认领内置类型时才可以空着）");
     for (const e of ext) {
       if (typeof e !== "string" || !/^\.[a-z0-9.]+$/.test(e)) bad(at + ".ext", `扩展名要是小写并带点，比如 .mp4（得到 ${String(e)}）`);
     }

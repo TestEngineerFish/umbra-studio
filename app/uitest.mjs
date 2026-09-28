@@ -1230,6 +1230,57 @@ console.log("\n插件 UI 的边界（M11-4）");
           await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
         } else ok(false, "csv 上找不到 ⋯ 这颗钮");
       } else ok(false, "建好了但目录树里没刷出来");
+      /* ═══ 代码插件（M10-2）═══ 和 csv 同一套路：建样本 → 点开 → 数真实渲染出来的东西。
+         ⚠️ 放在这一节里是因为它需要同样的铺垫（工作台已经打开、插件已接线）。
+         我第一版单开了一个脚本从头 goto 再点，**详情区一直是空的** ——
+         排查半天才发现是铺垫不够，不是插件的问题。**别重造一遍夹具。** */
+      {
+        const TS = "插件回归样本.ts";
+        const okMade = await pg.evaluate(async ({ name }) => {
+          const b = window.__UD_APP;
+          const u = (route) => `${b.url.replace(/\/$/, "")}/__ud/${route}?token=${encodeURIComponent(b.token)}`;
+          const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path: name, content: "export function greet(who: string) {\n  const msg = `hi ${who}`;\n  console.log(msg);\n  return msg;\n}\n", expectSha256: "0" }) });
+          return (await w.json()).ok;
+        }, { name: TS });
+        if (okMade) {
+          await pg.waitForTimeout(1200);
+          const tsRow = pg.locator('[role="treeitem"]').filter({ hasText: TS }).first();
+          if (await tsRow.count()) {
+            await tsRow.click(); await pg.waitForTimeout(3000);
+            const codeFrame = pg.frameLocator('iframe[data-role="body"]');
+            /* 判据读**真实渲染出来的东西**，不是「没报错」——
+               CM 在沙箱里跑不起来的话这几个数全是 0，而页面照样不报错。 */
+            const lines = await codeFrame.locator(".cm-line").count().catch(() => 0);
+            const colored = await codeFrame.locator(".cm-line span[class]").count().catch(() => 0);
+            /* ⚠️ **6 不是 5**：样本是 5 行代码 + 末尾换行，CM 把末尾那个空行也算一行
+               （真实文件基本都有末尾换行，所以这是常态不是特例）。
+               第一版写死 5，红了一条 —— **判据自己记错了样本**，
+               和 §M11 那次「面板 2 行写成 3 行」是同一个错。 */
+            ok(lines === 6, "**`.ts` 交给代码插件画，CodeMirror 渲染出全部 6 行**（5 行代码 + 末尾空行）", `${lines} 行`);
+            /* 再钉一条「渲染的是这个文件」—— 只数行数的话，随便哪份 6 行的文件都能蒙对 */
+            const firstLine = (await codeFrame.locator(".cm-line").first().innerText().catch(() => "")).trim();
+            ok(firstLine.startsWith("export function greet"), "渲染的确实是这份样本（不是蒙对了行数）", firstLine.slice(0, 40));
+            ok(colored > 0, "语法高亮真的上了（不是一片纯文本）", `${colored} 个高亮片段`);
+            const gut = await codeFrame.locator(".cm-gutterElement").count().catch(() => 0);
+            ok(gut >= 5, "行号在", `${gut} 个`);
+            /* 插件声明的那颗钮由**宿主代画**（chrome 那条路） */
+            const btns = await pg.locator('[data-ud="file-toolbar"] button').allTextContents().catch(() => []);
+            ok(btns.some((t) => t.includes("选中行给 AI")), "插件声明的钮出现在宿主的编辑栏里", btns.join("/") || "（空）");
+          } else ok(false, "`.ts` 样本建好了但树里没刷出来");
+          /* 收尾：和 csv 样本同一套 —— 扔回收站再彻底清掉，不给用户留东西 */
+          await pg.evaluate(async ({ name }) => {
+            const b = window.__UD_APP;
+            const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+            await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+            const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+            for (const it of t?.data?.items ?? []) if (it.originalName === name) {
+              await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+            }
+          }, { name: TS });
+        } else ok(false, "建不出 .ts 样本");
+      }
+
       /* ⚠️ **扔进回收站不算清干净**：回收站是用户的东西，每跑一次回归就往里堆一条，
          跑二十次之后用户打开回收站看到二十份「插件回归样本.csv」——
          那是我们弄脏了他的项目。所以扔完再**彻底清掉那一条**。

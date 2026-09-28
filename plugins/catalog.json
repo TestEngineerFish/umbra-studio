@@ -11,20 +11,66 @@
       "size": "随 Umbra 一起",
       "updated": "9 月 26 日",
       "brief": "渲染阅读、源码分栏；AI 能按节读、按节改。",
-      "formats": [".md", ".markdown"],
-      "permissions": { "files": ["read", "write"], "net": [] },
+      "formats": [
+        ".md",
+        ".markdown"
+      ],
+      "permissions": {
+        "files": [
+          "read",
+          "write"
+        ],
+        "net": []
+      },
       "tools": [
         {
-          "name": "列出章节", "id": "outline",
+          "name": "列出章节",
+          "id": "outline",
           "desc": "只读标题和每节的位置，不读正文",
-          "sample": { "task": "改其中一节，AI 要读写多少", "without": "whole", "with": "只读标题行" }
+          "sample": {
+            "task": "改其中一节，AI 要读写多少",
+            "without": "whole",
+            "with": "只读标题行"
+          }
         },
         {
-          "name": "替换某一节", "id": "replace_section",
+          "name": "替换某一节",
+          "id": "replace_section",
           "desc": "只写那一节，别的节原样不动",
-          "sample": { "task": "改其中一节，AI 要读写多少", "without": "whole", "with": "那一节" }
+          "sample": {
+            "task": "改其中一节，AI 要读写多少",
+            "without": "whole",
+            "with": "那一节"
+          }
         }
       ]
+    },
+    {
+      "id": "com.umbra.code",
+      "name": "代码与文本",
+      "author": "Umbra",
+      "version": "1.0.0",
+      "price": 0,
+      "builtin": true,
+      "size": "随 Umbra 一起",
+      "updated": "9 月 28 日",
+      "brief": "语法高亮、行号；选中几行连同行号带进会话。",
+      "formats": [
+        ".ts",
+        ".js",
+        ".py",
+        ".css",
+        ".sh",
+        ".yml",
+        "…"
+      ],
+      "permissions": {
+        "files": [
+          "read"
+        ],
+        "scope": "project",
+        "net": []
+      }
     }
   ]
 }

@@ -1,0 +1,27 @@
+/* 代码插件的样式。**跟着宿主的主题走** —— 宿主在 `ctx.theme` 里告诉我们深浅，
+   我们只在 `:root[data-theme]` 上换一组变量，不自己判断 `prefers-color-scheme`
+   （插件在 iframe 里，系统深浅和宿主当前主题**未必一致**：用户可以手动切）。 */
+:root {
+  --bg: #ffffff; --fg: #1c1f26; --muted: #7b8194; --line: #e3e6ec;
+  --gutter-bg: #fafbfc; --sel: #cfe3ff; --active: #f5f8ff;
+}
+:root[data-theme="dark"] {
+  --bg: #16181d; --fg: #dfe3ea; --muted: #8b91a1; --line: #2a2e37;
+  --gutter-bg: #1a1d23; --sel: #2d4a6b; --active: #1e232b;
+}
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+#host { height: 100%; }
+.err { padding: 14px 16px; font: 12px system-ui, sans-serif; color: var(--muted); line-height: 1.7; }
+.err b { color: var(--fg); }
+
+/* CodeMirror 的外观。**只调颜色和间距，不动它的布局** ——
+   CM 的行高、gutter 宽度是它自己算的，硬改会让光标和字错位。 */
+.cm-editor { height: 100%; background: var(--bg); color: var(--fg); }
+.cm-editor.cm-focused { outline: none; }
+.cm-scroller { font-family: inherit; line-height: 1.6; }
+.cm-gutters { background: var(--gutter-bg); border-right: 1px solid var(--line); color: var(--muted); }
+.cm-activeLine { background: var(--active); }
+.cm-activeLineGutter { background: var(--active); color: var(--fg); }
+.cm-selectionBackground, ::selection { background: var(--sel) !important; }
+.cm-cursor { border-left-color: var(--fg); }
