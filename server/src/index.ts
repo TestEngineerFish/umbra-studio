@@ -22,7 +22,7 @@ import { getComponent, getIcon, getToken, listComponents, listIcons, searchToken
 import { validateDraft } from "./validate.js";
 import { patchDraft, writeDraft } from "./write.js";
 import { missingRuntime } from "./normalize.js";
-import { getAiConfig, setAiConfig, getChannelA, getChannelB, type AiConfig } from "./ai_config.js";
+import { getAiConfig, setAiConfig, getChannelA, getChannelB, mergeChannel, type AiConfig } from "./ai_config.js";
 import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.js";
 import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
 import { findBrowser, renderCheck } from "./render.js";
@@ -402,27 +402,29 @@ server.registerTool("set_ai_config", {
   description: [
     "设置某一条通道的端点、API 密钥和模型名。密钥只存本地，不进任何日志或项目文件。",
     "channel=a：OpenAI 兼容端点（DeepSeek / 智谱通用 API / 其他兼容端点）；",
-    "channel=b：Anthropic 兼容端点（GLM Coding Plan），给 Claude Code 子进程用。两条通道各自一套，不共用。",
+    "channel=b：本地 CLI（Claude Code / cursor-agent / codex …），走它们自己的登录态；",
+    "channel=c：订阅制的 OpenAI 兼容端点（火山方舟 Agent Plan），和 a 同形。三条通道各自一套，不共用。",
+    "只改你点名的那一条，别的通道原样保留。",
   ].join("\n"),
   inputSchema: {
-    channel: z.enum(["a", "b"]).optional().describe("设哪条通道，默认 a"),
-    baseUrl: z.string().optional().describe("端点：a 如 https://api.deepseek.com/v1；b 如 https://open.bigmodel.cn/api/anthropic"),
+    channel: z.enum(["a", "b", "c"]).optional().describe("设哪条通道，默认 a"),
+    baseUrl: z.string().optional().describe("端点：a 如 https://api.deepseek.com/v1；c 如 https://ark.cn-beijing.volces.com/api/plan/v1；b 只对 cli=claude 有意义"),
     apiKey: z.string().optional().describe("API 密钥（存本地不进日志）"),
     model: z.string().optional().describe("模型名，不硬编码"),
-    defaultChannel: z.enum(["a", "b"]).optional().describe("默认通道"),
+    defaultChannel: z.enum(["a", "b", "c"]).optional().describe("默认通道"),
   },
 }, async ({ channel, baseUrl, apiKey, model, defaultChannel }) => run(async () => {
   const current = await getAiConfig();
   const ch = channel ?? "a";
-  const prev = ch === "a" ? current.channelA : current.channelB;
-  const next = {
-    baseUrl: baseUrl ?? prev?.baseUrl ?? "",
-    apiKey: apiKey ?? prev?.apiKey ?? "",
-    model: model ?? prev?.model ?? "",
-  };
+  /* ⚠️ 合并交给 `mergeChannel` 一处做（issue #34）。原来这里手工拼整份 `AiConfig`，
+     写在通道 C（`11` Q33）加进来**之前**，之后没人跟上 ——
+     **外部模型客户端调一次 `set_ai_config` 就把通道 C 整条清空了**：
+     `defaultChannel` 还是 `"c"`，但 `getChannelC()` 抛「通道 C 未配置」，默认通道直接不可用。
+     顺带还抹掉同一条通道上没传的字段（B 的 `cli` 被打回 `claude`、A 的 `supportsImage`）。
+     同一件事的另外两条写路径本来就是合并写 —— **只有 MCP 这一条是手工拼的**，
+     正是「一件能力两处实现」必然长出来的分叉（M11-7 那一整批的主题）。 */
   const updated: AiConfig = {
-    channelA: ch === "a" ? next : current.channelA,
-    channelB: ch === "b" ? next : current.channelB,
+    ...mergeChannel(current, ch, { baseUrl, apiKey, model }),
     defaultChannel: defaultChannel ?? current.defaultChannel,
   };
   await setAiConfig(updated);

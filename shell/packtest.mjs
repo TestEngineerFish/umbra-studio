@@ -25,6 +25,7 @@ const PROJ = resolve(process.env.PROJ ?? join(REPO, "projects", "Umbra_design_ne
 const IS_MAC = TARGET.endsWith(".app");
 
 let pass = 0, fail = 0;
+const location_hint = (b) => (b.inUrl ? "地址里有 token=，不该有" : "地址里没有 token=");
 const ok = (cond, name, detail = "") => { if (cond) { pass++; console.log(`  ✓ ${name}${detail ? ` — ${detail}` : ""}`); } else { fail++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); } };
 const note = (s) => console.log(`  · ${s}`);
 const bye = (why) => { console.log(`\n${fail === 0 ? "✓" : "✗"} 打包产物 ${pass}/${pass + fail}${why ? ` · ${why}` : ""}\n`); process.exit(fail === 0 ? 0 : 1); };
@@ -109,6 +110,20 @@ let app = await launch();
 let win = await mainWindow(app);
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 90000 });
 ok(true, "启动到首页", `${Date.now() - t0} ms`);
+
+/* ⚠️ **令牌走 preload 这条路，打包后还成不成立**（`11` Q42 / `00` §一一二）。
+   这一条只有产物答得出：`additionalArguments` 里的 boot 由**主进程**拼，
+   而主进程在包里的路径、preload 的加载方式都和开发模式不一样 ——
+   正是 §63.1 那一族「打包版才会炸、开发模式测不出」的东西。
+   下面那些判据其实间接依赖它（拿不到令牌就是兜底屏，什么都点不了），
+   但间接依赖会把根因藏起来：真坏了的话会看到「打开目录失败」而不是「令牌没到」。 */
+const boot = await win.evaluate(() => ({
+  has: !!window.__UD_APP,
+  tokenLen: window.__UD_APP?.token?.length ?? 0,
+  inUrl: /token=/.test(location.href),
+}));
+ok(boot.has && boot.tokenLen > 0, "打包版里令牌经 preload 到了页面", `token ${boot.tokenLen} 字符`);
+ok(!boot.inUrl, "**而地址里不带令牌**（带了会进历史记录、也会被 webContents.getURL() 读到）", location_hint(boot));
 
 /* ⚠️ CDP 端口和那行日志都是**主进程起来之后才写的**，而「窗口出现」比它们早。
    2026-09-26 实测过一次偶发：同样的产物，一次没有 CDP、一次有 ——

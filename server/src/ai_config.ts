@@ -159,3 +159,39 @@ export function engineView(cfg: AiConfig, ch: "a" | "b" | "c", cliLabel?: string
   if (ch === "c") return { engine: vendorOf(cfg.channelC?.baseUrl ?? "", cfg.channelC?.model ?? ""), billing: "订阅端点", group: "订阅端点" };
   return { engine: vendorOf(cfg.channelA?.baseUrl ?? "", cfg.channelA?.model ?? ""), billing: "按量", group: "API · 按量计费" };
 }
+
+/** 改**一条**通道，别的原样保留（issue #34，2026-09-28）。
+ *
+ *  为什么要有这个函数：`setAiConfig` 是整文件覆盖、不做合并，于是每一个调用方
+ *  都得自己记着「有几条通道、每条有哪些字段」。MCP 那一条就是这么烂掉的 ——
+ *  它写在通道 C 加进来之前，手工列了 `channelA / channelB / defaultChannel` 三项，
+ *  之后没人跟上，**外部模型客户端调一次就把通道 C 整条清空**。
+ *
+ *  两条都要合并，少一条就丢东西：
+ *  - **通道之间**：`...current` —— 不然没点名的通道消失
+ *  - **通道之内**：`...prev` —— 不然同一条通道上没传的字段消失
+ *    （通道 B 的 `cli` 被打回 `claude`、`maxBudgetUsd` 那道刹车没了；
+ *     通道 A 手动声明的 `supportsImage` 退回按模型名猜）
+ *
+ *  ⚠️ `patch` 里**值为 `undefined` 的键当作没传**，不是「设成空」。
+ *  清空一条通道请直接把它设成 `null`，不要靠传空串。
+ */
+export function mergeChannel(
+  current: AiConfig,
+  ch: "a" | "b" | "c",
+  patch: Partial<ChannelAConfig & ChannelBConfig>,
+): AiConfig {
+  const prev = ch === "a" ? current.channelA : ch === "b" ? current.channelB : current.channelC;
+  const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+  const next = {
+    ...(prev ?? {}),
+    ...clean,
+    baseUrl: (clean.baseUrl as string | undefined) ?? prev?.baseUrl ?? "",
+    apiKey: (clean.apiKey as string | undefined) ?? prev?.apiKey ?? "",
+    model: (clean.model as string | undefined) ?? prev?.model ?? "",
+  };
+  return {
+    ...current,
+    ...(ch === "a" ? { channelA: next } : ch === "b" ? { channelB: next as ChannelBConfig } : { channelC: next }),
+  };
+}

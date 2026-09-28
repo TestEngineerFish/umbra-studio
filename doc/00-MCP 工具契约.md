@@ -7042,3 +7042,65 @@ Failed to parse entitlements: AMFIUnserializeXML: syntax error near line 28
 | `replaceState` 去掉 `location.search` | 整个 uitest 卡在刷新那条上超时崩 |
 | 壳的 `additionalArguments` 注入 | `hasBoot: false` + 兜底屏出现 |
 | `signcheck` 退回只读 stdout | 一个真签了名的包被报成「未签名」 |
+
+---
+
+## 一一三、issue #34：手工拼对象 · 以及五个测试脚本一直在跑旧产物（2026-09-28）
+
+### 113.1 #34：MCP 那一条写在通道 C 之前，之后没人跟上
+
+`setAiConfig` 是**整文件覆盖、不做合并**，于是每个调用方都得自己记着
+「有几条通道、每条有哪些字段」。MCP 的 `set_ai_config` 手工列了三项：
+
+```ts
+const updated = { channelA: …, channelB: …, defaultChannel: … };   // 没有 channelC
+```
+
+它写在通道 C（`11` Q33）加进来**之前**。后果是**外部模型客户端调一次
+`set_ai_config` 就把通道 C 整条清空** —— 而 `defaultChannel` 还是 `"c"`，
+于是 `getChannelC()` 抛「通道 C 未配置」，**用户的默认通道直接不可用**。
+
+还少一层合并：`next` 只拼 `baseUrl` / `apiKey` / `model` 三个字段，所以
+
+| 丢的字段 | 用户看到什么 |
+| --- | --- |
+| 通道 B 的 `cli` | 他选的 codex / cursor-agent **静默换回 Claude Code** |
+| 通道 B 的 `maxBudgetUsd` | 那道花费刹车没了 |
+| 通道 A 的 `supportsImage` | 手动声明的「吃不吃图」被抹掉，退回按模型名猜（`11` Q32 明说别猜） |
+
+对照：同一件事的另外两条写路径**本来就是合并写**（`api.ts` 的 `{ ...cfg, channelB }` ·
+`ai_probe.ts` 的 `{ ...cfg, channelC }`）。**只有 MCP 这一条是手工拼的** ——
+这正是「一件能力两处实现」必然长出来的分叉，M11-7 那一整批的主题。
+
+修法不是在那里补一个 `channelC`，是把合并抽成 `mergeChannel()` 一处做
+（和 #27 一样：**判定抽成导出的纯函数**，判据才测得到真代码）。
+顺带把 MCP 的 enum 从 `a|b` 放开到 `a|b|c` —— 原来通道 C 在 MCP 面根本够不着。
+
+### 113.2 ⚠️ 更值得记的一条：五个测试脚本一直在跑旧 `dist`
+
+加完判据跑 `agenttest`，读数还是「9 项通过」—— **我加的四条一条都没跑**。
+原因是 `"agenttest": "node dist/agenttest.js"`，**不编译**。
+
+这不是第一次：`doc/00` §六十之一记着同一个坑（源码已回退、跑的是旧产物，
+那一轮测试照样全过）。但当时只修了眼前那一次，**没从机制上堵**。
+结果是后加的四个脚本（`captest` / `kindtest` / `plugintest` / `packplugin`）带 `build`，
+早期的五个（`selftest` / `lifecycletest` / `rendertest` / `agenttest` / `filetest`）不带 ——
+**新写的时候记得，老的没回头补**。
+
+现在九个测试脚本全部 `npm run build && …`。
+
+> 代价是每次跑测试多几秒编译。
+> 而「跑的是旧产物」这个错误的代价是**读数全绿而代码是坏的** ——
+> 那是判据能犯的最严重的错。
+
+### 113.3 读数
+
+`agenttest` **9 → 13**（新增四条：改 A 之后 C 还在 · 只改 B 的 model 时 `cli`
+和花费上限都还在 · `supportsImage` 没丢 · 通道 C 改得动且没碰到 A）。
+反向验证：退回手工拼 → **四条全红**。
+
+`packtest` **38 → 40**（新增两条：打包版里令牌经 preload 到了页面（32 字符）·
+**而地址里不带令牌**）。这一条只有产物答得出 —— `additionalArguments` 里的 boot
+由主进程拼，而主进程在包里的路径和 preload 的加载方式都和开发模式不一样，
+正是 §63.1 那一族。下面那些判据其实**间接**依赖它（拿不到令牌就是兜底屏），
+但间接依赖会把根因藏起来：真坏了会看到「打开目录失败」而不是「令牌没到」。

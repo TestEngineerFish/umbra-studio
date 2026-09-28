@@ -294,6 +294,48 @@ async function main() {
     console.log(`   ✗ 系统提示判据异常: ${(e as Error).message}`); failed++;
   }
 
+  /* ── 改一条通道不该动到别的（issue #34）──
+     `setAiConfig` 是**整文件覆盖、不做合并**，于是每个调用方都得自己记着
+     「有几条通道、每条有哪些字段」。MCP 那一条就是这么烂掉的：它手工列了
+     `channelA / channelB / defaultChannel`，写在通道 C（`11` Q33）加进来**之前**，
+     之后没人跟上 —— **外部模型客户端调一次 `set_ai_config` 就把通道 C 整条清空**，
+     而 `defaultChannel` 还是 `"c"`，于是默认通道直接不可用。
+
+     ⚠️ 判据测的是抽出来的 `mergeChannel`，**不是复制一份逻辑再测它** ——
+     复制出来的判据永远绿，测的是判据自己（§107.2 那条假判据同一族）。
+     这里不碰盘：`mergeChannel` 是纯函数，喂一份 config 进去看出来什么。 */
+  console.log("⑦ 改一条通道不动别的（issue #34）...");
+  try {
+    const { mergeChannel } = await import("./ai_config.js");
+    const before = {
+      channelA: { baseUrl: "https://a", apiKey: "ka", model: "ma", supportsImage: true },
+      channelB: { cli: "codex" as const, baseUrl: "", apiKey: "", model: "gpt-5", maxBudgetUsd: 2 },
+      channelC: { baseUrl: "https://c", apiKey: "kc", model: "mc" },
+      defaultChannel: "c" as const,
+    };
+    /* ① 改 A，C 得原样在 —— 这一条正是 issue #34 报的那个症状 */
+    const afterA = mergeChannel(before, "a", { model: "ma2" });
+    if (afterA.channelC?.baseUrl === "https://c" && afterA.channelC?.apiKey === "kc") {
+      console.log("   ✓ 改通道 A 之后**通道 C 还在**（原来它整条被清空，而 defaultChannel 还指着它）"); passed++;
+    } else { console.log(`   ✗ 通道 C 被抹了：${JSON.stringify(afterA.channelC)}`); failed++; }
+    /* ② 同一条通道上没传的字段也得在 —— B 的 cli 被打回 claude 是静默换引擎 */
+    const afterB = mergeChannel(before, "b", { model: "gpt-5-codex" });
+    if (afterB.channelB?.cli === "codex" && afterB.channelB?.maxBudgetUsd === 2) {
+      console.log("   ✓ 只改 B 的 model，**他选的 cli 和花费上限都还在**（原来 cli 被静默打回 claude）"); passed++;
+    } else { console.log(`   ✗ 通道 B 掉字段：${JSON.stringify(afterB.channelB)}`); failed++; }
+    /* ③ 通道 A 手动声明的「吃不吃图」不能丢 —— 丢了就退回按模型名猜（`11` Q32 明说别猜） */
+    if (afterA.channelA && (afterA.channelA as { supportsImage?: boolean }).supportsImage === true) {
+      console.log("   ✓ 通道 A 手动声明的 supportsImage 没丢（丢了就退回按模型名猜）"); passed++;
+    } else { console.log("   ✗ supportsImage 被抹了"); failed++; }
+    /* ④ MCP 面配得了通道 C 吗 —— 原来 enum 只有 a|b，这条通道在 MCP 面根本够不着 */
+    const afterC = mergeChannel(before, "c", { model: "mc2" });
+    if (afterC.channelC?.model === "mc2" && afterC.channelA?.baseUrl === "https://a") {
+      console.log("   ✓ 通道 C 改得动，且没碰到 A（MCP 面原来 enum 只有 a|b，够不着 C）"); passed++;
+    } else { console.log("   ✗ 改通道 C 出错"); failed++; }
+  } catch (e) {
+    console.log(`   ✗ 通道合并判据异常: ${(e as Error).message}`); failed++;
+  }
+
   // ── 清理 ──
   await cleanup();
 
