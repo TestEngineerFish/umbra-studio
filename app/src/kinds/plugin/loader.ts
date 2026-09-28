@@ -1,4 +1,4 @@
-import { isBuiltinKind, registerKind, unregisterKindsFrom } from "@shared/kinds";
+import { isBuiltinKind, isClaimable, registerKind, unregisterKindsFrom } from "@shared/kinds";
 import { register, unregisterFrom } from "../registry";
 import { registerPanelTitle, unregisterPanelTitles } from "../../layout/layout";
 import type { Core } from "../../api/client";
@@ -51,11 +51,18 @@ export async function loadPlugins(core: Core): Promise<{ on: string[]; off: Arra
 
     try {
       for (const k of man.kinds ?? []) {
-        /* **认领**内置类型 vs **定义**新类型（M11-9b）。
-           `md` 这种类型一直是内置的 —— 插件搬走的是模块（怎么看怎么改），不是类型。
-           只有内置插件能认领；第三方认领 `dc` 就等于劫持设计稿。 */
+        /* **认领**已有类型 vs **定义**新类型（M11-9b，闸在 2026-09-28 改过）。
+           `md` / `code` 这种类型一直是内置的 —— 插件搬走的是模块（怎么看怎么改），不是类型。
+
+           ⚠️ **原来的闸是「内置类型一律不许第三方认领」，实测下来它挡错了东西**：
+           第三方只要定义一个新类型匹配 `.ts`、priority 拉到 `PLUGIN_MAX_PRIORITY`，
+           照样抢走（实测 `a.ts` 从 `code` 变成了那个新类型）——
+           **挡住了正当用法，挡不住恶意用法**。真正护住 `.dc.html` 的是 priority 封顶。
+           现在改成**类型自己声明** `claimable`，关上的只有 `dc`。
+           这是用户 2026-09-28 那条关切的前提：要「发新格式编辑插件时不更新 PC 端」，
+           认领就不能只对内置插件开放（`00` §一一七）。 */
         if (isBuiltinKind(k.id)) {
-          if (!p.bundled) throw new Error(`${k.id} 是内置类型，第三方插件不能认领`);
+          if (!isClaimable(k.id)) throw new Error(`${k.id} 不许被插件接管（产品的核心格式）`);
           continue;
         }
         registerKind({

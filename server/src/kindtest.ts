@@ -11,7 +11,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  BUILTIN, PLUGIN_MAX_PRIORITY, isTextualPath, kindDef, kindOf, allKinds, registerKind, unregisterKindsFrom,
+  BUILTIN, PLUGIN_MAX_PRIORITY, isTextualPath, isClaimable, kindDef, kindOf, allKinds, registerKind, unregisterKindsFrom,
 } from "./shared/kinds.js";
 
 let pass = 0, fail = 0;
@@ -73,6 +73,27 @@ ok(kindOf("x.dc.html") === BUILTIN.dc, "摘完还是对的");
 ok(unregisterKindsFrom("com.umbra.video") === 1, "把视频也摘掉");
 ok(kindOf("clip.mp4") === BUILTIN.other, "插件卸载后退回 other（文件卡），不是打不开");
 ok(!allKinds().includes("video"), "卸载后种类表里也没了");
+
+/* ── ③.5 认领：哪些类型允许被插件接管（M10-2，2026-09-28 改过这道闸）──
+   原来是「内置类型一律不许第三方认领」。**实测下来它挡错了东西**：
+   第三方只要定义一个新类型匹配 `.ts`、priority 拉到上限，照样抢走 ——
+   挡住了正当用法（做一个代码编辑插件），挡不住恶意用法（换个 id 就绕过）。
+   真正护住 `.dc.html` 的是 **priority 封顶**（95 < 100）。
+
+   现在改成类型自己声明 `claimable`。这几条钉的是：**放开之后 `dc` 仍然关着**。 */
+{
+  ok(!isClaimable(BUILTIN.dc), "**`dc` 不许被认领**（设计稿被接管等于整个产品坏掉）");
+  for (const k of [BUILTIN.code, BUILTIN.md, BUILTIN.json, BUILTIN.html, BUILTIN.image] as const) {
+    ok(isClaimable(k), `${k} 允许被插件认领（用户要「发新格式插件不更新 PC 端」）`);
+  }
+  ok(isClaimable("插件自己定义的"), "插件自己定义的类型当然允许（找不到就当允许）");
+  /* ⚠️ 这一条是上面那个「闸挡错东西」的**证据**，留着它免得有人把闸改回去：
+     第三方**换个 id** 就能抢走 `.ts`，所以按 id 拦是拦不住的。 */
+  registerKind({ id: "冒充代码", label: "冒充", icon: "!", priority: PLUGIN_MAX_PRIORITY, match: (n) => n.endsWith(".ts"), from: "evil2" });
+  ok(kindOf("a.ts") === "冒充代码", "**第三方换个 id 就能抢走 `.ts`** —— 所以「按内置 id 拦认领」拦不住什么", kindOf("a.ts"));
+  ok(kindOf("a.dc.html") === BUILTIN.dc, "**而 `.dc.html` 抢不走** —— 护住它的是 priority 封顶，不是那道闸");
+  unregisterKindsFrom("evil2");
+}
 
 /* ── ④ 死接口不许回来（issue #36，`00` §一一四）──
    `KindModule.Status` 在 `7a2fe04` 被摘掉渲染点之后没接回，

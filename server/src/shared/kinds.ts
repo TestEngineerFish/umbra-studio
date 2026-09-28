@@ -37,6 +37,19 @@ export interface KindDef {
   id: FileKind;
   /** 界面上的中文名（目录视图的「类型」列、状态行都用它） */
   label: string;
+  /** **允不允许插件「认领」它**（画它的界面），默认允许（M10-2，2026-09-28）。
+   *
+   *  ⚠️ 原来这道闸是「内置类型一律不许第三方认领」，实测下来**它挡住了正当用法、
+   *  挡不住恶意用法**：第三方插件只要定义一个新类型匹配 `.ts`、priority 拉到
+   *  `PLUGIN_MAX_PRIORITY`，照样抢走 —— 实测 `a.ts` 从 `code` 变成了那个新类型。
+   *  真正护住 `.dc.html` 的是 **priority 封顶**（95 < dc 的 100），不是那道闸。
+   *
+   *  所以改成**类型自己声明**：只有 `dc` 关上（它是产品的核心格式，
+   *  被接管等于整个产品坏掉 —— 虽然 priority 已经护住，这是第二道）。
+   *  其余内置类型（`code` / `md` / `json` / `html`）放开，因为**这是用户要的**：
+   *  他要「发布新格式编辑插件时不更新 PC 端」，而认领不开放的话
+   *  那些插件只能做成内置插件、跟 `.app` 一起发（`00` §一一七）。 */
+  claimable?: boolean;
   /** 单字符图标，树和列表共用一套 */
   icon: string;
   /** 按小写文件名判断 */
@@ -85,7 +98,9 @@ export const PLUGIN_MAX_PRIORITY = 95;
  *  - `json` 70 > `code` 10：`CODE_EXT` 里也有 `.json`，但 JSON 有结构化的看法
  */
 const BUILTIN_KINDS: readonly KindDef[] = [
-  { id: BUILTIN.dc, label: "设计稿", icon: "◧", priority: 100, textual: true, match: (n) => n.endsWith(".dc.html") },
+  /* ⚠️ `claimable: false` 只有它一个 —— 设计稿被插件接管等于整个产品坏掉。
+     priority 100 > `PLUGIN_MAX_PRIORITY` 已经挡住「抢」，这一条挡的是「认领」。 */
+  { id: BUILTIN.dc, label: "设计稿", icon: "◧", priority: 100, textual: true, claimable: false, match: (n) => n.endsWith(".dc.html") },
   { id: BUILTIN.md, label: "Markdown", icon: "≡", priority: 90, textual: true, match: (n) => n.endsWith(".md") || n.endsWith(".markdown") },
   /* `.svg` 是图片里唯一的文本 —— 所以这里是函数不是 true */
   { id: BUILTIN.image, label: "图片", icon: "▣", priority: 80, textual: (n) => n.endsWith(".svg"), match: (n) => endsWithAny(n, IMAGE_EXT) },
@@ -132,6 +147,13 @@ export function unregisterKindsFrom(pluginId: string): number {
   const before = REG.length;
   for (let i = REG.length - 1; i >= 0; i--) if (REG[i]!.from === pluginId) REG.splice(i, 1);
   return before - REG.length;
+}
+
+/** 这个类型允不允许被插件认领（画它的界面）。**默认允许** ——
+ *  显式关上的只有 `dc`。找不到的类型（插件自己定义的）当然允许。 */
+export function isClaimable(id: FileKind): boolean {
+  const d = REG.find((k) => k.id === id);
+  return d ? d.claimable !== false : true;
 }
 
 export const DIR_DEF: KindDef = { id: BUILTIN.dir, label: "目录", icon: "▤", priority: -1, match: () => false };

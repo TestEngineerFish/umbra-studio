@@ -7518,3 +7518,45 @@ CM 探针加进 `fixtures/插件/com.umbra.demo/index.html` 之后，判据一�
 `uitest` **191 → 193**（+2：插件 import 得到宿主共享库 · CM 在沙箱里真跑起来了）·
 `plugintest` 76/76。反向验证：去掉 `/__shared/` 的 CORS 头 → 当场
 `Failed to fetch dynamically imported module`。
+
+### 117.7 ⚠️ 顺着用户的关切，发现一道**挡错东西**的闸
+
+要让「发新格式编辑插件时不更新 PC 端」成立，插件得能**认领 `code` 这个类型**。
+而 `loader.ts` 里那道闸写的是：
+
+```ts
+if (isBuiltinKind(k.id)) {
+  if (!p.bundled) throw new Error(`${k.id} 是内置类型，第三方插件不能认领`);
+```
+
+也就是：**内置类型只有内置插件能认领** → 代码插件只能跟 `.app` 一起发 → 用户的关切落空。
+
+改它之前先验一个论断：**这道闸真的在挡什么吗？** 实测：
+
+```
+装插件前  a.ts → code · code 的 priority = 10
+装插件后  a.ts → thirdparty-code     ← 第三方定义新类型匹配 .ts、priority 拉到 95
+对照     a.dc.html → dc              ← PLUGIN_MAX_PRIORITY(95) < dc(100)，抢不走
+```
+
+**结论：这道闸挡住了正当用法，挡不住恶意用法。** 第三方**换个 id** 就绕过去了；
+真正护住 `.dc.html` 的是 **priority 封顶**，不是它。
+
+所以把「能不能被认领」从「是不是内置 id」改成**类型自己声明** `claimable`：
+
+| 类型 | `claimable` | 为什么 |
+| --- | --- | --- |
+| `dc` | **false** | 产品的核心格式，被接管等于整个产品坏掉。priority 已挡住「抢」，这一条挡「认领」——**纵深防御** |
+| `code` / `md` / `json` / `html` / `image` | 默认 true | 这是用户要的：发新格式编辑插件时不更新 PC 端 |
+| 插件自己定义的 | true | 本来就是它的 |
+
+⚠️ 这**没有放大攻击面**：第三方原本就能用「新 id + 高 priority」接管这些扩展名，
+改完只是让它不用绕这个弯。唯一真正的边界仍然是 `dc`，而它两道都关着。
+
+`kindtest` **35 → 44**，其中两条是**留给未来的证据**：
+「第三方换个 id 就能抢走 `.ts`」和「而 `.dc.html` 抢不走」——
+免得有人看到 `claimable` 觉得「放开内置类型太危险」又把闸改回去。
+反向验证：拿掉 `dc` 的 `claimable: false` → 当场红。
+
+> **一道闸值不值得留，看它挡住的和放过的分别是什么。**
+> 这一道放过了真正的攻击（换 id），只挡住了老实人（照着契约声明 `code`）。
