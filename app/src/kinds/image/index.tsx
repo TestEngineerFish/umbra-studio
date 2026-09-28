@@ -83,4 +83,13 @@ export const image: KindModule = {
     const ext = (ctx.path.split(".").pop() ?? "").toUpperCase();
     return <>{[ext, d.info ? `${d.info.width ?? "?"}×${d.info.height ?? "?"}` : null, d.info ? fmtSize(d.info.size) : null].filter(Boolean).join(" · ")}</>;
   },
+  /* `⋯` 浮层头的读数（M8-33）：和状态行同一串 —— 图片的读数就这三样，
+     两处写不一样只会让人怀疑哪个是真的。⚠️ 数据在 `Provider` 的 state 里，
+     所以这一项必须是**组件**（纯函数取不到 context）。 */
+  meta: ({ ctx }) => {
+    const d = useImg();
+    const ext = (ctx.path.split(".").pop() ?? "").toUpperCase();
+    if (!d.info) return null;
+    return <>{[ext, `${d.info.width ?? "?"} × ${d.info.height ?? "?"}`, fmtSize(d.info.size)].filter(Boolean).join(" · ")}</>;
+  },
 };

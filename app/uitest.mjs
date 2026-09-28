@@ -775,6 +775,105 @@ console.log("\n指针三档（M8-31 · 用户拍板）");
   }
 }
 
+/* ── 页签溢出 + `⋯` 读数（M8-33 · 设计侧第十一轮 §一）──
+   第八轮的解法是「放不下就收进 +N ▾，不横向滚动」；第十一轮改回**横向滚动**，
+   但把当初那个毛病单独治掉：滚动条藏起来，被裁的那端 16px 渐隐。
+   固定的页签单独一组贴最左、**不跟着滚**（固定就是为了永远看得见）。 */
+console.log("\n页签溢出与 ⋯ 读数（M8-33）");
+{
+  /* 开一批文件把页签条挤满 */
+  const names = (await pg.locator('[role="treeitem"]').allTextContents())
+    .map((t) => t.replace(/\s+/g, " ").trim()).filter((t) => /\.(dc\.html|md|json|css)$/.test(t));
+  const rowsLoc = pg.locator('[role="treeitem"]').filter({ hasText: ".dc.html" });
+  for (let i = 0; i < Math.min(6, await rowsLoc.count()); i++) { await rowsLoc.nth(i).dblclick(); await pg.waitForTimeout(500); }
+  await pg.waitForTimeout(1200);
+  const sc = pg.locator('[data-ud="tab-scroll"]');
+  ok(await sc.count() === 1, "页签条是横向滚动容器");
+  const m = await sc.evaluate((el) => ({ scroll: el.scrollWidth > el.clientWidth + 1, bar: el.offsetHeight - el.clientHeight, edge: el.getAttribute("data-edge") }));
+  ok(m.scroll, "页签放不下时真的能横向滚");
+  /* ⚠️ 用户第八轮报的就是「右边不该有竖滚动条」—— 滚动条占的 px 必须是 0 */
+  ok(m.bar === 0, "**滚动条藏起来了**（占 0px —— 用户第八轮报的就是这个）", `${m.bar}px`);
+  /* ⚠️ 判据是「**有哪一端被裁就标出来**」，不是「一定被裁的是右端」——
+     滚到最右时被裁的是左端，`left` 一样合法。第一版写死了 right/both，
+     跑到这一组时滚动位置正好在最右，于是报了一条假红。 */
+  ok(m.edge !== "none" && m.edge !== null, "被裁的那一端标了出来（渐隐靠它）", `data-edge=${m.edge}`);
+  /* 竖滚轮换算成横向。先滚到最左 —— 在最右端滚当然不动，那是测试的问题 */
+  await sc.evaluate((el) => { el.scrollLeft = 0; });
+  await pg.waitForTimeout(250);
+  await sc.hover();
+  await pg.mouse.wheel(0, 240);
+  await pg.waitForTimeout(400);
+  ok(await sc.evaluate((el) => el.scrollLeft) > 0, "**在页签条上滚竖滚轮 → 横向滚动**");
+  ok(await pg.locator('[data-ud="tab-more"] svg').count() === 1, "放不下时出 chevron 下拉钮（「+N」去掉了）");
+  /* `⋯` 浮层头的读数 —— 要在**用户自己的** .dc.html 上看：
+     代码那类没有 meta（空是对的），而上面几组建的 `_uitest*.dc.html` 已经删了、
+     不在索引里，读数自然是空的（`openByName(".dc.html")` 会先撞上它们）。 */
+  {
+    const userDc = (await pg.locator('[role="treeitem"]').allTextContents())
+      .map((x) => x.replace(/\s+/g, " ").trim())
+      .find((x) => /\.dc\.html$/.test(x) && !/_/.test(x));
+    if (userDc) await openByName(userDc.replace(/^\W+\s*/, "").slice(0, 10));
+    else await openByName(".dc.html");
+  }
+  await pg.waitForTimeout(2600);
+  /* ⚠️ `⋯` 那颗钮在**页签条右端的 tail** 里，不在 `file-toolbar` 里 ——
+     第一版按 `[data-ud="file-toolbar"] button` 找，点不到，而 `.catch(() => {})`
+     把失败吞掉了：浮层没开，判据只看到「读数是空的」，看不出是没点开。
+     **吞掉的错误会伪装成另一种失败。** */
+  const moreBtn = pg.locator('button:has-text("⋯")').first();
+  ok(await moreBtn.count() === 1, "找得到 ⋯ 这颗钮");
+  await moreBtn.click();
+  await pg.waitForTimeout(600);
+  const meta = pg.locator('[data-ud="more-meta"]');
+  ok(await meta.count() === 1 && (await meta.innerText()).trim().length > 0, "**⋯ 浮层头写了这份文件的读数**（格式模块给的）", (await meta.innerText().catch(() => "")).trim());
+  await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+}
+
+/* ── 预览切换的过场（M8-34 · 设计侧第十一轮 §四）──
+   设计侧把我们给的两个方案都否了，理由一句话点破盲点：
+   「两层同时半透明时，中间会透出画布的底色，用户说的『闪』就是这一下」。
+   所以是**旧的留到新的画好为止、新的在上面淡入、旧的不淡出** —— 没有一帧是空白的。
+
+   ⚠️ 判据不能等「过场正在发生」再去量：它可能只有几十毫秒（稿被缓存过时尤其快），
+   轮询会整段错过，而**「量不到」不等于「没发生」**。改成事后读变化历史。 */
+console.log("\n预览切换的过场（M8-34）");
+{
+  const dc = pg.locator('[role="treeitem"]').filter({ hasText: ".dc.html" });
+  if (await dc.count() < 2) ok(false, "项目里不足两份 .dc.html，这一组测不了");
+  else {
+    await dc.nth(0).click(); await pg.waitForTimeout(3200);
+    await pg.evaluate(() => {
+      window.__fadeHist = [];
+      const sample = () => {
+        const b = document.querySelector('[data-ud="canvas"]');
+        const cur = b?.querySelector('iframe[data-pool="cur"]');
+        const prev = b?.querySelector('iframe[data-pool="prev"]');
+        window.__fadeHist.push({ fading: b?.getAttribute("data-fading") ?? null, cur: cur ? getComputedStyle(cur).opacity : null, prev: prev ? getComputedStyle(prev).opacity : null });
+      };
+      new MutationObserver(sample).observe(document.body, { attributes: true, subtree: true, attributeFilter: ["data-fading"] });
+    });
+    /* 挑一份**没在池里**的（池只留两份，最后一个最稳） */
+    await dc.nth(Math.min(3, await dc.count() - 1)).click();
+    await pg.waitForTimeout(2600);
+    const hist = await pg.evaluate(() => window.__fadeHist ?? []);
+    const during = hist.find((h) => h.fading === "1");
+    ok(!!during, "切稿时真的走了过场（事后读变化历史，不赌时间窗口）", `采到 ${hist.length} 次`);
+    if (during) {
+      ok(during.prev === "1", "**过场中上一份完整可见**（不淡出 —— 淡出就会透出画布底色，那才是「闪」）", `prev=${during.prev}`);
+      ok(during.cur === "0", "新的在它下面加载、先透明（等待和展示是重叠的）", `cur=${during.cur}`);
+    }
+    /* 切回上一份该是瞬时的：iframe 留在池里
+       ⚠️ 这里有一条实测过的坑 —— 缓存命中的 iframe **不会再发 load**，
+       第一版因此卡在过场里 8 秒（靠兜底超时才出来）。 */
+    const t0 = Date.now();
+    await dc.nth(0).click();
+    await pg.waitForFunction(() => document.querySelector('[data-ud="canvas"]')?.getAttribute("data-fading") === null, null, { timeout: 6000 }).catch(() => {});
+    const back = Date.now() - t0;
+    ok(back < 1500, "**切回上一份是瞬时的**（它的 iframe 还在池里，缓存命中要自己补 ready）", `${back}ms`);
+    ok(await pg.locator('[data-ud="canvas"] iframe').count() <= 2, "池最多留两份（实测每份约 5–10MB）", `${await pg.locator('[data-ud="canvas"] iframe').count()} 份`);
+  }
+}
+
 /* ── 评论的暂存区 · 画布钉 · 全部发给 AI（M8-32 · 设计侧第十一轮 §二.5）──
    暂存区放在**聊天输入框上方**（不在属性区）：暂存的东西最后都要交给 AI，
    放在发送键旁边用户一直看得见「还有 N 条没发」。放进抽屉就又变成上一轮那个病。

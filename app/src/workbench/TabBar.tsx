@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { PopItem, PopSep, Popover, usePopover } from "../ui/Popover";
 import { kindOf } from "@shared/kinds";
 import { draftTitle } from "../api/types";
@@ -22,11 +22,18 @@ import { closable, ordered, type Tab } from "./tabs";
  *  下边和文件工具栏连成一片，读作「这一行工具属于这个页签」。
  *
  *  **③ 右边不该有竖滚动条。** 那是横向滚动容器带出来的。
- *  改成放不下就收进「+N ▾」，**不横向滚动，也就没有滚动条**。
+ *  第八轮的解法是「放不下就收进 +N ▾，不横向滚动」。
+ *
+ *  ⚠️ **第十一轮改了这一条**（设计侧 §一.1，用户拍板三档那一轮一起交的）：
+ *  改回**横向滚动**，但把当初那个毛病单独治掉 —— 滚动条藏起来（`scrollbar-width: none`），
+ *  被裁掉的那一端用 16px 渐隐告诉人「那边还有」。
+ *  「+N」去掉了：放不下时在 ✎ ◨ ⋯ 左边出一颗 `chevron-down`，点开是完整列表。
+ *  **固定的页签单独一组贴在最左边，不跟着滚** —— 固定就是为了「永远看得见」，
+ *  跟着滚走就白固定了。
  */
-const TAB_W = 184, TAB_MIN = 112, MORE_W = 56;
+const TAB_W = 184, TAB_MIN = 112, PIN_W = 150;
 
-export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMany, onPin, onKeep, onLocate, onToChat, onCopyPath, onReveal, tail }: {
+export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMany, onPin, onKeep, onLocate, onToChat, onCopyPath, onReveal, metaOf, tail }: {
   tabs: Tab[];
   current: string | null;
   /** 当前文件在忙（渲染 / 体检）：下沿那条线变 2px 流动 */
@@ -45,6 +52,8 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
   onToChat: (path: string) => void;
   onCopyPath: (path: string) => void;
   onReveal: (path: string) => void;
+  /** 一个页签的读数，给悬停提示的第二行用。拿不到就给空 —— 那一行不写。 */
+  metaOf?: (path: string) => string;
   /** Tab 条**右端固定的那几颗**（第九轮：✎ 编辑栏 · ◨ 属性区 · ⋯ 这份文件）。
    *  位置固定，不跟着格式变 —— 格式变的是它们展开之后的内容。 */
   tail?: React.ReactNode;
@@ -56,24 +65,62 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
   const dirtySnap = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   void dirtySnap;
 
+  const scroller = useRef<HTMLDivElement>(null);
+  const [edge, setEdge] = useState({ left: false, right: false });
+
   useEffect(() => {
     const el = box.current; if (!el) return;
     const ro = new ResizeObserver(([e]) => { const w = e!.contentRect.width; if (w > 0) setAvail(w); });
     ro.observe(el); return () => ro.disconnect();
   }, []);
 
-  /* 能塞下几个：先按 184 排，放不下就压到最窄 112，还放不下就收进「+N ▾」 */
   const list = ordered(tabs);
-  const fitAll = list.length * TAB_W <= avail;
-  const capacity = fitAll ? list.length : Math.max(1, Math.floor((avail - MORE_W) / TAB_MIN));
-  const width = fitAll ? TAB_W : Math.max(TAB_MIN, Math.floor((avail - MORE_W) / Math.min(capacity, list.length)));
+  /* **固定的单独一组，贴最左，不参与滚动**（设计侧第十一轮 §一.1）。
+     `ordered` 已经把固定的排在前面，这里只是切成两段。 */
+  const pinned = list.filter((t) => t.pinned);
+  const rest = list.filter((t) => !t.pinned);
+  const pinW = pinned.length * PIN_W;
+  /* 剩下的宽度里按 184 排；排不下就压，**压到 112 为止**，再放不下就横向滚动。 */
+  const room = Math.max(0, avail - pinW - 44 /* 下拉钮 + 一点余量 */);
+  const width = rest.length * TAB_W <= room ? TAB_W : Math.max(TAB_MIN, Math.floor(room / Math.max(1, rest.length)));
+  /* 滚了才需要下拉钮和渐隐 —— 放得下的时候什么都不多出来 */
+  const overflow = rest.length * width > room + 1;
 
-  /* **当前页签永远在可见的那几个里**（设计侧）：它被挤出去的话，
-     就把它换到可见段的最后一个位置上。 */
-  let shown = list.slice(0, capacity);
-  const curTab = list.find((t) => t.path === current);
-  if (curTab && !shown.includes(curTab)) shown = [...list.slice(0, capacity - 1), curTab];
-  const hidden = list.filter((t) => !shown.includes(t));
+  /** 两端的渐隐：**被裁掉的那一端**才有（16px）。
+   *  两端都判，不只判右边 —— 用户滚到最右时左边才是被裁的那一端。 */
+  const syncEdge = useCallback(() => {
+    const el = scroller.current; if (!el) return;
+    setEdge({ left: el.scrollLeft > 2, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2 });
+  }, []);
+  useEffect(() => { syncEdge(); }, [syncEdge, avail, tabs.length, width]);
+
+  /* 竖滚轮换算成横向（设计侧 §一.1）：在 Tab 条上滚滚轮，人的意图是「看别的页签」，
+     而这一条上没有纵向内容可滚。
+     ⚠️ **必须用原生监听 + `passive: false`**。React 的 `onWheel` 挂的是 passive listener，
+     在里面调 `preventDefault()` 只会得到一句
+     `Unable to preventDefault inside passive event listener invocation.` ——
+     滚动照样生效（`scrollLeft` 改得动），但控制台多一条 error，
+     「零 error」那条判据当场抓到了它。**能用不等于对。** */
+  useEffect(() => {
+    const el = scroller.current; if (!el) return;
+    const on = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;   // 本来就是横向手势，交给浏览器
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", on, { passive: false });
+    return () => el.removeEventListener("wheel", on);
+  }, []);
+
+  /* **当前页签永远滚到看得见的位置**，但**只在它变了的时候滚** ——
+     设计侧特意写了后半句：用户自己滚开之后不该被拽回来。
+     所以这里盯的是 `current`，不是 scrollLeft。 */
+  useEffect(() => {
+    if (!current) return;
+    const el = scroller.current?.querySelector(`[data-ud="tab"][data-path="${CSS.escape(current)}"]`);
+    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    syncEdge();
+  }, [current, syncEdge]);
 
   /** 同名文件（两个 README.md）在名字后面带上目录名，页签和下拉里都一样 */
   const label = (path: string) => {
@@ -88,54 +135,89 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
      理由不只是整齐 —— 三列并排时三条状态栏的底线在同一个 y 上，
      横着看是一条线贯穿全屏；44/34/34 混用时这条线断成三截，
      用户说的「高度不一致」看到的就是这个。 */
+  /** 一个页签。**两组共用同一个渲染**（固定组和滚动组）——
+   *  写两遍的话，将来改页签形制就要改两处，而漏改一处的症状是
+   *  「固定的那几个长得不一样」，很难联想到是这里。 */
+  const renderTab = (t: Tab) => {
+        const cur = t.path === current;
+        const dirty = dirtyStore.has(t.path);
+        return (
+          <div key={t.path} data-ud="tab" data-path={t.path} data-current={cur || undefined} data-preview={t.preview || undefined} data-pinned={t.pinned || undefined}
+            style={{ width: t.pinned ? PIN_W : width, maxWidth: t.pinned ? PIN_W : width }}
+            className={`group relative flex items-center gap-1.5 pl-3 pr-1.5 cursor-pointer select-none ${
+              cur
+                ? "bg-panel border border-b-0 border-border rounded-t-md -mb-px text-text"
+                : "text-muted hover:text-text hover:bg-hover"} ${
+              /* 预览态：**浅一档的颜色 + 不加粗**。不用斜体 ——
+                 中文字体没有斜体，浏览器会硬斜切，很难看（设计侧特意写的）。 */
+              t.preview ? "text-text2 font-normal" : cur ? "font-semibold" : ""}`}
+            onClick={() => onPick(t.path)}
+            onDoubleClick={() => onOpen(t.path)}
+            onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, tab: t }); }}
+            /* 悬停提示分三行（设计侧第十一轮 §一.2）：路径 · 读数 · 状态。
+               ⚠️ 读数只对拿得到的那些写（现在是 `.dc.html`，它的读数在索引里）——
+               别的类型的读数住在各自格式模块的 Provider 里，页签条这一层取不到。
+               **拿不到就不写那一行**，不写「— · —」；第三行没状态也不写。 */
+            title={[t.path, metaOf?.(t.path) || null,
+              t.preview ? "预览页签：下一次单击别的文件会盖掉它，双击留下" : t.pinned ? "已固定" : null].filter(Boolean).join("\n")}>
+            <Glyph icon={ICON_OF[kindOf(t.path)] ?? "file"} size={14}
+              className={`shrink-0 ${cur && !t.preview ? "text-accent" : "text-muted"}`} />
+            <span className="truncate flex-1">{label(t.path)}</span>
+            <span className="w-4 h-4 shrink-0 grid place-items-center">
+              {/* 固定的：关闭钮的位置换成图钉，点它 = 取消固定 */}
+              {t.pinned ? (
+                <button className="ib w-4 h-4 text-accent" onClick={(e) => { e.stopPropagation(); onPin(t.path, false); }} title="取消固定">
+                  <Glyph icon="pin" size={12} />
+                </button>
+              ) : <>
+                {/* 未保存点**占关闭钮的位置**，hover 时变成 ×（编辑器通行的写法） */}
+                {dirty && <span className="w-1.5 h-1.5 rounded-full bg-text2 group-hover:hidden" title="改了还没落盘" />}
+                <button className={`ib w-4 h-4 ${dirty ? "hidden group-hover:grid" : "opacity-0 group-hover:opacity-100"}`}
+                  onClick={(e) => { e.stopPropagation(); onClose(t.path); }} title="关闭 ⌘W">
+                  <Glyph icon="close" size={12} />
+                </button>
+              </>}
+            </span>
+          </div>
+        );
+  };
+
   return (
     <div ref={box} data-ud="tabbar" className={`h-9 flex items-stretch border-b border-border bg-panel shrink-0 text-xs relative ${busy ? "busyline" : ""}`}>
-      <div className="flex-1 min-w-0 flex items-stretch overflow-hidden">
+      {/* ① 固定的那一组：贴最左、不滚。滚动开始后右边出一条 1px 分隔线（设计侧） */}
+      {pinned.length > 0 && (
+        <div data-ud="tab-pinned" className={`shrink-0 flex items-stretch ${edge.left ? "border-r border-border" : ""}`}>
+          {pinned.map((t) => renderTab(t))}
+        </div>
+      )}
+      {/* ② 其余的：横向滚动。滚动条藏起来，被裁的那端 16px 渐隐 */}
+      {/* `data-edge` 是判据钩子：computed 的 `mask-image` 会被浏览器规范化成
+          `rgba(0, 0, 0, 0) 0px …`，按字符串判很脆（第一版就这么误判过一次）。
+          哪一端被裁是个**离散状态**，直接写出来。 */}
+      <div ref={scroller} data-ud="tab-scroll" data-edge={edge.left && edge.right ? "both" : edge.left ? "left" : edge.right ? "right" : "none"} onScroll={syncEdge}
+        className="flex-1 min-w-0 flex items-stretch overflow-x-auto overflow-y-hidden no-scrollbar"
+        style={{
+          /* 两端渐隐用 mask：被裁的那一端才加。渐隐比「加一颗箭头」轻 ——
+             它不占位置，也不需要用户点。 */
+          maskImage: edge.left && edge.right ? "linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%)"
+            : edge.right ? "linear-gradient(90deg, #000 calc(100% - 16px), transparent 100%)"
+            : edge.left ? "linear-gradient(90deg, transparent 0, #000 16px)" : undefined,
+        }}>
         {tabs.length === 0 && <span className="px-3 self-center text-muted text-[11px]">还没打开文件 —— 从左边的目录里选一个</span>}
-        {shown.map((t) => {
-          const cur = t.path === current;
-          const dirty = dirtyStore.has(t.path);
-          return (
-            <div key={t.path} data-ud="tab" data-current={cur || undefined} data-preview={t.preview || undefined} data-pinned={t.pinned || undefined}
-              style={{ width: t.pinned ? Math.min(width, 150) : width, maxWidth: t.pinned ? 150 : width }}
-              className={`group relative flex items-center gap-1.5 pl-3 pr-1.5 cursor-pointer select-none ${
-                cur
-                  ? "bg-panel border border-b-0 border-border rounded-t-md -mb-px text-text"
-                  : "text-muted hover:text-text hover:bg-hover"} ${
-                /* 预览态：**浅一档的颜色 + 不加粗**。不用斜体 ——
-                   中文字体没有斜体，浏览器会硬斜切，很难看（设计侧特意写的）。 */
-                t.preview ? "text-text2 font-normal" : cur ? "font-semibold" : ""}`}
-              onClick={() => onPick(t.path)}
-              onDoubleClick={() => onOpen(t.path)}
-              onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, tab: t }); }}
-              title={t.preview ? `${t.path}\n预览页签：下一次单击别的文件会盖掉它，双击留下` : t.path}>
-              <Glyph icon={ICON_OF[kindOf(t.path)] ?? "file"} size={14}
-                className={`shrink-0 ${cur && !t.preview ? "text-accent" : "text-muted"}`} />
-              <span className="truncate flex-1">{label(t.path)}</span>
-              <span className="w-4 h-4 shrink-0 grid place-items-center">
-                {/* 固定的：关闭钮的位置换成图钉，点它 = 取消固定 */}
-                {t.pinned ? (
-                  <button className="ib w-4 h-4 text-accent" onClick={(e) => { e.stopPropagation(); onPin(t.path, false); }} title="取消固定">
-                    <Glyph icon="pin" size={12} />
-                  </button>
-                ) : <>
-                  {/* 未保存点**占关闭钮的位置**，hover 时变成 ×（编辑器通行的写法） */}
-                  {dirty && <span className="w-1.5 h-1.5 rounded-full bg-text2 group-hover:hidden" title="改了还没落盘" />}
-                  <button className={`ib w-4 h-4 ${dirty ? "hidden group-hover:grid" : "opacity-0 group-hover:opacity-100"}`}
-                    onClick={(e) => { e.stopPropagation(); onClose(t.path); }} title="关闭 ⌘W">
-                    <Glyph icon="close" size={12} />
-                  </button>
-                </>}
-              </span>
-            </div>
-          );
-        })}
+        {rest.map((t) => renderTab(t))}
       </div>
-      {hidden.length > 0 && (
-        <div className="shrink-0 flex">
+      {/* 下面这一段是原来的渲染逻辑，抽成 `renderTab` 给两组共用 */}
+      {/* ⚠️ 「+N ▾」**去掉了**（设计侧第十一轮 §一.1）：改成一颗 28×28 的 `chevron-down`，
+          摆在 ✎ ◨ ⋯ 左边，**只有放不下的时候才出现**。
+          为什么不要「+N」：那个数字看着像「还有 3 个没显示」，而横向滚动之后
+          「显示了几个」随时在变，写一个数反而让人去数。 */}
+      {overflow && (
+        <div className="shrink-0 flex items-center">
           <button data-ud="tab-more" ref={morePop.anchorRef as React.RefObject<HTMLButtonElement>}
-            className={`px-2.5 border-l border-border whitespace-nowrap ${morePop.open ? "bg-hover text-text" : "text-muted hover:text-text"}`}
-            onClick={morePop.toggle} aria-expanded={morePop.open} title="所有打开的文件">+{hidden.length} ▾</button>
+            className={`w-7 h-7 grid place-items-center rounded self-center ${morePop.open ? "bg-hover text-text" : "text-muted hover:text-text hover:bg-hover"}`}
+            onClick={morePop.toggle} aria-expanded={morePop.open} title="所有打开的文件">
+            <Glyph icon="chevron-down" size={16} />
+          </button>
           {/* 这一个自己带滚动容器，内边距归它管 */}
           <Popover pop={morePop} align="end" width={300} pad="0">
             <div className="max-h-[60vh] overflow-auto p-1">

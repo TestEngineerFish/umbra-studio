@@ -16,8 +16,8 @@ interface DirState {
   sel: string[]; setSel: (p: string[]) => void;
   onlyDrafts: boolean; setOnlyDrafts: (v: boolean) => void;
   manual: Record<string, "list" | "grid">; setManual: (m: Record<string, "list" | "grid">) => void;
-  counts: { total: number; autoNote: string | null; view: "list" | "grid" };
-  setCounts: (c: { total: number; autoNote: string | null; view: "list" | "grid" }) => void;
+  counts: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" };
+  setCounts: (c: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" }) => void;
   dirRel: string;
 }
 const Ctx = createContext<DirState | null>(null);
@@ -31,7 +31,7 @@ function Provider({ ctx, children }: { ctx: ViewContext; children: ReactNode }) 
   const [sel, setSel] = useState<string[]>([]);
   const [onlyDrafts, setOnlyDrafts] = useState(false);
   const [manual, setManualRaw] = useState<Record<string, "list" | "grid">>(() => mem.get("us.viewByDir", {}));
-  const [counts, setCounts] = useState({ total: 0, autoNote: null as string | null, view: "list" as "list" | "grid" });
+  const [counts, setCounts] = useState({ total: 0, drafts: 0, autoNote: null as string | null, view: "list" as "list" | "grid" });
   const setManual = (m: Record<string, "list" | "grid">) => { setManualRaw(m); mem.set("us.viewByDir", m); };
 
   /* 换目录、按 Esc 都清空勾选。
@@ -100,5 +100,12 @@ export const dir: KindModule = {
       <span>·</span><span>{d.counts.total} 项</span>
       {d.sel.length > 0 && <><span>·</span><span className="text-accent">已选 {d.sel.length}</span></>}
     </>;
+  },
+  /* `⋯` 浮层头的读数（M8-33 · 设计侧给的样子是 `6 项 · 3 份稿`）。
+     ⚠️ 计数住在 `Provider` 里，所以这一项是**组件**不是纯函数。 */
+  meta: () => {
+    const d = useDir();
+    if (!d.counts.total) return null;
+    return <>{[`${d.counts.total} 项`, d.counts.drafts ? `${d.counts.drafts} 份稿` : null].filter(Boolean).join(" · ")}</>;
   },
 };

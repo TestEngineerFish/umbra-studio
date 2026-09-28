@@ -488,6 +488,14 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
                 <Wrap ctx={ctx} key={kind}>
                 <div className="flex-1 min-w-0 flex flex-col">
             <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file}
+              /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
+                 图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。
+                 那几种的读数在 `⋯` 浮层头（`mod.meta`），不在这里重复造一套。 */
+              metaOf={(p) => {
+                const d = store.drafts.find((x) => x.file === p);
+                if (!d) return "";
+                return [d.elements != null ? `${d.elements} 元素` : null, d.version ?? null].filter(Boolean).join(" · ");
+              }}
               onPick={(p) => open(p)} onOpen={(p) => open(p, false, "open")}
               onClose={closeTab} onCloseMany={closeMany}
               onPin={(p, pinned) => setTabs(tabs.map((t) => (t.path === p ? { ...t, pinned, preview: pinned ? false : t.preview } : t)))}
@@ -531,7 +539,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
                         <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-warn" />}
                     </button>
                   )}
-                  <FileMore ctx={ctx} items={mod.menu?.(ctx) ?? []} />
+                  <FileMore ctx={ctx} items={mod.menu?.(ctx) ?? []} meta={mod.meta} />
                 </>
               ) : null} />
             {/* ═══ 编辑栏 36px · **默认收起**（第九轮 §三）═══

@@ -19,8 +19,8 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
   onSelectionChange: (paths: string[]) => void; selected: string[];
   onlyDrafts: boolean;
   manual: Record<string, "list" | "grid">;
-  /** 把读数交给工具栏与状态行：总项数、自动网格的理由 */
-  onCounts: (c: { total: number; autoNote: string | null; view: "list" | "grid" }) => void;
+  /** 把读数交给工具栏与状态行：总项数、**几份稿**（`⋯` 浮层头要它，M8-33）、自动网格的理由 */
+  onCounts: (c: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" }) => void;
 }) {
   const [data, setData] = useState<ListFilesResult | null>(null);
   const [tick, setTick] = useState(0);
@@ -32,7 +32,7 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
   const view = manual[dirRel] ?? auto;
   const autoNote = !manual[dirRel] && auto === "grid" ? `图片 ${images} / ${files.length} · 自动网格` : null;
   /* 读数交给工具栏 —— 它和视图不在一个渲染位置，只能这样递上去 */
-  useEffect(() => { onCounts({ total: data?.entries.length ?? 0, autoNote, view });
+  useEffect(() => { onCounts({ total: data?.entries.length ?? 0, drafts: (data?.entries ?? []).filter((e) => !e.isDir && e.name.endsWith(".dc.html")).length, autoNote, view });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, autoNote, view]);
 

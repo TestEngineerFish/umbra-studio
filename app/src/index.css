@@ -131,3 +131,9 @@ body:has([data-ud="tabmenu"]) iframe { pointer-events: none; }
   @keyframes popUp   { from { opacity: 0; } to { opacity: 1; } }
   .anim-col, .anim-row, .anim-block { transition-duration: 1ms !important; }
 }
+
+/* 藏起横向滚动条（M8-33 · 设计侧第十一轮 §一.1）。
+   页签条要能横向滚，但**不能出现滚动条** —— 用户第八轮报的「右边不该有竖滚动条」
+   就是滚动容器带出来的。被裁的那一端改用 16px 渐隐提示（mask 在组件里）。 */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }

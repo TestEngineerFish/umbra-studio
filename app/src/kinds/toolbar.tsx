@@ -93,7 +93,7 @@ export function SizeBtn({ label, title, widths, zoomPct, onZoom, onFit, extra }:
 
 /** 文件 `⋯`：格式自己的几项 + **公共尾巴**（复制路径 / 在访达中显示 / 关闭页签）。
  *  尾巴写在这里而不是每个模块重复一遍 —— 它对所有格式都一样。 */
-export function FileMore({ ctx, items }: { ctx: ViewContext; items: MenuItem[] }) {
+export function FileMore({ ctx, items, meta: Meta }: { ctx: ViewContext; items: MenuItem[]; meta?: React.FC<{ ctx: ViewContext }> }) {
   const pop = usePopover();
   const tail: MenuItem[] = [
     { label: "—" },
@@ -113,6 +113,16 @@ export function FileMore({ ctx, items }: { ctx: ViewContext; items: MenuItem[] }
           写死 224 的时候「在访达中显示」这种长项会被截掉后半截。 */}
       <Popover pop={pop} align="end">
         <div>
+          {/* ═══ 浮层头：文件名 + 读数（M8-33 · 设计侧第十一轮 §一.2）═══
+              读数由格式模块给（`KindModule.meta`）—— 「多少字」对图片没意义、
+              「多少像素」对目录没意义，统一算不出来。
+              `empty:hidden`：模块返回 null 时**这一行整行不出**，不留一条空白。 */}
+          <div className="px-2.5 pt-2 pb-1.5 border-b border-border">
+            <div className="text-[11px] text-text2 truncate" title={ctx.path}>{ctx.path.split("/").pop() || ctx.path}</div>
+            <div data-ud="more-meta" className="font-mono text-[11px] text-muted mt-0.5 empty:hidden" style={{ fontVariantNumeric: "tabular-nums" }}>
+              {Meta && <Meta ctx={ctx} />}
+            </div>
+          </div>
           {all.map((mi, k) => mi.label === "—"
             ? <PopSep key={k} />
             : <PopItem key={k} label={mi.label} hint={mi.hint} danger={mi.danger}

@@ -125,9 +125,24 @@ function menu(ctx: ViewContext) {
   ];
 }
 
+/** 稿的读数（设计侧第十一轮 §一.2）。
+ *  用索引里已经算好的，**不为这一行去拉源码** —— 它只是浮层头的一行字，
+ *  不该让人为看一眼读数而读一份几百 KB 的文件。 */
+function Meta({ ctx }: { ctx: ViewContext }) {
+  const d = ctx.store.drafts.find((x) => x.file === ctx.path);
+  if (!d) return null;
+  const t = d.updatedAt ? new Date(d.updatedAt) : null;
+  const s = [
+    d.elements != null ? `${d.elements} 元素` : null,
+    d.version ?? null,
+    t ? `改于 ${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}` : null,
+  ].filter(Boolean).join(" · ");
+  return s ? <>{s}</> : null;
+}
+
 export const dc: KindModule = {
   ids: ["dc"],
   panels: ["props", "diagnostics", "changes", "comments", "info"],
   Provider: DcProvider,
-  View, Toolbar, Corner, Panels, Status, menu,
+  View, Toolbar, Corner, Panels, Status, menu, meta: Meta,
 };
