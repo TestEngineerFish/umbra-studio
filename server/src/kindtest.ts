@@ -7,6 +7,9 @@
  *  ⚠️ 这份**不是** `kindOf` 的单元测试，是**防回归**的对照表：
  *  每一行都对应一条曾经想清楚过的判断（为什么 `.svg` 归图片、为什么 `.json` 不归代码）。
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   BUILTIN, PLUGIN_MAX_PRIORITY, isTextualPath, kindDef, kindOf, allKinds, registerKind, unregisterKindsFrom,
 } from "./shared/kinds.js";
@@ -70,6 +73,37 @@ ok(kindOf("x.dc.html") === BUILTIN.dc, "摘完还是对的");
 ok(unregisterKindsFrom("com.umbra.video") === 1, "把视频也摘掉");
 ok(kindOf("clip.mp4") === BUILTIN.other, "插件卸载后退回 other（文件卡），不是打不开");
 ok(!allKinds().includes("video"), "卸载后种类表里也没了");
+
+/* ── ④ 死接口不许回来（issue #36，`00` §一一四）──
+   `KindModule.Status` 在 `7a2fe04` 被摘掉渲染点之后没接回，
+   **三个模块还在实现它而没有任何地方画** —— 读代码的人会以为它在工作。
+   删掉之后这条钉着它别回来。
+
+   ⚠️ 判据是**源码级**的，因为死接口在界面上什么都不显示 —— uitest 量不到它。
+   和 #19 那条「不许再出现 `startsWith(p.dir)`」同一类：
+   **有些错误只有从「还有没有人写它」这个角度才看得见。**
+
+   为什么放在 kindtest 而不是 uitest：格式模块的契约是它的题目，而它跑在 Node 端，
+   直接读得到源码。放进 uitest 就只能去 grep 编译产物，
+   而 `/Status:/` 那种正则会命中 `checkStatus` / `jobStatus` ——
+   **过度敏感的判据和漏报的判据一样坏**，它会让人开始忽略红灯。 */
+{
+  const appSrc = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "app", "src");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const f = join(d, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (/\.tsx?$/.test(e.name)) files.push(f);
+    }
+  };
+  try { walk(appSrc); } catch { /* 没有 app/src（只跑服务端时）就跳过 */ }
+  /* 只认「把 Status 当模块字段用」这一种写法，不是任何含 Status 的词 */
+  const hits = files.filter((f) => /(^|[^A-Za-z])Status\s*[:?]\s*(FC<|\(|[A-Z])/m.test(readFileSync(f, "utf8")))
+    .map((f) => f.slice(appSrc.length + 1));
+  if (!files.length) console.log("  · 找不到 app/src，跳过死接口那一关");
+  else ok(hits.length === 0, "**没有任何格式模块再声明 `Status`**（读数只有 `meta` 一个出口）", hits.length ? hits.join(", ") : `扫了 ${files.length} 个文件`);
+}
 
 console.log(fail === 0 ? `\n✓ 类型表 ${pass}/${pass + fail}` : `\n✗ 类型表 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

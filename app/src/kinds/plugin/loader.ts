@@ -3,7 +3,7 @@ import { register, unregisterFrom } from "../registry";
 import { registerPanelTitle, unregisterPanelTitles } from "../../layout/layout";
 import type { Core } from "../../api/client";
 import { PluginSurface } from "./Surface";
-import { PluginToolbar, PluginStatus, pluginMenu, PluginPanels } from "./ChromeUI";
+import { PluginToolbar, PluginMeta, pluginMenu, PluginPanels } from "./ChromeUI";
 import { createElement } from "react";
 
 /** 把装好的插件接进来（M11-5）。
@@ -81,7 +81,7 @@ export async function loadPlugins(core: Core): Promise<{ on: string[]; off: Arra
              `Toolbar` 给 undefined 而不是空组件 —— 「有没有 ✎ 这颗钮」看的是它在不在，
              给个画不出东西的组件会让 ✎ 常驻而点开是空的。 */
           Toolbar: PluginToolbar(p.id),
-          Status: PluginStatus(p.id),
+          meta: PluginMeta(p.id),
           menu: pluginMenu(p.id),
           Panels: panels.length ? PluginPanels(p.id, panels) : undefined,
         });

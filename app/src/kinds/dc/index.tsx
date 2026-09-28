@@ -1,4 +1,3 @@
-import { HEALTH_LABEL } from "../../api/types";
 import { SidePanels } from "../../workbench/SidePanels";
 import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
@@ -90,18 +89,6 @@ function Panels({ ctx }: { ctx: ViewContext }) {
   );
 }
 
-function Status({ ctx }: { ctx: ViewContext }) {
-  const d = ctx.store.drafts.find((x) => x.file === ctx.path);
-  if (!d) return <span>设计稿</span>;
-  return (
-    <>
-      <span>{d.kind === "component" ? "组件稿" : "设计稿"}</span>
-      <span>·</span><span>{d.version ?? "—"}</span>
-      <span>·</span><span>{d.elements ?? "—"} 元素</span>
-      <span>·</span><span title={d.healthWhy}>{HEALTH_LABEL[d.health]}</span>
-    </>
-  );
-}
 
 /** `⋯` 里这四项都是低频动作。体检收进来是第七轮的裁决，它给的理由好：
  *  「结果本来就常驻在诊断角标、状态行、树里的点上，常驻一颗钮只为手动重跑，那是低频」。 */
@@ -144,5 +131,5 @@ export const dc: KindModule = {
   ids: ["dc"],
   panels: ["props", "diagnostics", "changes", "comments", "info"],
   Provider: DcProvider,
-  View, Toolbar, Corner, Panels, Status, menu, meta: Meta,
+  View, Toolbar, Corner, Panels, menu, meta: Meta,
 };

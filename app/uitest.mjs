@@ -1150,6 +1150,25 @@ console.log("\n插件 UI 的边界（M11-4）");
           ok(rows.length === 2 && rows[0].startsWith("name"), "面板的数据经宿主在两个 frame 间转发过来了", rows.join(" / "));
         }
         await pg.locator('[data-ud="toggle-props"]').click(); await pg.waitForTimeout(400);
+
+        /* ═══ 插件报的读数落在 `⋯` 浮层头（issue #36 / `00` §一一四）═══
+           原来它挂在 `KindModule.Status` 上，而那个接口**没有任何地方渲染** ——
+           插件报了 status 也不显示。现在和内置格式共用 `meta` 这一个出口。
+
+           ⚠️ 这一条**必须在这一节里**，因为样本 csv 用完就收进回收站了。
+           我第一版单独开了一节写在最后，`openByName(".csv")` 什么都没打开、
+           而 `.catch(() => {})` 把它吞掉，于是判据在**当前那份 .dc.html** 上跑、
+           读到 `12 元素 · 改于 22:55` 就绿了 —— **测的是别的东西**。
+           「吞掉的错误会伪装成另一种失败」这一条，同一个回归里我犯了两次。 */
+        const more = pg.locator('button:has-text("⋯")').first();
+        if (await more.count()) {
+          await more.click(); await pg.waitForTimeout(600);
+          const mt = (await pg.locator('[data-ud="more-meta"]').innerText().catch(() => "")).trim();
+          /* 演示插件报的 status 是行数那一串。**不比死字符串** —— 比「是不是这份 csv 的读数」：
+             含 "行" 或 "3"，且**不含内置稿的词**（元素 / 改于），后者才能证明没测错文件。 */
+          ok(mt.length > 0 && !/元素|改于/.test(mt), "**插件报的读数落在 ⋯ 浮层头**（和内置格式同一个出口）", mt || "（空）");
+          await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+        } else ok(false, "csv 上找不到 ⋯ 这颗钮");
       } else ok(false, "建好了但目录树里没刷出来");
       /* ⚠️ **扔进回收站不算清干净**：回收站是用户的东西，每跑一次回归就往里堆一条，
          跑二十次之后用户打开回收站看到二十份「插件回归样本.csv」——

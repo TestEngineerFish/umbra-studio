@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { mem } from "../../layout/layout";
-import { kindDef } from "@shared/kinds";
 import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
 import { Seg } from "../toolbar";
@@ -93,14 +92,6 @@ function View({ ctx }: { ctx: ViewContext }) {
 export const dir: KindModule = {
   ids: ["dir"],
   Provider, View, Toolbar,
-  Status: ({ ctx }) => {
-    const d = useDir();
-    return <>
-      <span>{kindDef(ctx.kind).label}</span>
-      <span>·</span><span>{d.counts.total} 项</span>
-      {d.sel.length > 0 && <><span>·</span><span className="text-accent">已选 {d.sel.length}</span></>}
-    </>;
-  },
   /* `⋯` 浮层头的读数（M8-33 · 设计侧给的样子是 `6 项 · 3 份稿`）。
      ⚠️ 计数住在 `Provider` 里，所以这一项是**组件**不是纯函数。 */
   meta: () => {

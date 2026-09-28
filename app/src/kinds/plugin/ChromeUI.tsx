@@ -32,11 +32,13 @@ export const PluginToolbar = (pluginId: string): FC<{ ctx: ViewContext }> =>
     );
   };
 
-export const PluginStatus = (pluginId: string): FC<{ ctx: ViewContext }> =>
-  function Status({ ctx }) {
+/** 插件报上来的读数，画进 `⋯` 浮层头 —— 和内置格式的 `meta` 同一个位置。
+ *  2026-09-28 从 `PluginStatus` 改过来（issue #36）：原来它挂在 `KindModule.Status` 上，
+ *  而那个接口**没有任何地方渲染**，于是插件报了 status 也不会显示。
+ *  **插件侧的协议字段仍叫 `status`，不用改** —— 变的只是宿主把它画到哪。 */
+export const PluginMeta = (pluginId: string): FC<{ ctx: ViewContext }> =>
+  function Meta({ ctx }) {
     const c = useChrome(chromeKey(pluginId, ctx.path));
-    /* 空字符串时回退到类型名由工作台兜底 —— 这里返回 null 就够了
-       （`registry.ts` 里记着：「省略等于空白」这条接口早晚有人踩，所以工作台有兜底） */
     return c.status ? <>{c.status}</> : null;
   };
 

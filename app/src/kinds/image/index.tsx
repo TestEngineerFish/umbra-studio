@@ -78,14 +78,10 @@ function View({ ctx }: { ctx: ViewContext }) {
 export const image: KindModule = {
   ids: ["image"],
   Provider, View, Toolbar, Corner,
-  Status: ({ ctx }) => {
-    const d = useImg();
-    const ext = (ctx.path.split(".").pop() ?? "").toUpperCase();
-    return <>{[ext, d.info ? `${d.info.width ?? "?"}×${d.info.height ?? "?"}` : null, d.info ? fmtSize(d.info.size) : null].filter(Boolean).join(" · ")}</>;
-  },
-  /* `⋯` 浮层头的读数（M8-33）：和状态行同一串 —— 图片的读数就这三样，
-     两处写不一样只会让人怀疑哪个是真的。⚠️ 数据在 `Provider` 的 state 里，
-     所以这一项必须是**组件**（纯函数取不到 context）。 */
+  /* `⋯` 浮层头的读数（M8-33）。**图片的读数就这三样，只有这一处**
+     —— 原来状态行里还有一份同样的串（`Status`），2026-09-28 随那个死接口一起删了
+     （issue #36）：两处写不一样只会让人怀疑哪个是真的。
+     ⚠️ 数据在 `Provider` 的 state 里，所以这一项必须是**组件**（纯函数取不到 context）。 */
   meta: ({ ctx }) => {
     const d = useImg();
     const ext = (ctx.path.split(".").pop() ?? "").toUpperCase();

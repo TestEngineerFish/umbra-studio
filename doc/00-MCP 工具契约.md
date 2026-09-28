@@ -7104,3 +7104,115 @@ const updated = { channelA: …, channelB: …, defaultChannel: … };   // 没�
 由主进程拼，而主进程在包里的路径和 preload 的加载方式都和开发模式不一样，
 正是 §63.1 那一族。下面那些判据其实**间接**依赖它（拿不到令牌就是兜底屏），
 但间接依赖会把根因藏起来：真坏了会看到「打开目录失败」而不是「令牌没到」。
+
+---
+
+## 一一四、`.app` 公证了，包着它的 dmg 没有 · issue #36 三分之二是误报（2026-09-28）
+
+### 114.1 判据要看**用户真正拿到手的那个文件**
+
+`signcheck` 报「6 项具备 · 0 项还没做」，`.app` 每一关都过 ——
+而 `codesign -dv` 那两份 dmg 是：
+
+```
+Umbra Studio-0.1.0-mac-arm64.dmg: code object is not signed at all
+spctl -a -t open  →  rejected / source=no usable signature
+```
+
+**用户双击的是 dmg**，Gatekeeper 先检查它。electron-builder 的内置公证只处理
+`.app`，dmg 打好之后原封不动 —— 这就是 §111.4 想避免的那个坑的**另一面**：
+不是「签了名没公证」，是「**里面的签了公证了，外面那层没有**」。
+
+> 这条缺陷躲过 `signcheck` 四轮，因为那台仪器**只看 `.app`**。
+> **判据要看用户真正拿到手的那个文件，不是看我们心里认为的那个主体。**
+
+判据一加上就说话了：`.app` 六项全绿、**两份 dmg 一项都不过**（6 项具备 · 6 项还没做）。
+
+修法两处：
+- `-c.dmg.sign=true` 让 electron-builder 签 dmg
+- `dist-signed.mjs` 新增第 ⑤ 步：对每份 dmg 跑 `notarytool submit --wait` + `stapler staple`，
+  **已经 staple 过的跳过**（重跑不该重新上传 128 MB），失败重试两次
+
+### 114.2 zip 那条路实测是通的（所以先别慌）
+
+zip 不需要签名 —— macOS 检查的是解出来的 `.app`。实测（打上 quarantine 标记模拟下载）：
+
+```
+Umbra Studio.app: accepted
+source=Notarized Developer ID
+origin=Developer ID Application: Mimikko network technology co.LTD. (7M4S44CE7D)
+xcrun stapler validate → The validate action worked!
+```
+
+**这就是「下载后不报已损坏」的直接证据。** 验法：
+
+```bash
+unzip -q "Umbra Studio-0.1.0-mac-arm64.zip"
+xattr -w com.apple.quarantine "0081;$(printf %x $(date +%s));Safari;$(uuidgen)" "Umbra Studio.app"
+spctl -a -vvv "Umbra Studio.app"        # 期望 accepted + source=Notarized Developer ID
+xcrun stapler validate "Umbra Studio.app"
+```
+
+⚠️ **不打 quarantine 标记就验不出东西** —— 本地构建的产物没有那个标记，
+Gatekeeper 根本不管它，量到的「accepted」是假的。
+
+### 114.3 ⚠️ 顺带一条：`--arm64` 没生效
+
+传了 `--arm64`，它照样打了 x64（输出里有 `out/mac/` 的签名）。
+package.json 的 `mac.target[].arch` 写了两个，命令行没覆盖掉它。
+这一轮不算问题（多打一份而已），但它让那次 x64 公证的网络超时把整条命令带成失败 ——
+而 **arm64 那份其实已经公证并 staple 好了**。所以第 ⑤ 步**即使 ④ 失败也走**：
+一次网络抖动不该让已经成了的产物白白浪费，而人只看到一个 ⨯。
+
+### 114.4 issue #36：三条症状里两条是误报
+
+code-review 报「状态行不再显示格式模块的读数」，列了三条症状。查下来：
+
+| 它说的 | 实际 |
+| --- | --- |
+| 目录勾选了文件看不到「已选 3 项」 | ❌ **误报** —— 目录视图自己有一整条选中条（`已选 N 项` + 文件名 + 取消/移动/删除/带进会话），比状态行里一个数字强 |
+| 图片看不到 `PNG · 1920×1080` | ❌ **误报** —— `mod.meta` 给了，在 `⋯` 浮层头 |
+| 目录看不到项数 | ❌ **误报** —— 同上 |
+| `Status` 是个「看起来在工作的死接口」 | ✅ **真的** —— 三个模块实现它、`PluginStatus` 也在，**零处渲染** |
+
+**真问题只有一条，而它是最该修的那条**：接口在、实现在、没人画，读代码的人会以为它在工作。
+
+### 114.5 删而不是接回，以及为什么
+
+读数的落点**设计侧第十一轮已经裁决**了：在 `⋯` 浮层头（`mod.meta`）。
+接回等于同一件事两个出口，而 `image/index.tsx` 的注释早就写着
+「两处写不一样只会让人怀疑哪个是真的」。
+
+但**不能直接删** —— 查下来内置格式和插件正好相反：
+
+| | 内置格式（dir/image/dc） | 插件 |
+| --- | --- | --- |
+| `meta` | ✅ 有 | ❌ 没有 |
+| `Status` | ✅ 有（不显示） | ✅ 有（不显示） |
+
+直接删 `Status` 会让插件**失去唯一的读数出口**。所以统一到 `meta` 一个接口：
+`PluginStatus` → `PluginMeta`，宿主把插件报的 `chrome.status` 画进 `meta` 的位置。
+**插件侧的协议字段仍叫 `status`，不用改** —— 变的只是宿主画到哪。
+
+效果是插件的读数**第一次真的显示出来**：实测 `3 行 · 2 列`。
+
+### 114.6 ⚠️ 判据两次测错了东西，同一个原因
+
+**第一次**：把「插件的读数」那条判据单独写在回归最后，`openByName(".csv")`
+什么都没打开（样本用完就收进回收站了），而 `.catch(() => {})` 把它吞掉 ——
+判据在**当前那份 `.dc.html`** 上跑，读到 `12 元素 · 改于 22:55` 就绿了。
+搬进 csv 那一节（样本还在的时候）之后读数变成 `3 行 · 2 列`，才是真的。
+
+修完还把判据从「非空就行」改成「非空**且不含「元素 / 改于」**」——
+后半句才是「没测错文件」的证据。
+
+**第二次**：「不许再出现 `Status`」这条本来想放 uitest，但死接口在界面上什么都不显示，
+只能去 grep 编译产物，而 `/Status:/` 会命中 `checkStatus` / `jobStatus`。
+**过度敏感的判据和漏报的判据一样坏** —— 它让人开始忽略红灯。
+放进 `kindtest`（Node 端，直接读源码），正则收窄到「把 Status 当模块字段用」这一种写法。
+
+### 114.7 读数
+
+`uitest` **188 → 189** · `kindtest` **34 → 35** · `signcheck` 加 dmg 三关
+（`.app` 6/6 · dmg 待这一轮公证完再验）。
+反向验证：给 `dir` 加回一个 `Status` → kindtest 当场红并点名 `kinds/dir/index.tsx`。
