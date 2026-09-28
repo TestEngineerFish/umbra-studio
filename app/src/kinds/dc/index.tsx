@@ -84,9 +84,9 @@ function View({ ctx }: { ctx: ViewContext }) {
 
 function Panels({ ctx }: { ctx: ViewContext }) {
   return (
-    <SidePanels core={ctx.core} store={ctx.store} file={ctx.path} picked={ctx.picked} onPicked={ctx.setPicked}
-      panels={[...(dc.panels ?? [])]} active={ctx.ui.activePanel} setActive={ctx.ui.openPanel} narrow={ctx.narrow}
-      onSendToAI={(text, p) => { ctx.setPicked(p); ctx.ask(text); }} />
+    /* M8-17 之后这里只递一个 `ctx` —— 原来是八个 props（其中三个只为了转给
+       属性面板、一个只为了「发给 AI」）。面板各自从 `ctx` 里取自己要的。 */
+    <SidePanels ctx={ctx} panels={[...(dc.panels ?? [])]} active={ctx.ui.activePanel} setActive={ctx.ui.openPanel} narrow={ctx.narrow} />
   );
 }
 

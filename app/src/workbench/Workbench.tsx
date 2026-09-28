@@ -21,6 +21,9 @@ import { FileTree } from "./FileTree";
 /* 详情区怎么画、右边配什么面板、状态行写什么，**全在 kinds 注册表里**。
    这个文件从此不认识任何一种具体格式 —— 加 `.json` 时它一个字都没动（M8-14）。 */
 import { moduleFor, type ViewContext, useKindRegistry } from "../kinds";
+/* 把五个内置从属面板注册上（M8-17）。**import 这一个文件就够了** ——
+   和 `kinds/index.ts` 同一个套路：加一个面板不用改这里。 */
+import "../panels";
 import { FileMore, ToolbarBar } from "../kinds/toolbar";
 import { makeActions } from "./ctxmenu";
 import { Market } from "../market/Market";

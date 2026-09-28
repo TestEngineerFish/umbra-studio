@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
 import type { Picked } from "../api/types";
 import { toast } from "../ui/Toast";
-import { shellCmd } from "./shell";
+import { shellCmd } from "../workbench/shell";
 
 /** 属性面板（S7 形制，M7-7 从 S2 搬进 React）：三组 style / attr / text，行高 30，标签 96；
  *  数字行有单位与步进（px 1 / Shift 10，% 5 / 25，其余 0.1 / 1）、颜色行带色板（这份稿自己声明的 CSS 变量）；

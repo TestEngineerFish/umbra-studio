@@ -6700,3 +6700,60 @@ M11-6 的验签管的是「**装的时候**这个包是不是我们签的」。�
 
 反向验证：摘掉高水位（只信系统时间）→ 那条过期授权真的被「调回时间」救活了
 （判据打印出 `可用至 2026-10-01`），判据抓到。
+
+## 一〇九、M8-17 面板层解耦：M8 这一期的最后一条（2026-09-28）
+
+M8-15b 当时如实留了两处没接上的，第一处（指针组）已由 M8-31 解决，这是第二处。
+
+### 109.1 病和格式层当年一样
+
+`SidePanels` 里是五条分叉：
+
+```tsx
+{active === "props" && <PropsPanel core={…} file={…} picked={…} onPicked={…} writeTick={…} onWritten={…} />}
+{active === "diagnostics" && <Diagnostics store={store} />}
+{active === "changes" && <Changes core={core} store={store} file={file} />}
+…
+```
+
+每个面板的 props 各不相同，加一个面板要改三处（这里 + `layout.ts` 的标题表 + 图标查表）。
+而 `PropsPanel`（只有设计稿用）和 `FileCard`（只有文件卡用）住在 `workbench/` ——
+**工作台里住着只有一种格式才用得上的东西。**
+
+> 这正是 M8-14 之前格式层的同一个病。那一轮的结论是
+> **「工作台只提供能力，不认识任何具体的东西」** —— 面板这一层当时没跟上。
+
+### 109.2 改成一个面板一个文件
+
+新增 `app/src/panels/`：`registry.ts`（`PanelDef` + `definePanel`）+ 五个面板各一个文件
+（`props` / `diagnostics` / `changes` / `comments` / `info`）+ `index.ts`
+（import 它就等于把五个都注册上，和 `kinds/index.ts` 同一个套路）。
+
+`SidePanels` 退化成**纯壳**：排图标轨 · 开合 · 窄窗变抽屉 · 把 `ctx` 递进去。
+**它现在不认识任何具体面板。**
+
+面板体统一收 `ctx`（`ViewContext`），不再各要一套 props ——
+它们要的东西（core / store / path / picked / ask）`ctx` 里全都有，
+而「各要一套」正是那五条分叉长出来的原因。调用处也跟着从**八个 props 变一个**。
+
+`PropsPanel` → `panels/props-body.tsx`（面板体一行没动，`props.tsx` 只负责把 `ctx` 拆开
+递给它 —— 拆在外面而不是改它的签名：它 139 行，逻辑不该在搬家时一起动）。
+`FileCard` → `kinds/fallback-card.tsx`（它只有文件卡用）。
+
+`workbench/` 现在只剩六样**通用**件：Workbench · TabBar · FileTree · BottomBar ·
+SidePanels（壳）· ctxmenu，加两个工具文件。
+
+### 109.3 一条小而实的改进
+
+查不到 `PanelDef` 时（插件注册的面板还没到、或者 id 写错了）**明说**
+「这个面板还没准备好」，而不是渲染空白 —— 空白会被读成「这个面板是空的」。
+图标轨上查不到图标就用通用符号，**不会漏画**。
+
+### 109.4 读数
+
+这是**纯重构，行为一个都不该变**，所以判据就是原有那 183 条：
+`uitest` **183/183** 全过（含属性区展开 / 诊断 / 评论三态 / 大纲那几组）·
+`selftest` 零 error · `captest` 239/239 · `plugintest` 76/76 · `kindtest` 34/34 ·
+`filetest` 全通 · `lifecycletest` 全通 · `agenttest` 9/9。
+
+**M8 这一期到此结束**（35/35）。

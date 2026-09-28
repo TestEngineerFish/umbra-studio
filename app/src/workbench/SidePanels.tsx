@@ -1,36 +1,44 @@
-import { useState } from "react";
-import type { Core } from "../api/client";
-import { HEALTH_LABEL, timeAgo, type Picked } from "../api/types";
 import { PANEL_TITLE, type PanelId } from "../layout/layout";
-import type { ProjectStore } from "../store/project";
-import { toast } from "../ui/Toast";
-import { PropsPanel } from "./PropsPanel";
+import type { ViewContext } from "../kinds/context";
+import { panelDef } from "../panels";
 
-/** 从属面板列（S11 第 1 题的定稿）：40 px 图标轨常驻 + 面板体，同一时刻只开一个；图片 / 目录整列不出现。
- *  属性面板（M7-7）已是 React 的 PropsPanel，S2 嵌入时只留画布。 */
-/** 内置面板的图标。⚠️ **`PanelId` 现在是 `string`**（M11-9），所以这是个查表不是穷举 ——
- *  插件带来的面板查不到就用一个通用符号，不会漏画。 */
-const ICON: Record<string, string> = { props: "⚙", diagnostics: "⚠", changes: "⟲", comments: "✎", info: "ⓘ" };
-const iconOf = (id: PanelId): string => ICON[id] ?? "▤";
+/** 从属面板列的**壳**（S11 第 1 题的定稿）：40px 图标轨常驻 + 面板体，同一时刻只开一个。
+ *
+ *  ⚠️ **这个文件现在不认识任何具体面板**（M8-17）。原来它是五条
+ *  `active === "props" && <PropsPanel core={…} file={…} picked={…} …/>` 的分叉，
+ *  每个面板的 props 各不相同，加一个面板要改三处（这里 + 标题表 + 图标查表）。
+ *  那正是 M8-14 之前格式层的同一个病 —— 那一轮的结论是
+ *  **「工作台只提供能力，不认识任何具体的东西」**，面板这一层当时没跟上。
+ *
+ *  现在：一个面板 = `panels/` 下一个文件（`PanelDef`），这里只负责
+ *  「排图标轨 · 开合 · 窄窗变抽屉 · 把 `ctx` 递进去」。
+ *  插件带来的面板也走同一条路（查不到 def 就只画图标，不会漏画）。
+ */
 export const PANEL_WIDTH = 340;
 
-export function SidePanels({ core, store, file, picked, onPicked, panels, active, setActive, narrow, onSendToAI }: {
-  core: Core; store: ProjectStore; file: string; picked: Picked | null; onPicked: (p: Picked | null) => void; panels: PanelId[]; active: PanelId | null; setActive: (p: PanelId | null) => void; narrow: boolean;
-  onSendToAI: (text: string, picked: Picked) => void;
+export function SidePanels({ ctx, panels, active, setActive, narrow }: {
+  ctx: ViewContext;
+  panels: PanelId[];
+  active: PanelId | null;
+  setActive: (p: PanelId | null) => void;
+  /** 详情区窄到要让位了（R5）：面板体改成浮在正文上的抽屉 */
+  narrow: boolean;
 }) {
-  const badge: Partial<Record<PanelId, number>> = { diagnostics: store.diags.filter((d) => d.level === "error" || d.level === "warning").length, comments: store.comments.filter((c) => !c.resolved).length };
+  const badgeOf = (id: PanelId): number => panelDef(id)?.badge?.(ctx) ?? 0;
+  const def = active ? panelDef(active) : undefined;
   const body = active && (
-    <section className={`bg-panel border-border flex flex-col min-h-0 ${narrow ? "fixed top-[86px] bottom-6 right-10 z-40 w-[320px] shadow-2xl border-l" : "shrink-0 border-l"}`} style={narrow ? undefined : { width: PANEL_WIDTH }}>
-      <header className="h-9 px-3 flex items-center gap-2 border-b border-border text-xs font-semibold shrink-0">{PANEL_TITLE[active]}{badge[active] ? <span className="badge">{badge[active]}</span> : null}<span className="flex-1" /><button className="ib" onClick={() => setActive(null)} title="收起">›</button></header>
+    <section className={`bg-panel border-border flex flex-col min-h-0 ${narrow ? "fixed top-[86px] bottom-6 right-10 z-40 w-[320px] shadow-2xl border-l" : "shrink-0 border-l"}`}
+      style={narrow ? undefined : { width: PANEL_WIDTH }}>
+      <header className="h-9 px-3 flex items-center gap-2 border-b border-border text-xs font-semibold shrink-0">
+        {def?.title ?? PANEL_TITLE[active]}
+        {badgeOf(active) ? <span className="badge">{badgeOf(active)}</span> : null}
+        <span className="flex-1" />
+        <button className="ib" onClick={() => setActive(null)} title="收起">›</button>
+      </header>
       <div className="flex-1 min-h-0 overflow-auto text-xs">
-        {active === "props" && <PropsPanel core={core} file={file} picked={picked} onPicked={onPicked} writeTick={String(store.fileTick(file))} onWritten={() => { void store.fetchDrafts(); void store.fetchDiagnostics(file); void store.fetchChanges(file); }} />}
-        {active === "diagnostics" && <Diagnostics store={store} />}
-        {active === "changes" && <Changes core={core} store={store} file={file} />}
-        {active === "comments" && <Comments core={core} store={store} file={file} onSendToAI={onSendToAI} />}
-        {active === "info" && <Info store={store} file={file} />}
-        {/* ⚠️ 大纲那一档**去掉了**（M11-9b）：它只有 `.md` 用，而 `.md` 搬成了插件，
-            大纲现在是插件自己的面板（它自己的一张网页）。留着是条死路。 */}
-        
+        {/* 查不到 def = 插件注册的面板还没到，或者 id 写错了。
+            **明说而不是空白** —— 空白会被读成「这个面板是空的」。 */}
+        {def ? <def.Body ctx={ctx} /> : <div className="p-4 text-muted">这个面板还没准备好（{active}）</div>}
       </div>
     </section>
   );
@@ -39,50 +47,19 @@ export function SidePanels({ core, store, file, picked, onPicked, panels, active
       {narrow && active && <div className="fixed inset-0 z-30 bg-black/20" onClick={() => setActive(null)} />}
       {body}
       <nav className="relative z-40 w-10 shrink-0 border-l border-border bg-panel flex flex-col items-center py-1 gap-0.5">
-        {panels.map((p) => <button key={p} className={`relative w-8 h-8 rounded grid place-items-center text-sm ${active === p ? "bg-accentSoft text-accent" : "text-muted hover:text-text hover:bg-hover"}`} onClick={() => setActive(active === p ? null : p)} title={PANEL_TITLE[p]}>{iconOf(p)}{badge[p] ? <span className={`absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full text-[9px] font-semibold text-onAccent grid place-items-center ${p === "diagnostics" ? "bg-warn" : "bg-accent"}`}>{badge[p]}</span> : null}</button>)}
+        {panels.map((p) => {
+          const d = panelDef(p);
+          const n = badgeOf(p);
+          return (
+            <button key={p} className={`relative w-8 h-8 rounded grid place-items-center text-sm ${active === p ? "bg-accentSoft text-accent" : "text-muted hover:text-text hover:bg-hover"}`}
+              onClick={() => setActive(active === p ? null : p)} title={d?.title ?? PANEL_TITLE[p]}>
+              {/* 插件带来的面板查不到图标就用通用符号 —— 不会漏画 */}
+              {d?.icon ?? "▤"}
+              {n ? <span className={`absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full text-[9px] font-semibold text-onAccent grid place-items-center ${d?.badgeWarn ? "bg-warn" : "bg-accent"}`}>{n}</span> : null}
+            </button>
+          );
+        })}
       </nav>
     </>
   );
-}
-
-function Diagnostics({ store }: { store: ProjectStore }) {
-  if (!store.diags.length) return <div className="p-4 text-muted">暂无诊断 · 点「体检」跑一次 render_check</div>;
-  return <ul className="divide-y divide-border">{store.diags.map((d, i) => <li key={i} className="px-3 py-2 flex flex-col gap-1"><div className="flex items-center gap-2"><span className={`lvl ${d.level}`}>{d.level}</span><span className="font-mono text-muted">{d.code}</span><span className="flex-1" />{d.line != null && <span className="font-mono text-muted">L{d.line}{d.col != null ? `:${d.col}` : ""}</span>}</div><div className="leading-relaxed">{d.message}</div>{d.fix && <div className="text-muted leading-relaxed">改法：{d.fix}</div>}</li>)}</ul>;
-}
-function Changes({ core, store, file }: { core: Core; store: ProjectStore; file: string }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const c = store.changes;
-  if (!c) return <div className="p-4 text-muted">正在读…</div>;
-  const versions = (c.versions ?? []).slice().reverse();
-  const revert = async (v: string) => {
-    setBusy(v);
-    const r = await core.post<{ write?: { version?: string } }>("revert", { file, version: v });
-    if (r.ok) { toast(`已退回 ${v}`, `历史不删，${r.data?.write?.version ?? "新一版"} 是回退版`, "ok"); void store.fetchChanges(file); void store.fetchDrafts(); } else toast("回退失败", r.errors?.[0]?.message, "error");
-    setBusy(null);
-  };
-  return (
-    <div className="flex flex-col">
-      <div className="px-3 py-2 text-[11px] text-muted border-b border-border">最新一版与上一版的语义差异</div>
-      {c.diff?.changes?.length ? <ul className="divide-y divide-border">{c.diff.changes.map((x, i) => <li key={i} className="px-3 py-2 flex gap-2"><span className="lvl info">{x.level ?? "变更"}</span><span className="font-mono text-muted">{x.at}</span><span className="flex-1">{x.message ?? `${x.target ?? ""} ${x.kind ?? ""}`.trim()}</span></li>)}</ul> : <div className="p-3 text-muted">只有一版，或还没有快照</div>}
-      <div className="px-3 py-2 text-[11px] text-muted border-y border-border">版本历史 · {versions.length} 版</div>
-      <ul className="divide-y divide-border">{versions.map((v, i) => { const m = c.versionMeta?.[v] ?? {}; return <li key={v} className="px-3 py-2 flex items-center gap-2"><span className="font-mono font-semibold">{v}</span><span className="text-muted">{m.src ?? ""}</span><span className="text-muted">{m.time ?? ""}</span><span className="flex-1 min-w-0 truncate text-text2" title={m.summary}>{m.summary ?? m.note ?? ""}</span>{i === 0 ? <span className="text-accent font-semibold">当前</span> : <button className="btn sm" disabled={!!busy} onClick={() => void revert(v)}>{busy === v ? "…" : "回退"}</button>}</li>; })}</ul>
-    </div>
-  );
-}
-function Comments({ core, store, file, onSendToAI }: { core: Core; store: ProjectStore; file: string; onSendToAI: (text: string, picked: Picked) => void }) {
-  const upd = async (id: string, resolved: boolean) => { const r = await core.post("comment_update", { id, resolved }); if (!r.ok) toast("更新评论失败", r.errors?.[0]?.message, "error"); void store.fetchComments(file); };
-  const del = async (id: string) => { const r = await core.post("comment_delete", { id }); if (!r.ok) toast("删除评论失败", r.errors?.[0]?.message, "error"); void store.fetchComments(file); };
-  /* ⚠️ 这句空态文案一度是**过期的**：原来写「开『点选』选中一个节点，属性面板底部可以留一句话」——
-     而 M8-31 之后写评论的地方是**评论档 + 元素下面那张框**，属性面板底部早就没有输入框了。
-     照着过期文案找不到入口，和「点了没反应」是同一类伤害。 */
-  if (!store.comments.length) return <div className="p-4 text-muted leading-relaxed">这份稿还没有评论。<br />在编辑栏切到 <b className="text-text2">评论</b> 档（或按 <b className="text-text2">C</b>），点稿里的元素就能写。</div>;
-  return <ul className="divide-y divide-border">{store.comments.map((c) => <li key={c.id} className={`px-3 py-2 flex flex-col gap-1 ${c.resolved ? "opacity-60" : ""}`}><div className="flex items-center gap-2">{/* 三态分清（M8-32）：已处理 / 已发给 AI 还没处理 / 还在暂存。
-     `sentAt` 和 `resolved` 是两个维度，混成一个标签的话「发过了」会被读成「改好了」。 */}
-<span className={`lvl ${c.resolved ? "info" : c.sentAt ? "info" : "warning"}`}>{c.resolved ? "已处理" : c.sentAt ? "已发给 AI" : "暂存"}</span><span className="font-mono text-muted truncate" title={c.node}>{c.tag ? `<${c.tag}>` : ""} {c.node}</span><span className="flex-1" /><span className="text-muted">{timeAgo(c.createdAt)}</span></div><div className={c.resolved ? "line-through" : ""}>{c.text}</div><div className="flex gap-1">{!c.resolved && <button className="btn sm" onClick={() => { void core.post("comment_update", { id: c.id, sent: true }).then(() => store.fetchComments(file)); onSendToAI(c.text, { file: c.file, node: c.node, tag: c.tag ?? "" }); }} title="单独把这一条连同节点地址发给 AI">发给 AI</button>}<button className="btn sm ghost" onClick={() => void upd(c.id, !c.resolved)}>{c.resolved ? "恢复" : "已处理"}</button><button className="btn sm ghost" onClick={() => void del(c.id)}>删除</button></div></li>)}</ul>;
-}
-function Info({ store, file }: { store: ProjectStore; file: string }) {
-  const d = store.drafts.find((x) => x.file === file);
-  if (!d) return <div className="p-4 text-muted">找不到稿件信息</div>;
-  const rows: Array<[string, string]> = [["文件名", d.file], ["类型", d.kind === "component" ? "组件稿" : "页稿"], ["元素数", String(d.elements ?? "—")], ["版本", d.version ?? "—"], ["更新", timeAgo(d.updatedAt)], ["演示态", d.states.join(", ") || "—"], ["被谁引用", d.importedBy.join(", ") || "无"], ["引用了谁", d.imports.join(", ") || "无"], ["健康", `${HEALTH_LABEL[d.health]} · ${d.healthWhy || "—"}`]];
-  return <dl className="grid grid-cols-[72px_minmax(0,1fr)] gap-x-3 gap-y-2 p-3">{rows.map(([k, v]) => <><dt key={k + "k"} className="text-muted">{k}</dt><dd key={k + "v"} className="break-all">{v}</dd></>)}</dl>;
 }

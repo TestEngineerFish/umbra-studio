@@ -1,4 +1,4 @@
-import { FileCard } from "../workbench/FileCard";
+import { FileCard } from "./fallback-card";
 import type { KindModule } from "./registry";
 import type { ViewContext } from "./context";
 
