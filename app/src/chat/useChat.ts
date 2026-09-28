@@ -138,6 +138,20 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
       const region = sels.find((s) => s.kind === "region");
       if (region) { const [head, ...rest] = region.detail.split("\n"); body.selectedRegion = { label: head, note: rest.join("\n"), image: region.image ?? null }; }
       const started = await core.post<{ jobId: string; sessionId?: string }>("chat_send", body);
+      /* ⚠️ **这个会话还有一轮在跑**（issue #35，2026-09-28）。
+         服务端现在回 409 `E_CHAT_BUSY` 并**带上那一轮的 jobId** ——
+         以前它静默复用旧作业回 `ok: true`，于是这条消息根本没执行，
+         而界面会把旧那一轮的结果当成这一条的回复。
+
+         下面这个 `throw` 会让调用方**把消息留在输入框里**（`onStarted` 不会被调），
+         所以用户的话不会凭空消失，他可以等一下再发，或者先点中断。
+         本地的 `running` 挡不住这种情况：刷新页面、切项目再切回来、
+         或者第二个窗口打开同一会话，它都是 false 而服务端那一轮还在跑。 */
+      if (started.errors?.[0]?.code === "E_CHAT_BUSY") {
+        /* 接上那一轮的会话 id，界面至少能继续看到它跑到哪了 */
+        const sid0 = started.data?.sessionId; if (sid0) setSessionId(sid0);
+        throw new Error(started.errors[0].message ?? "这个会话还有一轮在跑");
+      }
       if (!started.ok || !started.data) throw new Error(started.errors?.[0]?.message ?? "起作业失败");
       job.current = started.data.jobId; const sid = started.data.sessionId ?? sessionId!; setSessionId(sid);
       /* 作业起成功了 —— 这一刻「已经交给 AI」就成立，不必等它跑完。

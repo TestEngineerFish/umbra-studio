@@ -7216,3 +7216,79 @@ code-review 报「状态行不再显示格式模块的读数」，列了三条�
 `uitest` **188 → 189** · `kindtest` **34 → 35** · `signcheck` 加 dmg 三关
 （`.app` 6/6 · dmg 待这一轮公证完再验）。
 反向验证：给 `dir` 加回一个 `Status` → kindtest 当场红并点名 `kinds/dir/index.tsx`。
+
+### 114.8 dmg 那一轮的最终读数（同日稍晚）
+
+`-c.dmg.sign=true` + 第 ⑤ 步的 `notarytool submit --wait` + `stapler staple` 跑完：
+
+```
+✓ 12 项具备 · 0 项还没做
+  .app：Developer ID · hardened runtime · 时间戳 · 签名自洽 · Notarized · staple
+  dmg（arm64 / x64 各三关）：签了名 · 过 Gatekeeper（source=Notarized Developer ID）· 票据已 staple
+```
+
+**模拟真实下载**（给 dmg 打上 quarantine 标记，再挂载看里面的 `.app`）：
+
+```
+Umbra Studio-0.1.0-mac-arm64.dmg: accepted · source=Notarized Developer ID
+/Volumes/…/Umbra Studio.app:      accepted · source=Notarized Developer ID
+```
+
+**两层都过 —— 用户下载后双击就能用，不会报「已损坏」。**
+
+⚠️ **同一天第三条「仪器自己是零」**：那条「dmg 签了名」在 dmg 真签好之后**还是报没签** ——
+`codesign -dv` **不带 `--verbose=2` 就不输出 `Authority=` 那一行**，只有
+Executable / Identifier / Format。这个 bug 藏在一个**真读数**后面（第一次跑时 dmg 确实没签），
+所以第一眼完全看不出判据有问题。
+
+> 一天之内三条：`signcheck` 只读 stdout（§112.3）· `shelltest` 路径两种传法（§112.3）·
+> 这一条。**都是判据自己的错，都伪装成产品的错。**
+
+---
+
+## 一一五、issue #35：同一会话并发发两条 · 新建 `apitest`（2026-09-28）
+
+### 115.1 「中断给假回执」比中断没做还糟
+
+`startJob` 对同键在跑的情况**返回旧作业、不执行 `run`** —— 这本来是防重入的好设计。
+但 `chat_send` 直接把它当成功回了 `ok: true` + 旧 jobId，于是两条后果：
+
+1. **这条新消息根本没执行**，而界面会把旧那一轮的结果当成这一条的回复 ——
+   用户的一句指令**无声消失**
+2. `chatAborts.set(j.id, ctl)` 用一个**没接到任何东西上的**新 controller
+   盖掉了旧作业真正在用的那个 —— 之后点「中断」回「已发中断」，
+   **而那一轮照跑到底、照落盘**
+
+第二条尤其糟：用户点中断多半是因为 AI 正在往他的稿上写不该写的东西，
+而我们回了「已发中断」让他放心，AI 继续改。**假回执比没有回执糟。**
+
+前端的 `running` 挡不住：那是组件本地状态。刷新页面、切项目再切回来、
+或者第二个窗口打开同一会话，它都是 `false`，而服务端那一轮还在跑。
+
+修法：`startJob` 之前先查 `running(key)`，有就回 **409 `E_CHAT_BUSY`**，
+并**带上那一轮的 `jobId` 和 `sessionId`**。前端收到它 `throw`，
+于是消息**留在输入框里**、`onStarted` 不会被调 —— 用户的话不会凭空消失。
+
+### 115.2 新建 `apitest`：这一层原来谁也管不着
+
+这条缺陷住在**路由层**，而现有几份回归各管一层：
+`filetest` 管写入口 · `captest` 管能力注册表 · `uitest` 从浏览器看界面。
+从浏览器测不到它 —— 要造出「这个会话正忙」得在服务端直接塞一个作业，
+**而浏览器够不着 `jobs` 模块**。
+
+所以新建 `server/src/apitest.ts`。它的做法值得记：
+
+> **一条都不调真 AI**（CLAUDE.md 那条「别拿真 AI 回合当回归」）。
+> 用 `jobs.start` 直接塞一个不结束的作业来制造「正忙」，
+> 于是走到 `chat_send` 时它必然撞上 busy 分支 ——
+> **要测的那条路照样走到，而不花一分钱。**
+
+### 115.3 读数
+
+`apitest` **5/5**（409 · `E_CHAT_BUSY` · 带 jobId · 带 sessionId · 话里给了出路）。
+
+反向验证把原来的 bug **原样复现**了：把 `runningJob(key)` 改成 `null` →
+`HTTP 200` + `ok: true` + **我塞进去的那个旧 jobId**，三条红。
+
+⚠️ 判据第一版红了一条：按 `data.id` 比，而 `jobs.view()` 给的字段叫 `jobId`。
+**那是判据自己写错，不是产品的问题，而两者报出来的样子一样**（§111.3 同一族）。

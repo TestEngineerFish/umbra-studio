@@ -23,6 +23,7 @@
     "incoming": "node dist/incoming.js",
     "outgoing": "node dist/outgoing.js",
     "filetest": "npm run build && node dist/filetest.js",
+    "apitest": "npm run build && node dist/apitest.js",
     "captest": "npm run build && node dist/captest.js",
     "kindtest": "npm run build && node dist/kindtest.js",
     "plugintest": "npm run build && node dist/plugintest.js",

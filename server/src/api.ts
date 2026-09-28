@@ -33,7 +33,7 @@ import { revertTo, setProp, type SlotKind } from "./edit.js";
 import { validateDraft } from "./validate.js";
 import { listComponents, listIcons, searchTokens } from "./assets.js";
 import { renderCheck } from "./render.js";
-import { get as getJob, start as startJob, view as jobView } from "./jobs.js";
+import { get as getJob, start as startJob, view as jobView, running as runningJob } from "./jobs.js";
 import { changesSince, diffDrafts, humanTime, listVersions, projectChangesSince, readVersionMeta, snapDir, toMarkdown, workspaceState } from "./history.js";
 import { gunzipSync } from "node:zlib";
 import { existsSync, statSync } from "node:fs";
@@ -270,8 +270,28 @@ export async function handleApi(
         const s = await createChat(p.dir, { projectId: p.name, channel: args.channel, model: (args.channel === "b" ? cfg.channelB?.model : cfg.channelA?.model) ?? "unknown" });
         args.sessionId = s.id;
       }
+      /* ⚠️ **同一会话还有一轮在跑时要说出来，不能当没事**（issue #35，2026-09-28）。
+         `startJob` 对同键在跑的情况是**返回旧作业**、不执行 `run` —— 本来是防重入的好设计，
+         但这里直接把它当成功回了 `ok: true` + 旧 jobId，于是：
+         ① 这一条新消息**根本没执行**，而界面会把旧那一轮的结果当成这一条的回复；
+         ② 下面那句 `chatAborts.set(j.id, ctl)` 用一个**没接到任何东西上的**新 controller
+            盖掉了旧作业真正在用的那个 —— 之后点「中断」会回「已发中断」，
+            **而正在跑的那一轮照跑到底、照落盘**。中断给假回执，比中断没做还糟。
+
+         前端的 `running` 挡不住这个：那是组件本地状态，刷新页面、切项目再切回来、
+         或者第二个窗口打开同一会话，它都是 false，而服务端那一轮还在跑。
+
+         回 409 而不是静默复用：**带上 `jobId`**，前端接着轮询那一轮就行，
+         用户的消息也还在输入框里，不会凭空消失。 */
+      const key = `${p.name}::chat::${args.sessionId}`;
+      const busy = runningJob(key);
+      if (busy) {
+        json(reply, 409, { ok: false, errors: [{ code: "E_CHAT_BUSY", message: "这个会话还有一轮在跑 —— 等它结束，或者先中断它" }],
+          data: { ...jobView(busy), sessionId: args.sessionId } });
+        return true;
+      }
       const ctl = new AbortController();
-      const j = startJob("chat", `${p.name}::chat::${args.sessionId}`,
+      const j = startJob("chat", key,
         () => runChatSend(p, { ...args, abortSignal: ctl.signal }),
         (e) => ({ code: "E_JOB", message: (e as Error)?.message ?? String(e) }));
       chatAborts.set(j.id, ctl);

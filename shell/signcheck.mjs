@@ -17,7 +17,7 @@
  *  本机没有证书。混为一谈的话这个脚本会一直红，红久了就没人看了。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const app = process.argv[2] ?? join(import.meta.dirname ?? ".", "out", "mac-arm64", "Umbra Studio.app");
@@ -78,6 +78,37 @@ ok(notarized, "Gatekeeper：已公证的 Developer ID", (spctl.out.split("\n").f
 /* ④ 公证票据钉上了没 —— 钉了才能离线验证；没钉的话用户断网打开还是会被拦 */
 const staple = run("xcrun", ["stapler", "validate", app]);
 ok(staple.ok && /worked/.test(staple.out), "公证票据已 staple（断网也验得过）", staple.ok ? "" : (staple.out.split("\n").find((l) => l.trim()) ?? "").slice(0, 70));
+
+/* ⑤ **用户下载的是 dmg / zip，不是 .app** —— 前四条只看 `.app`，
+   于是 2026-09-28 漏掉了一条真缺陷：`.app` 六项全绿，而包着它的 **dmg 根本没签名**
+   （`code object is not signed at all` · `spctl -a -t open` → `rejected / no usable signature`）。
+   Gatekeeper 先检查用户双击的那个文件，所以 dmg 没签 = 下载后打不开。
+   ⚠️ 判据必须**看用户真正拿到手的那个文件**，不是看我们心里认为的那个主体。
+
+   zip 不在这里查：macOS 检查的是解出来的 `.app`，zip 自己不是签名对象。
+   那一条实测过（打上 quarantine 后 `accepted` + `source=Notarized Developer ID`），
+   验法写在 `00` §114。 */
+const outDir = join(app.includes(".app") ? join(app, "..", "..") : app, ".");
+const dmgs = (() => {
+  try { return readdirSync(outDir).filter((f) => f.endsWith(".dmg")).map((f) => join(outDir, f)); }
+  catch { return []; }
+})();
+if (!dmgs.length) {
+  console.log("  · 这一轮没有 dmg 产物，跳过 dmg 那一关（zip 只分发 .app，不用签 dmg）");
+} else for (const d of dmgs) {
+  const name = d.split("/").pop();
+  /* ⚠️ **必须带 `--verbose=2`** —— 不带的话 `codesign -dv` 只打 Executable / Identifier / Format，
+     **没有 `Authority=` 那一行**，于是这条判据对一个签好的 dmg 也报「没签」。
+     2026-09-28 当天第三条「仪器自己是零」的缺陷（前两条见 §112.3）。
+     第一次跑出来时 dmg 确实没签，所以这个 bug 藏在一个真读数后面。 */
+  const signed = run("codesign", ["-dv", "--verbose=2", d]).out;
+  const gate = run("spctl", ["-a", "-vv", "-t", "open", "--context", "context:primary-signature", d]).out;
+  const st = run("xcrun", ["stapler", "validate", d]);
+  ok(/Authority=Developer ID/.test(signed), `dmg 签了名：${name}`, /not signed/.test(signed) ? "code object is not signed at all（下载后会被拦）" : "");
+  ok(/accepted/.test(gate) && /source=Notarized/.test(gate), `dmg 过 Gatekeeper：${name}`,
+    (gate.split("\n").find((l) => l.includes("source=") || l.includes("rejected")) ?? "").trim().slice(0, 60));
+  ok(st.ok && /worked/.test(st.out), `dmg 的公证票据已 staple：${name}`, st.ok ? "" : "没 staple：首次打开要联网问 Apple");
+}
 
 console.log(`\n${todo === 0 ? "✓" : "–"} ${done} 项具备 · ${todo} 项还没做`);
 if (todo > 0) {
