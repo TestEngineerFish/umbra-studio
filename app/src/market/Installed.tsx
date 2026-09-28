@@ -11,8 +11,10 @@ import type { InstalledRow } from "./types";
  *  **① 回退的按钮要在更新之前就看得见** —— 「鼓励更新」靠这个，不是靠文案劝。
  *  **② 未签名要显眼，三处**：顶部横幅 · 那一行的底色 · 页签上的红点。
  */
-export function Installed({ core, rows, onChanged }: {
+export function Installed({ core, rows, onChanged, clockBack }: {
   core: Core; rows: InstalledRow[] | null; onChanged: () => void;
+  /** 系统时间被调回去过（M11-12 的单调高水位发现的） */
+  clockBack?: boolean;
 }) {
   const unsigned = (rows ?? []).filter((x) => x.unsigned);
   return (
@@ -22,6 +24,20 @@ export function Installed({ core, rows, onChanged }: {
         旧版本装过就留在本机。<b className="text-text">切版本不用重新下载，立刻生效</b> ——
         所以放心更新：出了问题切回上一版就行。
       </p>
+
+      {/* 时钟回拨：**必须说出来**。不说的话用户看到「已过期」只会觉得是我们的 bug，
+          而真正的原因是他的系统时间被调回去了 —— 我们判的是「见过的最晚时间」。
+          ⚠️ 语气不要像在指控：多数情况是换时区、装系统、虚拟机快照，不是有人想白用。 */}
+      {clockBack && (
+        <div data-ud="clock-banner" className="mt-4 rounded-lg px-4 py-3 text-xs leading-relaxed"
+          style={{ background: "var(--tool-warn-soft)", border: "1px solid var(--tool-warn)" }}>
+          <div className="font-semibold">本机的系统时间比我们见过的最晚时间更早</div>
+          <p className="mt-1 opacity-90">
+            有时效的授权按「见过的最晚时间」算，所以把时间调回去不会让过期的重新可用。
+            换时区、重装系统、恢复虚拟机快照都会这样 —— 把系统时间调准就好。
+          </p>
+        </div>
+      )}
 
       {/* 未签名横幅：**不打开这一页也要知道**，所以页签上还有个红点 */}
       {unsigned.length > 0 && (
@@ -88,11 +104,42 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
           {/* 实心红只给这一个标签：全页只有它是实心的，扫一眼就停在这里（设计侧原话） */}
           {r.unsigned && <span className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] text-onAccent" style={{ background: "var(--tool-err)" }}>未签名</span>}
           {r.unsigned && <span className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] border" style={{ borderColor: "var(--tool-err)", color: "var(--tool-err)" }}>开发模式</span>}
+          {/* ═══ 授权态（M11-12）═══ **装了 ≠ 能用**。
+              这一档以前根本不存在 —— 界面上只有「装没装」，而限时免费到期那天
+              所有试用用户同时需要看到「过期」这一态。
+              ⚠️ 只给**要紧的那几种**挂标签：有效不挂（正常状态不需要标签），
+              内置已经有「内置」那一颗。挂满标签等于没有标签。 */}
+          {r.entitlement === "expired" && (
+            <span data-ud="ent-expired" className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] text-onAccent"
+              style={{ background: "var(--tool-warn)" }}>已过期</span>
+          )}
+          {r.entitlement === "unlicensed" && !r.bundled && (
+            <span data-ud="ent-unlicensed" className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] border"
+              style={{ borderColor: "var(--tool-warn)", color: "var(--tool-warn)" }}>未授权</span>
+          )}
+          {r.entitlement === "not-yet" && (
+            <span data-ud="ent-notyet" className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] border border-border text-muted">还没生效</span>
+          )}
+          {r.entitlement === "bad-license" && (
+            <span data-ud="ent-bad" className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] text-onAccent"
+              style={{ background: "var(--tool-err)" }}>许可证有问题</span>
+          )}
+          {/* 有时效但还有效的：把日子写出来。「可用至 X」比一颗绿点有用得多 */}
+          {r.entitlement === "active" && r.until && (
+            <span data-ud="ent-until" className="px-1.5 h-[18px] grid place-items-center rounded text-[10px] border border-border text-muted">
+              可用至 {r.until.slice(0, 10)}
+            </span>
+          )}
         </div>
         <div className="text-[11px] text-muted mt-0.5">
           {r.bundled ? "Umbra 自带" : `认领 ${r.kinds.join(" / ") || "—"}`}
           {r.problems.length > 0 && <span className="text-err"> · 清单有毛病：{r.problems[0]!.field}</span>}
         </div>
+        {/* 每一种不能用的态都要**给出路** —— 只说「不可用」等于什么都没说（`doc/20` §4.4）。
+            文案由后端给（它才知道到期日和原因），这里只负责显示。 */}
+        {r.entitlementNote && r.entitlement !== "active" && r.entitlement !== "builtin" && (
+          <div data-ud="ent-note" className="text-[11px] mt-1 leading-relaxed" style={{ color: "var(--tool-warn)" }}>{r.entitlementNote}</div>
+        )}
         {arming && (
           <div className="mt-2 text-xs leading-relaxed" style={{ color: "var(--tool-err)" }}>
             {/* 卸载最让人犹豫的是「钱是不是白花了」—— 这句先答掉（设计侧 §三.2） */}

@@ -301,6 +301,91 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
     ok(t2.includes("逃出插件目录"), "**包里带反斜杠的路径被拦**（posix 上是一个文件名，到 win 上就是三级路径）", t2.slice(0, 32));
   }
 
+  /* ══════════ 授权：装了 ≠ 能用（M11-12 · `doc/20` §四）══════════
+     M11-6 的验签管「装的时候这个包是不是我们签的」；这一层管「**用的时候**还有效吗」。
+     ⚠️ 「过期」是会真实出现的态：**限时免费到期那天，所有试用用户同时看到它**。
+     所以判据要覆盖每一种态，而不只是「有授权能用」那一种。 */
+  {
+    const { verifyLicenseText, entitlementOf, nowMonotonic } = await import("./plugin/license.js");
+    const { STATE_ROOT } = await import("./project.js");
+    const licFile = join(STATE_ROOT, ".umbrastudio", "license.json");
+    const clockFile = join(STATE_ROOT, ".umbrastudio", "clock.json");
+    const day = (offset: number) => new Date(Date.now() + offset * 86400e3).toISOString().slice(0, 10);
+    const sign = (lic: unknown) => {
+      const payload = JSON.stringify(lic);
+      return JSON.stringify({ payload, signature: edSign(null, Buffer.from(payload, "utf8"), privateKey).toString("base64") });
+    };
+
+    /* ① 签名是这一层的地基 —— 改一个字节就得验不过 */
+    const good = sign({ sub: "u1", grants: [{ plugin: "com.a.buy", from: day(-10), until: null, src: "purchase" }] });
+    ok(verifyLicenseText(good).ok === true, "签过的许可证验得过");
+    const tampered = JSON.parse(good) as { payload: string; signature: string };
+    tampered.payload = tampered.payload.replace("com.a.buy", "com.a.pro");
+    ok(verifyLicenseText(JSON.stringify(tampered)).ok === false,
+       "**改一个插件名就验不过**（不然改一行就把没买的插件写成买了）");
+    ok(verifyLicenseText("{}").ok === false, "缺 payload / signature 的许可证拒收");
+
+    /* ② 四种态：买断 · 限时未到期 · 限时已过期 · 没授权。
+       ⚠️ 「过期」这一态必须单独验 —— 它是这一整层存在的理由。 */
+    await wf(licFile, sign({
+      sub: "u1",
+      grants: [
+        { plugin: "com.a.buy", from: day(-10), until: null, src: "purchase" },
+        { plugin: "com.a.trial", from: day(-10), until: day(7), src: "promo" },
+        { plugin: "com.a.over", from: day(-40), until: day(-3), src: "promo" },
+        { plugin: "com.a.soon", from: day(7), until: day(30), src: "gift" },
+      ],
+    }), "utf8");
+    const buy = await entitlementOf("com.a.buy");
+    ok(buy.state === "active" && buy.until === null, "买断：active 且永久（`until: null`）", buy.note);
+    ok((await entitlementOf("com.a.trial")).state === "active", "限时未到期：active");
+    const over = await entitlementOf("com.a.over");
+    ok(over.state === "expired" && !!over.until, "**限时已过期：expired，而且说得出到期日**", over.note);
+    ok(over.note.includes("购买"), "过期那一态**给了出路**（不是只说「不可用」）", over.note);
+    ok((await entitlementOf("com.a.soon")).state === "not-yet", "还没生效：not-yet");
+    ok((await entitlementOf("com.a.none")).state === "unlicensed", "没这一条授权：unlicensed");
+    ok((await entitlementOf("com.umbra.markdown", { bundled: true })).state === "builtin",
+       "内置插件永远能用（builtin，不看许可证）");
+
+    /* ③ 买断应该盖过已过期的试用 —— **同一个插件先试用后买断**是最常见的路径。
+       取错一条（比如取第一条 / 取最早的）会让「买过的人因为试用过期而用不了」，
+       那是这一层最糟的一种错：**它惩罚付过钱的人。** */
+    await wf(licFile, sign({
+      sub: "u1",
+      grants: [
+        { plugin: "com.a.both", from: day(-40), until: day(-3), src: "promo" },
+        { plugin: "com.a.both", from: day(-2), until: null, src: "purchase" },
+      ],
+    }), "utf8");
+    const both = await entitlementOf("com.a.both");
+    ok(both.state === "active" && both.until === null,
+       "**先试用后买断：取最宽松的那一条**（不能让买过的人被过期的试用挡住）", both.note);
+
+    /* ④ 时钟回拨：本地记「见过的最晚时间」，只许前进不许后退。
+       ⚠️ 这挡的是顺手改时间，挡不住会改文件的人 —— 离线授权一定可破解，
+       那是「离线可用」自带的代价（`doc/20` §4.2），不是实现没做好。 */
+    await wf(clockFile, JSON.stringify({ seen: Date.now() + 10 * 86400e3 }), "utf8");
+    const back = await nowMonotonic();
+    ok(back.rolledBack === true, "**系统时间被调回去了 → 认出来**（高水位比系统时间晚）");
+    ok(back.now.getTime() > Date.now() + 5 * 86400e3, "认出回拨之后用的是高水位那个时间，不是系统时间");
+    /* 回拨状态下，过期的那条**不能**因此复活 */
+    await wf(licFile, sign({ sub: "u1", grants: [{ plugin: "com.a.over", from: day(-40), until: day(3), src: "promo" }] }), "utf8");
+    const revived = await entitlementOf("com.a.over");
+    ok(revived.state === "expired",
+       "**把时间调回去也救不活过期的授权**（判的是高水位，不是系统时间）", revived.note);
+    ok(revived.rolledBack === true, "回拨这件事本身要报出来（界面要提一句，不然「为什么突然过期」没人答得上）");
+
+    /* ⑤ 半个 clock.json 不能让这道检查静悄悄失效 ——
+       坏文件解析出来是「时间零」，而 `Math.max(now, 0) === now`，**失效的方向正好是放行**。
+       这和 §100.2「坏掉的安全检查看起来和通过一模一样」是同一族。 */
+    await wf(clockFile, '{"seen":', "utf8");
+    const broken = await nowMonotonic();
+    ok(broken.rolledBack === false && Math.abs(broken.now.getTime() - Date.now()) < 5000,
+       "clock.json 坏了就当没见过（退回系统时间），不当成「时间零」");
+    await rmp(licFile, { force: true });
+    await rmp(clockFile, { force: true });
+  }
+
   /* 收尾：公钥是这一节临时造的，删掉；插件留着给 uitest 用 */
   await rmp(KEYS, { recursive: true, force: true });
   await rmp(join(PLUGINS_DIR, "com.umbra.demo", "0.2.0"), { recursive: true, force: true });

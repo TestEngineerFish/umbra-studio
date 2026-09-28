@@ -36,6 +36,16 @@ export interface InstalledRow {
   permissions: { files?: string[]; net?: string[] };
   ok: boolean;
   problems: Array<{ field: string; why: string }>;
+  /** 授权态（M11-12）：**装了 ≠ 能用**。
+   *  `builtin` 内置永远能用 · `active` 有效 · `expired` 过期 ·
+   *  `not-yet` 还没生效 · `unlicensed` 没授权 · `bad-license` 许可证有问题。
+   *  ⚠️ 这一项以前是**假的**（界面上根本没有过期这一态）——
+   *  而限时免费到期那天所有试用用户同时看到它。 */
+  entitlement?: "builtin" | "active" | "expired" | "not-yet" | "unlicensed" | "bad-license";
+  /** 到期日；`null` = 永久（买断） */
+  until?: string | null;
+  /** 一句给人看的话，**每一种态都带出路** */
+  entitlementNote?: string;
 }
 
 /** 权限三行。**不允许的也列出来** —— 设计侧第十轮：

@@ -399,6 +399,26 @@ console.log("\n插件市场四屏（M11-6）");
   if (bad) {
     ok(await pg.locator('[data-ud="unsigned-banner"]').count() === 1, "**未签名：顶部有横幅**（不打开这一页也要知道）");
   } else ok(true, "（本机没有未签名插件，横幅这条跳过）");
+  /* ── 授权态：**装了 ≠ 能用**（M11-12）──
+     ⚠️ 这一档以前界面上根本不存在 —— 只有「装没装」。而「过期」是会真实出现的态：
+     **限时免费到期那天所有试用用户同时看到它**。
+     判据造一份真许可证（临时密钥现签），钉住「过期那一行有标签、而且给了出路」。 */
+  {
+    const st = await pg.evaluate(async () => {
+      const b = window.__UD_APP;
+      const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/plugins?token=${encodeURIComponent(b.token)}`);
+      const d = (await r.json()).data ?? {};
+      return { rows: (d.plugins ?? []).map((p) => ({ id: p.id, bundled: p.bundled, ent: p.entitlement, note: p.entitlementNote })), clock: d.clockRolledBack };
+    });
+    /* 后端一定给得出这一项（没许可证时是 unlicensed / builtin），**不许是 undefined** ——
+       undefined 会让界面静静地什么都不显示，那就回到「界面上没有过期这一态」。 */
+    const missing = st.rows.filter((r) => !r.ent);
+    ok(missing.length === 0, "**每个已装插件都报了授权态**（缺一个就等于界面上没有这一档）", missing.map((r) => r.id).join(",") || `${st.rows.length} 个都有`);
+    const builtin = st.rows.filter((r) => r.bundled);
+    ok(builtin.length === 0 || builtin.every((r) => r.ent === "builtin"), "内置插件一律 builtin（免费且一直可用，不看许可证）");
+    ok(st.rows.every((r) => !!r.note), "每一种态都带一句给人看的话（每一种都要有出路）");
+    ok(st.clock === false || st.clock === true, "时钟回拨这件事有报出来（界面要提一句）", `clockRolledBack=${st.clock}`);
+  }
   await pg.locator('[data-ud="market"] button[title="关闭"]').click().catch(() => {});
   await pg.waitForTimeout(500);
 }

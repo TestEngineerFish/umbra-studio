@@ -19,13 +19,18 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
   const [tab, setTab] = useState<"market" | "installed" | "credits">("market");
   const [rows, setRows] = useState<MarketRow[] | null>(null);
   const [installed, setInstalled] = useState<InstalledRow[] | null>(null);
+  /** 系统时间被调回去过（后端的单调高水位发现的，M11-12）。
+   *  ⚠️ **必须说出来**：不说的话「为什么我的插件突然过期了」没人答得上，
+   *  而真正的原因是「你的系统时间被调回去了」。 */
+  const [clockBack, setClockBack] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [kind, setKind] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
   const reload = () => {
     void core.get<{ plugins: MarketRow[] }>("market").then((r) => setRows(r.data?.plugins ?? []));
-    void core.get<{ plugins: InstalledRow[] }>("plugins").then((r) => setInstalled(r.data?.plugins ?? []));
+    void core.get<{ plugins: InstalledRow[]; clockRolledBack?: boolean }>("plugins")
+      .then((r) => { setInstalled(r.data?.plugins ?? []); setClockBack(!!r.data?.clockRolledBack); });
   };
   useEffect(reload, [core]);
   /* 装 / 切版本 / 卸完服务端会发 `plugin` 事件，列表要跟着变 */
@@ -70,7 +75,7 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-auto">
-        {tab === "installed" ? <Installed core={core} rows={installed} onChanged={reload} />
+        {tab === "installed" ? <Installed core={core} rows={installed} onChanged={reload} clockBack={clockBack} />
           : tab === "credits" ? <Credits />
           : open ? <Detail row={open} onBack={() => setOpenId(null)} />
           : (

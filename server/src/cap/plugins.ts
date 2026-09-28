@@ -4,6 +4,7 @@ import { allowedCapNames } from "../plugin/host.js";
 import { HOST_API_MAJOR } from "../plugin/manifest.js";
 import { hostCall } from "../plugin/host.js";
 import { listInstalled, registerPluginKinds, uninstall } from "../plugin/store.js";
+import { entitlementOf, verifyLicenseText, type Entitlement } from "../plugin/license.js";
 import { installFromFile, pluginVersions, switchVersion } from "../plugin/install.js";
 import { emit } from "../events.js";
 import { defineCap } from "./registry.js";
@@ -21,16 +22,28 @@ defineCap({
   http: { route: "plugins", method: "GET" },
   run: async () => {
     const list = await listInstalled();
+    /* **装了 ≠ 能用**（M11-12）：每一个都带上「现在还有效吗」。
+       ⚠️ 这一项以前根本不存在 —— 验签只管「装的时候是不是我们签的」。
+       「过期」是会真实出现的态：限时免费到期那天所有试用用户同时看到它。 */
+    const ents = await Promise.all(list.map((p) => entitlementOf(p.manifest.id, { bundled: p.bundled })));
+    const entOf = (id: string): Entitlement | undefined => ents.find((e) => e.plugin === id);
     return envelope({
       hostApi: HOST_API_MAJOR,
       /** 插件能调的宿主能力 —— 装插件时摆给用户看 */
       allowedCaps: allowedCapNames(),
+      /** 系统时间被调回去过（单调高水位发现的）。界面要提一句 —— 
+       *  不提的话「为什么我的插件突然过期了」没人答得上来 */
+      clockRolledBack: ents.some((e) => e.rolledBack),
       plugins: list.map((p) => ({
         id: p.manifest.id, name: p.manifest.name, version: p.manifest.version,
         surfaces: p.manifest.surfaces, kinds: (p.manifest.kinds ?? []).map((k) => k.id), bundled: p.bundled,
         permissions: p.manifest.permissions, unsigned: p.unsigned, ok: p.problems.length === 0, problems: p.problems,
+        /* 授权态四样：能不能用 · 到什么时候 · 一句给人看的话 */
+        entitlement: entOf(p.manifest.id)?.state ?? "unlicensed",
+        until: entOf(p.manifest.id)?.until ?? null,
+        entitlementNote: entOf(p.manifest.id)?.note ?? "",
       })),
-    }, [], { count: list.length });
+    }, [], { count: list.length, licensed: ents.filter((e) => e.state === "builtin" || e.state === "active").length });
   },
 });
 
@@ -113,6 +126,47 @@ defineCap({
           where: "(plugin)", at: { kind: "key", name: r.id },
           fix: "正式发布的插件都带签名；未签名的只应出现在开发机上" } as never]
       : []);
+  },
+});
+
+defineCap({
+  name: "set_license", title: "放一份许可证进来", scope: "global",
+  summary: [
+    "把服务端签好的许可证写到本机。**本地验签，全程不联网** —— 用户要求离线可用。",
+    "⚠️ 验不过就**不落盘**：一份存着但验不过的许可证只会让「为什么我买了却不能用」更难查。",
+  ].join("\n"),
+  input: { text: z.string().describe("许可证原文：{ payload, signature }") },
+  faces: ["mcp", "http"],
+  http: { route: "license_set", method: "POST" },
+  run: async ({ text }) => {
+    const r = verifyLicenseText(text);
+    if (!r.ok) {
+      return envelope({ ok: false }, [{ level: "error", code: "E_LICENSE_BAD",
+        message: `许可证验不过：${r.why ?? "未知原因"}`, where: "(license)", at: { kind: "key", name: "license" },
+        fix: "重新登录账号取一份新的许可证" } as never]);
+    }
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { STATE_ROOT } = await import("../project.js");
+    await mkdir(join(STATE_ROOT, ".umbrastudio"), { recursive: true });
+    await writeFile(join(STATE_ROOT, ".umbrastudio", "license.json"), text, "utf8");
+    return envelope({ ok: true, sub: r.license!.sub, grants: r.license!.grants.length });
+  },
+});
+
+defineCap({
+  name: "plugin_entitlement", title: "这个插件现在能不能用", scope: "global",
+  summary: [
+    "**装了 ≠ 能用**：验签管的是装的时候，这一件管的是用的时候。",
+    "六种态：builtin（内置，永远能用）· active · expired · not-yet · unlicensed · bad-license。",
+    "⚠️ 每一种都带一句给人看的话，而且**每一种都有出路** —— 只说「不可用」等于什么都没说。",
+  ].join("\n"),
+  input: { id: z.string() },
+  faces: ["mcp", "http"],
+  http: { route: "plugin_entitlement", method: "GET" },
+  run: async ({ id }) => {
+    const found = (await listInstalled()).find((x) => x.manifest.id === id);
+    return envelope(await entitlementOf(id, { bundled: found?.bundled }));
   },
 });
 
