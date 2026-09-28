@@ -348,6 +348,31 @@ if (await fileRow.count()) {
   await closeCtx();
 } else ok(false, "树里没有文件行");
 
+/* ── 稿件的「复制一份」只对稿件出（issue #9）──
+   #9 报的是「应用本体里一份稿建了就删不掉、改不了名」，证据指向
+   `server/ui/index.html` —— **那个前端 M7-8 已经删了**，右键菜单（M8-21）把五个动作都补齐了。
+   上面两条已经实测了重命名和移到回收站，这里补最后一个没被判据覆盖的。
+
+   ⚠️ **必须找一份真的稿**（`.dc.html`），不能拿「第一个非目录行」——
+   「复制一份」是 `isDraft` 才出的，随手拿到一个 `.json` 就会误判成「这个动作没了」。
+   **判据自己挑错样本，红了也是假的。** */
+{
+  const draftRow = pg.locator('[role="treeitem"]:not([aria-expanded])').filter({ hasText: ".dc.html" }).first();
+  if (await draftRow.count()) {
+    await draftRow.click({ button: "right" }); await pg.waitForTimeout(400);
+    const t = await ctxText();
+    ok(/复制一份/.test(t), "右键**稿件**：有「复制一份」（issue #9 的第五个动作）", t.slice(0, 70));
+    await closeCtx();
+    /* 反面：非稿件不该有它 —— 只测「该有的」测不出 `isDraft` 这道条件在不在 */
+    const other = pg.locator('[role="treeitem"]:not([aria-expanded])').filter({ hasText: ".json" }).first();
+    if (await other.count()) {
+      await other.click({ button: "right" }); await pg.waitForTimeout(400);
+      ok(!/复制一份/.test(await ctxText()), "右键**非稿件**：没有「复制一份」（它只对稿件有意义）");
+      await closeCtx();
+    } else console.log("  · 树里没有非稿件文件，反面那条跳过");
+  } else ok(false, "树里找不到 .dc.html 行");
+}
+
 /* 在**项目名**上右键 = 空白处菜单。树一满就没有空白区可点，所以列头这条路是主入口。 */
 await pg.locator('button[title="回到项目根（右键：对项目根的操作）"]').click({ button: "right" });
 await pg.waitForTimeout(400);
