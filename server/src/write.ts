@@ -96,7 +96,7 @@ export async function writeDraft(
      脏 = 有人在别的编辑器里改过 —— 那一版我们的快照里没有（快照只在走写入口时产生）。
      **先提交再覆盖**，顺序不能换：反过来的话别人那一版已经被盖掉，git 里也没有它。
      用户的原话：「哪怕限制了 AI 工具的权限，也无法保证相关文件在其他编辑器里没有被修改。」 */
-  const rescued = await commitExternalChanges(p.dir);
+  const rescued = await commitExternalChanges(p.dir, relPath);
 
   // ① 归一化 + @ds 展开 + __resources 注入
   const prep = prepareForDisk(p, content, relPath);

@@ -33,6 +33,12 @@ node_modules/
 *.tsbuildinfo
 dist/
 build/
+# ⚠️ 例外：`shell/build/` 不是构建产物，是**打包的输入**（签名用的 entitlements）。
+# 被上面那条 `build/` 一起忽略掉的话，换一台机器 clone 下来就少了它，
+# 而 electron-builder 会在签第一个文件时失败、报错还指向一个无关的 .ttf（`00` §111.5 之二）。
+# 2026-09-28 提交前才发现 —— **「打包的输入」和「构建的产物」同名，很容易被一条通用规则扫掉。**
+!shell/build/
+!shell/build/**
 .npm/
 npm-debug.log*
 pnpm-debug.log*

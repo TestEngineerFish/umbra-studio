@@ -138,7 +138,10 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   const { createHash } = await import("node:crypto");
   const { commitExternalChanges, isDirty } = await import("./gitkeep.js");
   const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
-  const git = (args: string[]) => execFileSync("git", args, { cwd: DIR, encoding: "utf8" }).trim();
+  /* ⚠️ `-c core.quotepath=false`：不加的话 git 会把非 ASCII 路径转义成
+     `"\347\254\224\350\256\260.md"` 并加引号，于是判据里按「笔记.md」比较永远不成立 ——
+     实测被它绊倒过两条。**这是仪器的问题，不是产品的问题**，而两者报出来的样子一样。 */
+  const git = (args: string[]) => execFileSync("git", ["-c", "core.quotepath=false", ...args], { cwd: DIR, encoding: "utf8" }).trim();
 
   await writeAnyFile(p, "笔记.md", "第一版\n");
   ok("写入口自动给项目建了 git 仓库", existsSync(join(DIR, ".git")));
@@ -153,7 +156,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   /* ═══ 核心那一条：绕过写入口直接改文件（= 别的编辑器改的），再走一次写入口 ═══ */
   const 别处写的 = "别的编辑器改的这一版\n";
   await writeFile(join(DIR, "笔记.md"), 别处写的, "utf8");
-  const rescued = await commitExternalChanges(DIR);
+  const rescued = await commitExternalChanges(DIR, "笔记.md");
   ok("**别处改过 → 落盘前先记一版**（救下那一版）", !!rescued, { commit: rescued });
   await writeAnyFile(p, "笔记.md", "工具又改了一版\n", { expectSha256: sha(别处写的) });
   for (let i = 0; i < 40 && await isDirty(DIR); i++) await new Promise((r) => setTimeout(r, 100));
@@ -162,13 +165,41 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      从git取回 === 别处写的.trim(), { 取回: 从git取回.slice(0, 24) });
   const msgs = git(["log", "--pretty=%s"]).split("\n");
   ok("提交消息分得出「别处改的」和「工具写入」",
-     msgs.some((m) => m.includes("别处改过")) && msgs.some((m) => m.includes("写入")), { 消息: msgs.slice(0, 3) });
+     msgs.some((m) => m.includes("在别处被改过")) && msgs.some((m) => m.startsWith("写入 ")), { 消息: msgs.slice(0, 3) });
   /* **从不 push**：远端一个都不许有（用户明确要求「提交只要在本地」） */
   ok("从不配远端（提交只在本地）", git(["remote"]).trim() === "");
   /* `.umbrastudio/` 不许进仓库 —— 里面有 `ai_config.json`（有 key）。
      **这一条是安全问题，不是整洁问题。** */
   ok("`.umbrastudio/` 没被提交进去（里面有 key）",
      !git(["ls-files"]).split("\n").some((f) => f.startsWith(".umbrastudio")));
+
+  /* ═══ 用户 2026-09-28 问的那条：项目已经有 git、而且他**正在里面工作** ═══
+     判据：我们落盘时**不许把他手上的活儿一起提交**。
+     这是 `add -A` 和「只 add 点名的文件」之间的全部差别，
+     而症状很难联想到我们：他的十个未完成改动突然出现在一个叫
+     「写入 X.dc.html v3」的提交里。 */
+  await writeFile(join(DIR, "用户正在改的.md"), "他手上的活儿，还没想提交\n", "utf8");
+  await writeFile(join(DIR, "他也在改的.txt"), "另一个\n", "utf8");
+  await writeAnyFile(p, "笔记.md", "工具第三次落盘\n", { expectSha256: sha("工具又改了一版\n") });
+  for (let i = 0; i < 40 && await isDirty(DIR, "笔记.md"); i++) await new Promise((r) => setTimeout(r, 100));
+  const 提交里有什么 = git(["show", "--name-only", "--pretty=", "HEAD"]).split("\n").filter(Boolean);
+  ok("**不把用户正在改的别的文件卷进我们的提交**（只 add 点名的那一个）",
+     提交里有什么.length === 1 && 提交里有什么[0] === "笔记.md", { 提交里: 提交里有什么 });
+  ok("他手上那两个文件还是未跟踪状态（我们没碰）",
+     git(["status", "--porcelain"]).includes("用户正在改的.md") && git(["status", "--porcelain"]).includes("他也在改的.txt"));
+
+  /* ⚠️ **正在 rebase / merge 时一律不动这个仓库**。
+     用户只问了「已经有 git 怎么办」，但更糟的是「他正在 rebase」——
+     那时候提交会落在临时状态上，轻则打乱 rebase，重则丢掉他正在整理的历史。
+     造法：伪造一个 `.git/MERGE_HEAD`（真跑一次 merge 冲突太重，而判据看的就是这个标记）。 */
+  const gitDirAbs = join(DIR, ".git");
+  await writeFile(join(gitDirAbs, "MERGE_HEAD"), git(["rev-parse", "HEAD"]) + "\n", "utf8");
+  const before = git(["rev-parse", "HEAD"]);
+  await writeFile(join(DIR, "笔记.md"), "merge 中途别处又改了\n", "utf8");
+  const duringMerge = await commitExternalChanges(DIR, "笔记.md");
+  ok("**正在 merge 时什么都不做**（兜底不该有破坏力）",
+     duringMerge === null && git(["rev-parse", "HEAD"]) === before, { 提交号: duringMerge });
+  await rm(join(gitDirAbs, "MERGE_HEAD"), { force: true });
 }
 
 await rm(DIR, { recursive: true, force: true });

@@ -65,29 +65,67 @@ export async function ensureRepo(dir: string): Promise<boolean> {
       const tpl = join(TOOL_ROOT, "doc", "_模板-租户 .gitignore");
       if (existsSync(tpl)) await copyFile(tpl, gi);
       else await writeFile(gi, ".umbrastudio/\n", "utf8");
+      /* 顺手把它提交掉。`.gitignore` 不提交也生效，但**不提交就会永远挂在
+         用户的 `git status` 里**，看着像我们留下的垃圾。
+         只在**我们刚建的**仓库里做这一下 —— 上面 `existsSync(.git)` 已经把
+         「用户已有的仓库」挡在外面了，不会去碰他的工作区。 */
+      await commitPaths(dir, [".gitignore"], "记版本：忽略工具自己的产物（.umbrastudio/）");
     }
     return true;
   } catch { return false; }
 }
 
-/** 有没有未提交的改动（含未跟踪文件）。**这就是「外部改动」的判据** ——
- *  我们自己落盘之后会立刻提交，所以工作区脏了就说明是别处改的。 */
-export async function isDirty(dir: string): Promise<boolean> {
-  try { return (await exec(["status", "--porcelain"], dir)).trim().length > 0; }
-  catch { return false; }
+/** ⚠️ **正在 merge / rebase / cherry-pick / 二分查找中，一律不动这个仓库**。
+ *
+ *  用户问「如果项目根目录已经有了 git 该怎么处理」时，我先想到的是「别卷入他的改动」，
+ *  但还有更糟的一种：**他正在 rebase**。那时候 `git commit` 会把提交落在一个临时状态上，
+ *  轻则打乱他的 rebase，重则让他丢掉正在整理的历史。
+ *  **有疑问就什么都不做** —— 这个模块的价值是兜底，而兜底不该有破坏力。 */
+async function inMiddleOfSomething(dir: string): Promise<boolean> {
+  try {
+    const gitDir = (await exec(["rev-parse", "--git-dir"], dir)).trim();
+    const abs = gitDir.startsWith("/") ? gitDir : join(dir, gitDir);
+    for (const f of ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply"]) {
+      if (existsSync(join(abs, f))) return true;
+    }
+    return false;
+  } catch { return true; }   // 问不出来就当「正在做什么」，宁可不提交
 }
 
-/** 提交当前工作区。`null` = 没什么可提交的（或者 git 用不了）。
- *
- *  ⚠️ **不带 `--author`、不改 user.name/email** —— 用哪个身份提交是用户仓库的事，
- *  我们替他配会让他的其它仓库配置看起来莫名其妙地不一致。
- *  仓库还没配 user 时 `git commit` 会失败，那就失败 —— 提示里说清怎么配比替他猜好。 */
-export async function commitAll(dir: string, message: string): Promise<string | null> {
-  if (OFF) return null;
+/** 有没有未提交的改动。**给了 `file` 就只看那一个文件** ——
+ *  「整个工作区脏不脏」和「我要覆盖的那份稿被改过没」是两件事：
+ *  前者会把用户正在改的别的文件也算进来（见 `commitPaths` 的注释）。 */
+export async function isDirty(dir: string, file?: string): Promise<boolean> {
   try {
-    if (!(await isDirty(dir))) return null;
-    await exec(["add", "-A"], dir);
-    await exec(["commit", "-m", message, "--no-verify"], dir);
+    const args = file ? ["status", "--porcelain", "--", file] : ["status", "--porcelain"];
+    return (await exec(args, dir)).trim().length > 0;
+  } catch { return false; }
+}
+
+/** 提交**点名的那几个文件**。`null` = 没什么可提交的（或者 git 用不了）。
+ *
+ *  ⚠️ **只 add 点名的文件，绝不 `add -A`** —— 这是用户 2026-09-28 问
+ *  「如果项目根目录已经有了 git 该如何处理」时点出来的那个问题。
+ *  `add -A` 在一个**用户正在工作**的仓库里是破坏性的：他可能正改着十个文件
+ *  准备一起提交，而我们落盘一次就把那十个未完成的改动全提交了 ——
+ *  提交消息还写着「写入 X.dc.html v3」，完全描述不了那十个文件，
+ *  他的工作流被打乱，而且这种提交很难拆开。
+ *
+ *  只提交我们自己碰的那一个文件，上面那些情况**一次全消掉**：
+ *  已有历史、有 remote、工作区脏着、有 pre-commit hook，都不再是问题。
+ *
+ *  ⚠️ **不带 `--author`、不改 user.name/email** —— 用哪个身份提交是用户仓库的事。
+ *  `--no-verify` 是有意的：我们提交的是单个文件的机械改动，不该被他的 lint hook 拦下来
+ *  （拦下来的后果是「工具落盘成功但版本没记上」，而用户什么都看不到）。 */
+export async function commitPaths(dir: string, paths: string[], message: string): Promise<string | null> {
+  if (OFF || !paths.length) return null;
+  try {
+    if (await inMiddleOfSomething(dir)) return null;
+    /* `--` 之后才是路径 —— 不加的话 `-` 开头或与分支同名的文件会被当成 ref */
+    await exec(["add", "--", ...paths], dir);
+    /* ⚠️ `git commit -- <paths>` 只提交这几个路径，**忽略其它已暂存的东西** ——
+       用户自己 `git add` 过的别的文件因此不会被我们带进这个提交。 */
+    await exec(["commit", "-m", message, "--no-verify", "--", ...paths], dir);
     return (await exec(["rev-parse", "--short", "HEAD"], dir)).trim();
   } catch { return null; }
 }
@@ -97,7 +135,7 @@ export function commitAfterWrite(dir: string, file: string, version: string | nu
   return serial(dir, async () => {
     if (!(await ensureRepo(dir))) return null;
     const head = [`写入 ${file}`, version ?? null].filter(Boolean).join(" ");
-    return commitAll(dir, summary ? `${head} · ${summary}` : head);
+    return commitPaths(dir, [file], summary ? `${head} · ${summary}` : head);
   });
 }
 
@@ -106,10 +144,13 @@ export function commitAfterWrite(dir: string, file: string, version: string | nu
  *  这是这个模块存在的理由。**顺序不能换** —— 先落盘再提交的话，
  *  别人那一版已经被我们覆盖了，git 里也就没有它。
  *  返回提交号 = 真的救下了一版（调用方可以据此提醒用户）。 */
-export function commitExternalChanges(dir: string): Promise<string | null> {
+export function commitExternalChanges(dir: string, file: string): Promise<string | null> {
   return serial(dir, async () => {
     if (!(await ensureRepo(dir))) return null;
-    if (!(await isDirty(dir))) return null;
-    return commitAll(dir, "别处改过的内容（工具在落盘前先记一版）");
+    /* ⚠️ **只看我们要覆盖的那一个文件**。语义也更清楚：
+       「我要覆盖 X，先把 X 现在的样子存一版」——
+       而不是「工作区脏了，把用户手上的活儿一起提交掉」。 */
+    if (!(await isDirty(dir, file))) return null;
+    return commitPaths(dir, [file], `${file} 在别处被改过（工具在落盘前先记一版）`);
   });
 }

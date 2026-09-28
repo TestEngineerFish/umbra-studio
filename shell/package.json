@@ -13,7 +13,7 @@
     "dist:dir": "electron-builder --mac --arm64 --dir",
     "packtest": "node packtest.mjs",
     "shelltest": "node shelltest.mjs",
-    "dist:signed": "electron-builder --mac --arm64 --x64 -c.mac.identity=\"$MAC_IDENTITY\"",
+    "dist:signed": "node dist-signed.mjs",
     "signcheck": "node signcheck.mjs"
   },
   "devDependencies": {

@@ -6846,3 +6846,114 @@ tsc 和几个 `.sh`），所以文档第六节那条「extraResources 里的可�
 `npm --prefix shell run dist` 照旧打出四份产物（配置没破坏打包）。
 `signcheck` 在当前产物上报「1 项具备 · 4 项还没做」—— 那是对的：ad-hoc 签名、未公证。
 ⚠️ 回归全在临时目录跑，**用户的两个真实项目一个提交都没多**（实测确认）。
+
+## 一一一、「项目已经有 git」怎么处理 · 签名打包入口 · Windows 验收步骤（2026-09-28）
+
+用户 2026-09-28 的三条回复，其中第一条点出了 M9-7 的一个真问题。
+
+### 111.1 ⚠️ 他问的那个问题：已有 git 且**他正在里面工作**
+
+我第一版用的是 `git add -A`。用户问「如果当前项目根目录已经有了 git 的话，该如何处理？」——
+顺着这个问题往下想，才看到 `add -A` 的真正代价：
+
+> 他可能正改着十个文件准备一起提交，而我们落盘一次就把那十个未完成的改动全提交了 ——
+> 提交消息还写着「写入 X.dc.html v3」，完全描述不了那十个文件。
+
+他的工作流被打乱，而且这种提交很难拆开。**这不是「兜底」，这是破坏。**
+
+修法是一行的事，但方向很重要：**只 add 点名的那一个文件**
+（`git add -- <file>` + `git commit -- <file>`，后者会忽略其它已暂存的东西）。
+这一改，前面担心的那些情况**一次全消掉**：已有历史、有 remote、工作区脏着、
+甚至有 pre-commit hook，都不再是问题。
+
+「落盘前救下别处改的那一版」也跟着收窄到**那一个文件**，语义反而更清楚了：
+「我要覆盖 X，先把 X 现在的样子存一版」——而不是「工作区脏了，把用户手上的活儿一起提交掉」。
+
+### 111.2 他没问但更危险的一种：**他正在 rebase**
+
+顺着同一条思路往下看，比「卷入改动」更糟的是：用户正在 merge / rebase / cherry-pick。
+那时候 `git commit` 会把提交落在一个临时状态上，轻则打乱他的 rebase，
+**重则让他丢掉正在整理的历史**。
+
+所以加了一道 `inMiddleOfSomething`：`.git/` 下有 `MERGE_HEAD` / `REBASE_HEAD` /
+`CHERRY_PICK_HEAD` / `BISECT_LOG` / `rebase-merge` / `rebase-apply` 任意一个就什么都不做。
+**问不出来（git 报错）也当「正在做什么」** —— 宁可不提交。
+
+> **兜底不该有破坏力。** 一个用来「万一丢了还能找回来」的机制，
+> 绝不能反过来成为「丢东西」的原因。
+
+### 111.3 判据：直接钉在这两条上
+
+`filetest` 从 7 条加到 10 条，新增三条正对着上面：
+
+- **不把用户正在改的别的文件卷进我们的提交** —— 造两个未跟踪文件，落盘一次，
+  断言提交里**只有**我们那一个文件
+- 他手上那两个文件**还是未跟踪状态**（我们没碰）
+- **正在 merge 时什么都不做**（伪造 `.git/MERGE_HEAD`，断言 HEAD 没动）
+
+反向验证把用户担心的场景原样复现了：退回 `add -A` →
+提交里出现 `他也在改的.txt`、`用户正在改的.md`、`笔记.md` 三个。
+
+⚠️ 这一组判据被 **git 的路径转义**绊倒过两条：非 ASCII 文件名会被输出成
+`"\347\254\224\350\256\260.md"`（八进制 + 引号），按「笔记.md」比较永远不成立。
+加 `-c core.quotepath=false`。**这是仪器的问题，不是产品的问题，而两者报出来的样子一样。**
+
+### 111.4 签名打包入口：把「静默跳过」挡住
+
+用户给了凭据，但变量名是 `APPLEID` / `APPLEIDPASS`（他其它项目在用的），
+而 electron-builder ≥24 内置公证认的是 `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD`。
+**差一个下划线就静默跳过公证** —— 而产物看着一样、能装能跑，直到用户下载后看到「已损坏」。
+
+所以新增 `shell/dist-signed.mjs`，它在打包前把前提查清：
+
+| 它做的事 | 为什么 |
+| --- | --- |
+| `APPLEID` → `APPLE_ID`、`APPLEIDPASS` → `APPLE_APP_SPECIFIC_PASSWORD` | 差一个字就静默跳过公证 |
+| `MAC_IDENTITY` 没设时，用 `APPLE_TEAM_ID` 去钥匙串里把证书名找出来 | identity 要的是「公司名 (TeamID)」，而人手里通常只有 TeamID |
+| **公证凭据不全就停下** | 不打一个「签了名但没公证」的包 —— 那种包下载后照样报「已损坏」 |
+| `SKIP_NOTARIZE=1` 才跳过公证，并明确说这种包只适合自己测 | 跳过要显式，不能是默认行为 |
+
+### 111.5 Windows 验收步骤写成了给人照做的一份
+
+`doc/21-Windows 真机验收步骤.md`：六个关、每关「要看什么输出」、出问题怎么取日志
+（`.\"Umbra Studio.exe" | Tee-Object -FilePath run.log`）、以及**这一轮不用验的四件**。
+
+两条写在最前面的注意事项，都是为了让缺陷暴露而不是被环境掩盖：
+
+- **不要解压到 `C:\Program Files`** —— 那里默认只读，会把「状态错写到程序目录」
+  这条缺陷挡住而看不见（mac 那轮就是这条，§63.1）
+- **不要装 Node / git / Chrome** —— 产品的承诺是「用户不是开发者也能用」，
+  装了就测不出「少了它会怎样」
+
+### 111.5 之二 ⚠️ entitlements 的两条语法坑（都是实测踩到的）
+
+第一次签名打包**整个失败**，报错是：
+
+```
+Failed to parse entitlements: AMFIUnserializeXML: syntax error near line 28
+```
+
+而它指向的文件是
+`…/node_modules/playwright-core/lib/vite/dashboard/assets/codicon-DCmgc-ay.ttf` ——
+**一个字体文件**。electron-builder 会遍历签 `.app` 里的每一个文件，
+所以 entitlements 一旦有语法错，第一个被签的文件就让整个打包失败；
+好处是失败得早，坏处是报错指向一个和问题毫无关系的 `.ttf`。
+
+两条坑：
+
+| 坑 | 症状 |
+| --- | --- |
+| `<dict>` 里放了 `<!-- -->` 注释 | codesign 的 AMFI 解析器不接受（一般 plist 解析器接受，所以很容易写出来） |
+| 注释里有反引号 | `plutil -lint` 直接报 `Unexpected character \` at line 6` |
+
+所以 plist 现在只留键值，**说明全部搬进 `shell/build/entitlements.md`**（含这两条坑和验法）。
+
+> **改完必须当场验，别靠一次五分钟的打包去发现语法错**：
+> `plutil -lint` + 拿 `/usr/bin/true` 当靶子真 `codesign` 一次。
+> 实测靶子签完是 `Authority=Developer ID Application: …` + `flags=0x10000(runtime)` —— 链路通了。
+
+### 111.6 读数
+
+`filetest` 全通（7 → 10 条）· `lifecycletest` 全通 · `selftest` 零 error ·
+`plugintest` 76/76 · `captest` 239/239 · `kindtest` 34/34 · `agenttest` 9/9。
+反向验证两次（`add -A` → 卷入两个文件；`UMBRASTUDIO_NO_GIT=1` → 第一条红）。

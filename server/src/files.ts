@@ -209,7 +209,7 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
   /* 落盘前先把别处改的那一版留住（M9-7）。**第二条写入口也要有** ——
      `.md` / 代码 / 文本这些文件比设计稿更常在别的编辑器里改，
      只给设计稿装这道保险等于装了一半。 */
-  const rescued = await commitExternalChanges(p.dir);
+  const rescued = await commitExternalChanges(p.dir, clean);
   const abs = join(p.dir, clean.split("/").join(sep));
   const exists = existsSync(abs);
   const steps: string[] = [];
