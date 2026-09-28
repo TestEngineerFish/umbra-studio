@@ -227,6 +227,73 @@ async function main() {
     failed++;
   }
 
+  /* ── 通道 B 起子进程时的环境变量（issue #27）──
+     两族变量必须清：`ANTHROPIC_*`（父进程的凭据会随请求发到用户自配的第三方端点，
+     而它不是那个端点的主人）· `CLAUDE_CODE_*`（子进程会带着**别人的会话身份**在跑）。
+     ⚠️ 原来只有「本机登录态」那一支清了，「自配端点」那一支写的是 `{ ...process.env, … }` ——
+     **只修一支这种漏法最难看出来**：测的人多半只走登录态那条路。
+     所以这条判定从 `build()` 里抽成纯函数导出，专门给这条判据钉。 */
+  console.log("⑤ 通道 B 的子进程环境变量（issue #27）...");
+  try {
+    const { cleanCliEnv, claudeEnvFor } = await import("./local_cli.js");
+    const fake = {
+      PATH: "/usr/bin", HOME: "/Users/x",
+      ANTHROPIC_API_KEY: "父进程的", ANTHROPIC_AUTH_TOKEN: "父进程的令牌", ANTHROPIC_MODEL: "别人的模型",
+      CLAUDE_CODE_SESSION_ID: "别人的会话", CLAUDE_CODE_MESSAGING_TOKEN: "别人的通道",
+    } as NodeJS.ProcessEnv;
+    const login = cleanCliEnv(fake);
+    const custom = claudeEnvFor(fake, "https://端点", "我的key");
+    const dirty = (e: Record<string, string>) => Object.keys(e).filter((k) => /^(ANTHROPIC_|CLAUDE_CODE_)/.test(k));
+    if (dirty(login).length === 0 && login.PATH === "/usr/bin") {
+      console.log("   ✓ 本机登录态那一支：两族变量清干净了，PATH 还留着"); passed++;
+    } else { console.log(`   ✗ 登录态那一支没清干净：${dirty(login).join(",")}`); failed++; }
+
+    const left = dirty(custom).filter((k) => k !== "ANTHROPIC_BASE_URL" && k !== "ANTHROPIC_API_KEY");
+    if (left.length === 0 && custom.ANTHROPIC_BASE_URL === "https://端点" && custom.ANTHROPIC_API_KEY === "我的key") {
+      console.log("   ✓ **自配端点那一支也清干净了**，只留自己配的 BASE_URL / API_KEY"); passed++;
+    } else { console.log(`   ✗ 自配端点那一支漏了：${left.join(",")}`); failed++; }
+
+    if (custom.ANTHROPIC_AUTH_TOKEN === undefined && custom.CLAUDE_CODE_SESSION_ID === undefined) {
+      console.log("   ✓ 父进程的 ANTHROPIC_AUTH_TOKEN 与 CLAUDE_CODE_SESSION_ID 都没传下去"); passed++;
+    } else { console.log("   ✗ 父进程的凭据或会话身份传下去了"); failed++; }
+  } catch (e) {
+    console.log(`   ✗ 环境变量判据异常: ${(e as Error).message}`); failed++;
+  }
+
+  /* ── 通道 B 的系统提示里不许漏上下文（issue #28）──
+     圈选的坐标和备注原来整段漏在通道 B 外面：前端发过来了、`runChatSend` 也算出来了，
+     但通道 B 只拼了 node / file / files / range 四样。症状是「在图上圈一块说
+     『这里换个颜色』，CLI 只收到那六个字」，**而且不报错** —— M8-10 这个功能在
+     五家 CLI 上整个不可用，还看不出来。
+
+     判据不真起 CLI（那要花钱、要装那五家），而是**读源码问一句**：
+     通道 A/C 拼进系统提示的那几样上下文，通道 B 那一段是不是也都拼了。
+     这条判据守的是「**加一种上下文时别只加一半**」。 */
+  console.log("⑥ 通道 B 的系统提示不漏上下文（issue #28）...");
+  try {
+    const { readFile: rf } = await import("node:fs/promises");
+    const src = await rf(new URL("../src/chat_run.ts", import.meta.url), "utf8");
+    const bSeg = src.slice(src.indexOf("const bSystemParts"), src.indexOf("const ccResult"));
+    /* ⚠️ **判据要看代码，不能看「源码里有没有这个词」** —— 我第一版写的是
+       `bSeg.includes("regionContext")`，而**我自己在那一段写的注释里就有这个词**：
+       把那行 push 注释掉，判据照样通过（反向验证当场抓到）。
+       改成匹配真正的拼装语句：`if (xxx) bSystemParts.push(…)` 或 `bSystemParts.push(…xxx…)`。
+       这是这一轮第二条假判据了（上一条是 `startsWith("被拦")`，`00` §101.8）——
+       **判据里出现的字符串，要是它检查的那个东西本身，而不是提到它的文字。** */
+    const noComments = bSeg.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const missing = (["nodeContext", "contextFile", "filesContext", "rangeContext", "regionContext"] as const)
+      .filter((k) => !new RegExp(`(if \\(${k}\\)|\\b${k}\\b[,)])`).test(noComments) || !noComments.includes(k));
+    if (missing.length === 0) {
+      console.log("   ✓ 五样上下文（节点 / 当前稿 / 选中文件 / 选中文字 / **圈选区域**）通道 B 都拼了"); passed++;
+    } else { console.log(`   ✗ 通道 B 漏了：${missing.join(",")}`); failed++; }
+    /* 「你看不到图」那一句也必须给到 —— 不给的话模型不会说「这个通道看不了图」，只会去猜 */
+    if (noComments.includes("imageNote(")) {
+      console.log("   ✓ 「你看不到图」那一句也给到了通道 B（本地 CLI 一律看不到图）"); passed++;
+    } else { console.log("   ✗ 通道 B 没有「你看不到图」那一句，模型会去猜图上画的是什么"); failed++; }
+  } catch (e) {
+    console.log(`   ✗ 系统提示判据异常: ${(e as Error).message}`); failed++;
+  }
+
   // ── 清理 ──
   await cleanup();
 

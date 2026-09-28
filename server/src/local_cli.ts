@@ -263,6 +263,20 @@ interface Built {
   tmp?: string;
 }
 
+/** 起本地 CLI 子进程前，要清掉的那两族变量。**导出是为了让回归钉得住** ——
+ *  这条判定原来埋在 `build()` 里，而 `build()` 要起子进程、写临时文件，没法单测，
+ *  于是「只修了一支」这种漏法没有任何东西守着（issue #27）。 */
+export const DIRTY_ENV = /^(ANTHROPIC_|CLAUDE_CODE_)/;
+export function cleanCliEnv(src: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(src).filter(([k]) => !DIRTY_ENV.test(k))) as Record<string, string>;
+}
+
+/** 按自配端点起 claude 时的环境变量。**从 `cleanCliEnv` 起，再加那两个** ——
+ *  不是 `{ ...process.env, … }`（issue #27 就是那么写的）。 */
+export function claudeEnvFor(src: NodeJS.ProcessEnv, baseUrl: string, apiKey: string): Record<string, string> {
+  return { ...cleanCliEnv(src), ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey };
+}
+
 async function build(o: CliRunOptions): Promise<Built> {
   const spec = specOf(o.cli);
   const localLogin = !o.baseUrl?.trim() || !o.apiKey?.trim();
@@ -276,8 +290,7 @@ async function build(o: CliRunOptions): Promise<Built> {
    *    是**父会话的身份与消息通道**。子进程继承了它们，就不再是干净的一轮，
    *    而是带着别人的会话身份在跑。
    */
-  const DIRTY = /^(ANTHROPIC_|CLAUDE_CODE_)/;
-  const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !DIRTY.test(k)));
+  const cleanEnv = cleanCliEnv(process.env);
 
   switch (o.cli) {
     case "claude": {
@@ -286,7 +299,13 @@ async function build(o: CliRunOptions): Promise<Built> {
       await writeFile(mcpFile, JSON.stringify({ mcpServers: { [MCP_NAME]: mcpEntry(o.mcpServerPath) } }));
       return {
         tmp, wroteFiles: [],
-        env: localLogin ? cleanEnv : { ...process.env, ANTHROPIC_BASE_URL: o.baseUrl, ANTHROPIC_API_KEY: o.apiKey },
+        /* ⚠️ **两支都从 `cleanEnv` 起**（issue #27）。原来自配端点这一支写的是
+           `{ ...process.env, … }` —— §67.1 修掉的问题在这一支上原样还在：
+           `CLAUDE_CODE_*` 八个变量继续传下去（子进程带着**别人的会话身份**在跑），
+           父进程里的 `ANTHROPIC_AUTH_TOKEN` 也会跟着走 ——
+           那等于把一个凭据送到用户自己配的第三方端点上，**它不是那个端点的主人**。
+           而「只修了一支」这种漏法最难看出来：登录态那条路是对的，测的人多半只走那条。 */
+        env: localLogin ? cleanEnv : claudeEnvFor(process.env, o.baseUrl!, o.apiKey!),
         args: [
           "--print",
           // stream-json 才有 tool_use 事件；json 只吐一个最终对象（`00` §64.3 第 3 条）

@@ -6575,3 +6575,62 @@ React 的 `onWheel` 挂的是 **passive listener**，在里面 `preventDefault()
 `plugintest` 60/60 · `captest` 235/235 · `kindtest` 34/34 · `rendertest` 15/15。
 两条都做了反向验证：换回 `startsWith` → 同前缀那条报红；键退回按名字 →
 「同名项目串号了：两个项目拿到同一个服务」当场抓到。
+
+## 一〇七、#27 子进程的环境变量 · #28 通道 B 漏了圈选上下文（2026-09-28）
+
+两条通道 B 的 p1，共同点是**「只做了一半」而另一半没有任何东西守着**。
+
+### 107.1 #27：只修了一支
+
+§67.1 那次修的是「起子进程前清掉 `ANTHROPIC_*` 和 `CLAUDE_CODE_*`」，
+理由是 Umbra 被 Claude Code 起着时，父进程里有 `CLAUDE_CODE_SESSION_ID` /
+`MESSAGING_SOCKET` / `MESSAGING_TOKEN` —— 子进程继承了就**带着别人的会话身份在跑**。
+
+但那次的修法只落到了「本机登录态」那一支：
+
+```ts
+env: localLogin ? cleanEnv : { ...process.env, ANTHROPIC_BASE_URL: …, ANTHROPIC_API_KEY: … }
+//                            ↑ 自配端点这一支原样展开了 process.env
+```
+
+于是 `channelB.baseUrl` 和 `apiKey` 都填了（走自配 Anthropic 兼容端点）时：
+`CLAUDE_CODE_*` 八个变量继续传下去，父进程的 `ANTHROPIC_AUTH_TOKEN` 也跟着走 ——
+**那等于把一个凭据送到用户自己配的第三方端点上，而它不是那个端点的主人。**
+
+> **「只修了一支」这种漏法最难看出来**：登录态那条路是对的，而测的人多半只走那条。
+
+修法顺带把判定从 `build()` 里抽成导出的纯函数（`cleanCliEnv` / `claudeEnvFor`）——
+`build()` 要起子进程、写临时文件，没法单测，所以那条判定原来**没有任何东西守着**。
+
+### 107.2 #28：算出来了，但那一段没拼
+
+`runChatSend` 早就算出了 `regionContext`（图上圈的坐标 + 备注），
+通道 A / C 把它拼进系统提示，而通道 B 那一段只拼了 node / file / files / range 四样。
+
+症状：用户在图上圈一块说「这里换个颜色」，CLI 只收到那六个字 ——
+坐标、备注、圈的是哪张图全没有。**而且不报错**：M8-10 这个功能在
+claude / cursor-agent / codex / gemini / opencode 五家上整个不可用，还看不出来。
+
+那句「你看不到图」也一起补上 —— 不给的话模型不会说「这个通道看不了图」，只会去猜。
+本地 CLI 这一类**一律看不到图**（我们只传文字给它），所以写死 `imageNote(false)`。
+
+### 107.3 ⚠️ 这一轮的第二条假判据
+
+#28 的判据第一版写成 `bSeg.includes("regionContext")` —— 反向验证时把那行 push
+注释掉，**判据照样通过**。原因很朴素：**我自己在那一段写的注释里就有这个词**。
+
+改成剥掉注释、再匹配真正的拼装语句（`if (xxx) bSystemParts.push(…)`）。
+
+> **判据里出现的字符串，要是它检查的那个东西本身，而不是提到它的文字。**
+> 这是这一轮第二条假判据（上一条是 `startsWith("被拦")`，§101.8）——
+> 两条都是**反向验证抓出来的**，不做反向验证就会当成通过。
+
+### 107.4 读数
+
+`agenttest` **4 → 9 项**（+5：env 三条 + 系统提示两条）· `lifecycletest` 全通 ·
+`filetest` 全通 · `selftest` 零 error · `plugintest` 60/60 · `captest` 235/235 ·
+`kindtest` 34/34 · `rendertest` 15/15。
+
+反向验证两次都精准命中：`claudeEnvFor` 退回 `{ ...src, … }` →
+判据列出漏掉的四个变量（`ANTHROPIC_AUTH_TOKEN,ANTHROPIC_MODEL,CLAUDE_CODE_SESSION_ID,CLAUDE_CODE_MESSAGING_TOKEN`）；
+删掉那行 push → 「通道 B 漏了：regionContext」。

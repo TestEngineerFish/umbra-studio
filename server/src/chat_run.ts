@@ -627,6 +627,17 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
   }
   if (filesContext) bSystemParts.push("", "### 用户选中的文件", filesContext);
   if (rangeContext) bSystemParts.push("", "### 用户选中的一段文字", rangeContext, "", "只改这一段，其余不动。");
+  /* ⚠️ **圈选的坐标和备注原来整段漏在通道 B 外面**（issue #28）：
+     前端把 `selectedRegion` 发过来了、`runChatSend` 也算出了 `regionContext`，
+     但通道 B 的系统提示只拼了 node / file / files / range 四样。
+     症状是「在图上圈一块说『这里换个颜色』，CLI 只收到那六个字」——
+     坐标、备注、圈的是哪张图全没有，而且**不报错**：M8-10 这个功能在
+     claude / cursor-agent / codex / gemini / opencode 五家上整个不可用，还看不出来。
+
+     ⚠️ 那句「你看不到图」也必须给到 —— 不给的话模型不会说「这个通道看不了图」，
+     只会去猜图上画的是什么。本地 CLI 这一类**一律看不到图**（我们只传文字给它），
+     所以这里写死 `imageNote(false)`，不像 A/C 那样按通道能力填。 */
+  if (regionContext) bSystemParts.push("", "### 用户在图上圈的区域", regionContext, "", imageNote(false));
 
   const ccResult = await runLocalCli({
     cli: bCli,
