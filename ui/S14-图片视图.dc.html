@@ -3,12 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- umbradesign:resources -->
-<script>window.__resources = {
-    "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "./react.production.min.js",
-    "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "./react-dom.production.min.js"
-  };</script>
-<!-- /umbradesign:resources -->
 <script src="./support.js"></script>
 </head>
 <body>
@@ -45,7 +39,6 @@
   <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--tool-panel); border-bottom: 1px solid var(--tool-border); position: relative; z-index: 3;">
     <span style="color: var(--tool-text-2); display: grid;"><dc-import name="IconGlyph" d="M2.5 3h11v10h-11zM2.5 11l3.2-3.2 2.8 2.8 1.8-1.8 3.2 3.2M10.6 5.8h.1" size="14" hint-size="14px,14px"></dc-import></span>
     <span style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;" title="{{ path }}">{{ fileName }}</span>
-    <span style="font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap; font-variant-numeric: tabular-nums;">{{ metaLabel }}</span>
     <sc-if value="{{ isVector }}" hint-placeholder-val="{{ false }}">
       <span title="矢量图按 viewBox 渲染，放大不会糊" style="display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-ok-border); background: var(--tool-ok-soft); color: var(--tool-ok); font-size: 11px; font-weight: 560; white-space: nowrap;">矢量 · 可无损缩放</span>
     </sc-if>
@@ -208,7 +201,6 @@ class Component extends DCLogic {
           pick: () => this.setState({ demo: m.n, zoom: null, region: undefined, tool: null, drag: null, sent: null, note: null }) };
       }),
       path: d.path, fileName: base,
-      metaLabel: d.format.toUpperCase() + " · " + d.width + "×" + d.height + " · " + size(d.size),
       isVector: d.format === "svg",
       zoomLabel: zoom === "fit" ? "适配" : Math.round(zoom * 100) + "%",
       zoomFit: () => this.setState({ zoom: "fit" }),
