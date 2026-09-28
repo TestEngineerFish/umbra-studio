@@ -101,7 +101,36 @@ claude mcp add umbrastudio -- node <仓库绝对路径>/server/dist/index.js
 
 每做完一条更新 `doc/12` 的状态与进度表，读数写进 `doc/00`。设计侧**第十轮已收稿并入**（S17 插件市场四屏 + 图标 56→61，`00` §九十八）；回执待发。
 
-**加一种文件格式怎么做**（M8-14 的注册表，`00` §七十一）：① `server/src/shared/kinds.ts` 加一条 `KindDef`（前后端同时生效）② `app/src/kinds/<它>.tsx` 写 `View` / `Toolbar` / `Panels` / `menu` / `Status` ③ `app/src/kinds/index.ts` 数组里加一行。**`Workbench.tsx` 不要动** —— 要是不得不动它，说明抽象没抽对。
+**加一种文件格式怎么做** —— ⚠️ **2026-09-28 用户拍板：新格式一律做成插件**（`00` §一一七）。
+他的理由是关键：「**后面发布支持新格式的编辑插件时，不希望用户频繁更新 PC 端**」。
+
+落点有**三种**，别搞混（`install.ts` 里明写着内置插件不能用装包覆盖）：
+
+| 落点 | 在哪 | 改它要不要重发 PC 端 |
+| --- | --- | --- |
+| ① 格式模块 `app/src/kinds/` | 编译进 app bundle | **要** |
+| ② **内置插件** `plugins/` | `TOOL_ROOT`（`.app` 里） | **要** |
+| ③ 外部插件 `.umbrastudio/plugins/` | `STATE_ROOT`（userData） | **不要** |
+
+**`.md` 是 ②** —— M11-9b「搬成插件」解决的是代码结构，**不是独立更新**。
+好消息：②③ **是同一套代码**（`for (const root of [BUNDLED_DIR, PLUGINS_DIR])`，
+差一个 `builtin` 标志）—— **插件写一次，放在哪决定它怎么更新**。
+
+**大依赖放 `shared/`，不打进插件包**：插件的 CSP 是 `script-src 'self'`，
+而 `'self'` 匹配 **scheme+host+port 不是路径**，所以插件 `import("/__shared/…")` 拿得到
+（实测过，`uitest` 两条判据钉着）。CodeMirror 6 已在那里（916 KB 一份，
+`npm --prefix app run build:shared` 重打）。
+不这么做的话，`markdown-it` 在 md 插件里占 138 KB 那件事会按插件数重演。
+⚠️ `/__shared/` **对每个插件都可见**，只放公共依赖，**不放令牌、用户数据、项目路径**。
+⚠️ 新增 `shared/` 下的东西要**同时改 `shell/package.json` 的 `extraResources`** ——
+漏了的话开发模式一切正常、**打包版里插件 import 404**（§63.1 那一族，已经漏过一次）。
+
+旧路（① 格式模块，仍适用于**工作台自己的**格式如 `.dc.html`）：
+① `server/src/shared/kinds.ts` 加一条 `KindDef`（前后端同时生效）
+② `app/src/kinds/<它>.tsx` 写 `View` / `Toolbar` / `Panels` / `menu` / `meta`
+③ `app/src/kinds/index.ts` 数组里加一行。
+**`Workbench.tsx` 不要动** —— 要是不得不动它，说明抽象没抽对。
+（`Status` 这个字段 2026-09-28 删了，读数只有 `meta` 一个出口，见 `00` §一一四。）
 分界线用设计侧第七轮那条判据：**点了它，变的是什么** —— 变项目 / 布局 / 导航 / 会话的归工作台，变这份文件的归格式模块。
 
 **纪律**：前端只有 `app/` 一份（旧 vanilla 前端已于 M7-8 删除）。
@@ -216,6 +245,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `app/` | 新前端（Vite + React + TS + Tailwind）；`src/host/` 是唯一碰壳的目录；**`src/kinds/` 一个文件格式一个模块**（M8-14） | ✅（`dist/`、`node_modules/` 除外） |
 | `shell/` | Electron 桌面壳：主进程起核心、preload 挂 `window.umbraHost`、`shelltest.mjs` | ✅（`node_modules/`、`out/` 除外） |
 | `runtime/` | `support.js` + 两个 React UMD，**刻意 vendor** | ✅ |
+| `shared/` | **宿主共享库**（M10-2）：插件经 `/__shared/…` import 的大依赖。现在有 CodeMirror 6（916 KB，`app/shared-src/` 是它的打包入口）。**产物进仓库**——前提是断网可用 | ✅ |
 | `ui/` | 工具自己的界面稿（S1–S10、IconGlyph）；`ui/_incoming/` 是收设计侧稿的暂存处，不进仓库 | ✅ |
 | `outgoing/` | 给设计侧的发件包 | ❌ |
 | `plugins/` | **内置插件**（跟主程序一起发、免费、卸不掉）。目前一个：`com.umbra.markdown` | ✅ |
@@ -227,6 +257,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | --- | --- |
 | `npm --prefix server run build` | 编译核心 |
 | `npm --prefix app run build` | 编译新前端到 `app/dist`（`/__app/` 托管它） |
+| `npm --prefix app run build:shared` | 把 CodeMirror 打成一份 ESM 到 `shared/codemirror.js`（`/__shared/` 托管，给插件 import）。**产物进仓库**，改了 `app/shared-src/` 才要跑 |
 | `npm --prefix server run selftest` | 静态回归（三层判据） |
 | `npm --prefix server run lifecycletest` | 生命周期回归（建/改/删/恢复全流程） |
 | `npm --prefix server run filetest` | 泛型文件层回归（第二条写入口：写前校验 / 快照 / 回退 / 引用改写） |
