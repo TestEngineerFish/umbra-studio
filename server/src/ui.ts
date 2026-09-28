@@ -63,7 +63,11 @@ const built = await buildIndex(p, serve.url);
 // 前台用法里它就是唯一的存活理由，必须 ref 回来，否则打印完地址就退了。
 serveHold(p.dir);   // issue #20
 
-const entry = serve.url + "__app/";   // 应用前端本体（doc/00 §四十六）；build_index 的入口页仍在 index.dc.html
+/* ⚠️ 地址里带上令牌（`11` Q42 的 (c)，用户 2026-09-28 定）。
+   `/__app/` 不再无条件把令牌注进页面 —— 不带这个参数打开会看到「要从 Umbra Studio
+   或带令牌的链接打开」。下面本来就会自动开浏览器，所以用户无感；
+   代价只是「手敲 127.0.0.1:端口/__app/」不再直接可用，那正是这条要堵的口子。 */
+const entry = `${serve.url}__app/?token=${encodeURIComponent(serve.token)}`;
 console.log("");
 console.log(`  ${b("Umbra Studio")}  ${p.title}`);
 console.log(`  项目    ${p.dir}`);

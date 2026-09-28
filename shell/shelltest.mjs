@@ -16,16 +16,26 @@ console.log("windows:", await app.evaluate(({ BrowserWindow }) => BrowserWindow.
 console.log("cdp env in main:", await app.evaluate(() => process.env.UMBRASTUDIO_CDP ?? null));
 // 菜单「打开目录」→ 事件 → 前端 open_project
 await app.evaluate(({ BrowserWindow }, dir) => { const w = BrowserWindow.getAllWindows().find(w => w.isVisible()); w.webContents.send("host:event", { type: "open-dir", dir }); }, S + "/umbra_copy");
-await win.waitForFunction(() => /58 份稿/.test(document.body.innerText) && !/核心断开/.test(document.body.innerText), null, { timeout: 20000 }); await win.waitForTimeout(1500);
+/* ⚠️ 判据**不要写死稿数**（2026-09-28 实测栽过：写着 `58 份稿`，而测试副本是 38 份，
+   于是这条永远超时、整个 shelltest 到不了后面）。它同时犯了两个错：
+   拿界面文案当判据（uitest 已经栽过一次，第七轮把那颗钮改名就卡住了），
+   还把**夹具的内容数量**写进判据 —— 换一份测试项目就红。
+   `role="treeitem"` 是形制变了也还在的东西，和 uitest 用的是同一条。 */
+await win.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').length > 0 && !/核心断开/.test(document.body.innerText), null, { timeout: 20000 }); await win.waitForTimeout(1500);
 console.log("workbench:", await win.evaluate(() => document.querySelector("header")?.innerText.replace(/\s+/g, " ")));
 // 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
-const r = await win.evaluate(async () => {
+/* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
+   原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——
+   **同一个脚本里两种传法混着**。照文档只替换那个占位符的话，第 18 行拿到的是
+   `undefined/umbra_copy`，工作台永远开不出来，而超时报在第 24 行那条判据上，
+   看着像「产品打不开目录」。**夹具的问题和产品的问题报出来的样子一样**（§111.3 同一族）。 */
+const r = await win.evaluate(async (dir) => {
   // 从 React 状态拿不到句柄，直接用 hub 的 open_project 再拿一次 url/token（幂等）
-  const hub = window.__UD_APP; const o = await (await fetch(`${hub.url}__ud/open_project?token=${hub.token}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dir: "<scratchpad>/umbra_copy" }) })).json();
+  const hub = window.__UD_APP; const o = await (await fetch(`${hub.url}__ud/open_project?token=${hub.token}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dir }) })).json();
   const c = await (await fetch(`${o.data.url}__ud/check?token=${o.data.token}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: "PC 吐司.dc.html" }) })).json();
   for (let i = 0; i < 60; i++) { await new Promise(r => setTimeout(r, 500)); const s = await (await fetch(`${o.data.url}__ud/check_status?job=${c.data.jobId}&token=${o.data.token}`)).json(); if (s.data && s.data.running === false) return { ok: s.data.ok, res: s.data.result && s.data.result.result }; }
   return { timeout: true };
-});
+}, S + "/umbra_copy");
 console.log("check via CDP:", JSON.stringify(r).slice(0, 200));
 console.log("chrome processes launched by core? (ps count of headless chrome):", await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[h]eadless.*--disable-background-networking'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); }));
 // 单实例：第二个实例应立刻退出

@@ -22,7 +22,13 @@ export default function App() {
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
   useEffect(() => { applyTheme(layout.theme); const mq = window.matchMedia("(prefers-color-scheme: dark)"); const on = () => applyTheme(layout.theme); mq.addEventListener("change", on); return () => mq.removeEventListener("change", on); }, [layout.theme]);
-  useEffect(() => { history.replaceState(null, "", page === "home" ? "/__app/home" : "/__app/"); }, [page]);
+  /* ⚠️ **整地址时要把 query 原样留着**（`11` Q42，2026-09-28 实测抓到）。
+     浏览器入口的令牌就在 `?token=` 里（方案 (c)）。原来这里写死成 `/__app/`，
+     等于**每次切页就把令牌从地址里抹掉** —— 当场看不出问题（boot 已经读进内存了），
+     但**一刷新就废**：地址里没令牌了，页面直接变成「拿不到访问令牌」。
+     uitest 那条「刷新后引擎还是它」就卡在这里，连 treeitem 都等不出来。
+     桌面壳里地址本来就不带令牌（走 preload），所以这句对它是空操作。 */
+  useEffect(() => { history.replaceState(null, "", (page === "home" ? "/__app/home" : "/__app/") + location.search); }, [page]);
   /* 插件接线（M11-5）。**装不上的要说出来** —— 静静不显示的话，
      用户只会看到「我装的插件不见了」，而他刚付过钱。
      `loadPlugins` 可以重复调（装完 / 卸完再调一次），内部按 id 去重。 */
@@ -68,7 +74,41 @@ export default function App() {
     if (e.type === "go-home") setPage("home");
     if (e.type === "dirty-restart") toast("上次没有正常退出", "如果当时有没落盘的改动，请在稿的版本历史里核对一下", "error");
   }), [host, hub, open]);
-  if (!b || !hub || !host) return <div className="h-full flex items-center justify-center text-muted text-sm">这一页要由核心托管打开（npm --prefix server run ui -- &lt;项目&gt;），没有拿到启动数据。</div>;
+  /* ⚠️ 拿不到启动数据，现在**最常见的原因变了**（`11` Q42，2026-09-28）：
+     不是「核心没起来」，而是**拿不到令牌** —— `/__app/` 不再无条件把令牌注进页面。
+     而**浏览器和桌面壳的令牌走的是两条完全不同的路**（query vs preload），
+     所以出路也是两条不同的，必须分开说。
+     ⚠️ 第一版没分：桌面壳里也在说「用终端打印的那个带 token 的地址打开」——
+     反向验证时当场看到这一屏，才发现它在跟桌面用户讲一件他做不到的事。
+     `window.umbraHost` 是 preload 挂的另一样东西，它在而 `__UD_APP` 不在，
+     说明**确实是壳，只是注入那一步坏了** —— 这时候该让他重启，不是让他去找终端。
+     只说「没有拿到启动数据」会让人去查核心起没起，而那多半不是原因。 */
+  if (!b || !hub || !host) {
+    const inShell = typeof (window as unknown as { umbraHost?: unknown }).umbraHost === "object";
+    return (
+      <div className="h-full flex items-center justify-center p-8">
+        <div className="max-w-[420px] text-center text-sm leading-relaxed">
+          <div className="font-semibold text-text">这个页面还拿不到访问令牌</div>
+          {inShell ? (
+            <p className="mt-2 text-muted text-xs">
+              桌面版的令牌是<b className="text-text2">启动时直接交给页面的</b>，不经地址 —— 拿不到说明这一步出了岔。
+              <br />先<b className="text-text2">完全退出再打开一次</b>；还是这样的话，把启动日志发过来
+              （<code className="font-mono">UMBRASTUDIO_CHANNEL_B_LOG</code> 那类环境变量不用管，看终端里的报错就行）。
+            </p>
+          ) : (
+            <p className="mt-2 text-muted text-xs">
+              浏览器里要用 <b className="text-text2">终端打印的那个带 token 的地址</b> 打开
+              （<code className="font-mono">npm --prefix server run ui -- &lt;项目&gt;</code> 会自动开，也可以从终端复制）。
+              <br />用桌面版则不需要地址，它直接拿令牌。
+            </p>
+          )}
+          <p className="mt-2 text-muted text-[11px]">
+            为什么要这样：本机任何程序都能访问 127.0.0.1，令牌写在页面里就等于谁都能拿走。
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <>
       {page === "home" || !project

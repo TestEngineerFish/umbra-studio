@@ -1171,6 +1171,31 @@ console.log("\n插件 UI 的边界（M11-4）");
   }
 }
 
+/* 令牌不写进页面（`11` Q42 / issue #30，2026-09-28）。
+   原来 `/__app/` 不要任何凭据就把真令牌注进返回的 HTML，
+   于是**本机任何能发 HTTP 请求的进程扫到端口就能拿走它** —— 而拿到它就等于拿到全部 API。
+   现在只在 `?token=` 对得上时才注入（常数时间比较）。
+   ⚠️ 拿不到令牌时**照常回页面**（不是 403）—— 403 会让 SPA 的子路由一起打不开。
+
+   ⚠️ 第四条是最容易回归的一条：`history.replaceState` 整地址时**必须把 query 带上**。
+   写死成 `/__app/` 的话当场看不出问题（boot 已经在内存里了），**但一刷新就废**。
+   这条实测栽过，症状是 uitest 卡在「刷新后引擎还是它」那里连 treeitem 都等不出来。 */
+console.log("\n令牌不写进页面（Q42 / issue #30）");
+{
+  const bare = URL_.split("?")[0];
+  const good = new URL(URL_).searchParams.get("token") ?? "";
+  const has = async (u) => /__UD_APP/.test(await fetch(u).then((r) => r.text()).catch(() => ""));
+  ok(!(await has(bare)), "**不带令牌取 `/__app/` 拿不到 `__UD_APP`**（这才是 #30 的洞）");
+  ok(!(await has(`${bare}?token=${"0".repeat(good.length)}`)), "等长但不对的令牌也拿不到（不是只比长度）");
+  ok(await has(URL_), "带对的令牌才注入");
+  /* 刷新一次，然后看地址里令牌还在不在 —— 在，才说明刷新后还拿得到 */
+  await pg.reload({ waitUntil: "domcontentloaded" });
+  await pg.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').length > 0, null, { timeout: 30000 }).catch(() => {});
+  const nowUrl = pg.url();
+  ok(new URL(nowUrl).searchParams.get("token") === good, "**刷新之后地址里的令牌还在**（replaceState 没把 query 抹掉）", nowUrl.replace(good, "…"));
+  ok(await pg.evaluate(() => document.querySelectorAll('[role="treeitem"]').length > 0), "刷新之后界面还起得来（不是「拿不到访问令牌」那一屏）");
+}
+
 console.log(`\n${fail ? "✗" : "✓"} 界面回归 ${pass}/${pass + fail}\n`);
 await b.close();
 process.exit(fail ? 1 : 0);

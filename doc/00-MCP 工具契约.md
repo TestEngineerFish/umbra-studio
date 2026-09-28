@@ -6957,3 +6957,88 @@ Failed to parse entitlements: AMFIUnserializeXML: syntax error near line 28
 `filetest` 全通（7 → 10 条）· `lifecycletest` 全通 · `selftest` 零 error ·
 `plugintest` 76/76 · `captest` 239/239 · `kindtest` 34/34 · `agenttest` 9/9。
 反向验证两次（`add -A` → 卷入两个文件；`UMBRASTUDIO_NO_GIT=1` → 第一条红）。
+
+---
+
+## 一一二、Q42 令牌下发：两条完全不同的路 · 一台一直在撒谎的仪器（2026-09-28）
+
+用户 2026-09-28 定了方案 **(a)+(c)**（`11` Q42）：桌面壳走 preload，浏览器走地址里的 `?token=`。
+这一节记实现，以及顺带挖出来的**三条判据缺陷** —— 其中一条让 `signcheck` 对任何包都报「未签名」。
+
+### 112.1 洞长什么样（issue #30）
+
+原来 `/__app/` **不要任何凭据**就把真令牌注进返回的 HTML：
+
+```html
+<script>window.__UD_APP={"url":"http://127.0.0.1:54380/","token":"7f5a…"};</script>
+```
+
+于是**本机任何能发一次 HTTP 请求的进程**，扫到端口就能把令牌取走 ——
+而拿到令牌就等于拿到全部 API（读写用户任意目录）。
+「只监听 127.0.0.1」防的是别的机器，**防不了这台机器上的别的程序**。
+
+### 112.2 两条路，同一个形状
+
+| 入口 | 令牌从哪来 | 地址里有令牌吗 |
+| --- | --- | --- |
+| 浏览器（`npm run ui`） | `?token=` 对得上才注入（`timingSafeEqual` 常数时间比较） | **有** —— 这就是方案 (c) |
+| 桌面壳 | 主进程 `webPreferences.additionalArguments` → preload `exposeInMainWorld` | **没有**（实测 `urlHasToken: false`） |
+
+两边都落到 `window.__UD_APP`，**字段一模一样**。同形是刻意的：
+前端只认一个形状，两边长得不一样会变成「壳里能用、浏览器里不能用」这种最难查的差异。
+
+三条实现上的讲究：
+
+- **拿不到令牌照常回页面，不是 403** —— 403 会让 SPA 的子路由（`/__app/home`）一起打不开
+- preload 里用 `exposeInMainWorld`，**不能 `window.__UD_APP = …`** ——
+  `contextIsolation: true` 下 preload 在隔离世界里，直接赋值页面看不见
+- 壳的地址里不带令牌：带了它会进历史记录，也会被 `webContents.getURL()` 之类读到
+
+### 112.3 ⚠️ 三条判据缺陷，都是「仪器在撒谎」
+
+**① `signcheck` 对任何包都报「未签名」。** `run()` 成功路径只取 `execFileSync` 的返回值 ——
+那**只有 stdout**。而 `codesign -dv` 把 `Authority=` / `flags=` / `Timestamp=`
+**全部打到 stderr**。改成 `spawnSync` 合并两个流之后，同一个包的读数从
+「1 项具备」跳到「**4 项具备 · 2 项还没做**」。
+
+> 它一直没被发现，是因为**之前的包碰巧真没签**，读数看上去是对的。
+> 这就是纪律④那一族：「量到零」的两种可能里，这次是**仪器是零**。
+
+**② `replaceState` 把令牌从地址里抹掉了。** `history.replaceState(null, "", "/__app/")`
+写死了路径，**当场看不出问题**（boot 已经在内存里），但**一刷新就废**。
+症状是 uitest 卡在「刷新后引擎还是它」那条上，连 `treeitem` 都等不出来。
+修法是 `+ location.search`。
+
+**③ `shelltest` 里路径有两种传法，混着用。** 第 7 行 `process.env.S`，
+体检那段却是字面量 `"<scratchpad>/umbra_copy"`。照文档「替换那个占位符」只改到一半，
+第 18 行拿到 `undefined/umbra_copy`。同一个脚本里另有一条判据写死了
+`/58 份稿/` —— 换一份测试项目就红。
+
+> **夹具的问题和产品的问题报出来的样子一样**（§111.3 同一族）。
+> 这次两条都伪装成「产品打不开目录」。判据改成 `role="treeitem"` 有节点，
+> 和 uitest 用同一条；路径只从 `S` 来，**不再要求手改源码**
+> （手改源码还多一层风险：改动会被提交进仓库）。
+
+### 112.4 顺带修：桌面壳的兜底文案在讲浏览器的事
+
+反向验证时（拆掉 preload 注入）当场看到那一屏在跟桌面用户说
+「用终端打印的那个带 token 的地址打开」—— 一件他做不到的事。
+
+按 `window.umbraHost` 在不在分两套说：它在而 `__UD_APP` 不在，
+说明**确实是壳，只是注入那一步坏了**，这时候该让他重启，不是让他去找终端。
+
+### 112.5 读数（含四次反向验证）
+
+`uitest` **188/188**（新增 5 条「令牌不写进页面」）· `shelltest` 全流程通
+（launch→home 1151ms · 工作台开出 · 体检 `alive:true` / 24 节点 / 经 CDP ·
+**headless chrome 进程 0**（用的是壳自带 Chromium）· 单实例 · 脏重启提示 ·
+`--mcp` 93 件工具）· `signcheck` **4 项具备 · 2 项还没做**（剩的是公证，这轮 `SKIP_NOTARIZE=1`）。
+
+反向验证四次，都报红了才算：
+
+| 拆掉什么 | 判据的反应 |
+| --- | --- |
+| 服务端 `okToken` 改成 `true` | 「不带令牌拿不到 `__UD_APP`」「等长错令牌也拿不到」两条红 |
+| `replaceState` 去掉 `location.search` | 整个 uitest 卡在刷新那条上超时崩 |
+| 壳的 `additionalArguments` 注入 | `hasBoot: false` + 兜底屏出现 |
+| `signcheck` 退回只读 stdout | 一个真签了名的包被报成「未签名」 |

@@ -97,15 +97,38 @@ function wireIpc() {
   ipcMain.handle("host:setTitle", (_e, t) => { if (mainWin) mainWin.setTitle(t || "Umbra Studio"); });
 }
 
+/** 交给 preload 的启动数据。和 `serve.ts` 注进 `window.__UD_APP` 的那一份同形 ——
+ *  **同形很重要**：前端只认一个形状，两边长得不一样的话会变成「壳里能用、浏览器里不能用」
+ *  这种最难查的差异。 */
+function bootData() {
+  return {
+    url: hub.url, token: hub.token,
+    name: null, title: null, dir: null,
+    ws: `ws://127.0.0.1:${hub.port}/__ud/ws`,
+    hub: true,
+  };
+}
+
 async function createMainWindow() {
   mainWin = new BrowserWindow({
     width: 1440, height: 900, minWidth: 900, minHeight: 600, title: "Umbra Studio", show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#13151a" : "#f6f7f9",
-    webPreferences: { preload: join(HERE, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: {
+      preload: join(HERE, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: false,
+      /* ⚠️ **令牌经 preload 进去，不经 HTTP**（`11` Q42 的 (a)，用户 2026-09-28 定）。
+         `/__app/` 以前不要任何凭据就把真令牌写进返回的 HTML，于是本机任何能发
+         HTTP 请求的进程扫到端口就能拿走它（issue #30，实测确证）。
+         桌面版走这条：boot 作为启动参数交给 preload，**令牌从不出现在任何响应里**。
+         `additionalArguments` 的值会出现在渲染进程的 `process.argv` 里 ——
+         那是**这个窗口自己的进程**，不是全局可见的东西。 */
+      additionalArguments: [`--ud-boot=${Buffer.from(JSON.stringify(bootData()), "utf8").toString("base64")}`],
+    },
   });
   mainWin.once("ready-to-show", () => mainWin.show());
   mainWin.webContents.on("did-finish-load", () => { while (pending.length) mainWin.webContents.send("host:event", pending.shift()); void buildMenu(); });
   mainWin.webContents.setWindowOpenHandler(({ url }) => { void shell.openExternal(url); return { action: "deny" }; });
+  /* 地址里**不带 token** —— 壳靠 preload 拿（上面 `additionalArguments`）。
+     带在地址里的话它会进历史记录、也会被 `webContents.getURL()` 之类读到。 */
   await mainWin.loadURL(hub.url + "__app/home");
   mainWin.on("closed", () => { mainWin = null; });
 }

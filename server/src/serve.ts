@@ -7,6 +7,7 @@
  */
 import { createReadStream, existsSync, statSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { extname, normalize, resolve, relative, sep } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { emit, subscribe } from "./events.js";
@@ -119,14 +120,38 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
     let raw: string;
     try { raw = decodeURIComponent((req.url ?? "/").split("?")[0] as string); }
     catch { raw = "/"; }
-    /* /__app/ —— 应用前端本体由本服务托管：和稿同源，令牌注入（doc/00 §四十六）。 */
+    /* /__app/ —— 应用前端本体由本服务托管：和稿同源。
+     *
+     * ⚠️ **令牌不再无条件注入**（issue #30 / `11` Q42，用户 2026-09-28 定 (a)+(c)）。
+     * 原来这里不要任何凭据就把真令牌写进返回的 HTML —— 于是**本机任何能发 HTTP 请求的
+     * 进程**扫到端口就能拿走它，拿着它可以调 `/__ud/*` 的全部能力，
+     * `plugin/host.ts` 那九件白名单和插件清单里的权限声明**被整体绕过**（实测确证）。
+     *
+     * 现在分两条路拿令牌，**都不经过这个响应**：
+     * - 桌面壳（用户真正用的）：主进程把 boot 经 `preload` 挂进 `window.__UD_APP`，
+     *   令牌从不出现在任何 HTTP 响应里；
+     * - 浏览器模式（开发调试）：地址里带 `?token=`，对上了才注入。
+     *   `npm run ui` 本来就自动打开浏览器，所以用户无感 —— 代价只是
+     *   「手敲 127.0.0.1:端口/__app/」不再能直接用。
+     *
+     * 拿不到令牌时**照常回页面**（不是 403）：前端会显示「这个页面要从 Umbra Studio
+     * 或带令牌的链接打开」。403 会让 SPA 的子路由（/__app/home）也打不开，
+     * 而且一个白屏说不清原因。 */
     const c = api();
     const useApp = appDistReady();
     if (raw === "/__app" || raw === "/__app/" || raw === "/__app/index.html" || (useApp && raw.startsWith("/__app/") && !existsSync(resolve(APP_DIST, "." + normalize(raw.slice("/__app".length)))))) {
       reply.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       if (!useApp) { reply.end(NO_BUILD_PAGE); return; }
+      /* 查询串里的 token 对不对。⚠️ 用**定长比较**而不是 `===`：这是个凭据比较，
+         早退的字符串比较会泄露前缀信息。本机 loopback 上时序攻击不现实，
+         但「凭据用常数时间比」是那种写一次就一直对的事。 */
+      const q = (req.url ?? "").split("?")[1] ?? "";
+      const given = new URLSearchParams(q).get("token") ?? "";
+      const okToken = !!c && given.length === c.token.length && timingSafeEqual(Buffer.from(given), Buffer.from(c.token));
       // SPA：/__app/ 下任何不是静态文件的路径都回 index.html（前端自己按路径分页）
-      const boot = c ? `<script>window.__UD_APP=${JSON.stringify({ url: `http://127.0.0.1:${c.port}/`, token: c.token, name: c.project?.name ?? null, title: c.project?.title ?? null, dir: c.project?.dir ?? null, ws: `ws://127.0.0.1:${c.port}${API_PREFIX}ws`, hub: !c.project })};</script>` : "";
+      const boot = c && okToken
+        ? `<script>window.__UD_APP=${JSON.stringify({ url: `http://127.0.0.1:${c.port}/`, token: c.token, name: c.project?.name ?? null, title: c.project?.title ?? null, dir: c.project?.dir ?? null, ws: `ws://127.0.0.1:${c.port}${API_PREFIX}ws`, hub: !c.project })};</script>`
+        : "";
       reply.end(readFileSync(resolve(APP_DIST, "index.html"), "utf8").replace(/<head>/i, "<head>" + boot));
       return;
     }

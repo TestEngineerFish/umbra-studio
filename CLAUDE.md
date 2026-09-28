@@ -69,7 +69,10 @@ npm --prefix server run ui -- Umbra_design
 S1 稿件索引那一页仍在 `index.dc.html`，只是不再当入口。
 
 桌面壳（Electron，M9-2）：`npm --prefix shell install`（Electron 二进制走 npmmirror，见 `shell/.npmrc`）→ `npm --prefix shell start`。
-壳测试：`node shell/shelltest.mjs`（先把里面的 `<scratchpad>` 换成放测试项目副本的目录）。
+壳测试：`S=<放测试项目副本的目录> node shell/shelltest.mjs` —— 副本要叫 `umbra_copy`
+且**根目录得有 `project.json`**（`inspect_dir` 就认这一个文件）。**不用改源码**：
+2026-09-28 之前这里写的是「把里面的 `<scratchpad>` 换成…」，而脚本一半用 `process.env.S`、
+一半用那个字面量，照着改只改到一半，症状是「工作台永远开不出来」（`00` §112.3）。
 打包：`npm --prefix shell run dist:all` → `shell/out/` 出四份（mac arm64/x64 · win x64/arm64）。
 **打包产物要单独验**：`npm --prefix shell run packtest` —— 它把 .app 拷到仓库外、配一个全新 userData
 再跑一遍，问的是「换台机器还能不能用」。这一类缺陷开发模式下测不出来，M9-4 一次逼出三条（`doc/00` §六十三）。
@@ -232,7 +235,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run outgoing` | 给设计侧打包 ui/（每份稿插 baseline 行），产出 `outgoing/UmbraStudio-ui-<时间>.zip`；**每一轮交办都要随附这个包**（`doc/00` §三十二） |
 | `npm --prefix server run incoming` | 接设计侧交回来的稿（`ui/_incoming/`），先查底稿（正确 / 过时 / 不明），再查合法性与接线标记；加 `-- --apply` 把过关的稿并入 `ui/` |
 | `npm --prefix shell start` / `run dist` | 起 Electron 壳 / 打包 mac arm64（`doc/00` §五十三、§六十三）；`run dist:all` 出四份产物（mac arm64/x64 dmg+zip、win x64/arm64 zip） |
-| `npm --prefix shell run shelltest` | 壳的**源码**测试：Playwright `_electron` 走一遍主流程（先把里面的 `<scratchpad>` 换成放测试项目副本的目录） |
+| `S=<目录> npm --prefix shell run shelltest` | 壳的**源码**测试：Playwright `_electron` 走一遍主流程。路径只从环境变量 `S` 来（副本叫 `umbra_copy`、要有 `project.json`），**不改源码** |
 | `npm --prefix shell run packtest` | 打包**产物**测试：把 .app 拷到仓库外 + 全新 userData 再跑一遍（`doc/00` §63.4）。带参数验别的产物：`node shell/packtest.mjs shell/out/win-unpacked` |
 
 ---
@@ -279,6 +282,27 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 ---
 
 ## 9. 当前状态一句话（2026-09-28）
+
+**2026-09-28 收尾三批**（读数在 `doc/00` §一一〇 / §一一一 / §一一二）：
+
+| 批 | 做了什么 |
+| --- | --- |
+| **Q42 令牌下发** | issue #30 修完。**两条完全不同的路，同一个形状**：壳走 `additionalArguments` → preload `exposeInMainWorld`（地址里**不带**令牌）· 浏览器走 `?token=` + `timingSafeEqual`。拿不到令牌**照常回页面不是 403**（403 会让 SPA 子路由一起打不开）。`uitest` +5 条 · **四次反向验证都报红才算** |
+| **M9-7 项目 git 版本记录** | 补的是快照看不见的盲区（别的编辑器改的那一版）。⚠️ 用户问「已经有 git 怎么办」，顺着问下去才看到 `git add -A` 的真代价 —— 会把他手上十个未完成的改动一起提交掉。改成**只 add 点名那一个文件**，前面担心的情况一次全消；再加一道「正在 merge/rebase 就什么都不做」。**兜底不该有破坏力** |
+| **M9-5 签名（配置层 + 实测）** | `entitlements.mac.plist`（含我们特有的两项，缺了打包版一起来就闪退）· `dist-signed.mjs` 把「差一个下划线就静默跳过公证」挡住。签名链路实测通：`Authority=Developer ID Application: … (7M4S44CE7D)` + `flags=0x10000(runtime)` |
+
+⚠️ **这一批挖出三条「仪器在撒谎」的缺陷**，都比它们修的功能更值得记住：
+
+| 仪器 | 它在撒什么谎 |
+| --- | --- |
+| `signcheck.mjs` | `run()` 只取 stdout，而 `codesign -dv` **全打在 stderr** → 它对**任何**包都报「未签名」。之前的包碰巧真没签，所以读数看着是对的。修完同一个包从「1 项具备」跳到「**4 项具备**」 |
+| `shelltest.mjs` | 路径**两种传法混着用**（`process.env.S` + 字面量 `<scratchpad>`），照文档只改一半 → 工作台永远开不出来，而**症状伪装成「产品打不开目录」**。另有一条判据写死 `/58 份稿/`，换测试项目就红 |
+| `app/src/App.tsx` | `replaceState` 写死 `/__app/`，把令牌从地址里抹掉 —— **当场看不出、一刷新就废** |
+
+> 三条合起来是同一句话：**「量到零」的两种可能里，先排除仪器是零**（纪律④）。
+> 而**夹具的问题和产品的问题报出来的样子一样** —— 这一批两条都伪装成产品缺陷。
+
+---
 
 **2026-09-27：插件安全三条 + 用户 tmp.txt 三条**（读数与教训在 `doc/00` §一〇一）：
 

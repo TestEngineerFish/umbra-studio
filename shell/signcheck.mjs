@@ -16,7 +16,7 @@
  *  ⚠️ **未签名不算失败**，只算「这一步还没做」—— 现在默认 `identity: null`，
  *  本机没有证书。混为一谈的话这个脚本会一直红，红久了就没人看了。
  */
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -30,9 +30,17 @@ if (process.platform !== "darwin") {
   process.exit(0);
 }
 
+/* ⚠️ **stdout 和 stderr 一定要合起来看**（2026-09-28 实测栽过）。
+   `codesign -dv` 把 Authority / flags / Timestamp **全部打到 stderr**，stdout 是空的。
+   原来这里成功路径只取 `execFileSync` 的返回值（= 只有 stdout），
+   于是 `authority` 永远是空串，这台仪器**对任何包都报「未签名」** ——
+   包括一个刚用 Developer ID 签好、`codesign -dv` 手跑明明白白写着
+   `Authority=Developer ID Application: …` + `flags=0x10000(runtime)` 的包。
+   这正是纪律④那一族：**「量到零」的两种可能里，这次是仪器是零。**
+   碰巧上一批的包真没签，读数看着是对的，所以一直没人发现。 */
 const run = (cmd, args) => {
-  try { return { ok: true, out: execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) }; }
-  catch (e) { return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}` || String(e.message) }; }
+  const r = spawnSync(cmd, args, { encoding: "utf8" });
+  return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}` || String(r.error?.message ?? "") };
 };
 
 console.log(`签名与公证 · ${app}\n`);
