@@ -127,6 +127,50 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("六处调用方都换成了共用的判定（没有残留的 startsWith(p.dir)）", leftovers.length === 0, { leftovers });
 }
 
+
+/* ── git 版本记录：**补的是我们自己的机制看不见的盲区**（M9-7，用户 2026-09-28 提）──
+   用户的原话：「哪怕限制了 AI 工具的权限，也无法保证相关文件在其他编辑器里没有被修改。」
+   快照只在走写入口时产生 —— 别人在 VS Code 里改的那一版，我们的快照里没有。
+   所以判据就是这一句：**在别处改一个文件，那一版能在 git 历史里找回来。**
+   这是这一整套东西存在的理由，也是现在唯一的盲区。 */
+{
+  const { execFileSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { commitExternalChanges, isDirty } = await import("./gitkeep.js");
+  const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
+  const git = (args: string[]) => execFileSync("git", args, { cwd: DIR, encoding: "utf8" }).trim();
+
+  await writeAnyFile(p, "笔记.md", "第一版\n");
+  ok("写入口自动给项目建了 git 仓库", existsSync(join(DIR, ".git")));
+  /* ⚠️ 提交身份：干净环境里可能没配 user.name —— 不配的话下面量到的是
+     「git 不能提交」而不是「我们没提交」。**只在测试里配**，产品代码不替用户配
+     （那会让他别的仓库看起来莫名其妙地不一致）。 */
+  try { git(["config", "user.email", "filetest@local"]); git(["config", "user.name", "filetest"]); } catch { /* 没装 git */ }
+  await writeAnyFile(p, "笔记.md", "第二版（走写入口）\n", { expectSha256: sha("第一版\n") });
+  for (let i = 0; i < 40 && await isDirty(DIR); i++) await new Promise((r) => setTimeout(r, 100));
+  ok("走写入口落盘之后有提交", git(["log", "--oneline"]).split("\n").filter(Boolean).length >= 1);
+
+  /* ═══ 核心那一条：绕过写入口直接改文件（= 别的编辑器改的），再走一次写入口 ═══ */
+  const 别处写的 = "别的编辑器改的这一版\n";
+  await writeFile(join(DIR, "笔记.md"), 别处写的, "utf8");
+  const rescued = await commitExternalChanges(DIR);
+  ok("**别处改过 → 落盘前先记一版**（救下那一版）", !!rescued, { commit: rescued });
+  await writeAnyFile(p, "笔记.md", "工具又改了一版\n", { expectSha256: sha(别处写的) });
+  for (let i = 0; i < 40 && await isDirty(DIR); i++) await new Promise((r) => setTimeout(r, 100));
+  const 从git取回 = rescued ? git(["show", `${rescued}:笔记.md`]) : "";
+  ok("**别的编辑器改的那一版，能从 git 里原样取回**（这是这一层存在的理由）",
+     从git取回 === 别处写的.trim(), { 取回: 从git取回.slice(0, 24) });
+  const msgs = git(["log", "--pretty=%s"]).split("\n");
+  ok("提交消息分得出「别处改的」和「工具写入」",
+     msgs.some((m) => m.includes("别处改过")) && msgs.some((m) => m.includes("写入")), { 消息: msgs.slice(0, 3) });
+  /* **从不 push**：远端一个都不许有（用户明确要求「提交只要在本地」） */
+  ok("从不配远端（提交只在本地）", git(["remote"]).trim() === "");
+  /* `.umbrastudio/` 不许进仓库 —— 里面有 `ai_config.json`（有 key）。
+     **这一条是安全问题，不是整洁问题。** */
+  ok("`.umbrastudio/` 没被提交进去（里面有 key）",
+     !git(["ls-files"]).split("\n").some((f) => f.startsWith(".umbrastudio")));
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

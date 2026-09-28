@@ -12,7 +12,9 @@
     "dist:all": "electron-builder --mac --win",
     "dist:dir": "electron-builder --mac --arm64 --dir",
     "packtest": "node packtest.mjs",
-    "shelltest": "node shelltest.mjs"
+    "shelltest": "node shelltest.mjs",
+    "dist:signed": "electron-builder --mac --arm64 --x64 -c.mac.identity=\"$MAC_IDENTITY\"",
+    "signcheck": "node signcheck.mjs"
   },
   "devDependencies": {
     "electron": "^44.0.0",
@@ -98,7 +100,12 @@
       ],
       "category": "public.app-category.developer-tools",
       "identity": null,
-      "darkModeSupport": true
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "timestamp": "http://timestamp.apple.com/ts01",
+      "gatekeeperAssess": false
     },
     "win": {
       "target": [

@@ -13,6 +13,7 @@
  *  **不做的**：不归一化、不改编码、不动换行、不碰 frontmatter —— 写进去什么样，盘上就什么样（H5）。
  */
 import { createHash } from "node:crypto";
+import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
@@ -205,6 +206,10 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
       "这是工具自己产的文件，不该手写",
       { fix: "索引页、壳页面、运行时副本由 build_index 生成；改了也会被下一次重建覆盖。" }));
   }
+  /* 落盘前先把别处改的那一版留住（M9-7）。**第二条写入口也要有** ——
+     `.md` / 代码 / 文本这些文件比设计稿更常在别的编辑器里改，
+     只给设计稿装这道保险等于装了一半。 */
+  const rescued = await commitExternalChanges(p.dir);
   const abs = join(p.dir, clean.split("/").join(sep));
   const exists = existsSync(abs);
   const steps: string[] = [];
@@ -233,6 +238,8 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
   // ③ 新内容也留一份 —— 「回到这一版」要有得回
   const snapshot = await saveSnapshot(p, clean, Buffer.from(content, "utf8"), opts.origin ?? "人手改", opts.note);
   steps.push(`当前版 ${snapshot}`);
+  if (rescued) steps.unshift(`先记下了别处改的内容（git ${rescued}）`);
+  void commitAfterWrite(p.dir, clean, snapshot ?? null, null);
   return { path: clean, written: true, snapshot, previous, bytes: Buffer.byteLength(content, "utf8"), sha256: sha256(content), steps };
 }
 

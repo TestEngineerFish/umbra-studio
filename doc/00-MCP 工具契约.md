@@ -6757,3 +6757,92 @@ SidePanels（壳）· ctxmenu，加两个工具文件。
 `filetest` 全通 · `lifecycletest` 全通 · `agenttest` 9/9。
 
 **M8 这一期到此结束**（35/35）。
+
+## 一一〇、M9-7 项目的 git 版本记录 · M9-5 签名与公证的配置（2026-09-28）
+
+两件都来自用户 2026-09-28 的回复。
+
+### 110.1 git：不是新方向，是把空着的那一环补上
+
+用户提「给每个项目根目录自动增加一个 git」，理由是：
+
+> 哪怕限制了 AI 工具的权限，也无法保证相关文件在其他编辑器里没有被修改。
+
+**这一条说到了点上，而且它正好是我们自己机制的盲区**：`.umbrastudio/snapshots/`
+的语义快照**只在走写入口时产生**。别人在 VS Code 里改了一份稿，快照里没有那一版 ——
+磁盘监听只会让目录树刷新一下。git 能捕获这种改动，快照不能。
+
+⚠️ **查清之后发现这件事一半早就做了**：`doc/07` §七 定的就是
+「每个设计项目各自一个 git 仓库，**快照是主路径、git 是兜底**」，
+`_模板-租户 .gitignore` 写好了，按 ref 取历史（`git show <ref>:<path>`）的能力一直在，
+`create_project` 里也已经 `git init`。
+
+**缺的只是「谁来提交」** —— 实测两个项目都 `git init` 过但 **0 个提交**、
+60 / 70 个未跟踪文件。那条兜底路实际上是空的。
+
+### 110.2 两个触发点，缺一个都不够
+
+| 触发点 | 做什么 | 为什么 |
+| --- | --- | --- |
+| **落盘之前** | 工作区脏就先 commit 一次 | **这才是补盲区的那一半。** 顺序不能换 —— 先落盘再提交的话，别人那一版已经被覆盖，git 里也没有它 |
+| 落盘之后 | commit，消息带文件名和版本号 | 历史和 changelog 对齐；异步，不让用户等 git |
+
+三条纪律写进了代码：**只在本地提交，从不 push**（用户明确要求）·
+**失败不影响落盘**（git 没装、仓库坏了都不该让人改不了稿）·
+**不碰用户已有的历史**（只 `add -A` + `commit`，不 reset / rebase / amend / 切分支）。
+
+⚠️ 两个实现细节，都是「不这么做就会静悄悄出错」那一类：
+
+**① 按目录串行。** 落盘后的提交是异步的，而下一次落盘前又要问「工作区脏不脏」——
+两件事撞上，上一次还没提交完的改动会被当成「别处改的」，多出一个假的外部改动提交。
+一条 Promise 链解决。
+
+**② 新建仓库必须先写 `.gitignore`。** 不写的话第一次提交会把 `.umbrastudio/` 整个提进去，
+其中 `ai_config.json` 里有 key。**这是安全问题，不是整洁问题** ——
+所以判据里专门有一条「`.umbrastudio/` 没被提交进去」。
+
+留了逃生门 `UMBRASTUDIO_NO_GIT=1`：这件事会往用户的仓库里写东西，
+出意外要能一秒关掉，而不是等我们改代码发版。
+
+### 110.3 判据直接打在「存在理由」上
+
+`filetest` 新增七条，核心那一条是：**绕过写入口直接改文件（= 别的编辑器改的），
+再走一次写入口覆盖它，然后从 git 里把别处那一版原样取回来。** 实测取回一致。
+
+其余六条：自动建仓库 · 落盘后有提交 · 落盘前救下那一版 ·
+**提交消息分得出「别处改的」和「工具写入」** · 从不配远端 · `.umbrastudio/` 没进仓库。
+
+反向验证：`UMBRASTUDIO_NO_GIT=1` 一开，第一条立刻报红。
+
+### 110.4 M9-5：签名与公证的配置层做完了，等证书
+
+照用户给的 `mimikko-desktop/docs/MAC_SIGNING_NOTARIZE.md`（实测过的那一份）：
+
+- `shell/build/entitlements.mac.plist`：每一项都写了「为什么要」。
+  ⚠️ 我们比那份文档多两项**真的用得到**的：`disable-library-validation`（核心跑在
+  `extraResources/core/` 下、由主进程起成子进程）和 `allow-dyld-environment-variables`
+  （起核心要 `ELECTRON_RUN_AS_NODE`，插件沙箱还要传 execArgv）。缺了它们
+  **打包版一起来就闪退，而开发模式下完全测不出来**（§63.1 那一族）。
+  **没有开 App Sandbox** —— 产品的核心功能是「打开用户任意目录」，沙盒下要逐个授权，
+  和定位相反；官网分发（Developer ID）不要求沙盒。
+- `mac` 段加 `hardenedRuntime` / `entitlements` / `entitlementsInherit` /
+  `timestamp` / `gatekeeperAssess: false`；`identity` **保持 `null`**（本机没证书，
+  写死会让 `npm run dist` 直接失败），有证书时走新加的 `dist:signed`（从 `MAC_IDENTITY` 传）。
+- **用 electron-builder ≥24 的内置公证，不写 `afterSign` 脚本** ——
+  那份文档里的脚本「公证失败只打印不中断」，会产出「签了名但没公证」的包，
+  而那种包下载后照样报「已损坏」。
+
+新增 `shell/signcheck.mjs`（四条读数：Developer ID · hardened runtime · 签名自洽 ·
+Gatekeeper + staple）。⚠️ **未签名不算失败，只算「这一步还没做」** ——
+混为一谈的话这个脚本会一直红，红久了就没人看了。
+
+先查过一件事：`extraResources` 里**没有 `.node` 原生模块**（只有已被 filter 排除的
+tsc 和几个 `.sh`），所以文档第六节那条「extraResources 里的可执行文件公证不过」不适用。
+
+### 110.5 读数
+
+`filetest` 全通（+7）· `plugintest` 76/76 · `captest` 239/239 · `selftest` 零 error ·
+`kindtest` 34/34 · `lifecycletest` 全通 · `agenttest` 9/9。
+`npm --prefix shell run dist` 照旧打出四份产物（配置没破坏打包）。
+`signcheck` 在当前产物上报「1 项具备 · 4 项还没做」—— 那是对的：ad-hoc 签名、未公证。
+⚠️ 回归全在临时目录跑，**用户的两个真实项目一个提交都没多**（实测确认）。

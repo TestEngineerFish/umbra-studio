@@ -26,6 +26,7 @@ import {
 import { gzipSync } from "node:zlib";
 import { buildSnapshot } from "./snapshot.js";
 import { listVersions, recordChange, recordVersionMeta, snapDir, type VersionOrigin } from "./history.js";
+import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 
 export interface WriteOutcome {
   path: string;
@@ -90,6 +91,12 @@ export async function writeDraft(
       err(X.BAD_INPUT, relPath, { kind: "path", name: relPath },
         "路径跨出了项目目录", { fix: "path 必须是相对项目根的路径" }));
   }
+
+  /* ⚠️ **落盘之前**先看一眼工作区脏不脏（M9-7，用户 2026-09-28 提的）。
+     脏 = 有人在别的编辑器里改过 —— 那一版我们的快照里没有（快照只在走写入口时产生）。
+     **先提交再覆盖**，顺序不能换：反过来的话别人那一版已经被盖掉，git 里也没有它。
+     用户的原话：「哪怕限制了 AI 工具的权限，也无法保证相关文件在其他编辑器里没有被修改。」 */
+  const rescued = await commitExternalChanges(p.dir);
 
   // ① 归一化 + @ds 展开 + __resources 注入
   const prep = prepareForDisk(p, content, relPath);
@@ -177,7 +184,13 @@ export async function writeDraft(
     summary: note && /回退/.test(note) ? note.replace(/\*\*/g, "").split("。")[0] ?? ""
       : rec.diff ? heaviestChange(rec.diff) : `新建，${snap.stats.elements} 个元素`,
   });
+  /* 落盘之后记一版。**异步**：不该让用户等 git（大项目 `add -A` 要扫一遍工作区）。
+     按目录串行由 `gitkeep` 自己保证，不会和下一次的「脏不脏」打架。 */
+  void commitAfterWrite(p.dir, relPath, version, rec.diff ? heaviestChange(rec.diff) : null);
+
   const steps = [...prep.steps, `快照 ${version}`];
+  /* 救下过别处的改动就说出来 —— 用户要知道「你刚才在别处改的那一版没丢」 */
+  if (rescued) steps.unshift(`先记下了别处改的内容（git ${rescued}）`);
   if (rec.changelog.written) steps.push(`changelog ${rec.changelog.section}`);
   else if (rec.diff) steps.push(`changelog 未写（${rec.changelog.reason}）`);
 
