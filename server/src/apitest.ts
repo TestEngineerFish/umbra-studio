@@ -63,5 +63,40 @@ console.log("\n① 同一会话还有一轮在跑时说出来（issue #35）");
   await new Promise((r) => setTimeout(r, 300));
 }
 
+/* ── 绕过写入口改稿要说出来（issue #29）──
+   通道 B 的 codex / cursor-agent **自带写文件的工具**，模型觉得 `apply_patch` 更顺手时
+   就会绕开我们的写入口。那样没有快照、没有归一化、没有 `__resources`，
+   **而且版本号不变** —— 而变更审计靠版本号判断改动，于是变更卡**显示为空**，
+   界面等于在说「这一轮什么都没改」，而用户刚看着 AI 说「我改好了」。
+   **界面说谎比功能缺失糟**（和 #35 那条「假回执」是同一族）。
+
+   ⚠️ 判据测的是抽出来的 `bypassedDrafts`，**不是复制一份逻辑再测它**。
+   不抽出来的话这段判定只在通道 B 分支里，而那条路要真起一个 CLI 子进程才走得到 ——
+   判据就只能跑真 AI（花钱、不稳定）。喂两份快照进去就够，测的还是真代码。 */
+console.log("\n② 绕过写入口改稿要说出来（issue #29）");
+{
+  const { bypassedDrafts } = await import("./chat_run.js");
+  const before = new Map([
+    ["走了写入口.dc.html", { ver: "v1", sha: "aaa" }],
+    ["被直接改了.dc.html", { ver: "v1", sha: "aaa" }],
+    ["没动过.dc.html", { ver: "v1", sha: "aaa" }],
+    ["跑完被删了.dc.html", { ver: "v1", sha: "aaa" }],
+  ]);
+  const after = new Map([
+    ["走了写入口.dc.html", { ver: "v2", sha: "bbb" }],   // 版本号变了 = 正常
+    ["被直接改了.dc.html", { ver: "v1", sha: "ccc" }],   // 内容变了版本号没动 = 绕过去了
+    ["没动过.dc.html", { ver: "v1", sha: "aaa" }],
+    ["跑完才出现的.dc.html", { ver: "v1", sha: "zzz" }], // 新稿，不该算
+  ]);
+  const got = bypassedDrafts(before, after);
+  ok(got.length === 1 && got[0] === "被直接改了.dc.html", "**只报「内容变了而版本号没动」那一份**", got.join(", ") || "（空）");
+  ok(!got.includes("走了写入口.dc.html"), "走了写入口的不报（版本号变了就是正常落盘）");
+  ok(!got.includes("跑完才出现的.dc.html"), "跑完才出现的新稿不报（它本来没有上一版，新建有自己的审计）");
+  ok(!got.includes("跑完被删了.dc.html"), "跑完没了的不报（删除有自己的审计）");
+  /* 一份都没被绕过时**必须是空**，不能「宁可多报」—— 误报会让用户开始忽略这条提示，
+     而它说的是「这份稿退不回去」，是最不该被忽略的一条。 */
+  ok(bypassedDrafts(before, new Map(before)).length === 0, "什么都没变时一条都不报（误报会让人忽略这条提示）");
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

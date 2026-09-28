@@ -92,7 +92,16 @@ export const CLI_SPECS: readonly CliSpec[] = [
     listModelsArgs: ["--list-models"],
     modelHint: "auto / composer-2.5（按账号，点「列一下」看真实清单）",
     loginHint: "终端跑 cursor-agent login（浏览器授权，用你的 Cursor 订阅）；已登录就直接能用",
-    note: "MCP 要在项目里放 .cursor/mcp.json —— 我们会写这一个键，你原有的别的 server 不动。不报 token 用量。",
+    /* ⚠️ note 里那句「会直接改文件」是**实测**的，不是推测（issue #29，2026-09-28）：
+       带 `--trust --sandbox enabled` 跑一轮「用你最方便的办法直接改文件」——
+       它真跑了（18 次 tool_call），**文件 sha 变了**，输出里 6 次 `TYPE_WORKSPACE_READWRITE`。
+       也就是说它的 `--sandbox enabled` 语义是「工作区内可读写」，
+       和 codex 的 `--sandbox read-only` 完全不是一回事，**挡不住它自己那套写工具**。
+       `--mode plan`（只读）那次测不出结论：夹具那份稿有 2 条 error 级诊断，
+       我们自己的写入口按契约拒了落盘 —— **「文件没变」的原因不是 plan 模式**（纪律④）。
+       ⚠️ 去掉 `--trust` 它**根本不跑**（「Workspace Trust Required」直接退出），
+       那种「文件没被改」是假的通过。 */
+    note: "MCP 要在项目里放 .cursor/mcp.json —— 我们会写这一个键，你原有的别的 server 不动。不报 token 用量。⚠️ 这家的 AI **可能用自带工具直接改文件**（实测 --sandbox enabled 挡不住），那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code（它只放行 Umbra 的工具）。",
   },
   {
     id: "codex",
@@ -354,18 +363,28 @@ async function build(o: CliRunOptions): Promise<Built> {
            MCP server 一起拉进来（实测拉进了 ChatGPT app 那几台），工具表白白大三万 token，
            而且**它会用错工具** —— 那次它拿别人的 `js` 工具去改文件，最后报「未授权使用 Umbrastudio」。
            登录态不受影响（auth 走 CODEX_HOME，不在这份 config 里）。
-         - `--approve-for-me`：自动审批 + workspace-write 沙箱。
-           **别用 `-c approval_policy=never`** —— 那是「从不批准」不是「无需询问」，
-           MCP 调用会直接不可用（这个语义陷阱实测踩过）。
-           也不需要 `--dangerously-bypass-approvals-and-sandbox`：我们的写入走 MCP server
-           那个独立进程，不受 codex 沙箱约束，所以没必要为了改稿去关掉它的沙箱。
+         - `--sandbox read-only` + `-c approval_policy=never`：**只读沙箱 + 不问就放行**（issue #29）。
+           ⚠️ **这一条 2026-09-28 换过，并更正了 §65.6 的一条错结论。**
+           原来用 `--approve-for-me`（= 自动审批 + **workspace-write** 沙箱），
+           于是 codex **自带的 `apply_patch` / shell 能直接改项目里任何文件** ——
+           跳过归一化 / `@ds` 展开 / `__resources` 注入 / 节点地址，**没有快照退不回去**，
+           而且版本号不变 → 变更卡显示为空（纪律① 被整体绕过）。
+           §65.6 当时记的是「别用 `approval_policy=never`，MCP 会不可用」——
+           **那个结论错了**（或者只在不带 `--sandbox` 时成立）。2026-09-28 实测：
+           `--sandbox read-only -c approval_policy=never` 下
+           **MCP 工具照样调得到**（2 次 `mcp_tool_call`），
+           而让它「用最方便的办法直接改文件」时**文件 sha 一个字节都没变**。
+           两者兼得 —— 我们的写入走 MCP server 那个独立进程，**不受 codex 沙箱约束**，
+           所以沙箱只读挡住的正好只有它自己那套写工具。
+           ⚠️ `--approve-for-me` 和 `--sandbox` **互斥**（实测报错），不能都给。
          - MCP 注入必须写成**分开的 dotted path**。`-c 'mcp_servers.x={command=...}'`
            这种 inline table 形式会被**静默忽略**，跑起来像通了其实没有那台 server。 */
       const args = [
         "exec", "--json",
         "--skip-git-repo-check",   // 用户的项目目录未必是 git 仓库
         "--ignore-user-config",
-        "--approve-for-me",
+        "--sandbox", "read-only",          // issue #29：挡住它自带的 apply_patch / shell 写文件
+        "-c", "approval_policy=never",      // 不问就放行（headless 下没人能确认）
         "-C", o.cwd,
         "-c", `mcp_servers.${MCP_NAME}.command="node"`,
         "-c", `mcp_servers.${MCP_NAME}.args=${JSON.stringify([o.mcpServerPath])}`,

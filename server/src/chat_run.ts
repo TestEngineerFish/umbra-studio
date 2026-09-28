@@ -1,6 +1,7 @@
 /** AI 会话的执行主体（M2）：agent 循环里的工具执行 + chat_send 的完整流程。
  *  抽出来是为了让 MCP 工具（index.ts）和本地 API（api.ts，应用前端的会话面板走它）共用同一份 ——
  *  两个入口一套逻辑，落盘仍走唯一写入口（01 H3）。 */
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
@@ -325,6 +326,35 @@ function stripImages(history: Array<{ content: unknown }>): void {
   }
 }
 
+/** 一份稿的「跑之前长什么样」：最新版本号 + 内容哈希。 */
+export interface DraftStamp { ver: string; sha: string }
+
+/** 哪些稿是**绕过写入口**被直接改掉的（issue #29）。
+ *
+ *  判据只有一句：**内容变了，而版本号没变**。
+ *  走写入口的每一次落盘都会产生新版本号，所以「内容变了版本号却没动」
+ *  只可能是有人直接写了盘 —— 通道 B 的 codex / cursor-agent 自带写文件的工具，
+ *  模型觉得 `apply_patch` 更顺手时就会那么做。
+ *
+ *  ⚠️ **为什么要单独有这个函数**：不抽出来的话，这段判定只在
+ *  `runChatSend` 的通道 B 分支里，而那条路要真起一个 CLI 子进程才走得到 ——
+ *  判据就只能跑真 AI（花钱，且不稳定）。抽成纯函数之后
+ *  喂两份快照就能测，测的还是**真代码**而不是复制品（#27 / #34 同一条经验）。
+ *
+ *  ⚠️ 只报**两边都有**的稿：跑完才出现的新稿不算「被绕过改的」，
+ *  它本来就没有上一版（新建走的是另一条路，有自己的审计）。
+ */
+export function bypassedDrafts(before: Map<string, DraftStamp>, after: Map<string, DraftStamp>): string[] {
+  const out: string[] = [];
+  for (const [rel, b] of before) {
+    const a = after.get(rel);
+    if (!a) continue;                       // 跑完没了（删了）—— 删除有自己的审计
+    if (a.ver !== b.ver) continue;          // 版本号变了 = 走了写入口，正常
+    if (a.sha !== b.sha) out.push(rel);     // 内容变了而版本号没动 = 绕过去了
+  }
+  return out;
+}
+
 export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope<any>> {
   const { message, sessionId, channel, selectedNodeFile, selectedNodeAddress, selectedFiles, selectedRange, selectedRegion, contextFile, abortSignal } = a;
   const cfgAll = await getAiConfig();
@@ -589,12 +619,25 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
 
   // 记录循环前各稿的版本（用于审计变更）
   const draftVersionsBeforeB: Map<string, string> = new Map();
+  /* ⚠️ **也记内容哈希**（issue #29，2026-09-28）。
+     通道 B 的 CLI 里 codex / cursor-agent **自带写文件的工具**，模型觉得
+     `apply_patch` 更顺手时就会绕开我们的写入口 —— 那样没有快照、没有归一化、
+     没有 `__resources`，**而且版本号不变**。
+     下面的审计靠「版本号变了没」判断改动，于是这种改动会让变更卡**显示为空**，
+     界面等于在说「这一轮什么都没改」。
+     **界面说谎比功能缺失糟**（和 issue #35 那条「假回执」是同一族）。
+     所以再记一份 sha：内容变了而版本号没变 = 有人绕过写入口动了它。 */
+  const stampBeforeB: Map<string, DraftStamp> = new Map();
   try {
     const allDrafts = await listDrafts(p);
     for (const abs of allDrafts) {
       const rel = abs.slice(p.dir.length + 1).split("\\").join("/");
       const vs = await listVersions(p, rel);
       if (vs.length > 0) draftVersionsBeforeB.set(rel, vs[vs.length - 1] as string);
+      try {
+        const v = vs.length ? (vs[vs.length - 1] as string) : "";
+        stampBeforeB.set(rel, { ver: v, sha: createHash("sha256").update(await readFile(abs)).digest("hex") });
+      } catch { /* 读不到就算了 */ }
     }
   } catch { /* 忽略 */ }
 
@@ -678,6 +721,8 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
 
   // ── 审计本次 AI 会话对稿件的变更（M2-9，通道 B） ──
   const changesB: Array<{ path: string; from: string; to: string; counts: Record<string, number>; summary: string }> = [];
+  /** 跑完的快照，和 `stampBeforeB` 对一遍就知道谁被绕过去改了（issue #29）。 */
+  const stampAfterB: Map<string, DraftStamp> = new Map();
   try {
     const allDrafts = await listDrafts(p);
     for (const abs of allDrafts) {
@@ -687,7 +732,13 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
       const before = draftVersionsBeforeB.get(rel);
       if (!before) continue;
       const after = vs[vs.length - 1];
-      if (after === before) continue;
+      /* 版本号没变的先收进 after 快照，跑完交给 `bypassedDrafts` 一处判断 ——
+         **判定逻辑只有一份**，判据测的就是它（见那个函数的注释）。 */
+      if (after === before) {
+        try { stampAfterB.set(rel, { ver: after as string, sha: createHash("sha256").update(await readFile(abs)).digest("hex") }); }
+        catch { /* 读不到就算了 */ }
+        continue;
+      }
 
       const d = await diffDrafts(p, rel, { from: before, to: after });
       if (d.changes.length > 0) {
@@ -700,6 +751,19 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
       }
     }
   } catch { /* 忽略 */ }
+
+  /* ⚠️ **绕过写入口的改动要在会话里留一条**（issue #29）。
+     写成 system 消息而不是只放进返回值：**它得留在会话记录里** ——
+     用户过一会儿回来翻这一轮，才知道那几份稿是被直接改的、没有可退的上一版。
+     文案里说清三件：改了哪几份 · 为什么没有快照 · 现在能做什么。 */
+  const bypassed = bypassedDrafts(stampBeforeB, stampAfterB);
+  if (bypassed.length) {
+    await addMessage(p.dir, session.id, { role: "system",
+      content: `⚠️ 这一轮有 ${bypassed.length} 份稿是**被 ${bSpec.label} 直接改的**，没走 Umbra 的写入口：${bypassed.join("、")}。\n`
+        + `所以它们**没有快照，退不回去**，变更卡上也看不到这次改动（那不是「没改」，是我们拿不到前后两版）。\n`
+        + `这几份稿还可能缺 __resources（断网会白屏）和节点地址（点选用不了）—— 在它上面点一次「加上地址」可以补回来。\n`
+        + `要根治：在设置里把这条通道换成 Claude Code（它只放行 Umbra 的工具），或者让 AI 一律用 write_draft / write_file。` });
+  }
 
   const chValB: "a" | "b" | "c" = ch;
   return envelope<{ sessionId: string; channel: "a" | "b" | "c"; messages: ChatEntry[]; usage: typeof usageInfo; interrupted: boolean; toolCalls: typeof ccResult.toolCalls; numTurns: number; changes: typeof changesB }>({
