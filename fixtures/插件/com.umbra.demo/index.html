@@ -12,6 +12,36 @@
   <pre id="raw" hidden></pre>
   <table id="t" hidden><thead><tr id="h"></tr></thead><tbody id="b"></tbody></table>
   <script src="./umbra.js"></script>
+  <!-- 宿主共享库探针（M10-2）：插件能不能 import 一条**不在自己目录下**的模块。
+       CSP 是 `script-src 'self'`，而 `'self'` 匹配 scheme+host+port 不是路径 ——
+       所以理论上能。这一行把结论写进 DOM，让 uitest 数得到（判活只认 1+1，不看截图）。 -->
+  <div id="cmprobe" style="display:none"></div>
+  <script type="module">
+    /* ① 能不能 import 一条不在自己目录下的模块 */
+    import("/__shared/probe.mjs")
+      .then((m) => { window.__shared = m.SHARED_OK; })
+      .catch((e) => { window.__shared = "失败 " + String(e).slice(0, 80); });
+    /* ② **CodeMirror 在插件沙箱里真的跑得起来吗** —— 这一条比 ① 要紧得多。
+       CM 靠 CSS-in-JS 注入 `<style>`，而插件的 CSP 只给了 `style-src 'self' 'unsafe-inline'`；
+       它还要 contenteditable、Range、ResizeObserver 那一套。
+       **「import 得到」和「跑得起来」是两件事** —— 只验前者会得出一个太乐观的结论。
+       判据读的是**真实渲染出来的行数与文本**，不是「没报错」。 */
+    import("/__shared/codemirror.js")
+      .then(({ EditorView, EditorState, lineNumbers, javascript, syntaxHighlighting, defaultHighlightStyle }) => {
+        const v = new EditorView({
+          parent: document.getElementById("cmprobe"),
+          state: EditorState.create({
+            doc: "const a = 1;\nconst b = 2;\nconsole.log(a + b);",
+            extensions: [lineNumbers(), javascript(), syntaxHighlighting(defaultHighlightStyle)],
+          }),
+        });
+        const lines = v.dom.querySelectorAll(".cm-line").length;
+        const gutters = v.dom.querySelectorAll(".cm-gutterElement").length;
+        const colored = v.dom.querySelectorAll(".cm-line span[class]").length;
+        window.__cm = `行 ${lines} · 行号 ${gutters} · 高亮片段 ${colored}`;
+      })
+      .catch((e) => { window.__cm = "失败 " + String(e).slice(0, 90); });
+  </script>
   <script>
   /* 演示插件的正文面。它**同时是契约的验证件** —— 用到了宿主代画的全部四样：
      编辑栏（表格/源码两档 + 一颗钮）、状态行、⋯ 菜单、属性面板（经 share 喂数据）。 */

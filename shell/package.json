@@ -77,6 +77,10 @@
         "to": "core/plugins"
       },
       {
+        "from": "../shared",
+        "to": "core/shared"
+      },
+      {
         "from": "../app/dist",
         "to": "core/app/dist"
       }

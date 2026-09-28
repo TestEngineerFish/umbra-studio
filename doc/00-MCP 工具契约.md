@@ -7414,3 +7414,107 @@ outcome: { written: false, refused: "有 2 条 error 级诊断，按契约拒绝
 
 反向验证：把 sha 那一半判定去掉（退回只看版本号，也就是原来的行为）→ 第一条当场红。
 `agenttest` 13/13 照旧。
+
+---
+
+## 一一七、宿主共享库：插件 import 得到 `/__shared/`（M10-2 的地基，2026-09-28）
+
+### 117.1 用户定的方向，和它逼出的技术问题
+
+用户 2026-09-28 拍板 M10-2 走**插件 + 宿主共享 CodeMirror**。他的原话是关键：
+
+> 「后面如果要发布支持新格式的编辑插件时，不希望用户频繁更新 PC 端，只需要更新对应编辑模块即可。」
+
+⚠️ **先纠正一个容易搞错的地方：落点有三种，不是两种。**
+
+| 落点 | 在哪 | 改它要不要重发 PC 端 |
+| --- | --- | --- |
+| ① 格式模块 `app/src/kinds/` | 编译进 app bundle | **要** |
+| ② **内置插件** `plugins/` | `TOOL_ROOT`（`.app` 里，只读） | **要** |
+| ③ 外部插件 `.umbrastudio/plugins/` | `STATE_ROOT`（userData） | **不要** |
+
+**`.md` 现在是 ②。** M11-9b「搬成插件」解决的是**代码结构**，不是独立更新 ——
+`install.ts` 里明写着「是内置插件，不能用装包的方式覆盖它」。
+
+好消息是 ② 和 ③ **是同一套代码**：
+`for (const root of [BUNDLED_DIR, PLUGINS_DIR]) await scanRoot(root, root === BUNDLED_DIR, out)`
+—— 同一套扫描、同一套加载、同一份清单，唯一差别是一个 `builtin` 标志。
+**插件代码写一次，放在哪决定它怎么更新。**
+
+### 117.2 大依赖放哪：`/__shared/`
+
+插件的 CSP 是 `script-src 'self'`，而 **`'self'` 匹配 scheme+host+port，不是路径** ——
+所以插件 import 得到宿主路由下的模块。据此加了 `/__shared/<文件>`：
+
+- 大依赖放**一份**，代码插件、将来的 JSON / Python 插件共用
+- 不放这里的话，`markdown-it` 在 md 插件里占 **138 KB** 那件事会重演 N 遍
+
+⚠️ 三条讲究：
+- **`access-control-allow-origin` 不能省** —— 插件在不透明源的 iframe 里，
+  模块脚本走 **CORS 模式**取。这和 `/__plugin/` 是同一条实测教训（M11-9b）。
+  反向验证做了：去掉这个头，当场 `Failed to fetch dynamically imported module`
+- **`SHARED_DIR` 在 `TOOL_ROOT`** —— 它是只读资产，跟程序发（`00` §63.1 那一族）
+- **这里不放任何秘密** —— 对每个插件都可见，而插件是第三方写的
+
+### 117.3 CodeMirror 6：916 KB 一份
+
+`app/shared-src/codemirror.ts` 声明要导出什么，Vite library 模式打成一份 ESM：
+
+| | 大小 | gzip |
+| --- | --- | --- |
+| 核心（state / view / commands / language / search / autocomplete） | 578 KB | 162 KB |
+| 6 个语言包（js / json / python / html / css / markdown） | +337 KB | +115 KB |
+| **合计** | **916 KB** | **277 KB** |
+
+**不拆**：这是本地文件（`.app` 里多 916 KB 对 128 MB 的应用无所谓），一份最简单。
+要拆的条件是「语言包多到用户明显感觉到装插件变慢」——现在不是。
+
+产物 `shared/codemirror.js` **进仓库**，和 `runtime/` 里 vendor 的 React UMD 同一条理由：
+**整个项目的前提是断网可用**，让它依赖打包时能不能连上 npm 就本末倒置了。
+
+导出按「插件真正要用的」给，不把 CM 的全部 API 摊开 ——
+摊得越开，将来升 CM 大版本时插件坏得越多。
+
+### 117.4 ⚠️ 「import 得到」和「跑得起来」是两件事
+
+第一版判据只验了「import 成功」。**那个结论太乐观**：CM 靠 CSS-in-JS 注入 `<style>`
+（CSP 只给了 `style-src 'unsafe-inline'`），还要 contenteditable / Range / ResizeObserver
+在沙箱 iframe 里都正常。所以判据改成读**真实渲染出来的行数、行号、高亮片段数**：
+
+```
+行 3 · 行号 4 · 高亮片段 6
+```
+
+⚠️ **行号数不写死**：3 行文本的 gutter 实测是 **4** 个 `cm-gutterElement`，
+那是 CM 的实现细节，升版本就可能变 —— 写死它等于把判据绑在 CM 的内部结构上。
+行数 3 可以写死，那是探针自己写的 doc，我们控制得了。
+
+### 117.5 ⚠️ 排查记录：一条「改了源，跑的是副本」
+
+CM 探针加进 `fixtures/插件/com.umbra.demo/index.html` 之后，判据一直红，
+而且症状很迷惑：**第一个 import（probe.mjs）成功，第二个（codemirror.js）连请求都没发出去**。
+
+排查走了四步，每一步都排除了一个看似合理的原因：
+
+| 猜的 | 排除方式 |
+| --- | --- |
+| 判据抢跑（916 KB 要时间） | 改成轮询等 10 秒，还是没有 |
+| 文件不可达 | `curl` 200，915708 字节，合法 ESM |
+| content-type 不对（模块 MIME 严格） | 两个文件都是 `text/javascript` |
+| CSP 拦了大文件 | 在页面里手动 `await import()` —— **成功，导出 40 个** |
+
+最后加一行 `window.__cmStart` 才定位：**第一个 import 之后的代码根本没执行**。
+根因是 `/__plugin/` 服务的是**装到 `STATE_ROOT` 的副本**，不是 `fixtures/` 源 ——
+**我改了源没重装，跑的是旧的那份**（旧那份只有第一个探针）。
+
+> 这和 §113.2「五个测试脚本跑旧 `dist`」**是同一族**，同一天第二次。
+> **凡是「源 → 产物/副本」的关系，都要问一句「我跑的是哪一份」。**
+
+顺带记一条排查纪律：中途看到一个 404，差点当成线索 —— 它是 **favicon**
+（`uitest` 的噪声白名单里就有它）。**手边正好有个异常，不等于它就是原因。**
+
+### 117.6 读数
+
+`uitest` **191 → 193**（+2：插件 import 得到宿主共享库 · CM 在沙箱里真跑起来了）·
+`plugintest` 76/76。反向验证：去掉 `/__shared/` 的 CORS 头 → 当场
+`Failed to fetch dynamically imported module`。

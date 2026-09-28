@@ -61,6 +61,9 @@ function serveStatic(root: string, rel: string, reply: import("node:http").Serve
  *  实测过的一条（`doc/20` §3.3）：**`iframe sandbox` 单独用不挡网络** ——
  *  `fetch` / `<img src>` / `sendBeacon` / `WebSocket` 全都能把项目内容偷传出去。
  *  `default-src 'none'` 把这四条全堵上。 */
+/** 宿主共享库的根（M10-2）。**只读资产 → `TOOL_ROOT`**（打包后在 `.app` 里）。 */
+const SHARED_DIR = resolve(TOOL_ROOT, "shared");
+
 const PLUGIN_CSP = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-inline'",     // 插件自己的脚本
@@ -156,6 +159,26 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
       return;
     }
     if (raw.startsWith("/__app/") && serveStatic(APP_DIST, raw.slice("/__app".length), reply)) return;
+    /* ═══ 宿主共享库（M10-2）═══ `/__shared/<文件>`
+       给插件用的大依赖放这里**一份**，而不是每个插件各自打包一份
+       （`markdown-it` 在 md 插件里就占 138 KB，CodeMirror 更大 ——
+       用户每装一个编辑器插件就再下一份，那是纯浪费）。
+
+       能这么做是因为 CSP 的 `script-src 'self'` 匹配的是 **scheme+host+port，不是路径**：
+       插件页面和这条路由在同一个本地服务上，所以它 import 得到。
+
+       ⚠️ **`access-control-allow-origin` 不能省**（和 `/__plugin/` 同一条实测教训）：
+       插件在不透明源的 iframe 里（`origin: null`），而 `<script type="module">` 走
+       **CORS 模式**取 —— 不回这个头，模块脚本直接被拦，控制台报「blocked by CORS policy」。
+
+       ⚠️ **不放任何秘密**：这里的东西对每个插件都可见，而插件是第三方写的。
+       放的只能是我们发出去的公共依赖（CodeMirror 这一类），
+       **不放令牌、不放用户数据、不放项目路径**。 */
+    if (raw.startsWith("/__shared/") && serveStatic(SHARED_DIR, raw.slice("/__shared".length), reply, {
+      "access-control-allow-origin": "*",
+      /* 版本化的依赖可以长缓存；探针阶段先不缓存，免得改了看不到 */
+      "cache-control": "no-cache",
+    })) return;
     /* ═══ 插件 UI（M11-4）═══ `/__plugin/<id>/<路径>`
        每个插件的静态文件从它自己的目录出，**带 CSP 响应头**。
        前端把它装进 `<iframe sandbox="allow-scripts">`（不给 allow-same-origin）——

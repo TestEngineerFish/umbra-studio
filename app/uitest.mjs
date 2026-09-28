@@ -1150,6 +1150,41 @@ console.log("\n插件 UI 的边界（M11-4）");
         const head = await inner.locator("thead th").allTextContents().catch(() => []);
         ok(head[0] === "name", "表头对", head.join("/"));
 
+        /* ═══ 宿主共享库（M10-2 的地基）═══
+           插件能不能 import 一条**不在自己目录下**的模块（`/__shared/...`）。
+           这一条决定 CodeMirror 这类大依赖是**放宿主一份**、还是每个插件各自打包一份
+           （`markdown-it` 在 md 插件里就占 138 KB）。
+
+           理论依据：CSP 的 `script-src 'self'` 匹配 **scheme+host+port，不是路径**。
+           ⚠️ 理论要验 —— 插件在**不透明源**的 iframe 里（`sandbox` 不给 `allow-same-origin`），
+           而模块脚本走 **CORS 模式**取，`/__plugin/` 那条就为这个踩过一次（M11-9b）。
+           判据从插件 frame 里读 `window.__shared`，**不看截图**。 */
+        const sharedMsg = await inner.locator("body").evaluate(() => (window).__shared ?? "（探针没跑）").catch(() => "（读不到）");
+        ok(typeof sharedMsg === "string" && sharedMsg.startsWith("宿主共享库到了"),
+           "**插件 import 得到宿主共享库**（CodeMirror 这类大依赖放一份就够）", String(sharedMsg).slice(0, 70));
+        /* ⚠️ **「import 得到」和「跑得起来」是两件事**，后者才是 M10-2 的地基。
+           CM 靠 CSS-in-JS 注入 `<style>`（CSP 只给了 `style-src 'unsafe-inline'`），
+           还要 contenteditable / Range / ResizeObserver 那一套在沙箱 iframe 里都正常。
+           所以判据读的是**真实渲染出来的行数、行号、高亮片段数**，不是「没报错」。 */
+        /* ⚠️ **等它，别抢**（`packtest` §113 那条）：这份共享库 916 KB，
+           加载 + 解析 + CM 初始化要一会儿，而上面那句 `waitForTimeout(2500)`
+           是为别的判据定的。第一版没等，读到「探针没跑」**看着像 CM 在沙箱里跑不起来** ——
+           而它只是还没跑完。**抢跑的判据会把「慢」误报成「坏」。** */
+        let cmMsg = "（探针没跑）";
+        for (let i = 0; i < 40; i++) {
+          cmMsg = await inner.locator("body").evaluate(() => (window).__cm ?? "").catch(() => "");
+          if (cmMsg) break;
+          await pg.waitForTimeout(250);
+        }
+        if (!cmMsg) cmMsg = "（等了 10 秒还没跑完）";
+        /* ⚠️ **行号数不写死**：实测 3 行文本的 gutter 是 **4** 个 `cm-gutterElement`
+           （CM 自己多画了一个），那是它的实现细节，升个版本就可能变。
+           写死它等于把判据绑在 CM 的内部结构上。
+           行数 3 可以写死 —— 那是**探针自己写的** doc，我们控制得了。 */
+        const cmNums = String(cmMsg).match(/行 (\d+) · 行号 (\d+) · 高亮片段 (\d+)/);
+        ok(!!cmNums && cmNums[1] === "3" && Number(cmNums[2]) >= 3 && Number(cmNums[3]) > 0,
+           "**CodeMirror 在插件沙箱里真跑起来了**（行号 + 语法高亮都在）", String(cmMsg).slice(0, 70));
+
         /* ═══ chrome 由宿主代画（M11-9a）═══
            插件只有正文那块矩形，编辑栏 / 属性面板 / `⋯` 都在它够不着的地方。
            这几条钉的是「插件给数据 → 宿主照自己的形制画出来」这条路通不通。 */

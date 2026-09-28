@@ -121,8 +121,25 @@ const boot = await win.evaluate(() => ({
   has: !!window.__UD_APP,
   tokenLen: window.__UD_APP?.token?.length ?? 0,
   inUrl: /token=/.test(location.href),
+  url: window.__UD_APP?.url ?? null,
 }));
 ok(boot.has && boot.tokenLen > 0, "打包版里令牌经 preload 到了页面", `token ${boot.tokenLen} 字符`);
+
+/* ⚠️ **宿主共享库进包了吗**（M10-2 / `00` §一一七）。
+   `shared/codemirror.js` 是插件 import 的大依赖，而 `extraResources` 里
+   **一开始就漏了它** —— 漏了的话开发模式一切正常（源码目录下有 `shared/`），
+   **打包版里插件直接白屏**：import 404。这正是 §63.1 那一族
+   「可写状态写进 .app / doc 没进包」的同一种病：**清单式配置，加东西时忘了改它**。
+   判据从**产物**问，不从源码问。 */
+{
+  const r = await win.evaluate(async (base) => {
+    try {
+      const res = await fetch(base + "__shared/codemirror.js", { method: "HEAD" });
+      return `HTTP ${res.status}`;
+    } catch (e) { return "取不到：" + String(e).slice(0, 60); }
+  }, boot.url ?? new URL(win.url()).origin + "/");
+  ok(r === "HTTP 200", "**宿主共享库进包了**（插件的 CodeMirror 从这里来）", r);
+}
 ok(!boot.inUrl, "**而地址里不带令牌**（带了会进历史记录、也会被 webContents.getURL() 读到）", location_hint(boot));
 
 /* ⚠️ CDP 端口和那行日志都是**主进程起来之后才写的**，而「窗口出现」比它们早。
