@@ -59,6 +59,15 @@ export function useProject(core: Core, dir: string) {
   const fetchComments = useCallback(async (file: string) => {
     const r = await core.get<{ comments: Comment[] }>("comments?file=" + encodeURIComponent(file));
     if (sel.current === file) setComments(r.data?.comments ?? []);
+    void fetchStash();
+  }, [core]);
+  /** 暂存的评论（还没发给 AI、也还没标已处理）。
+   *  ⚠️ **不按当前文件过滤** —— 设计侧第十一轮 §二.5：「暂存区跟着当前会话的输入框走，
+   *  切文件不会丢；每条自己带着文件路径」。评审是跨文件的，一份份发才是反常的。 */
+  const [stash, setStash] = useState<Comment[]>([]);
+  const fetchStash = useCallback(async () => {
+    const r = await core.get<{ comments: Comment[] }>("comments");
+    setStash((r.data?.comments ?? []).filter((c) => !c.sentAt && !c.resolved));
   }, [core]);
   const fetchChanges = useCallback(async (file: string) => {
     const r = await core.get<ChangesData>("changes?file=" + encodeURIComponent(file));
@@ -129,6 +138,6 @@ export function useProject(core: Core, dir: string) {
   /** 某个文件最后一次变化的时刻。视图把它放进 deps 就会跟着重载。 */
   const fileTick = useCallback((path: string | null) => (path ? changedAt[path] ?? 0 : 0), [changedAt]);
 
-  return { drafts, indexed, selected, select, diags, comments, changes, source, checking, lastEvent, wsState, fileTick, fetchDrafts, fetchDiagnostics, fetchComments, fetchChanges, fetchSource, runCheck, rebuildIndex };
+  return { drafts, indexed, selected, select, diags, comments, stash, changes, source, checking, lastEvent, wsState, fileTick, fetchDrafts, fetchDiagnostics, fetchComments, fetchStash, fetchChanges, fetchSource, runCheck, rebuildIndex };
 }
 export type ProjectStore = ReturnType<typeof useProject>;

@@ -292,7 +292,13 @@ if (await openByName(".json")) {
 console.log("\n文件工具栏：四种格式的开关都上移了（M8-15b · 设计侧第七轮第四层）");
 const bar = () => pg.locator('[data-ud="file-toolbar"]');
 const countIn = async (loc, re) => (((await loc.innerText().catch(() => "")).match(re) ?? []).length);
-const pageCount = async (re) => (((await pg.locator("body").innerText()).match(re) ?? []).length);
+/* ⚠️ **在详情区里数，不是整页**（2026-09-28 加固）。
+   原来数的是 `body.innerText` —— 于是**聊天栏里 AI 的回复**只要提到「渲染」「画布」「结构」
+   任何一个词，对应那条判据就红。实测被一句「…比如读项目、渲染…」的回复绊倒过一次，
+   而那根本不是产品的问题。
+   判据的本意是「**视图**里没有第二条工具栏」，范围本来就该是详情区。 */
+const detail = () => pg.locator('[data-region="detail"]');
+const pageCount = async (re) => (((await detail().innerText().catch(async () => await pg.locator("body").innerText())).match(re) ?? []).length);
 
 for (const [suffix, label, probe] of [
   [".md", "Markdown", /渲染/g],
@@ -766,6 +772,72 @@ console.log("\n指针三档（M8-31 · 用户拍板）");
         { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: name }) });
     }, { name: SAMPLE });
     await pg.waitForTimeout(800);
+  }
+}
+
+/* ── 评论的暂存区 · 画布钉 · 全部发给 AI（M8-32 · 设计侧第十一轮 §二.5）──
+   暂存区放在**聊天输入框上方**（不在属性区）：暂存的东西最后都要交给 AI，
+   放在发送键旁边用户一直看得见「还有 N 条没发」。放进抽屉就又变成上一轮那个病。
+
+   ⚠️ 判据要钉「发过之后三处一起变」：`sentAt` 写上 · 暂存区清空 · **钉子变灰**。
+   只测其中一处的话，另两处坏了照样全绿。 */
+console.log("\n评论暂存区与画布钉（M8-32）");
+{
+  const SAMPLE = "_uitest暂存.dc.html";
+  const call = (route, body) => pg.evaluate(async ({ route, body }) => {
+    const b = window.__UD_APP;
+    const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/${route}?token=${encodeURIComponent(b.token)}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return await r.json();
+  }, { route, body });
+  const made = (await call("draft_write", { path: SAMPLE, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>暂存</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:24px;font-family:system-ui}h1{font-size:28px}button{margin-top:12px}</style></helmet>\n<div><h1>标题</h1><button>一颗钮</button></div></x-dc></body></html>` })).ok;
+  if (!made) ok(false, "建不出暂存验收样本");
+  else {
+    await pg.waitForTimeout(1500);
+    if (!(await openByName("_uitest暂存"))) ok(false, "样本没进树");
+    else {
+      await pg.waitForTimeout(2800);
+      const eb = pg.locator('[data-ud="toggle-edit"]');
+      if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }
+      await pg.locator('[role="group"][aria-label="指针"] button').filter({ hasText: "评论" }).click();
+      await pg.waitForTimeout(400);
+      /* 写两条 */
+      for (const [sel, text] of [["h1", "标题再大一号"], ["button", "这颗钮改成 danger"]]) {
+        const f = pg.frames().find((x) => /uitest暂存/.test(decodeURIComponent(x.url())) && !/S2-/.test(decodeURIComponent(x.url())));
+        if (!f) break;
+        await f.locator(sel).first().click({ timeout: 8000 }).catch(() => {});
+        await pg.waitForTimeout(900);
+        const box = pg.locator('[data-ud="comment-box"]');
+        if (!(await box.count())) break;
+        await box.locator("textarea").fill(text);
+        await box.locator("button", { hasText: "暂存" }).click();
+        await pg.waitForTimeout(1100);
+      }
+      const rows = pg.locator('[data-ud="stash-row"]');
+      ok(await pg.locator('[data-ud="stash"]').count() === 1 && await rows.count() === 2, "**暂存区在聊天输入框上方**，两条都在", `${await rows.count()} 行`);
+      const pins = pg.locator('[data-ud="pin"]');
+      ok(await pins.count() === 2, "画布上两枚评论钉", `${await pins.count()} 枚`);
+      ok((await pins.allTextContents()).join(",") === "1,2", "钉上的编号和暂存区对得上", (await pins.allTextContents()).join(","));
+      /* 「全部发给 AI」—— 会真开一轮 AI，所以点完立刻中断；判据看的是**标记那一刻**的三处变化 */
+      await pg.locator('[data-ud="stash-send"]').click();
+      await pg.waitForTimeout(2800);
+      ok(await rows.count() === 0, "**发出去之后暂存区立刻清空**（标记挂在「作业起成功」那一刻，不等 AI 跑完）");
+      ok(await pg.locator('[data-ud="pin"][data-sent="1"]').count() === 2, "**发过的钉变灰并留在画布上**（留着才知道「这一处我提过」）");
+      await pg.locator("button", { hasText: "中断" }).click().catch(() => {});
+      await pg.waitForTimeout(600);
+    }
+    /* 收尾：⚠️ 稿和评论要**分别**清 —— 稿进回收站，评论不跟着走（它挂在文件路径上）。
+       只删稿的话下一次跑会看到上一轮的评论，判据全乱（实测栽过）。 */
+    await openByName(".md");
+    await pg.waitForTimeout(500);
+    await call("delete_draft", { file: SAMPLE });
+    const left = await pg.evaluate(async () => {
+      const b = window.__UD_APP;
+      const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/comments?token=${encodeURIComponent(b.token)}`);
+      return ((await r.json()).data?.comments ?? []).map((c) => ({ id: c.id, file: c.file }));
+    });
+    for (const c of left.filter((x) => x.file === SAMPLE)) await call("comment_delete", { id: c.id });
+    await pg.waitForTimeout(500);
   }
 }
 

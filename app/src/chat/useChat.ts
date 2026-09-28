@@ -110,7 +110,13 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
     return () => window.removeEventListener("ud-pick-channel", on);
   }, []);
 
-  const send = useCallback(async (textIn?: string, selIn?: Selection[]) => {
+  /** 发一轮。
+   *  ⚠️ **这个 Promise 要等到整轮跑完才 resolve**（下面轮询最多 12 分钟）。
+   *  所以「消息已经交出去了」那一刻的事情不能挂在它后面 —— 用 `onStarted`（M8-32）：
+   *  暂存区就是这样在点下去的**那一瞬**清空的，而不是等 AI 干完。
+   *  第一版把「标记已发」写在 `await send()` 之后，实测点完暂存区半分钟不动、
+   *  用户只会以为没发出去而重复点。 */
+  const send = useCallback(async (textIn?: string, selIn?: Selection[], onStarted?: () => void) => {
     const text = (textIn ?? input).trim();
     if (!text || running) return;
     const sels = selIn ?? ctxRef.current.selections;
@@ -134,6 +140,9 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
       const started = await core.post<{ jobId: string; sessionId?: string }>("chat_send", body);
       if (!started.ok || !started.data) throw new Error(started.errors?.[0]?.message ?? "起作业失败");
       job.current = started.data.jobId; const sid = started.data.sessionId ?? sessionId!; setSessionId(sid);
+      /* 作业起成功了 —— 这一刻「已经交给 AI」就成立，不必等它跑完。
+         起失败会走上面那个 throw，`onStarted` 不会被调用，所以不会错标。 */
+      onStarted?.();
       type Done = { running?: boolean; error?: { message?: string; code?: string }; result?: { data?: { usage?: ChatUsage; interrupted?: boolean; changes?: Array<{ path: string; from: string; to: string; summary: string }> }; errors?: Array<{ message?: string; code?: string }> } };
       let done: Done | null = null;
       for (let i = 0; i < 600 && !done; i++) {

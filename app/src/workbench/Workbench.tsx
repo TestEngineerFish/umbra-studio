@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Core, type ProjectHandle } from "../api/client";
 import { draftTitle, type Picked, type Selection } from "../api/types";
 import { ChatRail } from "../chat/ChatRail";
+import { composeStash } from "../chat/Stash";
 import { useChat } from "../chat/useChat";
 import type { HostAdapter } from "../host";
 import { PANEL_W, TREE_W, computeYield, kindOf, mem, type LayoutState, type PanelId } from "../layout/layout";
@@ -334,7 +335,35 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
 
   /* 会话栏**固定在左**（第八轮：换边那一态有意删了），所以不再有 side / 换边 / 关闭三个 props。
      关会话只有一个入口：顶栏的左栏钮（或 ⌘\）。 */
-  const rail = <ChatRail chat={chat} selections={selections} onDropSelection={(i) => setSelections((xs) => xs.filter((_, j) => j !== i))} onClearSelections={() => setSelections([])} contextLabel={dirMode ? (dirRel || "这个目录") : (file ? draftTitle(file) : null)} />;
+  /** 「全部发给 AI」（M8-32）：合成**一条**消息发出去，成功后一次把这几条标成已发。
+   *  ⚠️ 一条而不是一条一轮 —— agent 循环每一步都要重发工具表 + 系统提示 + 全部历史，
+   *  五条评论发五轮就是五倍的钱（`CLAUDE.md` 那条读数）。 */
+  const sendStash = useCallback(async () => {
+    const rows = store.stash;
+    if (!rows.length) return;
+    expandChat();
+    /* ⚠️ 标记挂在 `onStarted` 上，**不是 `await send()` 之后** ——
+       send 要等整轮 AI 跑完才 resolve（最多 12 分钟轮询）。
+       等它的话用户点完看到暂存区半分钟不动，只会以为没发出去而重复点。
+       起作业失败时 `onStarted` 不会被调用，所以也不会错标。 */
+    void chat.send(composeStash(rows), undefined, () => {
+      /* ⚠️ 走的是 **HTTP 路由名** `comments_sent`，不是能力名 `mark_comments_sent`。
+         第一版写了能力名，结果 404 而界面只是"暂存区没清空" —— 而 404 的提示
+         被我自己的 `if (!r.ok)` 兜住变成一句 toast，很容易看成"网络抖了一下"。 */
+      void core.post("comments_sent", { ids: rows.map((c) => c.id) }).then((r) => {
+        if (!r.ok) toast("这几条发出去了，但没标成「已发」", r.errors?.[0]?.message, "error");
+        void store.fetchStash();
+        if (file) void store.fetchComments(file);
+      });
+    });
+  }, [store, chat, core, file, expandChat]);
+
+  const rail = <ChatRail chat={chat} selections={selections} onDropSelection={(i) => setSelections((xs) => xs.filter((_, j) => j !== i))} onClearSelections={() => setSelections([])} contextLabel={dirMode ? (dirRel || "这个目录") : (file ? draftTitle(file) : null)}
+    currentFile={dirMode ? null : file}
+    stash={store.stash}
+    onSendStash={sendStash}
+    onDropStash={(id) => void core.post("comment_delete", { id }).then(() => { void store.fetchStash(); if (file) void store.fetchComments(file); })}
+    onLocateComment={(c) => { if (c.file !== file) open(c.file); setTimeout(() => setPicked({ file: c.file, node: c.node, tag: c.tag ?? "" }), c.file !== file ? 600 : 0); }} />;
   /* ═══ 顶栏 38px · 只放两类：「应用 / 项目」和「窗口布局」（设计侧第七轮）═══
      判据是「点了它，变的是什么」：变的是整个项目或整扇窗的才配站在这儿。
      项目路径从顶栏拿掉了 —— 它占 280px，却只是信息，没人点它，现在进项目菜单。 */

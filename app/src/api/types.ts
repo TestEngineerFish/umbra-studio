@@ -7,7 +7,11 @@ export interface Draft {
   updatedAt: string | null; states: string[]; imports: string[]; importedBy: string[];
 }
 export interface Diag { level: "error" | "warning" | "info"; code?: string; message: string; fix?: string; line?: number; col?: number }
-export interface Comment { id: string; file: string; node: string; tag?: string; text: string; createdAt: string; resolved: boolean }
+/** 钉在节点上的一条评论。
+ *  ⚠️ `sentAt` 和 `resolved` 是**两个维度**（M8-32）：前者「交给 AI 了没」，后者「人说处理完了没」。
+ *  发过 ≠ 处理完（AI 可能改错），处理完也不必发过（自己动手改的）。
+ *  暂存区看的是 `!sentAt && !resolved`；画布上发过的钉变灰。 */
+export interface Comment { id: string; file: string; node: string; tag?: string; text: string; createdAt: string; resolved: boolean; sentAt?: string | null; line?: number | null }
 export interface ChangeRow { level?: string; at?: string; message: string }
 export interface VersionMeta { src?: string; time?: string; summary?: string; note?: string }
 export interface ChangesData { file: string; versions: string[]; versionMeta: Record<string, VersionMeta>; diff?: { changes: Array<{ level?: string; at?: string; message?: string; target?: string; kind?: string }> } }

@@ -51,11 +51,13 @@ export function CommentBox({ ctx }: { ctx: ViewContext }) {
   const stash = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
-    const r = await ctx.core.post("comment_add", { file: d.file, node: at.node, tag: at.tag, text: text.trim() });
+    /* 行号**存进这条评论**：「全部发给 AI」时要一起给 AI，
+       而那会儿节点可能已经被改过、地址都变了（M8-32） */
+    const r = await ctx.core.post("comment_add", { file: d.file, node: at.node, tag: at.tag, text: text.trim(), ...(line !== null ? { line } : {}) });
     setBusy(false);
     if (!r.ok) { ctx.ui.toast("存不下这条评论", r.errors?.[0]?.message, "error"); return; }
     void ctx.store.fetchComments(d.file);
-    ctx.ui.toast("已暂存", "在属性区的「评论」页，随时能发给 AI", "ok");
+    ctx.ui.toast("已暂存", "在聊天输入框上方那一叠里，评完一起发", "ok");
     d.closeComment();
   };
   const toAI = () => {

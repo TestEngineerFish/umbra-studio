@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { History } from "./History";
-import { SELECTION_ICON, type ChatMessage, type Selection, type ToolCall } from "../api/types";
+import { SELECTION_ICON, type ChatMessage, type Comment, type Selection, type ToolCall } from "../api/types";
 import type { ChatStore } from "./useChat";
 import { renderMd, renderMdInline } from "../ui/markdown";
 import { Popover, usePopover } from "../ui/Popover";
+import { Stash } from "./Stash";
 
 /** 会话栏，形制按 S9：用户句右对齐；一个 AI 回合共用一根左栏，文本与工具行按出现顺序排；变更卡带回退；「已选中」药丸紧挨输入框上方 */
-export function ChatRail({ chat, selections, onDropSelection, onClearSelections, contextLabel }: { chat: ChatStore; selections: Selection[]; onDropSelection: (i: number) => void; onClearSelections: () => void; contextLabel: string | null }) {
+export function ChatRail({ chat, selections, onDropSelection, onClearSelections, contextLabel, currentFile, stash, onSendStash, onDropStash, onLocateComment }: { chat: ChatStore; selections: Selection[]; onDropSelection: (i: number) => void; onClearSelections: () => void; contextLabel: string | null; currentFile: string | null; stash: Comment[]; onSendStash: () => void | Promise<void>; onDropStash: (id: string) => void; onLocateComment: (c: Comment) => void }) {
   const body = useRef<HTMLDivElement>(null);
   /* ── 别处把话头递过来（M8-31）──
      现在的来路是「这份稿没有节点地址 → 改用 AI」那颗钮：它已经把文件药丸挂上、
@@ -91,6 +92,9 @@ export function ChatRail({ chat, selections, onDropSelection, onClearSelections,
         ) : <div key={i} className="text-xs text-err px-1">{n.text}</div>)}
         {chat.running && <div className="flex gap-2"><span className="mt-1 w-2 h-2 rounded-full border border-accent border-r-transparent animate-spin shrink-0" /><span className="text-xs text-muted">正在读稿、调工具、落盘…</span></div>}
       </div>
+      {/* 暂存的评论：**在选区药丸再上面一层**（设计侧第十一轮 §二.5）。
+          放在发送键旁边，用户一直看得见「还有 N 条没发」。 */}
+      <Stash stash={stash} currentFile={currentFile} running={chat.running} onSendAll={onSendStash} onDrop={onDropStash} onLocate={onLocateComment} />
       {selections.length > 0 && <Pills selections={selections} onDrop={onDropSelection} onClear={onClearSelections} />}
       </>}
       {/* 输入区在历史模式下也留着 —— 打字就等于「在当前这条会话里继续说」，不必先退出历史 */}

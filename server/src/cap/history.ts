@@ -9,7 +9,7 @@ import {
   changesSince, diffDrafts, humanTime, listVersions, projectChangesSince,
   readVersionMeta, resolveSnapshot, toMarkdown,
 } from "../history.js";
-import { addComment, deleteComment, listComments, updateComment } from "../comments.js";
+import { addComment, deleteComment, listComments, markCommentsSent, updateComment } from "../comments.js";
 import { listReferences } from "../refs.js";
 import { buildIndex, collectIndex, indexStatus, isToolPage } from "../indexpage.js";
 import { defineCap } from "./registry.js";
@@ -202,20 +202,34 @@ defineCap({
   input: {
     file: z.string(), node: z.string().describe("data-ud-node 的值"),
     text: z.string(), tag: z.string().optional(),
+    /* 行号存下来而不是每次查：「全部发给 AI」时要一起给 AI，
+       而那会儿节点可能已经被改过、地址都变了（M8-32） */
+    line: z.number().optional().describe("那个节点在源码第几行（写评论时的，只是线索）"),
   },
   http: { route: "comment_add", method: "POST" },
-  run: async ({ file, node, text, tag }, c) => {
+  run: async ({ file, node, text, tag, line }, c) => {
     const proj = p(c);
-    return envelope(await addComment(proj.dir, { file: await rel(c, file), node, tag, text }));
+    return envelope(await addComment(proj.dir, { file: await rel(c, file), node, tag, text, line }));
   },
 });
 
 defineCap({
   name: "update_comment", title: "改一条评论 / 标记已处理", scope: "project",
   summary: "改文字，或把它标成已处理。",
-  input: { id: z.string(), text: z.string().optional(), resolved: z.boolean().optional() },
+  input: { id: z.string(), text: z.string().optional(), resolved: z.boolean().optional(), sent: z.boolean().optional() },
   http: { route: "comment_update", method: "POST" },
-  run: async ({ id, text, resolved }, c) => envelope(await updateComment(p(c).dir, id, { text, resolved })),
+  run: async ({ id, text, resolved, sent }, c) => envelope(await updateComment(p(c).dir, id, { text, resolved, sent })),
+});
+
+defineCap({
+  name: "mark_comments_sent", title: "把几条评论标成已发给 AI", scope: "project",
+  summary: [
+    "「暂存的评论 · 全部发给 AI」合成的是**一条**消息，所以这几条的标记也一次做完。",
+    "⚠️ `sentAt` 和 `resolved` 是两个维度：发过 ≠ 处理完（AI 可能改错），处理完也不必发过（自己改的）。",
+  ].join("\n"),
+  input: { ids: z.array(z.string()).min(1) },
+  http: { route: "comments_sent", method: "POST" },
+  run: async ({ ids }, c) => envelope(await markCommentsSent(p(c).dir, ids)),
 });
 
 defineCap({
