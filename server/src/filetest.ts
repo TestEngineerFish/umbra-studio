@@ -87,6 +87,46 @@ const esc = await writeAnyFile(p, "../../跑出去.md", "x");
 ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   esc.path === "跑出去.md" && existsSync(join(DIR, "跑出去.md")) && !existsSync(join(DIR, "..", "跑出去.md")), { path: esc.path });
 
+/* ── 项目根的边界：**同前缀的兄弟目录**（issue #19，2026-09-28）──
+   这一条的要害不是「`..` 能不能跳出去」（那个早有判据），而是
+   `resolve(base, rel).startsWith(base)` **不带分隔符**：
+   项目叫 `Umbra_design` 时，`../Umbra_design2` 解出来是 `/…/Umbra_design2`，
+   `startsWith` 判它「在项目内」。任何以项目名为前缀的兄弟目录都能穿进去，
+   而报错文案承诺的是「路径跨出了项目目录」。
+   **承诺了却不成立的边界比没有边界更糟。**
+
+   判据直接打在这上面：拿一个真实的同前缀路径问那份判定函数。
+   ⚠️ 不去真写盘 —— 判据自己不该在仓库外面造文件（同 `plugintest` 那条纪律）。 */
+{
+  const { isInside } = await import("./pathguard.js");
+  const base = "/tmp/projects/Umbra_design";
+  const cases: Array<[string, boolean]> = [
+    ["/tmp/projects/Umbra_design", true],                        // 项目根自己：合法（在根上建目录）
+    ["/tmp/projects/Umbra_design/a/b.dc.html", true],
+    ["/tmp/projects/Umbra_design2", false],                      // ← 同前缀兄弟目录，原来判成「内」
+    ["/tmp/projects/Umbra_design_old/x.dc.html", false],         // ← 同上
+    ["/tmp/projects/other/x.dc.html", false],
+    ["/tmp/projects", false],
+  ];
+  let allRight = true;
+  for (const [abs, want] of cases) {
+    const got = isInside(base, abs);
+    if (got !== want) { allRight = false; console.log(`    ✗ ${abs} → ${got}，该是 ${want}`); }
+  }
+  ok("**同前缀的兄弟目录不算项目内**（issue #19：原来 startsWith 不带分隔符，Umbra_design2 能穿过去）", allRight);
+
+  /* 六处调用方共用这一份判定 —— 少一处没跟上就等于没修。
+     判据：那六个文件里**不许再出现** `startsWith(p.dir)` 这种写法。 */
+  const { readFile: rf } = await import("node:fs/promises");
+  const guarded = ["write.ts", "project.ts", "refs.ts"];
+  const leftovers: string[] = [];
+  for (const f of guarded) {
+    const src = await rf(new URL(`../src/${f}`, import.meta.url), "utf8").catch(() => "");
+    if (/startsWith\(p\.dir\)/.test(src)) leftovers.push(f);
+  }
+  ok("六处调用方都换成了共用的判定（没有残留的 startsWith(p.dir)）", leftovers.length === 0, { leftovers });
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

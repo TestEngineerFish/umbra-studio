@@ -5,6 +5,7 @@
  * 所以生命周期操作必须先能回答「谁引用了我」。
  */
 import { readFile, rename, writeFile } from "node:fs/promises";
+import { isInside } from "./pathguard.js";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseDraft } from "./draft.js";
@@ -49,7 +50,10 @@ export async function buildRefGraph(p: Project): Promise<RefGraph> {
       const baseDir = dirname(abs);
       const targetAbs = resolve(baseDir, im.name + ".dc.html");
       // 算出相对于项目根的路径
-      const relTarget = targetAbs.startsWith(p.dir)
+      /* issue #19：这一处算的是「引用指向的稿在项目里的相对路径」。
+         判错的后果是把**项目外**一份同前缀目录里的稿当成项目内的引用，
+         引用图谱和改名时的引用改写都会跟着指到别处去。 */
+      const relTarget = isInside(p.dir, targetAbs)
         ? targetAbs.slice(p.dir.length + 1).split(sep).join("/")
         : null;
       imports.push({
@@ -288,7 +292,7 @@ export async function moveDraft(
 
   // 计算目标路径
   const targetAbs = resolve(p.dir, targetDir);
-  if (!targetAbs.startsWith(p.dir)) {
+  if (!isInside(p.dir, targetAbs)) {                // issue #19
     throw new Error("目标目录跨出了项目目录");
   }
 

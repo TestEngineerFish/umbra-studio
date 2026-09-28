@@ -61,7 +61,7 @@ const serve = await serveStart(p, opt("--port") ? Number(opt("--port")) : undefi
 const built = await buildIndex(p, serve.url);
 // serve.ts 对静态服务做了 unref（MCP 不该被它挡住退出）——
 // 前台用法里它就是唯一的存活理由，必须 ref 回来，否则打印完地址就退了。
-serveHold(p.name);
+serveHold(p.dir);   // issue #20
 
 const entry = serve.url + "__app/";   // 应用前端本体（doc/00 §四十六）；build_index 的入口页仍在 index.dc.html
 console.log("");

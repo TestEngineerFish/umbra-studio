@@ -586,7 +586,7 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
   const designed = join(TOOL_ROOT, "ui", "S1-稿件索引.dc.html");
   const useDesigned = existsSync(designed);
   const source = useDesigned ? "设计侧 ui/S1-稿件索引.dc.html" : "工具内置过渡页";
-  const serve = serveOf(p.name);
+  const serve = serveOf(p.dir);   // issue #20：按目录查，项目名不唯一
   const api = serve ? { base: serve.url.replace(/\/$/, "") + "/__ud/", token: serve.token } : null;
   const raw = injectIndexData(useDesigned ? await readFile(designed, "utf8") : page(data), data, api);
 

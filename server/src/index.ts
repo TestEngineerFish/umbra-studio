@@ -381,7 +381,7 @@ server.registerTool("serve_stop", {
   inputSchema: { project: z.string() },
 }, async ({ project }) => run(async () => {
   const p = await loadProject(project);
-  return envelope({ project: p.name, ...serveStop(p.name) });
+  return envelope({ project: p.name, ...serveStop(p.dir) });   // issue #20：按目录停
 }));
 
 server.registerTool("serve_status", {

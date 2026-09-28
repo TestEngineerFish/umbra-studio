@@ -9,6 +9,7 @@
  * diff 在下一批。快照从第一次落盘就开始攒，所以不会丢历史。
  */
 import { emit } from "./events.js";
+import { isInside } from "./pathguard.js";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -82,7 +83,9 @@ export async function writeDraft(
   }
 
   const abs = resolveInProject(p, relPath);
-  if (!abs.startsWith(p.dir)) {
+  /* ⚠️ `isInside` 而不是 `startsWith`（issue #19）：后者不带分隔符，
+     `../<项目名>2` 这种兄弟目录会被判成「项目内」。判定收进 `pathguard.ts` 一处。 */
+  if (!isInside(p.dir, abs)) {
     throw new ToolError(
       err(X.BAD_INPUT, relPath, { kind: "path", name: relPath },
         "路径跨出了项目目录", { fix: "path 必须是相对项目根的路径" }));

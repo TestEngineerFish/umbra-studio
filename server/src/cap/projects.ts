@@ -173,9 +173,11 @@ defineCap({
  *  延迟 300ms 是为了让**这次请求的响应先发出去** —— 服务停在响应之前，
  *  调用方拿到的是连接断开，看起来像失败，而事情其实做成了。
  *  动态 import 避免 `cap/` ⇄ `serve.ts` 的循环依赖。 */
-async function stopServing(name: string): Promise<void> {
+/** ⚠️ 传**目录**不是项目名（issue #20）：按名字停会停掉另一个同名项目的服务，
+ *  那个项目的窗口随即断连，而用户只是归档了自己这一个。 */
+async function stopServing(dir: string): Promise<void> {
   const { serveStop } = await import("../serve.js");
-  setTimeout(() => { void Promise.resolve(serveStop(name)).catch(() => { /* 本来就没开 */ }); }, 300);
+  setTimeout(() => { void Promise.resolve(serveStop(dir)).catch(() => { /* 本来就没开 */ }); }, 300);
 }
 
 defineCap({
@@ -186,7 +188,7 @@ defineCap({
   run: async (_i, c) => {
     const proj = p(c);
     const r = await archiveProject(proj);
-    await stopServing(proj.name);
+    await stopServing(proj.dir);
     return envelope({ ...r, note: "项目目录已移走，这个服务随即关闭" });
   },
 });
@@ -205,7 +207,7 @@ defineCap({
     const proj = p(c);
     if (typed !== proj.name) throw new Error(`要把项目名敲一遍才能删（typed 要等于 ${proj.name}）`);
     const r = await deleteProject(proj);
-    await stopServing(proj.name);
+    await stopServing(proj.dir);
     return envelope({ ...r, note: "项目目录已移走，这个服务随即关闭" });
   },
 });

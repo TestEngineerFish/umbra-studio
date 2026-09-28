@@ -40,6 +40,7 @@ async function main() {
     await step8_workspaceTracking();
     await step9_updateProject();
     await step10_archiveProject();
+    await step11_sameNameProjects();
 
     bar("总结");
     if (failed.length === 0) {
@@ -312,6 +313,47 @@ async function step10_archiveProject() {
   // 验证归档目录存在
   if (!existsSync(archiveR.archivePath)) { fail("归档目录不存在"); return; }
   ok("归档目录存在");
+}
+
+/** 两个**不同目录、同名**的项目（issue #20）。
+ *
+ *  `project.json` 的 name 不唯一，而服务表原来按名字索引：打开第二个同名项目时
+ *  `running.get(name)` 命中，**原样返回第一个项目的服务** ——
+ *  用户看到的、编辑的、让 AI 改的都是第一个项目的文件，界面标题却写着第二个。
+ *  改动落在错的项目上，而且界面一句话都不说。
+ *
+ *  判据钉在「两条服务各是各的」上：端口不同、`dir` 各自正确、停掉一个不影响另一个。
+ */
+async function step11_sameNameProjects() {
+  bar("同名项目不串号（issue #20）");
+  const { serveStart, serveStop, serveOf } = await import("./serve.js");
+  const a = join(TEMP, "同名A", "Demo");
+  const b = join(TEMP, "同名B", "Demo");        // 目录不同、name 同为 Demo
+  for (const d of [a, b]) {
+    await mkdir(d, { recursive: true });
+    await writeFile(join(d, "project.json"), JSON.stringify({ name: "Demo" }, null, 2), "utf8");
+  }
+  const pa = await loadProject(a);
+  const pb = await loadProject(b);
+  if (pa.name !== pb.name) { fail(`前提不成立：两个项目的 name 该相同，实际 ${pa.name} / ${pb.name}`); return; }
+
+  const sa = await serveStart(pa);
+  const sb = await serveStart(pb);
+  if (sa.port === sb.port) fail(`同名项目串号了：两个项目拿到同一个服务（端口 ${sa.port}）`);
+  else ok(`同名项目各起各的服务（端口 ${sa.port} / ${sb.port}）`);
+  if (sa.dir === sb.dir) fail("两条服务的 dir 相同 —— 第二个项目拿到的是第一个的服务");
+  else ok("两条服务的 dir 各自正确");
+
+  /* 按目录查，各自查得到自己的 */
+  const oa = serveOf(a), ob = serveOf(b);
+  if (oa?.port === sa.port && ob?.port === sb.port) ok("按目录查服务，各自查得到自己的");
+  else fail(`按目录查串号了：${oa?.port} / ${ob?.port}（该是 ${sa.port} / ${sb.port}）`);
+
+  /* 停掉一个不影响另一个 —— 原来 `serveStop(name)` 会停掉另一个同名项目的服务 */
+  serveStop(a);
+  if (serveOf(a) === null && serveOf(b)?.port === sb.port) ok("停掉一个，另一个还活着（原来按名字停会误伤）");
+  else fail("停一个把另一个也停了（或者停错了那一个）");
+  serveStop(b);
 }
 
 // ─── 入口 ───

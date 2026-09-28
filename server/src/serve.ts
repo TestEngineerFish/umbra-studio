@@ -72,6 +72,9 @@ const PLUGIN_CSP = [
 ].join("; ");
 
 /** 进程级注册表：项目名 → 正在跑的服务 */
+/** 一条服务的键：**规范化的绝对目录**（issue #20）。
+ *  用目录而不是项目名，因为 `project.json` 的 name 不唯一。 */
+const keyOf = (dir: string): string => resolve(dir);
 const running = new Map<string, Running>();
 
 function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | null): Server {
@@ -236,7 +239,12 @@ export async function serveStart(p: Project, wantPort?: number): Promise<ServeIn
      列表里却还是「其他」，看着像「插件装上了但没反应」。 */
   kindsReady ??= registerPluginKinds().catch(() => []);
   await kindsReady;
-  const cur = running.get(p.name);
+  /* ⚠️ **按目录索引，不按项目名**（issue #20）：`p.name` 来自 `project.json`，
+     **它不唯一** —— 首页确实会出现不同目录的同名项目。
+     原来 `running.get(p.name)` 命中之后原样返回**另一个项目**的服务：
+     用户看到的、编辑的、让 AI 改的都是第一个项目的文件，而界面标题写的是第二个。
+     改动落在错的项目上，而且界面一句话都不说。 */
+  const cur = running.get(keyOf(p.dir));
   if (cur) return info(p.name, cur);
 
   const rec: Running = { server: null as unknown as Server, port: 0, dir: p.dir,
@@ -263,14 +271,15 @@ export async function serveStart(p: Project, wantPort?: number): Promise<ServeIn
      unref 之后进程打印完地址就退了，只留一个没人监听的 URL。
      实测踩到（curl 全 000），所以补了下面这个 serveHold()。 */
   rec.server.unref();
-  running.set(p.name, rec);
+  running.set(keyOf(p.dir), rec);
   return info(p.name, rec);
 }
 
 /** 前台用法：把服务重新 ref 回来，让它撑住进程。
  *  只有 `ui` 这类自己就是服务的入口才调它 —— MCP 不调。 */
-export function serveHold(name: string): boolean {
-  const r = running.get(name);
+/** ⚠️ 参数是**项目目录**，不是项目名（issue #20）。 */
+export function serveHold(dir: string): boolean {
+  const r = running.get(keyOf(dir));
   if (!r) return false;
   r.server.ref();
   return true;
@@ -295,23 +304,29 @@ export async function hubStart(wantPort?: number): Promise<{ url: string; port: 
   return { url: `http://127.0.0.1:${rec.port}/`, port: rec.port, token: rec.token };
 }
 
-export function serveStop(name: string): { stopped: boolean } {
-  const r = running.get(name);
+/** ⚠️ 参数是**项目目录**，不是项目名（issue #20）——
+ *  按名字停会停掉另一个同名项目的服务，那个项目的窗口随即断连。 */
+export function serveStop(dir: string): { stopped: boolean } {
+  const key = keyOf(dir);
+  const r = running.get(key);
   if (!r) return { stopped: false };
   r.unsubscribe?.(); r.watcher?.close(); r.wss?.close();
   r.server.close();
-  running.delete(name);
+  running.delete(key);
   return { stopped: true };
 }
 
 /** 这个项目当前的服务信息（没起就是 null）—— build_index 要拿令牌注入壳页面 */
-export function serveOf(name: string): ServeInfo | null {
-  const r = running.get(name);
-  return r ? info(name, r) : null;
+/** ⚠️ 参数是**项目目录**，不是项目名（issue #20）。 */
+export function serveOf(dir: string): ServeInfo | null {
+  const r = running.get(keyOf(dir));
+  return r ? info(r.project?.name ?? "(hub)", r) : null;
 }
 
 export function serveStatus(): ServeInfo[] {
-  return [...running.entries()].map(([n, r]) => info(n, r));
+  /* 键现在是目录，而对外报的仍是项目名 —— 名字从那条服务自己记着的 `project` 取
+     （hub 没有项目，写 `(hub)`）。 */
+  return [...running.values()].map((r) => info(r.project?.name ?? "(hub)", r));
 }
 
 /* ── WebSocket（M7-4）：/__ud/ws?token=<令牌>。令牌与 Origin 的门槛和 HTTP 一样。

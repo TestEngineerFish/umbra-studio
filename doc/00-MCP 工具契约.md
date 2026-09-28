@@ -6515,3 +6515,63 @@ React 的 `onWheel` 挂的是 **passive listener**，在里面 `preventDefault()
 | 画好后 | — | 1 | 0（留在 DOM 里缓存） |
 
 切回上一份 **110ms**；池最多两份（实测最重的稿一份约 5–10 MB）。
+
+## 一〇六、#19 项目根的边界 · #20 同名项目串号（2026-09-28）
+
+两条代码审查报的 p1，都是「**判定写在了错的维度上**」。
+
+### 106.1 #19：`startsWith` 不带分隔符
+
+「路径不许跨出项目目录」在**六处**各写了一遍，写法都是
+`resolve(base, rel).startsWith(base)`。`resolve` 会吃掉 `..`，而 `startsWith`
+只比字符串前缀 —— 项目目录叫 `Umbra_design` 时：
+
+```
+../Umbra_design_old/x.dc.html  →  /…/Umbra_design_old/x.dc.html   判为「项目内」✗
+../Umbra_design2               →  /…/Umbra_design2                判为「项目内」✗
+../other/x.dc.html             →  /…/other/x.dc.html              判为「项目外」✓
+```
+
+**任何以项目名为前缀的兄弟目录都能穿进去。** `create_folder("../Umbra_design2")`
+先把那个兄弟目录建出来，之后 `write_draft` / `create_draft` / `move_draft` 就能往里写 ——
+而报错文案承诺的是「路径跨出了项目目录」。
+
+> **承诺了却不成立的边界，比没有边界更糟。** 没有边界的时候人会自己小心；
+> 有一条假边界，人就不再小心了。
+
+修法和插件那边同一条纪律（§101.2）：判定收进 `server/src/pathguard.ts` **一处**，
+六处调用方全部引用它；`plugin/paths.ts` 的两道闸也改成引用它，不再各自实现一份。
+（两处的语义差一点：项目根**自己算在里面**（在根上建目录是合法的），
+而插件那边要的是「在它**下面**」。差别写在注释里。）
+
+判据两条：① 拿一串真实的同前缀路径问那份判定函数 ② **六处调用方不许再出现
+`startsWith(p.dir)`** —— 少一处没跟上就等于没修。
+
+### 106.2 #20：服务表按项目名索引，而项目名不唯一
+
+`project.json` 的 `name` 没有唯一性约束（首页确实会出现不同目录的同名项目，见 #12）。
+而服务表 `running` 的键是它。于是打开第二个同名项目时 `running.get(name)` 命中，
+**原样返回第一个项目的服务**：
+
+- 用户看到的、编辑的、让 AI 改的都是**第一个**项目的文件，界面标题写着第二个
+- 归档 / 删除第二个时 `serveStop(name)` 停掉的是**第一个**的服务，那个窗口随即断连
+
+键改成**规范化的绝对目录**，`serveStart` / `serveStop` / `serveOf` / `serveHold`
+四个入口和五处调用方一起改。对外报的仍是项目名（从那条服务自己记着的 `project` 取）。
+
+判据（`lifecycletest` 新增一节）：两个不同目录、同名 `project.json` 的项目先后起服务 ——
+端口不同 · `dir` 各自正确 · 按目录查各查得到自己的 · **停掉一个另一个还活着**。
+
+### 106.3 一条测试卫生的坑
+
+`npm --prefix server run filetest` 的脚本**不带 build**（`plugintest` 带）。
+我改完 src 直接跑，判据一条都没打印，一度以为是插入位置不对 ——
+其实跑的是旧 `dist`。这和 `CLAUDE.md` §3.5 记的「源码已经回退，跑的是旧产物」是同一族：
+**读数来自产物，而产物未必跟得上源码。**
+
+### 106.4 读数
+
+`lifecycletest` 全通（+4 条）· `filetest` 全通（+2 条）· `selftest` 零 error ·
+`plugintest` 60/60 · `captest` 235/235 · `kindtest` 34/34 · `rendertest` 15/15。
+两条都做了反向验证：换回 `startsWith` → 同前缀那条报红；键退回按名字 →
+「同名项目串号了：两个项目拿到同一个服务」当场抓到。

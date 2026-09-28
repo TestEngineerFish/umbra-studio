@@ -1,4 +1,5 @@
 import path, { type PlatformPath } from "node:path";
+import { isInside as insideOrSelf } from "../pathguard.js";
 
 /** 插件目录路径的两道闸（issue #23 / #25，2026-09-27）。
  *
@@ -39,8 +40,10 @@ export const PLUGIN_VERSION_RE = /^[0-9]+(\.[0-9]+){0,2}(-[0-9a-z.]+)?$/;
  *
  *  `base` 自己不算在里面：要写的是它**下面**的文件，写到目录自己身上没有意义。 */
 export function isInside(base: string, abs: string, p: PlatformPath = path): boolean {
-  const rel = p.relative(base, abs);
-  return rel !== "" && !rel.startsWith("..") && !p.isAbsolute(rel);
+  /* 借项目那一份做「在不在里面」的判定，**这里额外要求「在它下面」** ——
+     `base` 自己不算（要写的是它里面的文件，写到目录身上没有意义）。
+     判定本身只有一份：`pathguard.ts`（issue #19 把它收拢到那里）。 */
+  return p.relative(base, abs) !== "" && insideOrSelf(base, abs, p);
 }
 
 /** 一个插件在某个根下的 id 目录。形状不对就**抛**，不返回 null ——

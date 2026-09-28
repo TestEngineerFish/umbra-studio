@@ -7,6 +7,7 @@
  *  - git 自动探测租户目录下有没有 .git，不手填。
  */
 import { readdir, readFile, stat, rename, cp } from "node:fs/promises";
+import { isInside } from "./pathguard.js";
 import { existsSync, cpSync } from "node:fs";
 import { join, resolve, relative, dirname, basename, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,7 +187,8 @@ export async function listDrafts(p: Project): Promise<string[]> {
 /** 稿的绝对路径。path 是相对租户根的。不存在就抛 E_DRAFT_NOT_FOUND。 */
 export function draftPath(p: Project, path: string): string {
   const abs = resolve(p.dir, path);
-  if (!abs.startsWith(p.dir)) {
+  /* issue #19：`startsWith` 不带分隔符，兄弟目录 `<项目名>2` 会穿过去 */
+  if (!isInside(p.dir, abs)) {
     throw new ToolError(err(X.BAD_INPUT, path, { kind: "path", name: path },
       "稿的路径跨出了项目目录", { fix: "path 必须是相对项目根的路径，不能用 .. 跳出去" }));
   }
@@ -495,7 +497,7 @@ export async function createDraft(
   source: DraftSource,
 ): Promise<CreateDraftResult> {
   const abs = resolve(p.dir, path);
-  if (!abs.startsWith(p.dir)) {
+  if (!isInside(p.dir, abs)) {                      // issue #19
     throw new Error("稿的路径跨出了项目目录");
   }
   if (existsSync(abs)) {
@@ -621,7 +623,7 @@ export async function createFolder(
   folderPath: string,
 ): Promise<CreateFolderResult> {
   const abs = resolve(p.dir, folderPath);
-  if (!abs.startsWith(p.dir)) {
+  if (!isInside(p.dir, abs)) {                      // issue #19
     throw new Error("目录路径跨出了项目目录");
   }
 
