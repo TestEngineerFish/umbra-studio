@@ -8,6 +8,24 @@ import { Popover, usePopover } from "../ui/Popover";
 /** 会话栏，形制按 S9：用户句右对齐；一个 AI 回合共用一根左栏，文本与工具行按出现顺序排；变更卡带回退；「已选中」药丸紧挨输入框上方 */
 export function ChatRail({ chat, selections, onDropSelection, onClearSelections, contextLabel }: { chat: ChatStore; selections: Selection[]; onDropSelection: (i: number) => void; onClearSelections: () => void; contextLabel: string | null }) {
   const body = useRef<HTMLDivElement>(null);
+  /* ── 别处把话头递过来（M8-31）──
+     现在的来路是「这份稿没有节点地址 → 改用 AI」那颗钮：它已经把文件药丸挂上、
+     把会话栏展开，还差**把光标放进输入框**和换一句占位字。
+     ⚠️ 派事件的一方必须有人听 —— 第一版只 dispatch 没监听，
+     那颗钮点下去看着"做了点什么"，实际光标还在原处（自己造的「点了没反应」）。 */
+  const [hint, setHint] = useState<string | null>(null);
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<{ placeholder?: string } | undefined>).detail;
+      setHint(d?.placeholder ?? null);
+      const el = document.getElementById("chatInput") as HTMLTextAreaElement | null;
+      el?.focus();
+    };
+    window.addEventListener("ud-focus-chat", on);
+    return () => window.removeEventListener("ud-focus-chat", on);
+  }, []);
+  /* 用户一开始打字，这句临时占位字就该退场（它只是引导，不是长期状态） */
+  useEffect(() => { if (chat.input) setHint(null); }, [chat.input]);
   useEffect(() => { if (body.current) body.current.scrollTop = body.current.scrollHeight; }, [chat.messages, chat.notes, chat.running]);
   /* 状态行要一眼看出**现在谁在干活**。通道 B 光写「通道 B · sonnet」不够 ——
      真正动手的是 Codex 还是 Cursor 得说出来（2026-09-24 用户实测提的）。
@@ -78,7 +96,7 @@ export function ChatRail({ chat, selections, onDropSelection, onClearSelections,
       {/* 输入区在历史模式下也留着 —— 打字就等于「在当前这条会话里继续说」，不必先退出历史 */}
       <div className="px-3 pb-2 flex gap-2 items-end shrink-0">
         <textarea id="chatInput" rows={2} value={chat.input} onChange={(e) => chat.setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void chat.send(); } if (e.key === "Escape" && chat.running) void chat.interrupt(); }}
-          placeholder={selections.length ? "对选中的说…（「这里字号大一点」）" : contextLabel ? (/^[\u4e00-\u9fa5]/.test(contextLabel) ? `对${contextLabel}说…` : `对 ${contextLabel} 说…`) : "输入消息… ⏎ 发送"} className="flex-1 min-h-[40px] max-h-40 px-3 py-2 rounded border border-border bg-bg text-xs outline-none focus:border-accent resize-y" />
+          placeholder={hint ?? (selections.length ? "对选中的说…（「这里字号大一点」）" : contextLabel ? (/^[\u4e00-\u9fa5]/.test(contextLabel) ? `对${contextLabel}说…` : `对 ${contextLabel} 说…`) : "输入消息… ⏎ 发送")} className="flex-1 min-h-[40px] max-h-40 px-3 py-2 rounded border border-border bg-bg text-xs outline-none focus:border-accent resize-y" />
         {chat.running ? <button className="btn danger" onClick={() => void chat.interrupt()}>中断</button> : <button className="btn primary" onClick={() => void chat.send()} disabled={!chat.input.trim()}>发送</button>}
       </div>
       {/* 「本轮多少 tokens」和「运行中」**挪进了底栏**（M8-25，用户第九轮第 4 条：

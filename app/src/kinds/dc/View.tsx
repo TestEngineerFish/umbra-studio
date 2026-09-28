@@ -1,13 +1,15 @@
 import { useEffect, useRef } from "react";
 import type { Picked, SourceData } from "../../api/types";
 import type { ProjectStore } from "../../store/project";
+import type { ViewContext } from "../context";
 import { useDc } from "./bridge";
+import { CommentBox } from "./CommentBox";
 
 /** 画布：S2 嵌入壳 iframe（编辑）/ 稿本身（预览）/ 源码只读。
  *  **工具栏不在这里** —— 第七轮把它搬到了统一那条横带（`index.tsx` 的 `Toolbar`）。
  *  iframe 只在换稿 / 换档时重建；其它状态变化不碰它
  *  （就地编辑的内层 iframe 会被卸掉，`00` §四十三 踩过）。 */
-export function DcView({ store, picked }: { store: ProjectStore; picked: Picked | null }) {
+export function DcView({ ctx, store, picked }: { ctx: ViewContext; store: ProjectStore; picked: Picked | null }) {
   const d = useDc();
   const note = d.shell.editHint || d.shell.checkNote || (d.shell.apiErr ? "出错：" + d.shell.apiErr : "") || (d.shell.busy ? "落盘中…" : "");
   return (
@@ -20,10 +22,14 @@ export function DcView({ store, picked }: { store: ProjectStore; picked: Picked 
         : (
           <div className="flex-1 min-h-0 relative">
             <iframe ref={d.frame} key={d.src} src={d.src} title={d.file} data-shell={d.mode === "shell" ? "1" : undefined}
+              onLoad={d.onFrameLoad}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               className="absolute inset-0 w-full h-full border-0 bg-panel" />
           </div>
         )}
+      {/* 评论框：评论档点中元素后贴在它下面。**在画布之外渲染**（fixed）——
+          它要盖在 iframe 上，而 iframe 里面我们塞不进 DOM。 */}
+      <CommentBox ctx={ctx} />
       {d.present && <Present src={d.rawSrc} onStop={() => d.setPresent(false)} />}
     </div>
   );

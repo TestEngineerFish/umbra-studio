@@ -686,6 +686,125 @@ console.log("\n页签：状态点 / 溢出 / 当前态（M8-22）");
   ok(await pg.locator('[data-ud="tab"] .hdot').count() === 0, "页签上没有体检点了（只留未保存）");
 }
 
+/* ── 指针三档（用户 2026-09-28 拍板 · 设计侧第十一轮 §二 · M8-31）──
+   第九轮曾裁到只剩「点选」一颗；设计侧这一轮自己推翻了，理由是那句「评论是选中之后的
+   一个动作」没错、但它把那个动作放进了**默认收起**的属性区，于是「选中之后」在屏幕上
+   没有可见的去处。三档共用一个底座：**S2 不改、不加命令**，由 bridge 按档位分派。
+
+   ⚠️ 判据要钉「点下去真的到位」，不是「钮亮了」——
+   钮的高亮和行为是两件事，只测前者的话分派写错了照样全绿。 */
+console.log("\n指针三档（M8-31 · 用户拍板）");
+{
+  /* 样本自己建自己收：项目里的稿**一份都没有节点地址**（issue #31），
+     没有地址三档全都点不中元素，测不到分派。 */
+  const SAMPLE = "_uitest三档.dc.html";
+  const made = await pg.evaluate(async ({ name }) => {
+    const b = window.__UD_APP;
+    const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+    const w = await fetch(u("draft_write"), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: name, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>三档</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:24px;font-family:system-ui}h1{font-size:28px}</style></helmet>\n<div><h1>标题</h1><button>一颗钮</button></div></x-dc></body></html>` }) });
+    return (await w.json()).ok;
+  }, { name: SAMPLE });
+  if (!made) ok(false, "建不出三档验收样本，这一组测不了");
+  else {
+    await pg.waitForTimeout(1500);
+    if (!(await openByName("_uitest三档"))) ok(false, "样本没出现在树里");
+    else {
+      await pg.waitForTimeout(2600);
+      const eb = pg.locator('[data-ud="toggle-edit"]');
+      if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }
+      const segs = pg.locator('[data-ud="file-toolbar"] [role="group"][aria-label="指针"] button');
+      ok(await segs.count() === 3, "指针组是**三颗**（点选 / 评论 / 编辑）", (await segs.allTextContents()).join("/"));
+      /* 有地址的稿上不该出「没有节点地址」那条 */
+      ok(await pg.locator('[data-ud="no-addr"]').count() === 0, "有地址的稿不出「没有节点地址」提示条");
+
+      const clickInDraft = async () => {
+        const f = pg.frames().find((x) => /uitest三档/.test(decodeURIComponent(x.url())) && !/S2-/.test(decodeURIComponent(x.url())));
+        if (!f) return false;
+        const h1 = f.locator("h1").first();
+        if (!(await h1.count().catch(() => 0))) return false;
+        await h1.click({ timeout: 8000 }).catch(() => {});
+        await pg.waitForTimeout(1000);
+        return true;
+      };
+      /* 点选档：**不去打开属性区**（设计侧明说「开着就跟着换，关着不去打开」） */
+      await segs.filter({ hasText: "点选" }).click(); await pg.waitForTimeout(400);
+      if (await clickInDraft()) ok(await pg.locator('[data-ud="props"]').count() === 0, "点选档**不强行打开属性区**");
+      else ok(false, "点不到稿里的元素，分派测不了");
+      /* 编辑档：属性区自己打开 —— 这一步正是用户上一轮没找到的那一步 */
+      await segs.filter({ hasText: "编辑" }).click(); await pg.waitForTimeout(400);
+      await clickInDraft();
+      ok(await pg.locator('[data-ud="props"]').count() === 1, "**编辑档点一下，属性区自己打开**");
+      /* 评论档：评论框贴在元素下面，空框时两个出口都不响应 */
+      await segs.filter({ hasText: "评论" }).click(); await pg.waitForTimeout(400);
+      await clickInDraft();
+      const box = pg.locator('[data-ud="comment-box"]');
+      ok(await box.count() === 1, "**评论档点一下，评论框出来**");
+      if (await box.count()) {
+        ok(await box.locator("button:disabled").count() === 2, "空框时「暂存」和「发给 AI」都不响应（原因摆在眼前，不算禁用不解释）");
+        await box.locator("textarea").fill("这里再大一号");
+        await pg.waitForTimeout(250);
+        ok(await box.locator("button:disabled").count() === 0, "打了字两个出口就活了");
+        await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+      }
+      /* V / C / E */
+      for (const [key, want] of [["v", "点选"], ["c", "评论"], ["e", "编辑"]]) {
+        await pg.keyboard.press(key); await pg.waitForTimeout(300);
+        ok(await segs.filter({ hasText: want }).getAttribute("aria-pressed") === "true", `按 ${key.toUpperCase()} 切到「${want}」档`);
+      }
+      await pg.keyboard.press("v"); await pg.waitForTimeout(200);
+    }
+    /* 收尾：移进回收站，不给用户项目留东西。
+       ⚠️ **先切走再删** —— 不切的话当前文件指着一个已经不存在的稿，
+       之后每一次 comments / diagnostics / locate 请求都 400，
+       而「零 error」那条判据会把它算到自己头上（实测踩到，一次跑出两条假红）。 */
+    await openByName(".md");
+    await pg.waitForTimeout(600);
+    await pg.evaluate(async ({ name }) => {
+      const b = window.__UD_APP;
+      await fetch(`${b.url.replace(/\/$/, "")}/__ud/delete_draft?token=${encodeURIComponent(b.token)}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: name }) });
+    }, { name: SAMPLE });
+    await pg.waitForTimeout(800);
+  }
+}
+
+/* ── 没有节点地址时要说话（issue #31 · 设计侧第十一轮 §三）──
+   用户项目里能打开的 29 份稿**节点地址全为 0**，所以「点选」对他从来没有可用过，
+   而界面一句话都不说。判据钉三条：提示条出、**三颗钮不禁用**、点画布有回应。
+   ⚠️ 不许把钮禁掉 —— 禁用态不解释原因，和现在的静默是同一个病。 */
+console.log("\n没有节点地址时要说话（issue #31）");
+{
+  /* ⚠️ **不能用 `openByName(".dc.html")`** —— 它取的是树里第一份，而上一组建的
+     `_uitest三档.dc.html` 下划线开头、排在最前，那一份是**有地址**的，
+     于是这一组会量到「提示条不出」并报一条假红（实测踩到）。
+     这里显式挑一份不以 `_` 开头的用户稿。 */
+  const userDraft = (await pg.locator('[role="treeitem"]').allTextContents())
+    .map((t) => t.replace(/\s+/g, " ").trim())
+    .find((t) => /\.dc\.html$/.test(t) && !/[_◧▤]?\s*_/.test(t));
+  const openUser = userDraft ? await openByName(userDraft.replace(/^\W+\s*/, "").slice(0, 12)) : false;
+  if (openUser) {
+    await pg.waitForTimeout(2600);
+    const eb = pg.locator('[data-ud="toggle-edit"]');
+    if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }
+    const bar = pg.locator('[data-ud="no-addr"]');
+    const n = await bar.count();
+    if (!n) ok(false, "这份稿有地址，测不到「没有地址」那一态（项目里的稿被加过地址了？）");
+    else {
+      ok((await bar.innerText()).includes("没有节点地址"), "**提示条说出了原因**，不是静默");
+      ok(await bar.locator("button", { hasText: "加上地址" }).count() === 1, "给了出路：「加上地址…」");
+      ok(await bar.locator("button", { hasText: "改用 AI" }).count() === 1, "给了第二条出路：「改用 AI」");
+      ok(await pg.locator('[role="group"][aria-label="指针"] button:not(:disabled)').count() === 3, "三颗钮**照样能按**（禁用态不解释原因）");
+      /* 点画布要有回应：`data-nudge` 是判据钩子，动画时序量不准 */
+      const before = await bar.getAttribute("data-nudge");
+      const f = pg.frames().find((x) => /\.dc\.html/.test(x.url()) && !/S2-/.test(decodeURIComponent(x.url())) && !/__app/.test(x.url()));
+      if (f) await f.locator("body").click({ position: { x: 40, y: 40 }, force: true }).catch(() => {});
+      await pg.waitForTimeout(400);
+      ok((await bar.getAttribute("data-nudge")) !== before, "点了画布提示条抖一下（「你点了，这就是为什么没反应」）", `nudge ${before} → ${await bar.getAttribute("data-nudge")}`);
+    }
+  } else ok(false, "项目里没有（不以 _ 开头的）.dc.html，这一组测不了");
+}
+
 /* ── 换格式不许动目录列（用户 tmp.txt 第 1 条，2026-09-27）──
    他的原话：「点击查看不同的文件，目录列表不应刷新（能感觉到明显闪烁了一下）」。
    根因：格式模块的 Provider 原来包着整个 `Frame`，`key={kind}` 一变

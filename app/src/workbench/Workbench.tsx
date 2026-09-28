@@ -96,7 +96,15 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   }, [file, core]);
   const panels = [...(mod.panels ?? [])];
   const active: PanelId | null = panels.length ? (layout.panelByKind[kind] === undefined ? panels[0]! : (layout.panelByKind[kind] && panels.includes(layout.panelByKind[kind]!) ? layout.panelByKind[kind]! : null)) : null;
-  const setActive = useCallback((p: PanelId | null) => setLayout({ ...layout, panelByKind: { ...layout.panelByKind, [kind]: p } }), [layout, setLayout, kind]);
+  /* ⚠️ **既要切页，也要真的开合属性区**（M8-31 修）。
+     原来这里只写 `panelByKind`（记住这一类看哪一页），而属性区展开与否看的是
+     `layout.props` —— 于是 `ctx.ui.openPanel("props")` 在属性区收起时**什么都不会发生**。
+     ctx 的契约注释写的是「切到某个从属面板；`null` 收起」，实现没做到后半句。
+     踩到它的是三档指针的「编辑」档：设计侧定的行为是「点一个元素，属性区**自己打开**」，
+     实测钮亮了、点了、属性区没出来。
+     两处必须合成**一次** `setLayout` —— 分两次调用都基于同一个 layout 快照，后一次会盖掉前一次。 */
+  const setActive = useCallback((p: PanelId | null) =>
+    setLayout({ ...layout, props: p, panelByKind: { ...layout.panelByKind, [kind]: p } }), [layout, setLayout, kind]);
   /* 树本体抽出来：常驻列和窄窗浮层用的是同一棵，别写两遍 */
   /* ── 移到回收站的行内撤销（M8-21）──
      设计侧 §五：**不弹确认框**，删完原地给一行撤销。

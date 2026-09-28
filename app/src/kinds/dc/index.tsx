@@ -4,8 +4,9 @@ import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
 import { Seg, SizeBtn } from "../toolbar";
 import { Glyph } from "../../ui/Glyph";
-import { DcProvider, PRESETS, useDc } from "./bridge";
+import { DcProvider, POINTERS, PRESETS, useDc } from "./bridge";
 import { DcView } from "./View";
+import { AddrBar } from "./AddrBar";
 
 export type { PreviewMode } from "./bridge";
 
@@ -20,7 +21,7 @@ const ZOOMS = [0.3, 0.5, 0.75, 1, 1.25, 1.5];
 /** 编辑栏（**默认收起**，点 Tab 条右端的 ✎ 展开）：只放**改稿用**的。
  *  第九轮把「编辑 / 预览」两档并进了 ✎ 本身 —— 展开 = 编辑态，收起 = 预览态，
  *  所以这里不再有那两档，只剩「源码」这一档和指针。 */
-function Toolbar() {
+function Toolbar({ ctx }: { ctx: ViewContext }) {
   const d = useDc();
   return (
     <>
@@ -28,16 +29,22 @@ function Toolbar() {
         { label: "画布", active: d.mode !== "code", onPick: () => d.setMode("shell"), title: "在稿上直接改" },
         { label: "源码", active: d.mode === "code", onPick: () => d.setMode("code"), title: "只读" },
       ]} />
-      {/* ⚠️ 指针组**只剩「点选」一颗**：第九轮裁掉了「评论」指针 ——
-          「评论不是另一种指针，是**选中之后的一个动作**」（先点选元素，再在属性区的评论页写）。
-          这样只用 S2 已经有的 `pick`，不用改 S2 的命令表。 */}
+      {/* ═══ 指针三档（用户 2026-09-28 拍板 · 设计侧第十一轮 §二）═══
+          第九轮曾裁到只剩「点选」一颗，理由是「评论是选中之后的一个动作」——
+          这一轮设计侧自己推翻了：那句话没错，错在它把那个动作放进了**默认收起**的属性区，
+          于是「选中之后」这一步在屏幕上没有任何可见的去处。
+
+          三档在实现上共用一个底座：**S2 不用改、不加命令**，照旧只发 `pick`，
+          由 `bridge` 按当前档位分派。所以这里只是三颗钮 + 一个 state。 */}
       {d.mode === "shell" && (
-        <button onClick={() => d.cmd("pick")} aria-pressed={d.shell.selectOn}
-          title="点选：点稿里的元素即选中（V）"
-          className={`inline-flex items-center gap-1.5 h-[22px] px-2 rounded-sm border shrink-0 ${
-            d.shell.selectOn ? "bg-accentSoft text-accent font-semibold border-accent" : "bg-panel2 text-text2 border-border hover:text-text"}`}>
-          <Glyph icon="pick" size={12} />点选
-        </button>
+        <>
+          <Seg label="指针" items={POINTERS.map((p) => ({
+            label: p.label, active: d.pointer === p.id, title: p.title, toggle: true,
+            onPick: () => { d.setPointer(p.id); if (!d.shell.selectOn) d.cmd("pick"); },
+          }))} />
+          {/* 没有节点地址时那条提示 —— 占掉剩下的宽度，一展开编辑栏就看得见 */}
+          <AddrBar ctx={ctx} />
+        </>
       )}
       <span className="flex-1" />
     </>
@@ -72,7 +79,7 @@ function Corner() {
 }
 
 function View({ ctx }: { ctx: ViewContext }) {
-  return <DcView store={ctx.store} picked={ctx.picked} />;
+  return <DcView ctx={ctx} store={ctx.store} picked={ctx.picked} />;
 }
 
 function Panels({ ctx }: { ctx: ViewContext }) {
