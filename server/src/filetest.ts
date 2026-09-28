@@ -202,6 +202,39 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await rm(join(gitDirAbs, "MERGE_HEAD"), { force: true });
 }
 
+/* ── 项目**在别人的 git 仓库里**时，别往那个仓库提交（2026-09-28）──
+   用户当初问的是「项目根目录已经有 git 怎么办」，这是它的**更深一层**：
+   项目不是仓库，而是某个更大的仓库里的一个子目录
+   （`~/work/我的主项目/设计稿/`，而 `~/work/我的主项目` 是他的仓库）。
+   往那里提交等于**在他的主项目历史里插一条「写入 X.dc.html v3」**。
+
+   ⚠️ 实测下来现在是安全的，但**这个安全是 `git init` 带来的，不是显式判定带来的**：
+   `ensureRepo` 看的是 `existsSync(dir/.git)`，子目录没有 `.git` 于是它建了一个自己的。
+   哪天有人把它改成看起来更「正确」的 `git rev-parse --is-inside-work-tree`
+   （那个命令对大仓库里的子目录返回 **true**），就会当场引入这条缺陷。
+   **这条判据钉的就是那个未来的改动。** */
+{
+  /* 放在临时目录里，不放仓库 —— 它自己是个 git 仓库，落在仓库里会变成嵌套 */
+  const BIG = join(tmpdir(), `umbrastudio-gitbig-${Date.now()}`);
+  const { execFileSync } = await import("node:child_process");
+  await rm(BIG, { recursive: true, force: true });
+  await mkdir(join(BIG, "设计稿"), { recursive: true });
+  const g = (a: string[], cwd = BIG) => execFileSync("git", a, { cwd, encoding: "utf8" }).trim();
+  g(["init", "-q"]);
+  await writeFile(join(BIG, "README.md"), "用户的主项目\n", "utf8");
+  g(["add", "-A"]); g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "用户的大仓库"]);
+  const bigHeadBefore = g(["rev-parse", "HEAD"]);
+  const sub = join(BIG, "设计稿");
+  const { commitAfterWrite } = await import("./gitkeep.js");
+  await writeFile(join(sub, "稿.dc.html"), "<html>x</html>", "utf8");
+  const sha = await commitAfterWrite(sub, "稿.dc.html", "v1", null);
+  ok("**项目在别人的仓库里时，提交落进项目自己的新仓库**（不是那个大仓库）",
+     sha !== null && existsSync(join(sub, ".git")), { 提交号: sha, 子目录自己的仓库: existsSync(join(sub, ".git")) });
+  ok("**用户那个大仓库一条提交都没多**（他的主项目历史没被插东西）",
+     g(["rev-parse", "HEAD"]) === bigHeadBefore, { 前: bigHeadBefore.slice(0, 7), 后: g(["rev-parse", "HEAD"]).slice(0, 7) });
+  await rm(BIG, { recursive: true, force: true });
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;
