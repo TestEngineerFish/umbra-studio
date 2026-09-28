@@ -174,11 +174,23 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
        ⚠️ **不放任何秘密**：这里的东西对每个插件都可见，而插件是第三方写的。
        放的只能是我们发出去的公共依赖（CodeMirror 这一类），
        **不放令牌、不放用户数据、不放项目路径**。 */
-    if (raw.startsWith("/__shared/") && serveStatic(SHARED_DIR, raw.slice("/__shared".length), reply, {
-      "access-control-allow-origin": "*",
-      /* 版本化的依赖可以长缓存；探针阶段先不缓存，免得改了看不到 */
-      "cache-control": "no-cache",
-    })) return;
+    if (raw.startsWith("/__shared/")) {
+      if (serveStatic(SHARED_DIR, raw.slice("/__shared".length), reply, {
+        "access-control-allow-origin": "*",
+        /* 版本化的依赖可以长缓存；探针阶段先不缓存，免得改了看不到 */
+        "cache-control": "no-cache",
+      })) return;
+      /* ⚠️ **找不到就 404，不往下走**（2026-09-28 实测栽过）。
+         原来写成 `if (… && serveStatic(…)) return;`，取不到时**继续往下**，
+         最后落到 SPA 兜底页 —— **回的是 200 + 一段 HTML**。
+         于是「文件在不在」这件事在外面**完全看不出来**：
+         packtest 那条判据拿 200 当成功，一条只会说「是」的判据等于没有判据。
+         诊断信息也一并回出去 —— 这条路由的使用者是插件作者，
+         「404」告诉不了他是路径写错了还是这个依赖没发，而 `SHARED_DIR` 能。 */
+      reply.writeHead(404, { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" });
+      reply.end(`共享库里没有这个文件。\n查的是：${resolve(SHARED_DIR, "." + normalize(raw.slice("/__shared".length)))}\n共享库根：${SHARED_DIR}`);
+      return;
+    }
     /* ═══ 插件 UI（M11-4）═══ `/__plugin/<id>/<路径>`
        每个插件的静态文件从它自己的目录出，**带 CSP 响应头**。
        前端把它装进 `<iframe sandbox="allow-scripts">`（不给 allow-same-origin）——

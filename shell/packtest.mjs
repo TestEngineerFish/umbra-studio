@@ -132,13 +132,33 @@ ok(boot.has && boot.tokenLen > 0, "打包版里令牌经 preload 到了页面", 
    「可写状态写进 .app / doc 没进包」的同一种病：**清单式配置，加东西时忘了改它**。
    判据从**产物**问，不从源码问。 */
 {
+  /* ⚠️ **带一个对照组**：同时取一个**一定不存在**的文件。
+     第一版只测「存在的那个回 200」，反向验证（把 `core/shared` 整个移走）时
+     它**照样绿** —— 一条只会说「是」的判据，等于没有判据。
+     两个一起看：真的 200 + 假的 404，才说明这条路由在按文件存在与否回答。
+     ⚠️ 顺带记一条：那次反向验证还**红了两条签名自洽** ——
+     移走 `.app` 里的目录会破坏签名封印。**反向验证的手法本身也会有副作用**，
+     看红的是不是你要验的那条。 */
   const r = await win.evaluate(async (base) => {
-    try {
-      const res = await fetch(base + "__shared/codemirror.js", { method: "HEAD" });
-      return `HTTP ${res.status}`;
-    } catch (e) { return "取不到：" + String(e).slice(0, 60); }
+    /* ⚠️ **看拿到的是不是那个文件，不是看状态码。**
+       hub 服务对未知路径有 SPA fallback（回 `index.html`，**200**）——
+       所以对照组那个「一定不存在的文件」也是 200，状态码在这里什么都证明不了。
+       改成认内容：CM 的产物里一定有 `EditorView`，而 SPA fallback 是一段 HTML。 */
+    const one = async (u) => {
+      try { const res = await fetch(base + u); const t = await res.text(); return { s: res.status, len: t.length, head: t.slice(0, 200) }; }
+      catch (e) { return { s: 0, len: 0, head: String(e).slice(0, 60) }; }
+    };
+    const real = await one("__shared/codemirror.js");
+    const fake = await one("__shared/一定没有这个文件.js");
+    return { real, fake, base };
   }, boot.url ?? new URL(win.url()).origin + "/");
-  ok(r === "HTTP 200", "**宿主共享库进包了**（插件的 CodeMirror 从这里来）", r);
+  /* ⚠️ **判据不认 minify 之后的名字。** 第一版查 `EditorView`，而产物是压缩过的 ——
+     那个名字只在**文件末尾**的 export 列表里，我却只取了前 4000 字符，于是**永远 false**。
+     差点让我去追一个不存在的产品缺陷（`/__shared/` 其实一直是通的）。
+     现在认三样都不依赖压缩结果的：**够大** · **不是 HTML 兜底页** · **对照组是 404**。 */
+  const realOk = r.real.s === 200 && r.real.len > 400_000 && !/<!DOCTYPE|<html/i.test(r.real.head);
+  ok(realOk && r.fake.s === 404, "**宿主共享库进包了**（够大 · 不是兜底页 · 对照组 404）",
+     `真的 ${r.real.s}/${Math.round(r.real.len / 1024)}KB · 对照组 ${r.fake.s} · ${r.base}`);
 }
 ok(!boot.inUrl, "**而地址里不带令牌**（带了会进历史记录、也会被 webContents.getURL() 读到）", location_hint(boot));
 
