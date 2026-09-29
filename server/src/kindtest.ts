@@ -74,6 +74,20 @@ ok(unregisterKindsFrom("com.umbra.video") === 1, "把视频也摘掉");
 ok(kindOf("clip.mp4") === BUILTIN.other, "插件卸载后退回 other（文件卡），不是打不开");
 ok(!allKinds().includes("video"), "卸载后种类表里也没了");
 
+/* ── ③.4 只读名单里的每一种，都真的走得到代码插件（M10-2 / 设计侧第十二轮 §一.4）──
+   ⚠️ 设计侧给的自动只读名单第一条就是 `*.lock`，而当时 `kindOf("Cargo.lock")` 是
+   **`other`**（走通用文件卡）——**那条规则根本到不了代码插件，是死的**。
+   **一条规则写在纸上，不等于它能跑到。**
+   这几条钉的就是「名单和类型表对得上」。 */
+{
+  for (const f of ["Cargo.lock", "yarn.lock", "Gemfile.lock", "pnpm-lock.yaml", "a.min.js", "a.min.css"]) {
+    ok(kindOf(f) === BUILTIN.code, `只读名单里的 ${f} 走得到代码插件`, kindOf(f));
+  }
+  /* `package-lock.json` 是**例外，而且是对的**：`json` 有结构化的看法（`json` 70 > `code` 10），
+     只读那套由 JSON 那个模块自己管。写在这里是为了**说明它不是漏的**。 */
+  ok(kindOf("package-lock.json") === BUILTIN.json, "`package-lock.json` 归 JSON（有结构化的看法，不是漏的）");
+}
+
 /* ── ③.5 认领：哪些类型允许被插件接管（M10-2，2026-09-28 改过这道闸）──
    原来是「内置类型一律不许第三方认领」。**实测下来它挡错了东西**：
    第三方只要定义一个新类型匹配 `.ts`、priority 拉到上限，照样抢走 ——

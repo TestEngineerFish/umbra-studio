@@ -81,6 +81,12 @@ export const CODE_EXT = [
   ".py", ".rb", ".rs", ".go", ".java", ".kt", ".swift", ".c", ".h", ".cpp", ".cs", ".php",
   ".sh", ".bash", ".zsh", ".sql", ".graphql", ".vue", ".svelte",
   ".txt",   // 纯文本按代码看：它能预览、能给 AI 读，归到 other 反而少了这两样
+  /* ⚠️ `.lock` 2026-09-29 补的。设计侧第十二轮给的自动只读名单里第一条就是 `*.lock`，
+     而实测 `kindOf("Cargo.lock")` 是 **`other`** —— 它根本到不了代码插件，
+     **那条只读规则是死的**。`Cargo.lock` / `yarn.lock` / `Gemfile.lock` 都是纯文本配置，
+     归 `code` 才能被看、被只读、被带给 AI。
+     **一条规则写在纸上，不等于它能跑到。** */
+  ".lock",
 ];
 
 const endsWithAny = (name: string, exts: string[]) => exts.some((e) => name.endsWith(e));
