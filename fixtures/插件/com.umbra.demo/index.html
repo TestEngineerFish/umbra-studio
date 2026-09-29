@@ -16,6 +16,14 @@
        CSP 是 `script-src 'self'`，而 `'self'` 匹配 scheme+host+port 不是路径 ——
        所以理论上能。这一行把结论写进 DOM，让 uitest 数得到（判活只认 1+1，不看截图）。 -->
   <div id="cmprobe" style="display:none"></div>
+  <script src="./umbra.js"></script>
+  <!-- 宿主共享库探针（M10-2）：插件能不能 import 一条**不在自己目录下**的模块。
+       CSP 是 `script-src 'self'`，而 `'self'` 匹配 scheme+host+port 不是路径 ——
+       所以理论上能。这一行把结论写进 DOM，让 uitest 数得到（判活只认 1+1，不看截图）。 -->
+  <div id="cmprobe" style="display:none"></div>
+  <!-- M10-3 探针：插件里能不能嵌一个 iframe（装用户的 .html）。
+       CSP 是 `default-src 'none'` 且**没有 frame-src** —— 理论上会被挡。实测一下。 -->
+  <div id="frameprobe" style="display:none"></div>
   <script type="module">
     /* ① 能不能 import 一条不在自己目录下的模块 */
     import("/__shared/probe.mjs")

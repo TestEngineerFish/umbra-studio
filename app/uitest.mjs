@@ -1194,6 +1194,19 @@ console.log("\n插件 UI 的边界（M11-4）");
   if (r.ui.s === 200) {
     ok(/default-src 'none'/.test(r.ui.csp ?? ""), "插件 UI 的 CSP 在**响应头**上（不是页面里的 meta）", (r.ui.csp ?? "无").slice(0, 40));
     ok(/connect-src 'none'/.test(r.ui.csp ?? ""), "CSP 禁掉外联 —— iframe sandbox 单独用挡不住 fetch/img/beacon/ws");
+    /* ⚠️ **没有 `frame-src` = 插件里嵌不了 iframe**（落到 `default-src 'none'`）。
+       这一条钉的是一堵**已经实测撞过的墙**（2026-09-29）：M10-3「非 dc 的 `.html` 预览」
+       要在插件里套一个 iframe 装用户的页面，控制台当场报
+       `Framing … violates … "default-src 'none'". The request has been blocked`。
+
+       ⚠️ 当时的探针还骗了我一次：它用 `iframe.onload` 判断，而**被 CSP 挡住时
+       onload 照样触发**（iframe 变成 about:blank，about:blank 会触发 onload）——
+       探针说「能嵌」，控制台说「被挡了」。**控制台才是权威。**
+
+       **这条判据将来会红** —— 那时说明有人给插件放开了 frame-src。
+       红了不是坏事，是提醒：放开之前先想清楚插件能嵌什么
+       （`'self'` 会让它能嵌 `/__app/`，那是视觉欺骗的入口）。 */
+    ok(!/frame-src/.test(r.ui.csp ?? ""), "**CSP 里没有 `frame-src`**（插件嵌不了 iframe —— M10-3 的墙，放开前先想清楚能嵌什么）");
   } else {
     /* ⚠️ **红着报，不许静静跳过。**「119/119 全过」和「127/127 全过」在输出里都是一个 ✓ ——
        判据整块消失不会报警，它和「这些判据通过了」长得一模一样。
