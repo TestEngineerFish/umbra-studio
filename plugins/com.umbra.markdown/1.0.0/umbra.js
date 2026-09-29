@@ -82,17 +82,22 @@
 
 /* ── 剩下三件（M11-9）── */
 (function (u) {
-  var changedCbs = [], keyCbs = [];
+  var changedCbs = [], keyCbs = [], sendSelCbs = [];
   window.addEventListener("message", function (e) {
     var m = e.data;
     if (m && m.t === "changed") changedCbs.forEach(function (cb) { cb(m.path); });
     if (m && m.t === "key") keyCbs.forEach(function (cb) { cb(m); });
+    if (m && m.t === "send-selection") sendSelCbs.forEach(function (cb) { cb(); });
   });
   /** 有没有没落盘的改动。**归宿主管** —— 关页签要拦、退出要拦，
    *  这些都发生在插件的矩形之外，插件拦不住。 */
   u.setDirty = function (on) { parent.postMessage({ t: "dirty", on: !!on }, "*"); };
-  /** 把一段文字带进会话（「选中这段给 AI」） */
+  /** 把一段文字带进会话并**直接发给 AI**。⚠️ 多数时候你要的是下面那个 `pick`。 */
   u.ask = function (text) { parent.postMessage({ t: "ask", text: String(text) }, "*"); };
+  /** 把一段选区**挂成药丸**（不发送），并聚焦输入框 —— 用户自己写问题。
+   *  和 `ask` 的区别是那一半的全部：`ask` 是「替我问」，`pick` 是「把这个带上」。
+   *  按 ⌘L 的那一刻用户**还没想好要问什么**，替他发出去是越权。 */
+    u.pick = function (label, detail) { parent.postMessage({ t: "pick", label: String(label), detail: String(detail) }, "*"); };
   /** 文件在盘上变了（AI 改的、别的编辑器改的）。**插件自己发现不了** ——
    *  它没有文件系统也没有事件流。收到就重读一次。 */
   u.onChanged = function (cb) { changedCbs.push(cb); };
@@ -102,4 +107,9 @@
    *  宿主只转插件会用的那几个（⌘S / ⌘Z / ⌘Y / ⌘F），不转它自己的 ⌘B / ⌘\。
    *  ⚠️ 插件**两边都要接**：焦点在自己身上时走本地 keydown，不在时走这一条。 */
   u.onKey = function (cb) { keyCbs.push(cb); };
+
+  /** 用户按了 ⌘L（「把选中的拿去问 AI」）。**这不是插件自己的键** ——
+   *  ⌘L 归工作台（聚焦会话输入框），我们只是有话要说：有选区就带上。
+   *  没选区时什么都不做，工作台照样会聚焦输入框。 */
+  u.onSendSelection = function (cb) { sendSelCbs.push(cb); };
 })(window.umbra);

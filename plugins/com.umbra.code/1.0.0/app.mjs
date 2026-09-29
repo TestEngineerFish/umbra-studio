@@ -80,8 +80,14 @@ function askAboutSelection() {
   const doc = view.state.doc;
   if (s.empty) { umbra.toast("先选中几行", "选中之后再按这颗钮", "warn"); return; }
   const from = doc.lineAt(s.from).number, to = doc.lineAt(s.to).number;
-  umbra.ask(`${curPath} 第 ${from}–${to} 行：\n\n\`\`\`\n${doc.sliceString(s.from, s.to)}\n\`\`\`\n\n`);
-  umbra.toast("已带进会话", `${curPath} 第 ${from}–${to} 行`, "ok");
+  /* ⚠️ **挂药丸，不直接发**（设计侧第十二轮 §一.3）。
+     第一版用的是 `umbra.ask`，那条路是 `chat.send` —— **当场就发给 AI 了**，
+     而用户按 ⌘L 的那一刻**还没想好要问什么**。替他发出去是越权。
+     药丸的形状照 `json.tsx` 那套（`range` · 文件名 › 范围）。 */
+  umbra.pick(
+    `${curPath.split("/").pop()} › L${from}–${to}`,
+    `${curPath} 第 ${from}–${to} 行：\n\n\`\`\`\n${doc.sliceString(s.from, s.to)}\n\`\`\`\n`,
+  );
 }
 
 /** 落盘。**带 `expectSha256`** —— 这是第二条写入口的核心：
@@ -177,6 +183,20 @@ window.addEventListener("keydown", (e) => {
    用户点了 `⋯` 看一眼读数再按 ⌘S 就是这种情况，改动看着像被无声丢掉了。
    宿主替我们转发（`Surface.tsx` 的 `onKey`），这里接住。 */
 umbra.onKey((k) => { if (k.key === "s" && (k.meta || k.ctrl)) void save(); });
+/* ⌘L：工作台的键，插件有话要说 —— 有选区就带上（`00` §121.3 · S18 §一.3）。
+   ⚠️ **没选区时什么都不做，不要 toast**：那一下用户的意图是「聚焦输入框」，
+   工作台已经在做了；这时候弹一句「先选中几行」是在怪他没做一件他没打算做的事。 */
+umbra.onSendSelection(() => { if (view && !view.state.selection.main.empty) askAboutSelection(); });
+/* ⚠️ **⌘L 也要在插件自己这边听一次**（2026-09-29 实测）：
+   焦点在这个 iframe 里时，**工作台顶层的监听器收不到** —— 键盘事件不跨 iframe 边界。
+   和 ⌘S 是同一条病、相反的方向：⌘S 是工作台转给插件，⌘L 是插件自己先收到。
+   没选区时**什么都不做**，宿主那边照样会聚焦输入框（`pick` 不发就不挂药丸）。 */
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "l") return;
+  e.preventDefault();
+  if (view && !view.state.selection.main.empty) askAboutSelection();
+  else umbra.pick("", "");        // 空的 pick = 只聚焦，不挂药丸
+});
 /* ⚠️ **失焦不自动落盘**（这一条和 md 插件不同，是有意的）：
    `.md` 是文档，写到哪存到哪很自然；代码改一半失焦就落盘，
    会把一个语法不完整的中间状态写进快照历史。代码要显式 ⌘S。 */

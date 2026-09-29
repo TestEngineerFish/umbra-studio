@@ -5,6 +5,7 @@ import { applyTheme, loadLayout, saveLayout, type LayoutState } from "./layout/l
 import { Home } from "./pages/Home";
 import { NewProjectSheet, SettingsSheet } from "./sheets/Sheets";
 import { Toasts, toast } from "./ui/Toast";
+import { guardUnsaved } from "./ui/dirty";
 import { auditKindsOrThrow } from "./kinds";
 import { loadPlugins } from "./kinds/plugin/loader";
 import { Workbench } from "./workbench/Workbench";
@@ -21,6 +22,8 @@ export default function App() {
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
+  /* 刷新 / 关窗前拦一下没落盘的改动（`00` §一二一）。挂一次，整个应用生效。 */
+  useEffect(() => guardUnsaved(), []);
   useEffect(() => { applyTheme(layout.theme); const mq = window.matchMedia("(prefers-color-scheme: dark)"); const on = () => applyTheme(layout.theme); mq.addEventListener("change", on); return () => mq.removeEventListener("change", on); }, [layout.theme]);
   /* ⚠️ **整地址时要把 query 原样留着**（`11` Q42，2026-09-28 实测抓到）。
      浏览器入口的令牌就在 `?token=` 里（方案 (c)）。原来这里写死成 `/__app/`，

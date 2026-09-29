@@ -237,9 +237,20 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
       }
       /* ⌘L 聚焦会话输入框。**原来是 ⌘J，让给底栏了**（`00` §75.4）——
          Cursor 和 VS Code 的 Copilot Chat 都用 ⌘L 聚焦聊天输入，用户正在用 Cursor。
-         左栏关着时先打开再聚焦：他按这个键的意图很清楚，别让他按了没反应。 */
+         左栏关着时先打开再聚焦：他按这个键的意图很清楚，别让他按了没反应。
+
+         ⚠️ **不换键，合并语义**（用户 2026-09-29 定，`00` §121.3）。
+         设计侧第十二轮给代码视图定的「选中行给 AI」也用 ⌘L，撞上了这一条 ——
+         而这两件事**几乎是同一件**：我们的是「我要跟 AI 说话」，
+         它的是「把这几行拿去问 AI」。所以：
+         **有选区时先把选区带进会话，再聚焦；没选区时只聚焦。**
+         用户按 ⌘L 的意图始终是「找 AI」，不该因为手上有没有选区而记两个键。
+
+         先发事件让当前格式模块有机会带选区（它比工作台更清楚「选中的是什么」），
+         **然后照旧聚焦** —— 带不带得成都要聚焦，否则按了像没反应。 */
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l") {
         e.preventDefault();
+        window.dispatchEvent(new CustomEvent("ud-send-selection"));
         if (!layout.right) setLayout({ ...layout, right: true });
         setTimeout(() => document.getElementById("chatInput")?.focus(), layout.right ? 0 : 60);
       }

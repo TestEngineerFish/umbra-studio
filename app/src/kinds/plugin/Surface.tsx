@@ -30,7 +30,11 @@ type FromPlugin =
   /** 有没有没落盘的改动。关页签要拦，所以这件归宿主管 */
   | { t: "dirty"; on: boolean }
   /** 把一段文字带进会话（「选中这段给 AI」） */
-  | { t: "ask"; text: string };
+  | { t: "ask"; text: string }
+  /** 把一段选区**挂成药丸**（不发送）。和 `ask` 的区别是那一半的全部：
+   *  `ask` 是「替我问」，`pick` 是「把这个带上，我自己写问题」。
+   *  设计侧第十二轮 §一.3 定的是后者 —— 用户按 ⌘L 时还没想好要问什么。 */
+  | { t: "pick"; label: string; detail: string };
 
 export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
   ctx: ViewContext; pluginId: string; entry: string;
@@ -90,6 +94,14 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
       /* 未落盘状态归宿主管：关页签要拦、退出要拦，这些都发生在插件的矩形之外 */
       if (m.t === "dirty") { dirtyStore.set(ctx.path, m.on); return; }
       if (m.t === "ask") { ctx.ask(m.text); return; }
+      if (m.t === "pick") {
+        /* 空 label = 「只聚焦，别挂药丸」—— 用户按了 ⌘L 但手上没选区，
+           那一下的意图是「我要跟 AI 说话」，不该因此弹一句「先选中几行」。 */
+        if (m.label) ctx.select("range", { kind: "range", label: m.label, detail: m.detail });
+        ctx.ui.expandChat();
+        setTimeout(() => document.getElementById("chatInput")?.focus(), 50);
+        return;
+      }
       if (m.t === "menu") {
         /* 菜单由**宿主**画：插件只给数据，点了哪一项回给它一个下标。
            这样它的形制跟着主程序走，也不会被矩形裁掉。 */
@@ -120,6 +132,9 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
        全转的话插件会收到工作台自己的快捷键（⌘B / ⌘\ 那些），
        而它不知道那些键已经被用掉了，可能当成自己的。 */
     const FORWARD = new Set(["s", "z", "y", "f"]);   // 落盘 / 撤销 / 重做 / 查找
+    /* ⌘L 不在 `FORWARD` 里 —— 它是**工作台的键**（聚焦会话），
+       工作台自己要响应。插件那半通过下面的 `ud-send-selection` 事件收到，
+       这样两边都不会漏，也不会各按各的。 */
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || !FORWARD.has(e.key.toLowerCase())) return;
       /* 焦点已经在这个 iframe 里时**不转发** —— 插件自己会收到，转了就成两次。 */
@@ -129,6 +144,11 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
         { t: "key", key: e.key.toLowerCase(), meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey }, "*");
     };
     if (role === "body") window.addEventListener("keydown", onKey);
+    /* ⌘L：工作台发这个事件，我们转给插件（`00` §121.3）。
+       **和 `FORWARD` 那条分开**：那条转的是「插件自己的键」，
+       这一条转的是「工作台的键，但插件有话要说」。 */
+    const onSendSel = () => ref.current?.contentWindow?.postMessage({ t: "send-selection" }, "*");
+    if (role === "body") window.addEventListener("ud-send-selection", onSendSel);
     /* chrome 上被点了什么，回给插件。`Workbench` 画的按钮最终走到这儿 */
     if (role === "body") {
       setSender(key, (kind, a, b) =>
@@ -137,6 +157,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
     return () => {
       window.removeEventListener("message", onMsg);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("ud-send-selection", onSendSel);
       /* 换文件 / 卸载时把这份 chrome 收掉 —— 不收的话编辑栏会停在上一个文件的状态 */
       if (role === "body") dropChrome(key);
     };

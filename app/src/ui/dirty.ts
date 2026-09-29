@@ -23,4 +23,32 @@ export const dirtyStore = {
   },
   /** 关掉页签时清掉，免得一个已经不在的文件永远挂着点 */
   drop(path: string): void { if (set.delete(path)) for (const f of subs) f(); },
+  /** 现在有几份没落盘。`beforeunload` 要它 —— 那一刻只需要「有没有」和「几份」。 */
+  count(): number { return set.size; },
+  list(): string[] { return [...set].sort(); },
 };
+
+/** ⚠️ **刷新 / 关窗前拦一下**（2026-09-29，设计侧第十二轮反问出来的）。
+ *
+ *  实测过：代码插件里改了几行没落盘，**刷新就没了，而且没有任何提示**。
+ *  根因是内容只在编辑器的内存里 —— 而**插件自己存不了**：
+ *  它在不透明源的 iframe 里，`localStorage` 访问会抛。
+ *
+ *  所以这一层由宿主兜。`beforeunload` 只能弹浏览器自己那句（文案不由我们定），
+ *  但它挡住的是**最坏的那一下**：手滑按了 ⌘R，几十行改动无声消失。
+ *
+ *  ⚠️ 这**不是**「草稿自动保存」。真要做到「刷新回来改动还在」得由宿主替插件
+ *  暂存草稿（一件新能力）。在那之前，拦一下比什么都不做强得多 ——
+ *  **而「什么都不做」恰恰是最容易被当成「已经处理了」的状态**。
+ *
+ *  在 `App` 里挂一次即可；返回解绑函数。 */
+export function guardUnsaved(): () => void {
+  const on = (e: BeforeUnloadEvent) => {
+    if (set.size === 0) return;
+    /* 现代浏览器只认 preventDefault + returnValue，文案一律忽略 */
+    e.preventDefault();
+    e.returnValue = "";
+  };
+  window.addEventListener("beforeunload", on);
+  return () => window.removeEventListener("beforeunload", on);
+}

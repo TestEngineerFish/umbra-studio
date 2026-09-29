@@ -1403,6 +1403,33 @@ console.log("\n插件 UI 的边界（M11-4）");
               return { has: /改了一行/.test(j?.data?.content ?? ""), lines: j?.data?.lines ?? 0 };
             }, { name: TS });
             ok(onDisk.has && onDisk.lines === 7, "**盘上那一份真的多了那行**（不是只有界面说落盘了）", `${onDisk.lines} 行`);
+            /* ⌘L 合并语义（`00` §121.3，用户 2026-09-29 定）：
+               **有选区时带上选区，没选区时只聚焦** —— 用户按 ⌘L 的意图始终是「找 AI」，
+               不该因为手上有没有选区而记两个键。
+               ⚠️ 这两半要**分开测**：只测「有选区能带」的话，
+               「没选区时别弹『先选中几行』」那一半坏了也不会红。 */
+            await cmContent.click();
+            await pg.keyboard.press("Meta+a");          // 全选，制造选区
+            await pg.waitForTimeout(300);
+            await pg.keyboard.press("Meta+l");
+            await pg.waitForTimeout(1200);
+            /* ⚠️ **找药丸本身，不找会话栏里随便什么文字。**
+               第一版判据是「会话栏里出现文件名或 range」—— 而会话栏里本来就有
+               历史消息和引擎名，读数打出来是「Claude Code ▾ 🕘 ping pong！我在…」，
+               **那是蒙对的**。药丸的标识是 `文件名 › L起–止` 这个形状。 */
+            const pillTxt = (await pg.locator('[data-ud="sel-pill"], aside [class*="pill"]').allTextContents().catch(() => []))
+              .concat(await pg.locator("aside").first().innerText().catch(() => "")).join(" ").replace(/\s+/g, " ");
+            ok(/插件回归样本\.ts › L\d+–\d+/.test(pillTxt), "**⌘L 有选区时挂出 range 药丸**（不是直接发给 AI）",
+               (pillTxt.match(/插件回归样本\.ts › L\d+–\d+/) ?? ["（没找到药丸）"])[0]);
+            ok(await pg.evaluate(() => document.activeElement?.id === "chatInput"), "**⌘L 之后焦点在会话输入框**（带没带成都要聚焦）");
+            /* 没选区那一半：点一下取消选区再按 ⌘L，不该弹「先选中几行」 */
+            await cmContent.click(); await pg.keyboard.press("End");
+            await pg.waitForTimeout(300);
+            await pg.keyboard.press("Meta+l");
+            await pg.waitForTimeout(900);
+            const toastTxt = (await pg.locator("[data-ud=\"toasts\"], .toast").allTextContents().catch(() => [])).join(" ");
+            ok(!/先选中/.test(toastTxt), "**没选区时不弹「先选中几行」**（那一下的意图是聚焦，不是带选区）", toastTxt.slice(0, 40) || "（没有 toast）");
+
             /* sha 校验那一关：盘上被别人改过时**拒绝落盘**而不是覆盖。
                ⚠️ **顺序要紧，第一版造错了**：我先绕过插件写盘、再让插件打字落盘 ——
                而插件的 `onChanged` 收到「盘上变了」会**重读**，sha 跟着更新，
