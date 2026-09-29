@@ -16,8 +16,8 @@ import { Glyph, ICON } from "../ui/Glyph";
 import { PopItem, PopSep, Popover, usePopover } from "../ui/Popover";
 import { BottomBar } from "./BottomBar";
 import { debugBus, wireDebug } from "../ui/debug";
-import { dirtyStore } from "../ui/dirty";
-import { LeaveGuard } from "./LeaveGuard";
+import { LEAVE, dirtyStore } from "../ui/dirty";
+import { useLeaveGuard } from "./LeaveGuard";
 import { FileTree } from "./FileTree";
 /* 详情区怎么画、右边配什么面板、状态行写什么，**全在 kinds 注册表里**。
    这个文件从此不认识任何一种具体格式 —— 加 `.json` 时它一个字都没动（M8-14）。 */
@@ -121,6 +121,9 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   /* **改了内容就转正**（设计侧 §六.1）：人都开始改了，它不该再被下一次单击盖掉。
      `dirtyStore` 是每种格式各自登记的，这里订阅它。 */
   const dirtySnap = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
+  /** 「要丢内容了，先问一句」**一处实现**，关页签 / 切文件 / 回退三种触发共用
+   *  （S18 §一.1 数出来的三种，设计侧第十二轮）。 */
+  const { askLeave, guardNode } = useLeaveGuard();
   useEffect(() => {
     const dirty = dirtySnap ? dirtySnap.split("|") : [];
     if (!dirty.length) return;
@@ -292,14 +295,10 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   const open = (f: string, isDir = false, mode: "preview" | "open" = "preview") => {
     /* 切到自己不算离开 —— 单击已打开的页签会走到这里 */
     if (!isDir && f === file) { doOpen(f, isDir, mode); return; }
-    if (file && !dirMode && dirtyStore.has(file)) { setLeavingTo({ path: file, next: { f, isDir, mode } }); return; }
+    if (file && !dirMode && dirtyStore.has(file)) { void askLeave(file, LEAVE.switch).then((ok) => { if (ok) doOpen(f, isDir, mode); }); return; }
     doOpen(f, isDir, mode);
   };
   const dirRel = dirMode ? (file === "__root__" ? "" : (file ?? "")) : "";
-  /** 关页签前要不要拦一下。`null` = 不拦。 */
-  const [leaving, setLeaving] = useState<string | null>(null);
-  /** 「有改动时要切到别的文件」—— 拦住的那一下，记着要去哪。 */
-  const [leavingTo, setLeavingTo] = useState<{ path: string; next: { f: string; isDir: boolean; mode: "preview" | "open" } } | null>(null);
   /** 真的关掉（确认过了，或者本来就没改动）。 */
   const doCloseTab = useCallback((f: string) => {
     dirtyStore.drop(f);
@@ -317,9 +316,9 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
    *  ⚠️ 原来这里直接 `dirtyStore.drop(f)` 然后关 —— **改动就这么没了，一句话都不说**。
    *  设计侧的裁决是「平时不打扰，**只在真的要丢东西的时候**出来」，这就是那个时候。 */
   const closeTab = useCallback((f: string) => {
-    if (dirtyStore.has(f)) { setLeaving(f); return; }
+    if (dirtyStore.has(f)) { void askLeave(f, LEAVE.close).then((ok) => { if (ok) doCloseTab(f); }); return; }
     doCloseTab(f);
-  }, [doCloseTab]);
+  }, [doCloseTab, askLeave]);
   /** 关一批（右键菜单的「关闭其他 / 右侧 / 已保存的」用） */
   const closeMany = useCallback((list: Tab[]) => {
     for (const t of list) dirtyStore.drop(t.path);
@@ -356,7 +355,10 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     select: putSelection,
     ask: (text, sels) => { expandChat(); void chat.send(text, sels); },
     picked, setPicked,
-    ui: { activePanel: active, openPanel: setActive, expandChat, closeFile: () => { if (file) closeTab(file); }, toast },
+    ui: { activePanel: active, openPanel: setActive, expandChat, closeFile: () => { if (file) closeTab(file); }, toast,
+      /* 从属面板里也有会丢内容的动作（变更卡的「回退」会覆盖盘上的文件）。
+         **同一张卡、同一套等待**，只是说法换成「退回」。 */
+      confirmLeave: (p: string) => askLeave(p, LEAVE.revert) },
     ai: { supportsImage: chat.supportsImage, engineLabel: engineLabel(chat.caps, chat.channel, chat.model), reloadCaps: () => void chat.reloadCaps() },
     mem: {
       get: (k, d) => mem.get(`us.kind.${kind}.${k}`, d),
@@ -662,57 +664,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
           } : undefined}
         />
       {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
-      {leavingTo && (
-        /* 切到别的文件时那一张。**和关页签共用一个组件**，但三条出路的落点不同：
-           「不要了」= 丢掉改动并切过去（**不关页签** —— 他要的是去看别的，不是关掉这个）。 */
-        <LeaveGuard
-          path={leavingTo.path}
-          verb="切走"
-          onCancel={() => setLeavingTo(null)}
-          onDiscard={() => { const t = leavingTo; dirtyStore.drop(t.path); setLeavingTo(null); doOpen(t.next.f, t.next.isDir, t.next.mode); }}
-          onSave={() => {
-            /* 同关页签那条：**让格式模块自己落**，我们只发一个合成的 ⌘S。 */
-            window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }));
-            const t = leavingTo;
-            let n = 0;
-            const timer = setInterval(() => {
-              if (!dirtyStore.has(t.path)) { clearInterval(timer); setLeavingTo(null); doOpen(t.next.f, t.next.isDir, t.next.mode); return; }
-              if (++n > 40) {                     // 40 × 150ms = 6 秒
-                clearInterval(timer);
-                setLeavingTo(null);
-                toast("还没落完，先没切", "这个文件的改动还在，你可以再按一次 ⌘S", "error");
-              }
-            }, 150);
-          }}
-        />
-      )}
-      {leaving && (
-        <LeaveGuard
-          path={leaving}
-          onCancel={() => setLeaving(null)}
-          onDiscard={() => { const f = leaving; setLeaving(null); doCloseTab(f); }}
-          onSave={() => {
-            /* ⚠️ **不自己落盘 —— 让那个格式模块自己落。**
-               内容在它手里（插件在自己的 iframe 里，工作台读不到），
-               而「怎么算落盘」也是它的事（`.dc.html` 走 `write_draft`，代码走 `write_file`）。
-               复用已有的 ⌘S 转发那条路：发一个合成的 ⌘S 出去，谁接谁落。 */
-            window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }));
-            const f = leaving;
-            /* ⚠️ **等它落完，但要有上限**（纪律 3.4）。
-               落盘是异步的（写盘 + 快照），而「落完了」的信号就是 `dirtyStore` 变干净。
-               等不到就**不关**，并说一句 —— 悄悄关掉等于把改动丢了。 */
-            let n = 0;
-            const t = setInterval(() => {
-              if (!dirtyStore.has(f)) { clearInterval(t); setLeaving(null); doCloseTab(f); return; }
-              if (++n > 40) {                       // 40 × 150ms = 6 秒
-                clearInterval(t);
-                setLeaving(null);
-                toast("还没落完，先没关", "这个文件的改动还在，你可以再按一次 ⌘S", "error");
-              }
-            }, 150);
-          }}
-        />
-      )}
+      {guardNode}
     </div>
   );
 }

@@ -52,3 +52,16 @@ export function guardUnsaved(): () => void {
   window.addEventListener("beforeunload", on);
   return () => window.removeEventListener("beforeunload", on);
 }
+
+/** 「离开」这个动作的说法。**三种触发共用一张卡，但话要说准** ——
+ *  「关掉以后这些改动不会留」「切走以后…」「退回以后…」，
+ *  设计侧原话：后两种用户更容易以为「我一会儿回来它还在」。
+ *
+ *  ⚠️ 放在这里而不是 `workbench/` —— 从属面板（变更卡的「回退」）也要用它，
+ *  而面板不该反过来依赖工作台。 */
+export type LeaveVerb = { long: string; short: string };
+export const LEAVE: { close: LeaveVerb; switch: LeaveVerb; revert: LeaveVerb } = {
+  close: { long: "关掉", short: "关" },
+  switch: { long: "切走", short: "切" },
+  revert: { long: "退回", short: "退" },
+};

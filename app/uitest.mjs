@@ -1650,6 +1650,35 @@ console.log("\n插件 UI 的边界（M11-4）");
               await pg.keyboard.press("End");
               await pg.keyboard.type("\n// 为了测切走而改的");
               await pg.waitForTimeout(700);
+
+              /* ─ 批量关页签**不会碰没落盘的那份**（2026-09-30）─
+                 ⚠️ 这一条是**一次误报的产物**：我孤立地读 `closeMany`，看见它对整批
+                 `dirtyStore.drop` 就判「关闭其他会静默丢改动」。查调用方才发现
+                 四处入口全走 `closable()`，而它的 `keep` 上游就把脏页签滤掉了。
+                 那处「修复」已撤回 —— 真正在保护用户的是这条不变量，所以钉它。
+                 判法：同一颗页签在**脏**和**干净**两种状态下各读一次
+                 「关闭已保存的」的个数，差应当正好是 1。
+                 这样不依赖「一共几个页签」「有没有固定的」这些我控制不了的前提。 */
+              const savedCount = async () => {
+                await pg.locator(`[data-ud="tab"][data-path="${TS}"]`).first().click({ button: "right" });
+                await pg.waitForTimeout(400);
+                const t = await pg.locator('[data-ud="tabmenu"]').innerText().catch(() => "");
+                await pg.keyboard.press("Escape"); await pg.waitForTimeout(250);
+                return Number((/关闭已保存的\s*(\d+)\s*个/.exec(t) ?? [])[1] ?? NaN);
+              };
+              const nDirty = await savedCount();
+              /* 落盘 —— 让同一颗页签变干净。⌘S 走的是转发给插件那条路 */
+              await cm2.click();
+              await pg.keyboard.press("Meta+s");
+              for (let i = 0; i < 40 && await pg.locator(`[data-ud="tab"][data-path="${TS}"] [title="改了还没落盘"]`).count(); i++) await pg.waitForTimeout(150);
+              const nClean = await savedCount();
+              ok(Number.isFinite(nDirty) && nClean === nDirty + 1,
+                 "**「关闭已保存的」把没落盘的那份排除在外**（批量也不丢改动）", `脏 ${nDirty} 个 → 干净 ${nClean} 个`);
+              /* 判据自己把状态改干净了，切走那一段要的是脏的 —— 自己改回去（§一二二.3） */
+              await cm2.click();
+              await pg.keyboard.press("End");
+              await pg.keyboard.type("\n// 再改一次，为了测切走");
+              await pg.waitForTimeout(700);
               /* 去点树里另一份 .dc.html */
               const other = pg.locator('[role="treeitem"]').filter({ hasText: ".dc.html" }).first();
               await other.click();

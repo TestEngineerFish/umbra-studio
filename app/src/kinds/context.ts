@@ -65,6 +65,10 @@ export interface ViewContext {
     expandChat(): void;
     /** 关掉当前文件的页签。它出现在文件 `⋯` 的公共尾巴里（设计侧第七轮的 `fileTail`） */
     closeFile(): void;
+    /** 这份文件有没落盘的改动就**先问一句**，返回「能不能继续」。
+     *  给的是那些**会覆盖或丢掉内容**的动作用的（变更卡的「回退」）。
+     *  没改动时同步放行，所以调用点不用自己判断。 */
+    confirmLeave(path: string): Promise<boolean>;
     toast(title: string, body?: string, kind?: "error" | "ok"): void;
   };
 

@@ -12,6 +12,16 @@ function Body({ ctx }: { ctx: ViewContext }) {
   if (!c) return <div className="p-4 text-muted">正在读…</div>;
   const versions = (c.versions ?? []).slice().reverse();
   const revert = async (v: string) => {
+    /* **回退会覆盖盘上的文件**，所以有没落盘的改动要先问一句 ——
+       这是 S18 §一.1 那张卡数出来的第三种触发（设计侧管它叫「切快照」）。
+       没改动时 `confirmLeave` 同步放行，所以平时一点感觉都没有。
+
+       ⚠️ **这条路今天到不了，接闸是为了它到得了的那天**，别把它当成修了个活缺陷：
+       `changes` 面板只挂在 `.dc.html` 上（`kinds/dc/index.tsx`），而 `dirtyStore`
+       只有插件会上报（`kinds/plugin/Surface.tsx`）—— **能回退的类型不会脏，
+       会脏的类型没有这颗按钮**。两边任意一边变了（代码文件有了版本历史、
+       或者 dc 开始上报未落盘），这一行立刻生效。 */
+    if (!(await ctx.ui.confirmLeave(file))) return;
     setBusy(v);
     const r = await core.post<{ write?: { version?: string } }>("revert", { file, version: v });
     if (r.ok) { toast(`已退回 ${v}`, `历史不删，${r.data?.write?.version ?? "新一版"} 是回退版`, "ok"); void store.fetchChanges(file); void store.fetchDrafts(); } else toast("回退失败", r.errors?.[0]?.message, "error");
