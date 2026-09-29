@@ -42,3 +42,21 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px ui-monospa
 body.dirty #host { height: calc(100% - 33px); }
 /* 可改时光标要是文本插入符（只读时 CM 自己会设成 default） */
 .cm-editor.cm-focused { outline: none; }
+
+
+/* 只读那一条（S18 §一.4）。**和未落盘横条用同一个 .bar 骨架**，
+   但底色是中性的 —— 只读不是警告，是「这份改了也没用」。 */
+.bar.ro { background: var(--gutter-bg); }
+.tag { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px;
+  border-radius: 5px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); white-space: nowrap; }
+/* 按了字键：标签变 warn 并横向抖一下（360ms，和第十一轮「没有地址」那一下同一个时长） */
+.tag.nudge { border-color: #c8821e; color: #c8821e; background: rgba(210,140,40,.10); animation: roNudge 360ms ease; }
+@keyframes roNudge { 0%,100% { transform: translateX(0);} 20% { transform: translateX(-3px);} 40% { transform: translateX(3px);} 60% { transform: translateX(-2px);} 80% { transform: translateX(2px);} }
+.hint { position: absolute; left: 62px; z-index: 3; display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 8px 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg);
+  box-shadow: 0 4px 16px rgba(0,0,0,.18); font: 12px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
+.btn.sm { height: 22px; padding: 0 8px; font-size: 11px; }
+body { position: relative; }
+/* 有只读条时正文也要让出高度 —— 和 .dirty 同一条理由 */
+body.ro #host { height: calc(100% - 33px); }
+body.ro.dirty #host { height: calc(100% - 66px); }

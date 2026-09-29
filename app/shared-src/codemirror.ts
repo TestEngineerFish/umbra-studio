@@ -14,8 +14,11 @@
  *  导出什么：按「插件真正要用的」给，不是把 CM 的全部 API 都摊开 ——
  *  摊得越开，将来升 CM 大版本时插件坏得越多。
  */
-export { EditorState, StateEffect, StateField, Compartment } from "@codemirror/state";
-export { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, placeholder } from "@codemirror/view";
+export { EditorState, StateEffect, StateField, Compartment, RangeSet, RangeSetBuilder } from "@codemirror/state";
+/* ⚠️ `Decoration` / `gutterLineClass` 是**行标记**要的（S18 §一.1：改过的行在行号边上
+   一道 warn 竖线 + 行底 warn-soft）。加导出时想一句「插件真的会用吗」——
+   摊得越开，将来升 CM 大版本时插件坏得越多。 */
+export { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor, placeholder, Decoration, gutterLineClass, GutterMarker } from "@codemirror/view";
 export { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 export { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 export { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } from "@codemirror/autocomplete";

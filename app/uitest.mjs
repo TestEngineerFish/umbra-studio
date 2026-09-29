@@ -964,13 +964,34 @@ console.log("\n预览切换的过场（M8-34）");
         window.__fadeHist.push({ fading: b?.getAttribute("data-fading") ?? null, cur: cur ? getComputedStyle(cur).opacity : null, prev: prev ? getComputedStyle(prev).opacity : null });
       };
       new MutationObserver(sample).observe(document.body, { attributes: true, subtree: true, attributeFilter: ["data-fading"] });
+      /* ⚠️ **属性变化采不到渐变**：opacity 从 1 到 0 是一条 CSS 过渡，
+         中间没有任何属性变。所以再加一条轮询，专门采那一半。
+         两个采样器写进同一个 `__fadeHist`，判据一起看。 */
+      window.__fadeTimer = setInterval(sample, 40);
     });
-    /* 挑一份**没在池里**的（池只留两份，最后一个最稳） */
-    await dc.nth(Math.min(3, await dc.count() - 1)).click();
+    /* ⚠️ **判据自己把池挤空，别指望「最后一份多半不在池里」**（2026-09-29 修）。
+       原来挑第 4 份并注释「最后一个最稳」—— 而池里有什么，取决于**这一节之前
+       所有判据打开过哪些文件**。我这轮在后面加了 `.ts` / `-lock.yaml` 两节，
+       池的内容跟着变，这条就红了：采样里 `data-fading` 全是 `null`，
+       因为目标命中了缓存、**根本没走过场那条路**——而缓存命中不走过场是对的行为。
+
+       **判据依赖的前提，判据自己要建立。** 池最多留两份，
+       所以先点两份别的就能保证目标一定被挤出去。 */
+    const n = await dc.count();
+    await dc.nth(1).click(); await pg.waitForTimeout(1600);
+    await dc.nth(2).click(); await pg.waitForTimeout(1600);
+    await dc.nth(Math.min(3, n - 1)).click();
     await pg.waitForTimeout(2600);
-    const hist = await pg.evaluate(() => window.__fadeHist ?? []);
+    const hist = await pg.evaluate(() => { clearInterval(window.__fadeTimer); return window.__fadeHist ?? []; });
     const during = hist.find((h) => h.fading === "1");
-    ok(!!during, "切稿时真的走了过场（事后读变化历史，不赌时间窗口）", `采到 ${hist.length} 次`);
+    /* ⚠️ 判据认**两样中的任意一样**，因为过场的实质有两个可观察面：
+       `data-fading="1"`（工作台知道自己在过场）或 **`prev` 的 opacity 真的在渐变**
+       （那是用户看得见的那一半）。
+       只认属性的话，MutationObserver 有个盲区：**它不报告新插入节点的初始属性** ——
+       canvas 若是新建的而不是复用的，`data-fading="1"` 就是「初始值」不是「变化」。 */
+    const faded = hist.some((h) => h.prev != null && Number(h.prev) > 0.02 && Number(h.prev) < 0.98);
+    ok(!!during || faded, "切稿时真的走了过场（属性或 prev 的淡出，两者认其一）",
+       `采到 ${hist.length} 次${during ? " · 有 fading=1" : ""}${faded ? " · prev 在渐变" : ""}`);
     if (during) {
       ok(during.prev === "1", "**过场中上一份完整可见**（不淡出 —— 淡出就会透出画布底色，那才是「闪」）", `prev=${during.prev}`);
       ok(during.cur === "0", "新的在它下面加载、先透明（等待和展示是重叠的）", `cur=${during.cur}`);
@@ -1390,6 +1411,12 @@ console.log("\n插件 UI 的边界（M11-4）");
             await pg.waitForTimeout(600);
             const barTxt = (await codeFrame.locator("#dirty:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
             ok(/还没落盘/.test(barTxt), "**打字之后出未落盘横条**（带前后行数）", barTxt.slice(0, 50));
+            /* 改过的行有标记（S18 §一.1）：行底 warn-soft + 左边一道竖线。
+               ⚠️ **必须在落盘之前读**。第一版放在 ⌘S 之后，一直是 0 ——
+               落盘后 `disk` 换成新的那一版，「改过的行」自然就空了，**标记清空是对的行为**。
+               判据读错时机，测到的是「落盘之后还有没有标记」，而那本来就该没有。 */
+            const marked = await codeFrame.locator(".cm-line.ud-changed").count().catch(() => 0);
+            ok(marked >= 1, "**改过的行有标记**（行底色 + 左边竖线）", `${marked} 行带标记`);
             ok(/未落盘/.test(await readMeta()), "⋯ 浮层头的读数也跟着变成「未落盘」（一处算两处用）");
             /* ⌘S 落盘 —— 挂在 window 上而不是 CM 的 keymap 里（点了横条上的钮再按也要生效） */
             await pg.keyboard.press("Meta+s");
@@ -1457,6 +1484,56 @@ console.log("\n插件 UI 的边界（M11-4）");
             ok(stillDirty, "**盘上被别人改过时落盘被拒**（横条还在，改动没被静默丢掉）");
           } else ok(false, "`.ts` 样本建好了但树里没刷出来");
           } finally {
+            /* ═══ 只读（S18 §一.4）═══ 按文件名自动进，不问内容。
+               ⚠️ **样本名要选真会走 `code` 这个类型的**。第一版用 `插件回归样本.lock` ——
+               而 `kindOf("a.lock")` 是 **`other`**（走通用文件卡），
+               根本到不了代码插件，判据当然红，**而红的原因和只读毫无关系**。
+               `-lock.yaml` 才是 `code`（`kindOf` 实测过）。
+               **测一个功能之前，先确认样本真的会走到那条路。** */
+            const LOCK = "插件回归样本-lock.yaml";
+            const lockOk = await pg.evaluate(async ({ name }) => {
+              const b = window.__UD_APP;
+              const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+              const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ path: name, content: "lockfileVersion: '9.0'\nsettings:\n  a: true\n", expectSha256: "0" }) });
+              return (await w.json()).ok;
+            }, { name: LOCK });
+            if (lockOk) {
+              await pg.waitForTimeout(1200);
+              const lockRow = pg.locator('[role="treeitem"]').filter({ hasText: LOCK }).first();
+              if (await lockRow.count()) {
+                await lockRow.click(); await pg.waitForTimeout(2800);
+                const lf = pg.frameLocator('iframe[data-role="body"]');
+                const roTxt = (await lf.locator("#ro:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
+                ok(/只读/.test(roTxt) && /锁文件/.test(roTxt), "**`.lock` 自动进只读，并说出原因**", roTxt.slice(0, 40) || "（没有只读条）");
+                ok(/解锁编辑/.test(roTxt), "只读条上有「解锁编辑」（不是死路）");
+                /* 只读下照样能选中 —— 只读不等于「这个文件与你无关」 */
+                await lf.locator(".cm-content").click();
+                await pg.keyboard.press("Meta+a");
+                await pg.waitForTimeout(300);
+                const selLen = await lf.locator(".cm-content").evaluate(() => (window.getSelection()?.toString() ?? "").length).catch(() => 0);
+                ok(selLen > 0, "**只读下照样选得中**（只读不是「与你无关」）", `选中 ${selLen} 字符`);
+                /* 按字键：不改内容 + 出提示 */
+                const before = await lf.locator(".cm-line").count();
+                await pg.keyboard.press("End");
+                await pg.keyboard.type("xyz");
+                await pg.waitForTimeout(600);
+                const txt = await lf.locator(".cm-content").innerText().catch(() => "");
+                ok(!/xyz/.test(txt), "只读下按字键**改不进去**");
+                const hint = (await lf.locator("#roHint:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
+                ok(/没改/.test(hint), "**只读下按字键会说出原因**（不是静默吞掉）", hint.slice(0, 40) || "（没有提示）");
+              } else ok(false, "`.lock` 样本建好了但树里没刷出来");
+              await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+                await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                for (const it of t?.data?.items ?? []) if (it.originalName === name) {
+                  await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }
+              }, { name: LOCK });
+            } else ok(false, "建不出 .lock 样本");
+
           /* 收尾：和 csv 样本同一套 —— 扔回收站再彻底清掉，不给用户留东西 */
             await pg.evaluate(async ({ name }) => {
               const b = window.__UD_APP;

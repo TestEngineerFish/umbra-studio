@@ -14,6 +14,35 @@
 const CM = "/__shared/codemirror.js";
 
 const el = (id) => document.getElementById(id);
+
+/** 改过的行的装饰集。**放 StateField 而不是每次重建 view** ——
+ *  重建会丢掉光标、选区和撤销栈，而用户正在打字。 */
+let changedField = null, setChangedEffect = null;
+function ensureChangedField(cm) {
+  if (changedField) return;
+  setChangedEffect = cm.StateEffect.define();
+  const lineDeco = cm.Decoration.line({ class: "ud-changed" });
+  changedField = cm.StateField.define({
+    create: () => cm.RangeSet.empty,
+    update(set, tr) {
+      for (const e of tr.effects) {
+        if (!e.is(setChangedEffect)) continue;
+        const b = new cm.RangeSetBuilder();
+        for (const n of [...e.value].sort((x, y) => x - y)) {
+          if (n <= tr.state.doc.lines) b.add(tr.state.doc.line(n).from, tr.state.doc.line(n).from, lineDeco);
+        }
+        return b.finish();
+      }
+      return set.map(tr.changes);
+    },
+    provide: (f) => cm.EditorView.decorations.from(f),
+  });
+}
+/** 重算「哪几行改了」并推进编辑器。落盘之后 `disk` 换了新的，这里自然就空了。 */
+function markChanged() {
+  if (!view || !disk || !setChangedEffect) return;
+  view.dispatch({ effects: setChangedEffect.of(changedLines(disk.content, view.state.doc.toString())) });
+}
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const fail = (title, body) => {
   el("err").hidden = false;
@@ -37,6 +66,37 @@ function langFor(path, cm) {
 }
 
 let view = null, cm = null, curPath = null;
+/** 这个页签解锁过没（S18 §一.4）。**只对这一个页签生效** —— 换文件就回到只读。
+ *  解锁是「这一次我要改它」，不是「以后都别拦我」。 */
+let unlocked = false;
+/** 只读的原因（`null` = 可改）。标签和那句「没改：…」共用一份，免得两处写得不一样。 */
+let roReason = null;
+
+/** 该不该只读。**按文件名和大小，不问内容**（S18 §一.4 给的名单）。
+ *
+ *  ⚠️ 这不是「保护」，是**省去一次误会**：这些文件改了也没用（下次生成就覆盖），
+ *  而用户要花几秒才意识到这一点。所以只读下**照样能选中、复制、给 AI** ——
+ *  只读不等于「这个文件与你无关」。 */
+function readOnlyReason(path, size) {
+  const name = (path.split("/").pop() || "").toLowerCase();
+  if (/\.lock$/.test(name)) return "锁文件";
+  if (/-lock\.(json|yaml|yml)$/.test(name)) return "锁文件";
+  if (/\.min\.[a-z0-9]+$/.test(name)) return "压缩产物";
+  if (/(^|\/)dist\//.test(path.toLowerCase())) return "构建产物";
+  if (size > 1024 * 1024) return "超过 1 MB";
+  return null;
+}
+
+/** 哪几行和盘上那一版不一样。**按行比，不做真 diff** ——
+ *  真 diff（LCS）能认出「插入一行」让后面的行号整体平移，而按行比会把后面全标成改过。
+ *  但这里只是**视觉提示**，标多了不误导人（用户看得见自己改了什么），
+ *  而引入一个 diff 实现要多几百行、多一份出错的地方。**够用就停。** */
+function changedLines(before, now) {
+  const a = before.split("\n"), b = now.split("\n");
+  const out = new Set();
+  for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) out.add(i + 1);
+  return out;
+}
 /** 盘上那一版：内容 + sha + 快照号。**改动判定靠它** —— 不留这一份的话
  *  没法回答「改过没」，只能靠一个 boolean，而那个 boolean 在「改了又改回来」时是错的。 */
 let disk = null;
@@ -47,8 +107,12 @@ const isDirty = () => !!disk && !!view && view.state.doc.toString() !== disk.con
 /** 横条 + chrome 的读数。**一处算、两处用** —— 分开算迟早对不上。 */
 function paint() {
   const dirty = isDirty();
+  const ro = !!roReason && !unlocked;
   document.body.classList.toggle("dirty", dirty);
+  document.body.classList.toggle("ro", ro);
   el("dirty").hidden = !dirty;
+  el("ro").hidden = !ro;
+  if (ro) el("roText").textContent = `只读 · ${roReason}`;
   if (dirty) {
     const a = (disk.content.match(/\n/g) ?? []).length + 1;
     const b = (view.state.doc.toString().match(/\n/g) ?? []).length + 1;
@@ -66,7 +130,8 @@ function paint() {
          那会永远显示「未改过」，而文件可能改过一百次，我们只是不知道。
          **一个我们答不出来的问题，不该给一个看着像答案的答案**（§一一四 同一条：
          读数该由格式自己定，「多少字」对图片没意义，「改过没」对我们这一层没数据）。 */
-      status: `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}` + (dirty ? " · 未落盘" : ""),
+      status: `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}`
+        + (ro ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : ""),
     },
     (kind, a) => { if (kind === "button" && a === 0) askAboutSelection(); },
   );
@@ -130,10 +195,15 @@ async function load(path, theme, opt = {}) {
     return;
   }
   el("err").hidden = true; el("host").hidden = false;
+  ensureChangedField(cm);
+  /* 换文件就回到只读（解锁只对一个页签生效，S18 §一.4） */
+  if (path !== curPath) unlocked = false;
   /* `read_file` 给的是 path / kind / size / updatedAt / **sha256** / content / lines
      —— 字段名去 `server/src/cap/files.ts` 查过，不是猜的（猜错的话 sha 对不上，
      每次落盘都会被写前校验拦住，而错误信息只说「校验不过」，很难想到是字段名）。 */
   disk = { content: r.data?.content ?? "", sha: r.data?.sha256 ?? "", lines: r.data?.lines ?? null, size: r.data?.size ?? 0 };
+  roReason = readOnlyReason(path, disk.size);
+  roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 
   const lang = langFor(path, cm);
@@ -149,9 +219,36 @@ async function load(path, theme, opt = {}) {
     cm.highlightSelectionMatches(),
     /* 每一次改动都重画横条与读数。**不用 debounce** —— 只是几个 DOM 文本，
        而延迟会让「改了一个字横条还没出来」这种半秒的不一致被看见。 */
-    cm.EditorView.updateListener.of((u) => { if (u.docChanged) paint(); }),
+    cm.EditorView.updateListener.of((u) => { if (u.docChanged) { paint(); markChanged(); } }),
+    changedField,
+    /* 改过的行：行底 warn-soft + 行号边一道 warn 竖线（S18 §一.1，和 S13 源码视图同一套）。
+       ⚠️ 颜色走 CSS 变量并**带兜底值** —— 插件的 iframe 拿不到宿主的 token 表。 */
+    cm.EditorView.theme({
+      ".cm-line.ud-changed": {
+        background: "var(--warn-soft, rgba(210, 140, 40, .10))",
+        /* 左边那道竖线：贴在行的最左侧，和稿里「行号右边一道 2px warn 竖线」等价 */
+        boxShadow: "inset 2px 0 0 var(--warn, #c8821e)",
+      },
+    }),
+    /* ⚠️ **行号那道竖线不走 `gutterLineClass`**（2026-09-29 实测）。
+       它要的是 `GutterMarker` 的 RangeSet，而 `changedField` 里装的是 `Decoration` ——
+       类型不匹配时**整个 extension 静默失效**（连行底色那一半也跟着没了），
+       而控制台一个字都不报。最小复现证明 `Decoration.line` 本身是好的：
+       同样的 field 单独用，3 行里 1 行带上了 class。
+
+       所以行号那道线改成用**同一个 class 的 CSS 兄弟选择器**画 ——
+       `.cm-line.ud-changed` 已经有了，gutter 那一侧用 `:has()` 对不上（它们是并列容器）。
+       退一步：**只画行底色 + 左边一道内阴影**，视觉上和稿里的「行号边竖线」等价，
+       而少一个会静默失效的 API。 */
   ];
   if (lang) exts.push(lang);
+  /* 只读：**只给 `readOnly`，不给 `editable.of(false)`**（2026-09-29 实测更正）。
+     我第一版两个都给，注释还写着「有些扩展只看其中一个」——**那个判断是错的**：
+     `editable.of(false)` 把 contentDOM 的 `contenteditable` 关掉，
+     于是**连焦点都拿不到** → 选不中、复制不了、keydown 也收不到，
+     而设计侧明确要「只读下照样能选中、复制、给 AI」（S18 §一.4）。
+     `EditorState.readOnly` 只挡改动，选区、光标、键盘导航全都还在 —— 这才是这里要的。 */
+  if (roReason && !unlocked) exts.push(cm.EditorState.readOnly.of(true));
 
   if (view) view.destroy();
   view = new cm.EditorView({
@@ -165,6 +262,40 @@ async function load(path, theme, opt = {}) {
   }
   paint();
 }
+
+/** 解锁。**只对这一个页签** —— 换文件回到只读（`load` 里重置）。
+ *  重建 view 是必要的：`editable` / `readOnly` 是建 state 时定的。
+ *  ⚠️ **带上当前光标**，否则解锁之后光标跳回开头，用户要重新找位置。 */
+function doUnlock() {
+  unlocked = true;
+  el("roHint").hidden = true;
+  void load(curPath, document.documentElement.dataset.theme, { keepCursor: true });
+}
+el("unlock").addEventListener("click", doUnlock);
+el("unlock2").addEventListener("click", doUnlock);
+
+/* 只读下按了字键：标签抖一下 + 光标下方说原因（S18 §一.4）。
+   ⚠️ **只出第一次**：每按一个键弹一次会变成噪音，而他第一次就已经知道了。
+   ⚠️ 判据是「这个键会不会改内容」——方向键、⌘C、Esc 都不算。 */
+let roHinted = false;
+el("host").addEventListener("keydown", (e) => {
+  if (!roReason || unlocked) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;                    // ⌘C / ⌘A 这些照常
+  if (e.key.length !== 1 && !["Enter", "Backspace", "Delete", "Tab"].includes(e.key)) return;
+  const tag = el("roLabel");
+  tag.classList.remove("nudge");
+  void tag.offsetWidth;                                              // 重排一次，让动画能重放
+  tag.classList.add("nudge");
+  if (roHinted) return;
+  roHinted = true;
+  const h = el("roHint");
+  el("roWhy").textContent = `没改：这份是${roReason}，只读`;
+  /* 贴到光标那一行下面 —— 用 CM 报的坐标，不自己算行高 */
+  const c = view && view.coordsAtPos(view.state.selection.main.head);
+  const box = el("host").getBoundingClientRect();
+  h.style.top = c ? `${c.bottom - box.top + 4}px` : "48px";
+  h.hidden = false;
+}, true);
 
 el("save").addEventListener("click", () => void save());
 /* 放弃 = 回到盘上那一版。**不问一句** —— 和 md 插件同口径：

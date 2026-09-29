@@ -10,7 +10,18 @@
     <button id="discard" class="btn ghost">放弃</button>
     <button id="save" class="btn primary">落盘 ⌘S</button>
   </div>
+  <!-- 只读：一枚标签 + 解锁（S18 §一.4）。**不出横条** —— 只读本身不是警告 -->
+  <div id="ro" class="bar ro" hidden>
+    <span id="roLabel" class="tag">🔒 <span id="roText">只读</span></span>
+    <span class="sp"></span>
+    <button id="unlock" class="btn">解锁编辑</button>
+  </div>
   <div id="host"></div>
+  <!-- 只读下按了字键：光标下方出一行原因 + 解锁。**只出第一次** -->
+  <div id="roHint" class="hint" hidden>
+    <span id="roWhy"></span>
+    <button id="unlock2" class="btn primary sm">解锁编辑</button>
+  </div>
   <!-- ⚠️ 顺序要紧：`umbra.js` 是**经典脚本**（立即执行），`app.mjs` 是**模块**（自带 defer）。
        和 md 插件同一条 —— 经典脚本这一行必须在前面才保证 `umbra` 已就位。 -->
   <script src="./umbra.js"></script>

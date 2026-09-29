@@ -23186,10 +23186,14 @@ const px = /code|horizontalrule|html|link|comment|processing|escape|entity|image
 });
 export {
   ts as Compartment,
+  A as Decoration,
   D as EditorState,
   T as EditorView,
+  $t as GutterMarker,
   us as HighlightStyle,
   ai as LanguageSupport,
+  _ as RangeSet,
+  At as RangeSetBuilder,
   W as StateEffect,
   $e as StateField,
   Nf as StreamLanguage,
@@ -23206,6 +23210,7 @@ export {
   bx as dropCursor,
   Cx as foldGutter,
   Xx as foldKeymap,
+  dr as gutterLineClass,
   yx as highlightActiveLine,
   wx as highlightActiveLineGutter,
   _x as highlightSelectionMatches,
