@@ -1457,6 +1457,69 @@ console.log("\n插件 UI 的边界（M11-4）");
             const toastTxt = (await pg.locator("[data-ud=\"toasts\"], .toast").allTextContents().catch(() => [])).join(" ");
             ok(!/先选中/.test(toastTxt), "**没选区时不弹「先选中几行」**（那一下的意图是聚焦，不是带选区）", toastTxt.slice(0, 40) || "（没有 toast）");
 
+            /* ═══ 关页签前拦一下（S18 §一.1）═══
+               ⚠️ 三条出路**各测一条**：只测「卡片出来了」的话，
+               三颗钮里坏了哪一颗都不会红 —— 而「不要了」坏掉是丢数据，
+               「落盘再关」坏掉是假的安全感。 */
+            {
+              /* ⚠️ **判据自己先制造「未落盘」** —— 前面那几节已经 ⌘S 落过盘了，
+                 这时 `dirtyStore` 是干净的，关页签当然不会拦。
+                 又一次「判据依赖一个它控制不了的前提」（§一二二.3 同族）：
+                 前面的判据改变了状态，后面的判据默认它没变。 */
+              await cmContent.click();
+              await pg.keyboard.press("End");
+              await pg.keyboard.type("\n// 为了测拦截而改的一行");
+              await pg.waitForTimeout(700);
+              ok(await codeFrame.locator("#dirty:not([hidden])").count() > 0, "（前置）先把它改脏，才测得到拦截");
+
+              /* ⚠️ 关闭钮 **dirty 时要 hover 才显示**（`hidden group-hover:grid`）——
+                 未保存那颗点占着它的位置，这是编辑器通行的写法。
+                 判据不 hover 的话点的是那颗点，什么都不会发生。 */
+              /* ⚠️ 页签的选择器是 **`[data-ud="tab"][data-path=…]`，不是 `role="tab"`**。
+                 我按 ARIA 猜了一个，`count()` 一直是 0 而判据只说「没拦」——
+                 **找不到元素和功能坏了，读数长得一模一样**。 */
+              const tabOf = () => pg.locator(`[data-ud="tab"][data-path="${TS}"]`).first();
+              const openGuard = async () => {
+                const t = tabOf();
+                if (await t.count()) {
+                  await t.hover();
+                  await pg.waitForTimeout(250);
+                  const x = t.locator('button[title*="关闭"]');
+                  if (await x.count()) await x.first().click();
+                }
+                await pg.waitForTimeout(700);
+                return (await pg.locator('[role="alertdialog"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+              };
+              const g1 = await openGuard();
+              ok(/还没落盘/.test(g1), "**有未落盘改动时关页签会拦一下**（不是悄悄丢掉）", g1.slice(0, 50) || "（没拦）");
+              ok(/不要了/.test(g1) && /回去接着改/.test(g1) && /落盘再关/.test(g1), "三条出路都给了", g1.slice(0, 60));
+              /* ① 回去接着改 —— 页签还在、改动还在 */
+              await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click();
+              await pg.waitForTimeout(500);
+              ok(await tabOf().count() > 0, "「回去接着改」之后页签还在");
+              ok(await codeFrame.locator("#dirty:not([hidden])").count() > 0, "「回去接着改」之后改动也还在");
+              /* ② 落盘再关 —— 盘上要真的变了，页签要没了 */
+              await openGuard();
+              await pg.locator('[role="alertdialog"] button:has-text("落盘再关")').click();
+              await pg.waitForTimeout(2500);
+              ok(await tabOf().count() === 0, "**「落盘再关」之后页签关掉了**");
+              const savedNow = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/file?path=${encodeURIComponent(name)}&token=${encodeURIComponent(b.token)}`);
+                /* ⚠️ 查的是**这一节自己写进去的那行**，不是前面某一节写的。
+                   第一版查「我也改」——那是上一节的字，这一节改的是别的，
+                   判据当然红，**而红的原因和落盘毫无关系**。 */
+                return /为了测拦截而改的一行/.test((await r.json())?.data?.content ?? "");
+              }, { name: TS });
+              ok(savedNow, "**而且盘上真的落了**（不是只把页签关掉）");
+              /* ⚠️ **这一节把页签关掉了，后面还要用** —— 重新打开。
+                 不还原的话下一节找 `.cm-content` 会等 30 秒然后整个回归崩掉，
+                 而报错指向的是**下一节**的那一行（`uitest.mjs:1525`），
+                 看起来像那一节坏了。**判据之间的状态要各自还原。** */
+              const back = pg.locator('[role="treeitem"]').filter({ hasText: TS }).first();
+              if (await back.count()) { await back.click(); await pg.waitForTimeout(2500); }
+            }
+
             /* sha 校验那一关：盘上被别人改过时**拒绝落盘**而不是覆盖。
                ⚠️ **顺序要紧，第一版造错了**：我先绕过插件写盘、再让插件打字落盘 ——
                而插件的 `onChanged` 收到「盘上变了」会**重读**，sha 跟着更新，

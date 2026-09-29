@@ -17,6 +17,7 @@ import { PopItem, PopSep, Popover, usePopover } from "../ui/Popover";
 import { BottomBar } from "./BottomBar";
 import { debugBus, wireDebug } from "../ui/debug";
 import { dirtyStore } from "../ui/dirty";
+import { LeaveGuard } from "./LeaveGuard";
 import { FileTree } from "./FileTree";
 /* 详情区怎么画、右边配什么面板、状态行写什么，**全在 kinds 注册表里**。
    这个文件从此不认识任何一种具体格式 —— 加 `.json` 时它一个字都没动（M8-14）。 */
@@ -279,7 +280,10 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     setTabsRaw((t) => { const n = openTab(t, f, mode); mem.set(`us.tabs.${project.dir}`, n); return n; });
   };
   const dirRel = dirMode ? (file === "__root__" ? "" : (file ?? "")) : "";
-  const closeTab = useCallback((f: string) => {
+  /** 关页签前要不要拦一下。`null` = 不拦。 */
+  const [leaving, setLeaving] = useState<string | null>(null);
+  /** 真的关掉（确认过了，或者本来就没改动）。 */
+  const doCloseTab = useCallback((f: string) => {
     dirtyStore.drop(f);
     /* 关页签时把编辑栏的记忆也清掉 —— 重新打开时回到收起。
        设计侧问过这一条，它的建议就是「回到收起」：重开一份文件多半是去看的，
@@ -290,6 +294,14 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     if (file === f) { const next = n[n.length - 1]?.path ?? null; if (next) open(next, false, "open"); else store.select(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabs, file, setTabs]);
+  /** 关页签。**有没落盘的改动就先问一句**（S18 §一.1，设计侧第十二轮）。
+   *
+   *  ⚠️ 原来这里直接 `dirtyStore.drop(f)` 然后关 —— **改动就这么没了，一句话都不说**。
+   *  设计侧的裁决是「平时不打扰，**只在真的要丢东西的时候**出来」，这就是那个时候。 */
+  const closeTab = useCallback((f: string) => {
+    if (dirtyStore.has(f)) { setLeaving(f); return; }
+    doCloseTab(f);
+  }, [doCloseTab]);
   /** 关一批（右键菜单的「关闭其他 / 右侧 / 已保存的」用） */
   const closeMany = useCallback((list: Tab[]) => {
     for (const t of list) dirtyStore.drop(t.path);
@@ -632,6 +644,33 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
           } : undefined}
         />
       {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
+      {leaving && (
+        <LeaveGuard
+          path={leaving}
+          onCancel={() => setLeaving(null)}
+          onDiscard={() => { const f = leaving; setLeaving(null); doCloseTab(f); }}
+          onSave={() => {
+            /* ⚠️ **不自己落盘 —— 让那个格式模块自己落。**
+               内容在它手里（插件在自己的 iframe 里，工作台读不到），
+               而「怎么算落盘」也是它的事（`.dc.html` 走 `write_draft`，代码走 `write_file`）。
+               复用已有的 ⌘S 转发那条路：发一个合成的 ⌘S 出去，谁接谁落。 */
+            window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }));
+            const f = leaving;
+            /* ⚠️ **等它落完，但要有上限**（纪律 3.4）。
+               落盘是异步的（写盘 + 快照），而「落完了」的信号就是 `dirtyStore` 变干净。
+               等不到就**不关**，并说一句 —— 悄悄关掉等于把改动丢了。 */
+            let n = 0;
+            const t = setInterval(() => {
+              if (!dirtyStore.has(f)) { clearInterval(t); setLeaving(null); doCloseTab(f); return; }
+              if (++n > 40) {                       // 40 × 150ms = 6 秒
+                clearInterval(t);
+                setLeaving(null);
+                toast("还没落完，先没关", "这个文件的改动还在，你可以再按一次 ⌘S", "error");
+              }
+            }, 150);
+          }}
+        />
+      )}
     </div>
   );
 }
