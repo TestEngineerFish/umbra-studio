@@ -284,7 +284,22 @@ const sweepSamples = async () => await pg.evaluate(async (pats) => {
   }
 }
 
+/** ⚠️ **确认卡会挡住一切**（它是全屏遮罩）。一节忘了收，下一节所有点击都点不动，
+ *  而报错指向的是**下一节里的某一行**，看起来像那一节坏了 ——
+ *  2026-09-29 这个形状已经撞到第三次（§一二二.6）。
+ *
+ *  所以给点击加一道「先把挡路的收掉」。**只按 Esc，不替用户做选择** ——
+ *  Esc = 「回去接着改」，是三条出路里**唯一不改变任何东西**的那条。
+ *  判据不该替用户决定丢不丢改动。 */
+const clearGuard = async () => {
+  if (await pg.locator('[role="alertdialog"]').count()) {
+    await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click().catch(() => {});
+    await pg.waitForTimeout(300);
+  }
+};
+
 const openByName = async (suffix) => {
+  await clearGuard();
   const row = pg.locator('[role="treeitem"]').filter({ hasText: suffix }).first();
   if (!(await row.count())) return false;
   await row.click(); await pg.waitForTimeout(1200);
@@ -1546,6 +1561,23 @@ console.log("\n插件 UI 的边界（M11-4）");
             ok(stillDirty, "**盘上被别人改过时落盘被拒**（横条还在，改动没被静默丢掉）");
           } else ok(false, "`.ts` 样本建好了但树里没刷出来");
           } finally {
+            /* ⚠️ **切走之前先落盘** —— 2026-09-29 加了「切文件也拦」之后，
+               这一节点开 `-lock.yaml` 会触发那张确认卡，**遮罩挡住后面所有点击**，
+               而报错指向的是**这一节里的一行**（`.cm-content` 点不动），
+               看起来像只读坏了。**又一次「上一节留下的状态，下一节吃亏」**（§一二二.6）。 */
+            /* ⚠️ **用「放弃」而不是 ⌘S。** 上一条判据（「盘上被别人改过时落盘被拒」）
+               **刻意留下一份落不下去的改动** —— 那正是它要证明的事。
+               这时按 ⌘S 必然失败，dirty 一直挂着，下一次点文件就弹确认卡、
+               遮罩挡住后面所有点击，而报错指向**这一节里的一行**。
+               「放弃」那颗钮是插件自己的，一定生效。 */
+            {
+              const cf = pg.frameLocator('iframe[data-role="body"]');
+              if (await cf.locator("#dirty:not([hidden])").count().catch(() => 0) > 0) {
+                await cf.locator("#discard").click().catch(() => {});
+                await pg.waitForTimeout(600);
+              }
+            }
+
             /* ═══ 只读（S18 §一.4）═══ 按文件名自动进，不问内容。
                ⚠️ **样本名要选真会走 `code` 这个类型的**。第一版用 `插件回归样本.lock` ——
                而 `kindOf("a.lock")` 是 **`other`**（走通用文件卡），
@@ -1564,8 +1596,15 @@ console.log("\n插件 UI 的边界（M11-4）");
               await pg.waitForTimeout(1200);
               const lockRow = pg.locator('[role="treeitem"]').filter({ hasText: LOCK }).first();
               if (await lockRow.count()) {
-                await lockRow.click(); await pg.waitForTimeout(2800);
+                /* ⚠️ **清理要在点之后**：卡片是**这一次点击触发**的（当前文件还脏着），
+                   点之前清没有用 —— 那时还没有卡。
+                   第一版把 `clearGuard()` 放在点之前，遮罩照样挡住后面所有点击。 */
                 const lf = pg.frameLocator('iframe[data-role="body"]');
+                await lockRow.click(); await pg.waitForTimeout(800);
+                await clearGuard();                     // 收掉「要切走吗」
+                /* 被卡片拦下的那一次点击不会生效 —— 收掉之后再点一次 */
+                if (await lf.locator("#ro").count().catch(() => 0) === 0) { await lockRow.click(); }
+                await pg.waitForTimeout(2800);
                 const roTxt = (await lf.locator("#ro:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
                 ok(/只读/.test(roTxt) && /锁文件/.test(roTxt), "**`.lock` 自动进只读，并说出原因**", roTxt.slice(0, 40) || "（没有只读条）");
                 ok(/解锁编辑/.test(roTxt), "只读条上有「解锁编辑」（不是死路）");
@@ -1596,6 +1635,43 @@ console.log("\n插件 UI 的边界（M11-4）");
               }, { name: LOCK });
             } else ok(false, "建不出 .lock 样本");
 
+            /* ═══ 切到别的文件也拦（S18 §一.1 那张卡的第二种触发）═══
+               ⚠️ 三条出路的**落点和关页签不同**，尤其「不要了」——
+               它该是「丢掉改动**并切过去**」，**不是关掉这个页签**。
+               用户按它的意图是「我要去看别的」，不是「这个我不要了」。 */
+            {
+              /* ⚠️ **上一节把当前文件换成了 `.lock`**（而且它是只读的，打不了字）。
+                 这一节要的是一份**能改的** `.ts` —— 自己切回去，别指望上一节留对了状态。
+                 又一次「判据依赖的前提，判据自己要建立」（§一二二.3）。 */
+              const tsRow2 = pg.locator('[role="treeitem"]').filter({ hasText: TS }).first();
+              if (await tsRow2.count()) { await tsRow2.click(); await pg.waitForTimeout(2500); }
+              const cm2 = pg.frameLocator('iframe[data-role="body"]').locator(".cm-content");
+              await cm2.click();
+              await pg.keyboard.press("End");
+              await pg.keyboard.type("\n// 为了测切走而改的");
+              await pg.waitForTimeout(700);
+              /* 去点树里另一份 .dc.html */
+              const other = pg.locator('[role="treeitem"]').filter({ hasText: ".dc.html" }).first();
+              await other.click();
+              await pg.waitForTimeout(800);
+              const g = (await pg.locator('[role="alertdialog"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+              ok(/还没落盘/.test(g), "**有改动时切到别的文件也会拦**（不是悄悄丢掉）", g.slice(0, 40) || "（没拦）");
+              /* ⚠️ 话要说准：这一张说的是「切走」不是「关掉」 */
+              ok(/切走以后/.test(g), "这一张说的是「**切走**以后…」（不是「关掉以后」）", g.slice(0, 50));
+              ok(/落盘再切/.test(g), "主钮写的是「落盘再切」", g.slice(0, 60));
+              /* 「不要了」：丢掉改动、切过去，**但页签不该关** */
+              await pg.locator('[role="alertdialog"] button:has-text("不要了")').click();
+              await pg.waitForTimeout(1800);
+              ok(await pg.locator('[role="alertdialog"]').count() === 0, "「不要了」之后卡片收起来了");
+              ok(await pg.locator(`[data-ud="tab"][data-path="${TS}"]`).count() > 0,
+                 "**「不要了」不关页签**（他要的是去看别的，不是关掉这个）");
+              /* 切回来：改动应该没了（我们丢掉了），而且不该再拦 */
+              await pg.locator(`[data-ud="tab"][data-path="${TS}"]`).first().click();
+              await pg.waitForTimeout(2500);
+              ok(await pg.locator('[role="alertdialog"]').count() === 0, "切回来不会再拦（改动已经丢掉了）");
+            }
+
+
             /* ═══ 非 dc 的 `.html`：预览 + 点选（M10-3）═══
                ⚠️ 这一条端到端穿过**三层 iframe**：工作台 → 插件 → 预览页。
                判据数的是**真的渲染出来了、真的点中了**，不是「iframe 标签在」。 */
@@ -1612,7 +1688,10 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await pg.waitForTimeout(1200);
                 const hRow = pg.locator('[role="treeitem"]').filter({ hasText: H }).first();
                 if (await hRow.count()) {
-                  await hRow.click(); await pg.waitForTimeout(3000);
+                  await hRow.click(); await pg.waitForTimeout(800);
+                  await clearGuard();
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator("#page").count().catch(() => 0) === 0) { await hRow.click(); }
+                  await pg.waitForTimeout(3000);
                   const plug = pg.frameLocator('iframe[data-role="body"]');
                   /* 预览页是**第三层** —— 插件的 iframe 里那个 #page */
                   const page = plug.frameLocator("#page");

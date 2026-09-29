@@ -268,7 +268,8 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   }, [layout, setLayout, panels.length, onSettings, kind, mod.Toolbar, setEditOpen]);
 
   /** 打开任意文件或目录。目录不进页签（它是一个位置，不是一份文件）。 */
-  const open = (f: string, isDir = false, mode: "preview" | "open" = "preview") => {
+  /** 真的切过去（确认过了，或者本来就没改动）。**内部调用走它**。 */
+  const doOpen = (f: string, isDir = false, mode: "preview" | "open" = "preview") => {
     commitTrash();   // 「做下一件事」的第一条：打开别的文件或目录
     setPicked(null);
     setDirMode(isDir);
@@ -279,9 +280,26 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
        这是用户第 8 条要的「不要每看一个就多一个」。 */
     setTabsRaw((t) => { const n = openTab(t, f, mode); mem.set(`us.tabs.${project.dir}`, n); return n; });
   };
+  /** 打开一个文件 / 目录。**当前这份有没落盘的改动就先问一句**
+   *  （S18 §一.1 那张卡管的第二种触发，设计侧第十二轮）。
+   *
+   *  ⚠️ **拦在这一层，不是拦在每个调用点** —— 打开的入口有十处（树、页签、
+   *  ⌘P、评论定位、新建完打开…），逐个加判断迟早漏一个，而漏掉的那个正是丢数据的那个。
+   *
+   *  ⚠️ **但内部调用不走这里**：`closeTab` / `closeMany` 关完之后要自动打开下一份，
+   *  那时当前文件**已经关了**，再拦一次就成了死循环（拦 → 确认 → 关 → 又拦）。
+   *  它们直接调 `doOpen`。 */
+  const open = (f: string, isDir = false, mode: "preview" | "open" = "preview") => {
+    /* 切到自己不算离开 —— 单击已打开的页签会走到这里 */
+    if (!isDir && f === file) { doOpen(f, isDir, mode); return; }
+    if (file && !dirMode && dirtyStore.has(file)) { setLeavingTo({ path: file, next: { f, isDir, mode } }); return; }
+    doOpen(f, isDir, mode);
+  };
   const dirRel = dirMode ? (file === "__root__" ? "" : (file ?? "")) : "";
   /** 关页签前要不要拦一下。`null` = 不拦。 */
   const [leaving, setLeaving] = useState<string | null>(null);
+  /** 「有改动时要切到别的文件」—— 拦住的那一下，记着要去哪。 */
+  const [leavingTo, setLeavingTo] = useState<{ path: string; next: { f: string; isDir: boolean; mode: "preview" | "open" } } | null>(null);
   /** 真的关掉（确认过了，或者本来就没改动）。 */
   const doCloseTab = useCallback((f: string) => {
     dirtyStore.drop(f);
@@ -291,7 +309,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     setEditBy((m) => { const n = { ...m }; delete n[f]; return n; });
     const n = tabs.filter((x) => x.path !== f);
     setTabs(n);
-    if (file === f) { const next = n[n.length - 1]?.path ?? null; if (next) open(next, false, "open"); else store.select(null); }
+    if (file === f) { const next = n[n.length - 1]?.path ?? null; if (next) doOpen(next, false, "open"); else store.select(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabs, file, setTabs]);
   /** 关页签。**有没落盘的改动就先问一句**（S18 §一.1，设计侧第十二轮）。
@@ -308,7 +326,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     const gone = new Set(list.map((t) => t.path));
     const n = tabs.filter((t) => !gone.has(t.path));
     setTabs(n);
-    if (file && gone.has(file)) { const next = n[n.length - 1]?.path ?? null; if (next) open(next, false, "open"); else store.select(null); }
+    if (file && gone.has(file)) { const next = n[n.length - 1]?.path ?? null; if (next) doOpen(next, false, "open"); else store.select(null); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabs, file, setTabs]);
 
@@ -644,6 +662,30 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
           } : undefined}
         />
       {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
+      {leavingTo && (
+        /* 切到别的文件时那一张。**和关页签共用一个组件**，但三条出路的落点不同：
+           「不要了」= 丢掉改动并切过去（**不关页签** —— 他要的是去看别的，不是关掉这个）。 */
+        <LeaveGuard
+          path={leavingTo.path}
+          verb="切走"
+          onCancel={() => setLeavingTo(null)}
+          onDiscard={() => { const t = leavingTo; dirtyStore.drop(t.path); setLeavingTo(null); doOpen(t.next.f, t.next.isDir, t.next.mode); }}
+          onSave={() => {
+            /* 同关页签那条：**让格式模块自己落**，我们只发一个合成的 ⌘S。 */
+            window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true }));
+            const t = leavingTo;
+            let n = 0;
+            const timer = setInterval(() => {
+              if (!dirtyStore.has(t.path)) { clearInterval(timer); setLeavingTo(null); doOpen(t.next.f, t.next.isDir, t.next.mode); return; }
+              if (++n > 40) {                     // 40 × 150ms = 6 秒
+                clearInterval(timer);
+                setLeavingTo(null);
+                toast("还没落完，先没切", "这个文件的改动还在，你可以再按一次 ⌘S", "error");
+              }
+            }, 150);
+          }}
+        />
+      )}
       {leaving && (
         <LeaveGuard
           path={leaving}

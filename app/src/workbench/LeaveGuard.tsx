@@ -8,8 +8,13 @@
  *  但触发它的动作（关页签）在工作台 —— 让插件画就得先有一轮「能不能走」的协商，
  *  而那条协议现在还不需要。**落盘这件事仍然归格式模块**（见 `onSave` 那段注释）。
  */
-export function LeaveGuard({ path, onCancel, onDiscard, onSave }: {
-  path: string; onCancel: () => void; onDiscard: () => void; onSave: () => void;
+export function LeaveGuard({ path, verb = "关掉", onCancel, onDiscard, onSave }: {
+  path: string;
+  /** 这一次是要**关掉**还是**切走**。两处共用这张卡，但说的事不一样 ——
+   *  「关掉以后这些改动不会留」和「切走以后这些改动不会留」，
+   *  后者用户更容易以为「我一会儿切回来它还在」。**话要说准。** */
+  verb?: string;
+  onCancel: () => void; onDiscard: () => void; onSave: () => void;
 }) {
   const name = path.split("/").pop() ?? path;
   return (
@@ -19,13 +24,13 @@ export function LeaveGuard({ path, onCancel, onDiscard, onSave }: {
         className="w-[360px] p-4 rounded-lg border border-border bg-panel shadow-lg"
         onClick={(e) => e.stopPropagation()}>
         <div className="font-semibold mb-1 truncate" title={path}>{name} 还没落盘</div>
-        <div className="text-xs leading-relaxed text-muted mb-3">关掉以后这些改动不会留。</div>
+        <div className="text-xs leading-relaxed text-muted mb-3">{verb}以后这些改动不会留。</div>
         <div className="flex items-center gap-1.5">
           {/* 「不要了」放最左、描边而不是红色 —— 它是个正当选择，不是危险操作 */}
           <button className="btn sm" onClick={onDiscard}>不要了</button>
           <span className="flex-1" />
           <button className="btn sm ghost" onClick={onCancel}>回去接着改</button>
-          <button className="btn sm primary" onClick={onSave}>落盘再关 ⌘S</button>
+          <button className="btn sm primary" onClick={onSave}>落盘再{verb === "关掉" ? "关" : "切"} ⌘S</button>
         </div>
       </div>
     </div>
