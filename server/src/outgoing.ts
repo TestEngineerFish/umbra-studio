@@ -26,6 +26,8 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { TOOL_ROOT } from "./project.js";
 import { BASELINE_RE, shaOf } from "./baseline.js";
+import { readdirSync, readFileSync } from "node:fs";
+import { writeZip } from "./zipwrite.js";
 
 const UI = join(TOOL_ROOT, "ui");
 const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13).replace("T", "-");
@@ -83,17 +85,34 @@ await writeFile(join(stage, "README-给设计侧.md"), `# Umbra Studio 界面稿
 ${drafts.map((f) => `- \`${f}\``).join("\n")}
 `);
 
-/* 先在临时目录打包，再拷进 outgoing/ —— zip 写完会「替换原文件」，
-   那一步要删除权限；有些环境（沙箱、只读挂载）没有。拷贝只需要写权限。 */
+/* ⚠️ **用自己写的 zip，不用 `zip -qr`**（2026-09-29 实测踩过）。
+   系统 `zip` 把 UTF-8 文件名原样写进去，**但不设 general purpose bit 11**
+   （那一位声明「文件名是 UTF-8」）。于是严格的解压方按 CP437 解，
+   `S3-诊断面板.dc.html` 变成 `S3-Φ»èµû¡Θ¥óµ¥┐.dc.html` ——
+   **ClaudeDesign 那边连文件都打不开**（它的工具报 `invalid path: disallowed characters`），
+   整个发件包等于废的，而我们这边 `ditto` 解出来是好的（macOS 会猜编码），
+   所以**一直没发现**。
+
+   试过两条更省的路都不行：`zip -UN=UTF8`（Apple 改过的 Zip 3.0 去掉了这个开关）·
+   `ditto -c -k`（实测同样不设那一位）。 */
 const outDir = join(TOOL_ROOT, "outgoing");
 await mkdir(outDir, { recursive: true });
 const zipName = `UmbraStudio-ui-${stamp}.zip`;
-const tmpZip = join(tmpdir(), zipName);
-await rm(tmpZip, { force: true });
-execFileSync("zip", ["-qr", tmpZip, "."], { cwd: stage });
 const zipPath = join(outDir, zipName);
-await copyFile(tmpZip, zipPath);
-await rm(tmpZip, { force: true });
+{
+  /** 递归收集 stage 下的所有文件，路径用 **posix 分隔符**（zip 格式要求）。 */
+  const collect = (dir: string, prefix = ""): Array<{ name: string; data: Buffer }> => {
+    const out: Array<{ name: string; data: Buffer }> = [];
+    for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const abs = join(dir, e.name);
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
+      if (e.isDirectory()) out.push(...collect(abs, rel));
+      else out.push({ name: rel, data: readFileSync(abs) });
+    }
+    return out;
+  };
+  writeZip(zipPath, collect(stage));
+}
 
 // 本地发件记录：incoming 用它说清「是基于哪一次发出去的版本」
 const recDir = join(TOOL_ROOT, ".umbrastudio", "outgoing");
