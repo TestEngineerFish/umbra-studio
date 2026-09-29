@@ -18,6 +18,7 @@ import { isToolPage } from "./indexpage.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
 import { BUILTIN, kindOf } from "./shared/kinds.js";
+import { resolveInside } from "./pathguard.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -64,16 +65,79 @@ function serveStatic(root: string, rel: string, reply: import("node:http").Serve
 /** 宿主共享库的根（M10-2）。**只读资产 → `TOOL_ROOT`**（打包后在 `.app` 里）。 */
 const SHARED_DIR = resolve(TOOL_ROOT, "shared");
 
-const PLUGIN_CSP = [
+/** 注进预览页的桥（M10-3）。**只做描边、选中、发消息三件事。**
+ *
+ *  ⚠️ 写成一个立即执行函数并且**不留全局变量** —— 这是用户的页面，
+ *  我们多留一个名字就多一分和它自己的代码撞名的可能。
+ *
+ *  ⚠️ `click` 用 **capture 阶段**并 `preventDefault` —— 否则点一个 `<a>` 会导航走，
+ *  而这个视图的用途就是点选。代价是这个预览里链接点不动，
+ *  那是**这个模式本来的含义**（要正常浏览就在浏览器里开）。 */
+const PREVIEW_BRIDGE = `<script>(function(){
+  var last=null, box=document.createElement('div');
+  box.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #3a6df0;border-radius:2px;display:none';
+  document.documentElement.appendChild(box);
+  function label(el){
+    var t=el.tagName.toLowerCase();
+    if(el.id) return '<'+t+'#'+el.id+'>';
+    var c=(el.className&&typeof el.className==='string')?el.className.trim().split(/\\s+/)[0]:'';
+    if(c) return '<'+t+'.'+c+'>';
+    var sib=el.parentElement?[].slice.call(el.parentElement.children).filter(function(x){return x.tagName===el.tagName}):[];
+    return sib.length>1 ? '<'+t+'> '+(sib.indexOf(el)+1)+'/'+sib.length : '<'+t+'>';
+  }
+  function path(el){
+    var out=[];
+    while(el&&el.nodeType===1&&el!==document.documentElement){
+      var t=el.tagName.toLowerCase();
+      if(el.id){ out.unshift(t+'#'+el.id); break; }
+      var sib=el.parentElement?[].slice.call(el.parentElement.children).filter(function(x){return x.tagName===el.tagName}):[];
+      out.unshift(sib.length>1 ? t+':nth-of-type('+(sib.indexOf(el)+1)+')' : t);
+      el=el.parentElement;
+    }
+    return out.join(' > ');
+  }
+  addEventListener('mousemove',function(e){
+    var el=e.target; if(!el||el.nodeType!==1||el===box) return;
+    var r=el.getBoundingClientRect();
+    box.style.cssText=box.style.cssText.replace('display:none','display:block');
+    box.style.left=r.left+'px'; box.style.top=r.top+'px'; box.style.width=r.width+'px'; box.style.height=r.height+'px';
+    box.style.display='block';
+  },true);
+  addEventListener('mouseleave',function(){box.style.display='none'},true);
+  addEventListener('click',function(e){
+    var el=e.target; if(!el||el.nodeType!==1) return;
+    e.preventDefault(); e.stopPropagation();
+    last=el;
+    parent.postMessage({t:'ud-pick',label:label(el),path:path(el),
+      self:el.cloneNode(false).outerHTML,
+      all:el.outerHTML,
+      kids:el.children.length},'*');
+  },true);
+})();</script>`;
+
+/** 插件页面的 CSP。**按端口拼** —— `frame-src` 里要写完整 origin + 路径前缀，
+ *  而端口是运行期才知道的。 */
+const pluginCsp = (port: number): string => PLUGIN_CSP_BASE
+  .concat([`frame-src http://127.0.0.1:${port}/__preview/`])
+  .join("; ");
+
+const PLUGIN_CSP_BASE = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-inline'",     // 插件自己的脚本
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",            // 只看得到自己目录下的图
   "font-src 'self'",
   "connect-src 'none'",                    // 不许外联 —— 要数据就走 postMessage 问宿主
+  /* ⚠️ **`frame-src` 只放 `/__preview/`，不给 `'self'`**（M10-3，用户 2026-09-29 定）。
+     `'self'` 匹配的是 scheme+host+port **不是路径** —— 给了它，插件就能嵌
+     **本机服务上的任何东西**，包括 `/__app/`（我们自己的界面）。那是视觉欺骗的入口。
+     而 M10-3 只需要「嵌用户项目里的一个 html」，**闸的粒度该配需求的粒度**。
+     ⚠️ CSP 的源表达式允许带路径前缀，但**必须是完整 origin + 路径**才有意义 ——
+     这里用 `'self'` 做不到「只放一条路径」，所以写成通配的 http 源加路径。
+     ⚠️ 端口是运行期才知道的，所以这一条**在 `makeServer` 里按端口拼**，不是常量。 */
   "form-action 'none'",
   "base-uri 'none'",
-].join("; ");
+];
 
 /** 进程级注册表：项目名 → 正在跑的服务 */
 /** 一条服务的键：**规范化的绝对目录**（issue #20）。
@@ -191,6 +255,56 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
       reply.end(`共享库里没有这个文件。\n查的是：${resolve(SHARED_DIR, "." + normalize(raw.slice("/__shared".length)))}\n共享库根：${SHARED_DIR}`);
       return;
     }
+    /* ═══ 预览用户项目里的网页（M10-3）═══ `/__preview/<项目内相对路径>`
+       给非 `.dc.html` 的普通 `.html` 用：插件把它装进 iframe 渲染、点选元素。
+
+       ⚠️ **为什么要一条专用路由，而不是给插件 `frame-src 'self'`**（用户 2026-09-29 定）：
+       `'self'` 匹配的是 **scheme+host+port，不是路径** —— 给了它，插件就能嵌
+       **本机服务上的任何东西**，包括 `/__app/`（我们自己的界面）。
+       那是视觉欺骗的入口：插件在自己的矩形里嵌一份像真的界面，诱导用户在里面输入。
+       （缓解事实是那份界面拿不到令牌、会显示「拿不到访问令牌」——
+       但「骗不了多久」不等于「骗不了」。）
+
+       **闸的粒度该配需求的粒度**：M10-3 只需要「嵌用户项目里的一个 html」，
+       所以只开这一条路由，`frame-src` 只放它。
+       这和 §一一七.7 那条「认领闸挡错东西」是同一个判断方式 ——
+       那次是闸太紧挡了正当用法，这次是闸太松放了不需要的。
+
+       三道闸：
+       ① **只服务当前项目里的文件**（`c.project` 为空时直接 404 —— hub 没有项目）
+       ② `resolveInProject` 守住不许跨出项目目录（`pathguard.ts` 那一份，issue #19）
+       ③ **只放 `.html` / `.htm`**：这条路由的用途就是渲染网页，
+          放开成「任意文件」等于多一条读项目内容的路，而读文件本来就有 `read_file`（带权限） */
+    if (raw.startsWith("/__preview/")) {
+      const c = api();
+      if (!c?.project) { reply.writeHead(404); reply.end("预览只在项目里可用"); return; }
+      const rel = decodeURIComponent(raw.slice("/__preview/".length));
+      if (!/\.html?$/i.test(rel)) { reply.writeHead(415); reply.end("这条路由只渲染 .html"); return; }
+      let abs: string;
+      try { abs = resolveInside(c.project.dir, rel); }
+      catch { reply.writeHead(403); reply.end("路径跨出了项目目录"); return; }
+      if (!existsSync(abs) || statSync(abs).isDirectory()) { reply.writeHead(404); reply.end("没有这个文件"); return; }
+      /* ⚠️ **不给这一页加 CSP**：它是用户自己的网页，我们不是它的作者，
+         收紧了反而让它显示不出来（外链的 CSS / 图片全被挡）。
+         它的隔离靠的是**装它的那个 iframe**（插件那一层已经 sandbox 过）。
+         ⚠️ 但 `X-Frame-Options` 不能设 —— 设了插件就嵌不进来了，那正是这条路由的用途。 */
+      /* ⚠️ **往用户的页面里注入一小段桥**（M10-3）。
+         为什么非注入不可：插件在**不透明源**的 iframe 里（origin 是 `null`），
+         而这个预览页的 origin 是 `http://127.0.0.1:<port>` —— **两者不同源**，
+         插件读不到它的 `contentDocument`，也就点不了它里面的元素。
+         所以点选这件事只能**在页面自己这一侧**做，再 `postMessage` 出来。
+
+         ⚠️ 这**改变了用户的页面**（多了一段脚本）。两条自律：
+         ① 只在**预览**这条路由上注入 —— 盘上那份文件一个字节都没动；
+         ② 脚本只做三件事：描边、选中、往外发消息。**不读 cookie、不发网络、不改 DOM 内容**。 */
+      const html = readFileSync(abs, "utf8");
+      const injected = html.includes("</body>")
+        ? html.replace(/<\/body>/i, PREVIEW_BRIDGE + "</body>")
+        : html + PREVIEW_BRIDGE;
+      reply.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      reply.end(injected);
+      return;
+    }
     /* ═══ 插件 UI（M11-4）═══ `/__plugin/<id>/<路径>`
        每个插件的静态文件从它自己的目录出，**带 CSP 响应头**。
        前端把它装进 `<iframe sandbox="allow-scripts">`（不给 allow-same-origin）——
@@ -211,7 +325,7 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
          放开安全吗：这些文件就是我们发出去的插件代码和资源，**没有秘密**；
          而插件**往外**发请求仍被 CSP 的 `connect-src 'none'` 挡着，这一头不影响那一边。 */
       if (base && serveStatic(base, inner, reply, {
-        "content-security-policy": PLUGIN_CSP,
+        "content-security-policy": pluginCsp(c?.port ?? 0),
         "access-control-allow-origin": "*",
       })) return;
       reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });

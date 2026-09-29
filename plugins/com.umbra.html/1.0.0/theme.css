@@ -1,0 +1,20 @@
+/* 网页预览的外壳样式。**正文那一块是用户自己的页面**，我们一个字都不改 ——
+   只在它外面加一条点选条。 */
+:root { --bg:#fff; --fg:#1c1f26; --muted:#7b8194; --line:#e3e6ec; --accent:#3a6df0; --accent-soft:#eaf0fe; }
+:root[data-theme="dark"] { --bg:#16181d; --fg:#dfe3ea; --muted:#8b91a1; --line:#2a2e37; --accent:#6f9bff; --accent-soft:#1e2740; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; display: flex; flex-direction: column; }
+.err { padding: 14px 16px; color: var(--muted); line-height: 1.7; }
+.bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.bar .sp { flex: 1; }
+.pill { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 5px;
+  border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent);
+  font-family: ui-monospace, monospace; font-size: 11px; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--muted); height: 22px; padding: 0 8px; font-size: 11px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent-soft); color: var(--accent); }
+.btn { border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 5px; height: 22px; padding: 0 9px; font-size: 11px; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+#host { flex: 1; min-height: 0; }
+#page { width: 100%; height: 100%; border: 0; background: #fff; }

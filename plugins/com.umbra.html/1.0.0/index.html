@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<meta charset="utf-8"><title>网页预览</title>
+<link rel="stylesheet" href="./theme.css">
+<body>
+  <div id="err" class="err" hidden></div>
+  <!-- 点选条：选中一个元素之后出。药丸写**开始标签的缩写**（设计侧第十二轮 §二.1）——
+       「用户认得开始标签，认不出 body > main > div:nth-of-type(2) > …」 -->
+  <div id="bar" class="bar" hidden>
+    <span id="pill" class="pill" title=""></span>
+    <span class="sp"></span>
+    <span id="scope" class="seg">
+      <button data-scope="self">只这一层</button><button data-scope="skeleton" class="on">骨架</button><button data-scope="all">整棵子树</button>
+    </span>
+    <button id="send" class="btn primary">给 AI ⌘L</button>
+  </div>
+  <div id="host"><iframe id="page" sandbox="allow-scripts allow-same-origin"></iframe></div>
+  <script src="./umbra.js"></script>
+  <script type="module" src="./app.mjs"></script>
+</body>

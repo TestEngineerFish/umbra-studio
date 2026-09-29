@@ -1215,19 +1215,18 @@ console.log("\n插件 UI 的边界（M11-4）");
   if (r.ui.s === 200) {
     ok(/default-src 'none'/.test(r.ui.csp ?? ""), "插件 UI 的 CSP 在**响应头**上（不是页面里的 meta）", (r.ui.csp ?? "无").slice(0, 40));
     ok(/connect-src 'none'/.test(r.ui.csp ?? ""), "CSP 禁掉外联 —— iframe sandbox 单独用挡不住 fetch/img/beacon/ws");
-    /* ⚠️ **没有 `frame-src` = 插件里嵌不了 iframe**（落到 `default-src 'none'`）。
-       这一条钉的是一堵**已经实测撞过的墙**（2026-09-29）：M10-3「非 dc 的 `.html` 预览」
-       要在插件里套一个 iframe 装用户的页面，控制台当场报
-       `Framing … violates … "default-src 'none'". The request has been blocked`。
+    /* ⚠️ **`frame-src` 只放 `/__preview/`，绝不能是 `'self'`**（M10-3，用户 2026-09-29 定）。
+       这条判据换过一次，换的过程本身值得记：
+       原来它是「**没有** `frame-src`」——那时插件里嵌不了任何 iframe，
+       而 M10-3 需要嵌用户的网页。放开时那条判据**按设计红了**，
+       提醒我「放开之前先想清楚能嵌什么」。**它做到了它该做的事。**
 
-       ⚠️ 当时的探针还骗了我一次：它用 `iframe.onload` 判断，而**被 CSP 挡住时
-       onload 照样触发**（iframe 变成 about:blank，about:blank 会触发 onload）——
-       探针说「能嵌」，控制台说「被挡了」。**控制台才是权威。**
-
-       **这条判据将来会红** —— 那时说明有人给插件放开了 frame-src。
-       红了不是坏事，是提醒：放开之前先想清楚插件能嵌什么
-       （`'self'` 会让它能嵌 `/__app/`，那是视觉欺骗的入口）。 */
-    ok(!/frame-src/.test(r.ui.csp ?? ""), "**CSP 里没有 `frame-src`**（插件嵌不了 iframe —— M10-3 的墙，放开前先想清楚能嵌什么）");
+       现在钉的是放开之后的边界：`'self'` 匹配 scheme+host+port **不是路径** ——
+       给了它，插件就能嵌 `/__app/`（我们自己的界面），那是视觉欺骗的入口。
+       所以只放那一条专用路由。**闸的粒度该配需求的粒度。** */
+    const fs = (r.ui.csp ?? "").match(/frame-src ([^;]+)/)?.[1]?.trim() ?? "";
+    ok(/\/__preview\/$/.test(fs), "**`frame-src` 只放 `/__preview/` 这一条路由**", fs || "（没有 frame-src）");
+    ok(!/'self'/.test(fs), "**没给 `'self'`**（给了插件就能嵌 `/__app/`，那是视觉欺骗的入口）", fs);
   } else {
     /* ⚠️ **红着报，不许静静跳过。**「119/119 全过」和「127/127 全过」在输出里都是一个 ✓ ——
        判据整块消失不会报警，它和「这些判据通过了」长得一模一样。
@@ -1596,6 +1595,60 @@ console.log("\n插件 UI 的边界（M11-4）");
                 }
               }, { name: LOCK });
             } else ok(false, "建不出 .lock 样本");
+
+            /* ═══ 非 dc 的 `.html`：预览 + 点选（M10-3）═══
+               ⚠️ 这一条端到端穿过**三层 iframe**：工作台 → 插件 → 预览页。
+               判据数的是**真的渲染出来了、真的点中了**，不是「iframe 标签在」。 */
+            {
+              const H = "插件回归样本.html";
+              const made2 = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+                const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ path: name, content: '<!DOCTYPE html><html><body><main><button class="primary">买</button><div id="hero"><p>一</p><p>二</p></div></main></body></html>', expectSha256: "0" }) });
+                return (await w.json()).ok;
+              }, { name: H });
+              if (made2) {
+                await pg.waitForTimeout(1200);
+                const hRow = pg.locator('[role="treeitem"]').filter({ hasText: H }).first();
+                if (await hRow.count()) {
+                  await hRow.click(); await pg.waitForTimeout(3000);
+                  const plug = pg.frameLocator('iframe[data-role="body"]');
+                  /* 预览页是**第三层** —— 插件的 iframe 里那个 #page */
+                  const page = plug.frameLocator("#page");
+                  const btn = page.locator("button.primary");
+                  ok(await btn.count() === 1, "**用户的网页真渲染出来了**（三层 iframe 穿到底）", `${await btn.count()} 个按钮`);
+                  /* 点它 —— 桥接脚本该把选中的元素发出来 */
+                  await btn.click({ force: true });
+                  await pg.waitForTimeout(700);
+                  const pill = (await plug.locator("#pill").innerText().catch(() => "")).trim();
+                  ok(pill === "<button.primary>", "**药丸写的是开始标签缩写**（不是选择器路径）", pill || "（没有药丸）");
+                  const tip = await plug.locator("#pill").getAttribute("title").catch(() => "");
+                  ok(/button/.test(tip ?? "") && /main/.test(tip ?? ""), "完整选择器路径在悬停提示里", (tip ?? "").slice(0, 50));
+                  /* 三档范围 */
+                  ok(await plug.locator("#scope button.on").innerText().catch(() => "") === "骨架", "默认档是「骨架」");
+                  await plug.locator('#scope button[data-scope="all"]').click();
+                  await pg.waitForTimeout(400);
+                  ok(await plug.locator("#scope button.on").innerText().catch(() => "") === "整棵子树", "三档切得动");
+                  /* 给 AI —— 挂药丸不发送 */
+                  await plug.locator("#send").click();
+                  await pg.waitForTimeout(1200);
+                  const sel = (await pg.locator("aside").first().innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/插件回归样本\.html › <button\.primary>/.test(sel), "**点选的元素挂成了 range 药丸**",
+                     (sel.match(/插件回归样本\.html › [^\s]+/) ?? ["（没找到）"])[0]);
+                } else ok(false, "`.html` 样本建好了但树里没刷出来");
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name) {
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                  }
+                }, { name: H });
+              } else ok(false, "建不出 .html 样本");
+            }
+
 
           /* 收尾：和 csv 样本同一套 —— 扔回收站再彻底清掉，不给用户留东西 */
             await pg.evaluate(async ({ name }) => {

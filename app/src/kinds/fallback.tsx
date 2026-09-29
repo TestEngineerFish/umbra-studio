@@ -2,7 +2,7 @@ import { FileCard } from "./fallback-card";
 import type { KindModule } from "./registry";
 import type { ViewContext } from "./context";
 
-/** 还没有专门视图的类型：普通网页、其他（`00` §五十九的通用文件卡）。
+/** 还没有专门视图的类型：**只剩 `other`**（`00` §五十九的通用文件卡）。
  *
  *  **`other` 这一条是注册表的兜底**，`moduleFor` 找不到模块时落到它 ——
  *  所以在 `shared/kinds.ts` 里加一种新 kind、忘了写模块，界面不会崩，
@@ -14,7 +14,11 @@ import type { ViewContext } from "./context";
  *  `register()` 当场抛「被注册了两次」，而 `loader` 把它 catch 成
  *  「这个插件没能接上」。症状是**插件装着却不起作用**，
  *  而服务端那边看一切正常（清单 ok、kinds 认到了），很难想到是前端注册撞了。 */
+/*  ⚠️ **`html` 2026-09-29 也让出去了**（M10-3），和 `code`、`md` 同一条：
+ *  它归内置插件 `plugins/com.umbra.html/`（预览 + 点选元素给 AI）。
+ *  一种 kind 只能有一个模块 —— 不让出来的话插件注册时当场抛，
+ *  而 `loader` 把它 catch 成「这个插件没能接上」。 */
 export const fallback: KindModule = {
-  ids: ["html", "other"],
+  ids: ["other"],
   View: ({ ctx }: { ctx: ViewContext }) => <FileCard core={ctx.core} host={ctx.host} path={ctx.path} onOpen={ctx.open} />,
 };

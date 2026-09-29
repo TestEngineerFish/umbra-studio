@@ -72,6 +72,28 @@
         "scope": "project",
         "net": []
       }
+    },
+    {
+      "id": "com.umbra.html",
+      "name": "网页预览",
+      "author": "Umbra",
+      "version": "1.0.0",
+      "price": 0,
+      "builtin": true,
+      "size": "随 Umbra 一起",
+      "updated": "9 月 29 日",
+      "brief": "渲染普通网页；点一个元素把它的 HTML 带给 AI。",
+      "formats": [
+        ".html",
+        ".htm"
+      ],
+      "permissions": {
+        "files": [
+          "read"
+        ],
+        "scope": "project",
+        "net": []
+      }
     }
   ]
 }

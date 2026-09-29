@@ -98,5 +98,32 @@ console.log("\n② 绕过写入口改稿要说出来（issue #29）");
   ok(bypassedDrafts(before, new Map(before)).length === 0, "什么都没变时一条都不报（误报会让人忽略这条提示）");
 }
 
+/* ── 预览路由的三道闸（M10-3）──
+   这条路由存在的唯一理由是「让插件能嵌用户项目里的一个网页」。
+   **它一旦松一点，就等于给插件开了一条读项目内容的新路** ——
+   而读文件本来有 `read_file`（带权限声明），这条不该重复那件事。 */
+console.log("\n③ 预览路由的三道闸（M10-3）");
+{
+  const u2 = (route: string) => `${s.url}${route}?token=${encodeURIComponent(s.token)}`;
+  const code = async (r: string) => (await fetch(u2(r))).status;
+  /* 先造一个真的 .html —— 用项目里现成的 .dc.html（它也是 .html 结尾） */
+  const ls = await fetch(u2("__ud/files") + "&dir=").then((x) => x.json() as Promise<{ data?: { entries?: Array<{ name: string; isDir: boolean }> } }>).catch(() => null);
+  const drafts = ls?.data?.entries ?? [];
+  const anyHtml = drafts.find((f) => !f.isDir && /\.html$/i.test(f.name));
+  if (anyHtml) {
+    ok(await code(`__preview/${encodeURIComponent(anyHtml.name)}`) === 200, "正常的 .html 能预览", anyHtml.name);
+  } else console.log("  · 项目里没有 .html，正面那条跳过");
+  ok(await code("__preview/umbra-tokens.json") === 415, "**非 .html 一律拒**（这条路由只渲染网页，不是第二条读文件的路）");
+  ok(await code("__preview/..%2f..%2fetc%2fpasswd.html") === 403, "**路径逃不出项目目录**（走 `pathguard` 那一份判定，issue #19）");
+  ok(await code("__preview/这个肯定没有.html") === 404, "不存在的回 404");
+  /* ⚠️ 注入的桥**只在这条路由上**，盘上那份文件一个字节都没动 */
+  if (anyHtml) {
+    const body = await fetch(u2(`__preview/${encodeURIComponent(anyHtml.name)}`)).then((x) => x.text());
+    ok(body.includes("ud-pick"), "**预览页注入了点选桥**（插件跨不过源，只能它自己发消息出来）");
+    const onDisk = await fetch(u2(`__ud/file`) + `&path=${encodeURIComponent(anyHtml.name)}`).then((x) => x.json() as Promise<{ data?: { content?: string } }>);
+    ok(!(onDisk?.data?.content ?? "").includes("ud-pick"), "**而盘上那份没被动过**（注入只发生在预览这条路上）");
+  }
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
