@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- umbradesign:resources -->
+<script>window.__resources = {
+    "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "./react.production.min.js",
+    "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "./react-dom.production.min.js"
+  };</script>
+<!-- /umbradesign:resources -->
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="./_ds-tool/tokens.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { background: var(--tool-bg); }
+  * { box-sizing: border-box; }
+  a { color: var(--tool-accent); text-decoration: none; }
+  a:hover { color: var(--tool-accent-hover); text-decoration: underline; }
+  input, button { font: inherit; color: inherit; }
+  @keyframes roNudge { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-3px); } 40% { transform: translateX(3px); } 60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
+</style>
+</helmet>
+
+<div data-tool-theme="{{ theme }}" style="height: 100vh; display: flex; flex-direction: column; background: var(--tool-bg); color: var(--tool-text); font-family: var(--tool-sans); font-size: 13px; -webkit-font-smoothing: antialiased;">
+
+  <sc-if value="{{ showDemoBar }}" hint-placeholder-val="{{ true }}">
+  <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border);">
+    <span style="font-size: 11px; color: var(--tool-muted); flex: none;">演示态</span>
+    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="7">
+      <button type="button" onClick="{{ st.pick }}" title="{{ st.name }}" aria-pressed="{{ st.active }}" style="display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 9px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; cursor: pointer; font-size: 11px; white-space: nowrap; transition: background .13s ease, border-color .13s ease, color .13s ease; background: {{ st.bg }}; border-color: {{ st.bd }}; color: {{ st.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+        <span style="font-family: var(--tool-mono); opacity: 0.6;">{{ st.n }}</span>
+        <span style="font-weight: {{ st.fw }};">{{ st.short }}</span>
+      </button>
+    </sc-for>
+    <span style="color: var(--tool-border-strong); flex: none;">·</span>
+    <span style="color: var(--tool-muted); min-width: 0;">{{ demoNote }}</span>
+  </div>
+  </sc-if>
+
+  <div style="flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--tool-bg);">
+
+    <!-- 视图工具条：同 S13 的 40px 条。未落盘不再单独占一条横带，收进这一条里 -->
+    <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--tool-panel); border-bottom: 1px solid var(--tool-border); position: relative; z-index: 4;">
+      <span style="color: var(--tool-text-2); display: grid;"><dc-import name="IconGlyph" d="M5.6 4.4L2 8l3.6 3.6M10.4 4.4L14 8l-3.6 3.6" size="14" hint-size="14px,14px"></dc-import></span>
+      <span style="font-weight: 600; white-space: nowrap;">{{ path }}</span>
+      <span title="快照：{{ snapCount }} 版" style="display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 1px solid var(--tool-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-family: var(--tool-mono); font-size: 11px; color: var(--tool-text-2);">
+        {{ snapVersion }}
+        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      </span>
+
+      <!-- 1. 未落盘：一颗点 + 一行读数 + 两颗小钮，贴在文件名后面 -->
+      <sc-if value="{{ unsaved }}" hint-placeholder-val="{{ false }}">
+        <div role="status" title="代码只在 ⌘S 时落盘，失焦不落盘" style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+          <span style="width: 7px; height: 7px; border-radius: 999px; background: var(--tool-warn); flex: none;"></span>
+          <span style="font-size: 12px; color: var(--tool-warn); white-space: nowrap;">未落盘</span>
+          <span style="font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap; font-variant-numeric: tabular-nums;">{{ unsavedDelta }}</span>
+          <button type="button" onClick="{{ discard }}" style="height: 22px; padding: 0 6px; border: 0; border-radius: var(--tool-radius-sm); background: transparent; color: var(--tool-text-2); font-size: 11px; cursor: pointer;" style-hover="background: var(--tool-hover); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">放弃</button>
+          <button type="button" onClick="{{ save }}" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 11px; cursor: pointer;" style-hover="border-color: var(--tool-accent); color: var(--tool-accent);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">落盘 <kbd style="font-family: var(--tool-mono); font-size: 10px; color: var(--tool-muted);">⌘S</kbd></button>
+        </div>
+      </sc-if>
+
+      <!-- 4. 只读：一枚标签 + 解锁；只读下打字，标签抖一下并说原因 -->
+      <sc-if value="{{ readOnly }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+          <span title="{{ roTip }}" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid {{ roBd }}; background: {{ roBg }}; color: {{ roFg }}; font-size: 11px; white-space: nowrap; animation: {{ roAnim }};">
+            <dc-import name="IconGlyph" d="M4.5 7.2h7v5.6h-7zM6 7.2V5.4a2 2 0 014 0v1.8" size="12" hint-size="12px,12px"></dc-import>
+            <span>{{ roLabel }}</span>
+          </span>
+          <button type="button" onClick="{{ unlock }}" style="height: 22px; padding: 0 8px; border: 1px solid var(--tool-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 11px; color: var(--tool-text-2); cursor: pointer; white-space: nowrap;" style-hover="border-color: var(--tool-border-strong); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">解锁编辑</button>
+        </div>
+      </sc-if>
+
+      <span style="flex: 1;"></span>
+      <span style="font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ lang }}</span>
+    </div>
+
+    <div style="flex: 1 1 0; min-height: 0; position: relative; display: flex;">
+      <div style="flex: 1 1 0; min-width: 0; overflow: auto; background: var(--tool-panel);">
+        <div style="padding: 10px 0 48px; font-family: var(--tool-mono); font-size: 12px; line-height: 20px; min-width: max-content;">
+          <sc-for list="{{ lines }}" as="l" hint-placeholder-count="14">
+            <div style="position: relative; display: grid; grid-template-columns: 52px minmax(0, 1fr); min-height: 20px; background: {{ l.bg }};">
+              <span style="padding-right: 14px; text-align: right; color: {{ l.numFg }}; user-select: none; font-variant-numeric: tabular-nums; box-shadow: {{ l.gutter }};">{{ l.n }}</span>
+              <span style="padding: 0 180px 0 10px; white-space: pre;"><sc-for list="{{ l.toks }}" as="t" hint-placeholder-count="3"><span style="color: {{ t.fg }}; font-style: {{ t.fs }}; font-weight: {{ t.fw }};">{{ t.v }}</span></sc-for><sc-if value="{{ l.caret }}" hint-placeholder-val="{{ false }}"><span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--tool-text);"></span></sc-if></span>
+
+              <!-- 3. 有选区：选区末行右侧出一颗「给 AI」 -->
+              <sc-if value="{{ l.chip }}" hint-placeholder-val="{{ false }}">
+                <button type="button" onClick="{{ sendSel }}" title="把 {{ selLabel }} 带进会话" style="position: absolute; right: 16px; top: -1px; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 6px; border: 1px solid var(--tool-accent-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); color: var(--tool-accent); font-family: var(--tool-sans); font-size: 11px; font-weight: 560; box-shadow: var(--tool-shadow-1); cursor: pointer;" style-hover="background: var(--tool-accent-soft);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+                  <dc-import name="IconGlyph" d="M3 3.5h10v7H7.5L4.5 13v-2.5H3z" size="12" hint-size="12px,12px"></dc-import>
+                  给 AI
+                  <kbd style="font-family: var(--tool-mono); font-size: 10px; font-weight: 400; color: var(--tool-muted);">⌘L</kbd>
+                </button>
+              </sc-if>
+              <sc-if value="{{ l.sentTag }}" hint-placeholder-val="{{ false }}">
+                <span style="position: absolute; right: 16px; top: 1px; font-family: var(--tool-mono); font-size: 10px; padding: 0 6px; height: 18px; line-height: 16px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-panel); color: var(--tool-accent);">{{ selRange }} · 已带进会话</span>
+              </sc-if>
+              <sc-if value="{{ l.roHint }}" hint-placeholder-val="{{ false }}">
+                <span style="position: absolute; left: 62px; top: 22px; z-index: 2; display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px; border-radius: var(--tool-radius); border: 1px solid var(--tool-border-strong); background: var(--tool-panel); box-shadow: var(--tool-shadow-2); font-family: var(--tool-sans); font-size: 12px; color: var(--tool-text-2); white-space: nowrap;">
+                  没改：这份是 pnpm 生成的锁文件，只读
+                  <button type="button" onClick="{{ unlock }}" style="height: 22px; padding: 0 8px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 11px; font-weight: 560; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">解锁编辑</button>
+                </span>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <!-- 离开前再问：关页签 / 切快照 / 切文件都走这一张 -->
+      <sc-if value="{{ leaving }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; inset: 0; background: rgba(15, 18, 24, 0.24); display: flex; justify-content: center; align-items: flex-start; padding-top: 56px;">
+          <div role="alertdialog" aria-label="还没落盘" style="width: 360px; padding: 14px 16px; background: var(--tool-panel); border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-lg); box-shadow: var(--tool-shadow-2);">
+            <div style="font-weight: 600; margin-bottom: 4px;">{{ path }} 还没落盘</div>
+            <div style="font-size: 12px; line-height: 1.6; color: var(--tool-text-2); margin-bottom: 12px;">{{ unsavedDelta }}。关掉以后这些改动不会留。</div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button type="button" onClick="{{ discard }}" style="height: 26px; padding: 0 10px; border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 12px; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">不要了</button>
+              <span style="flex: 1;"></span>
+              <button type="button" onClick="{{ cancelLeave }}" style="height: 26px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: transparent; font-size: 12px; color: var(--tool-text-2); cursor: pointer;" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">回去接着改</button>
+              <button type="button" onClick="{{ save }}" style="display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 12px; font-weight: 560; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">落盘再关 <kbd style="font-family: var(--tool-mono); font-size: 10px; opacity: .8;">⌘S</kbd></button>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+
+    <!-- 会话输入条（示意 S11 收起态） -->
+    <sc-if value="{{ sent }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--tool-panel); border-top: 1px solid var(--tool-border);">
+        <span style="flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-accent-soft); color: var(--tool-accent); font-size: 11px;">
+          <dc-import name="IconGlyph" d="M2 4.5v7M4.5 4h9M4.5 6.7h9M4.5 9.4h9M4.5 12h5.5" size="12" hint-size="12px,12px"></dc-import>
+          <span style="font-family: var(--tool-mono); font-weight: 600;">range</span>
+          <span style="font-family: var(--tool-mono); color: var(--tool-text-2); white-space: nowrap;">{{ selLabel }}</span>
+        </span>
+        <input type="text" placeholder="问这几行，或者说要怎么改… ⏎ 发送" style="flex: 1 1 0; min-width: 120px; height: 30px; padding: 0 10px; border: 1px solid var(--tool-accent); box-shadow: 0 0 0 3px var(--tool-accent-soft); border-radius: var(--tool-radius); background: var(--tool-panel); outline: none;">
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;跟随外层&quot;, &quot;dark&quot;], &quot;default&quot;: &quot;跟随外层&quot;, &quot;tsType&quot;: &quot;'dark'|null&quot;, &quot;section&quot;: &quot;工具皮肤&quot;}}">
+const TS = [
+  'import { readFile } from "node:fs/promises";',
+  'import type { Snapshot } from "./types";',
+  '',
+  'const MAX_KEEP = 50;',
+  '',
+  '// 读最近的快照，按时间倒序',
+  'export async function listSnapshots(dir: string): Promise<Snapshot[]> {',
+  '  const raw = await readFile(`${dir}/index.json`, "utf8");',
+  '  const all: Snapshot[] = JSON.parse(raw);',
+  '  return all',
+  '    .sort((a, b) => b.at - a.at)',
+  '    .slice(0, MAX_KEEP);',
+  '}'
+];
+const TS_EDIT = TS.slice(0, 8).concat(['  if (!raw) return [];'], TS.slice(8));
+const LOCK = [
+  "lockfileVersion: '9.0'",
+  "",
+  "settings:",
+  "  autoInstallPeers: true",
+  "  excludeLinksFromLockfile: false",
+  "",
+  "importers:",
+  "",
+  "  .:",
+  "    dependencies:",
+  "      '@codemirror/state':",
+  "        specifier: ^6.4.1",
+  "        version: 6.4.1",
+  "      react:",
+  "        specifier: ^18.3.1",
+  "        version: 18.3.1",
+  "",
+  "packages:",
+  "",
+  "  '@codemirror/state@6.4.1':",
+  "    resolution: {integrity: sha512-QkEyUiLhsJoZkbumGZlswmAhA7CBU02Wrz7zvH4SrcifbsqwlXShVXg65f3v/ts57W3dqyamEriMhij1Z3Zz4g==}"
+];
+const DEMOS = [
+  { n: 1, short: "看", name: "看 · 干净", note: "CodeMirror 原样：高亮、行号、当前行底色。没有横条", caret: 8 },
+  { n: 2, short: "改动中", name: "改动中", note: "不出横条：文件名后面一颗点 + 「未落盘 · 13 → 14 行」+ 放弃 / 落盘；改过的行在行号边上一道 warn 竖线", edit: true, caret: 9 },
+  { n: 3, short: "离开前", name: "关页签 / 切快照前", note: "只有要离开时才拦一次：落盘再关 / 回去接着改 / 不要了", edit: true, leave: true, caret: 9 },
+  { n: 4, short: "选区", name: "有选区 → 给 AI", note: "选中几行，末行右侧出「给 AI ⌘L」；不用先按 ⌘E。不自动带进会话（代码里选中多半是要剪切、缩进）", sel: [7, 13], caret: 13 },
+  { n: 5, short: "已带进", name: "已带进会话", note: "输入条出 range 药丸并聚焦；选区保留高亮 + 「已带进会话」角标，同 S13", sel: [7, 13], sent: true },
+  { n: 6, short: "只读", name: "只读 · 锁文件", note: "按文件名自动只读（锁文件、生成物、> 1 MB）。可选中、可给 AI，不能改", ro: true, caret: 12 },
+  { n: 7, short: "只读下打字", name: "只读下打字", note: "按了字键：标签抖一下，光标下出一行原因 + 解锁。解锁只对这一个页签生效", ro: true, nudge: true, caret: 12 }
+];
+const KW = /^(import|from|type|const|export|async|function|return|await|if)$/;
+const TYPES = /^(string|Promise|Snapshot|JSON)$/;
+const tok = (v, fg, fs, fw) => ({ v: v, fg: fg || "var(--tool-text)", fs: fs || "normal", fw: fw || "400" });
+const lexTs = (line) => {
+  const out = []; const re = /(\/\/.*$)|("[^"]*"|`[^`]*`)|(\b\d+\b)|([A-Za-z_$][\w$]*)|(\s+|.)/g; let m;
+  while ((m = re.exec(line))) {
+    if (m[1]) out.push(tok(m[1], "var(--tool-muted)", "italic"));
+    else if (m[2]) out.push(tok(m[2], "var(--tool-ok)"));
+    else if (m[3]) out.push(tok(m[3], "var(--tool-warn)"));
+    else if (m[4]) out.push(KW.test(m[4]) ? tok(m[4], "var(--tool-accent)", null, "560") : TYPES.test(m[4]) ? tok(m[4], "var(--tool-text-2)", null, "600") : tok(m[4]));
+    else out.push(tok(m[5], /[{}()[\];,.<>:=]/.test(m[5]) ? "var(--tool-text-2)" : null));
+  }
+  return out;
+};
+const lexYaml = (line) => {
+  const m = /^(\s*)([^:]+?)(:)(.*)$/.exec(line);
+  if (!m) return line ? [tok(line)] : [];
+  const val = m[4], vfg = /^\s*'/.test(val) ? "var(--tool-ok)" : /^\s*[\^\d]/.test(val) ? "var(--tool-warn)" : /^\s*(true|false)/.test(val) ? "var(--tool-accent)" : "var(--tool-text-2)";
+  return [tok(m[1]), tok(m[2], "var(--tool-accent)"), tok(m[3], "var(--tool-text-2)"), tok(val, vfg)];
+};
+
+class Component extends DCLogic {
+  state = { demo: 1, unlocked: false };
+  go(n) { this.setState({ demo: n, unlocked: false }); }
+
+  renderVals() {
+    const s = this.state;
+    const dm = DEMOS[s.demo - 1];
+    const ro = !!dm.ro && !s.unlocked;
+    const isLock = !!dm.ro;
+    const src = isLock ? LOCK : dm.edit ? TS_EDIT : TS;
+    const sel = dm.sel || null;
+    const inSel = (n) => sel && n >= sel[0] && n <= sel[1];
+    const path = isLock ? "pnpm-lock.yaml" : "src/snapshots.ts";
+    const selRange = sel ? "L" + sel[0] + "–" + sel[1] : "";
+
+    return {
+      theme: this.props.theme === "dark" ? "dark" : null,
+      showDemoBar: true,
+      demoNote: s.unlocked ? "已解锁：这个页签里能改了，关掉再开又是只读" : dm.note,
+      demoStates: DEMOS.map((m) => {
+        const on = m.n === s.demo;
+        return { n: m.n, name: m.name, short: m.short, active: on, fw: on ? "600" : "400",
+          bg: on ? "var(--tool-accent)" : "var(--tool-panel)", bd: on ? "var(--tool-accent)" : "var(--tool-border-strong)",
+          fg: on ? "var(--tool-on-accent)" : "var(--tool-text-2)", pick: () => this.go(m.n) };
+      }),
+      path: path,
+      lang: isLock ? "YAML" : "TypeScript",
+      snapVersion: isLock ? "s2" : "s7",
+      snapCount: isLock ? "2" : "7",
+      unsaved: !!dm.edit,
+      unsavedDelta: TS.length + " → " + TS_EDIT.length + " 行",
+      save: () => this.go(1),
+      discard: () => this.go(1),
+      leaving: !!dm.leave,
+      cancelLeave: () => this.go(2),
+      readOnly: ro,
+      roLabel: dm.nudge ? "只读 · 锁文件，由 pnpm 生成" : "只读 · 锁文件",
+      roTip: "按文件名自动只读：*.lock、*-lock.json、*-lock.yaml、dist/、*.min.*；超过 1 MB 的也自动只读",
+      roBg: dm.nudge ? "var(--tool-warn-soft)" : "var(--tool-panel-2)",
+      roBd: dm.nudge ? "var(--tool-warn-border)" : "var(--tool-border)",
+      roFg: dm.nudge ? "var(--tool-warn)" : "var(--tool-text-2)",
+      roAnim: dm.nudge ? "roNudge 360ms ease" : "none",
+      unlock: () => this.setState({ unlocked: true }),
+      sent: !!dm.sent,
+      selRange: selRange,
+      selLabel: sel ? path + " " + selRange : "",
+      sendSel: () => this.go(5),
+      lines: src.map((t, i) => {
+        const n = i + 1, edited = dm.edit && n === 9, cur = dm.caret === n && !sel, sl = inSel(n);
+        return { n: String(n), toks: isLock ? lexYaml(t) : lexTs(t),
+          caret: dm.caret === n && !dm.leave,
+          chip: !!(sl && n === sel[1] && !dm.sent),
+          sentTag: !!(sl && n === sel[0] && dm.sent),
+          roHint: !!(dm.nudge && ro && n === dm.caret),
+          bg: sl ? "var(--tool-accent-soft)" : edited ? "var(--tool-warn-soft)" : cur ? "var(--tool-panel-2)" : "transparent",
+          gutter: sl ? "inset -2px 0 0 var(--tool-accent)" : edited ? "inset -2px 0 0 var(--tool-warn)" : "none",
+          numFg: sl ? "var(--tool-accent)" : cur ? "var(--tool-text)" : "var(--tool-muted)" };
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>
