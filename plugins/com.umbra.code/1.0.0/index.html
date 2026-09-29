@@ -3,6 +3,13 @@
 <link rel="stylesheet" href="./theme.css">
 <body>
   <div id="err" class="err" hidden></div>
+  <!-- 未落盘横条**留在正文里**，不进编辑栏（和 md 插件同一条：
+       它是状态提示，编辑栏那一行装的是开关，混在一起横条一出现编辑栏就跳）。 -->
+  <div id="dirty" class="bar" hidden>
+    <span id="note"></span><span class="sp"></span>
+    <button id="discard" class="btn ghost">放弃</button>
+    <button id="save" class="btn primary">落盘 ⌘S</button>
+  </div>
   <div id="host"></div>
   <!-- ⚠️ 顺序要紧：`umbra.js` 是**经典脚本**（立即执行），`app.mjs` 是**模块**（自带 defer）。
        和 md 插件同一条 —— 经典脚本这一行必须在前面才保证 `umbra` 已就位。 -->

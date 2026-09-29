@@ -3,10 +3,26 @@
   "name": "代码与文本",
   "version": "1.0.0",
   "hostApi": "^1",
-  "surfaces": ["ui"],
-  "kinds": [
-    { "id": "code", "label": "代码", "icon": "⟨⟩", "ext": [], "textual": true, "priority": 10 }
+  "surfaces": [
+    "ui"
   ],
-  "permissions": { "files": ["read"], "scope": "project", "net": [] },
+  "kinds": [
+    {
+      "id": "code",
+      "label": "代码",
+      "icon": "⟨⟩",
+      "ext": [],
+      "textual": true,
+      "priority": 10
+    }
+  ],
+  "permissions": {
+    "files": [
+      "read",
+      "write"
+    ],
+    "scope": "project",
+    "net": []
+  },
   "ui": "index.html"
 }

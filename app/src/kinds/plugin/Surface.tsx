@@ -109,6 +109,26 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
       }
     };
     window.addEventListener("message", onMsg);
+    /* ⚠️ **键盘事件不跨 iframe 边界** —— 焦点不在插件里时，它收不到任何 keydown。
+       §八十一 记着同一条：⌘E「时灵时不灵」，就是因为事件到不了该收它的那个 document。
+
+       具体怎么撞上的（2026-09-29 实测）：用户点了 `⋯` 看一眼读数，焦点回到顶层，
+       再按 ⌘S —— **插件里那个监听器压根没被调用**，改动看着像被无声丢掉了。
+       判据也撞上过同一件事：中间插了一次「点 ⋯ 读读数」，后面的 ⌘S 就失效了。
+
+       所以顶层替它转发。**只转插件会用的那几个键**，不是全部 keydown ——
+       全转的话插件会收到工作台自己的快捷键（⌘B / ⌘\ 那些），
+       而它不知道那些键已经被用掉了，可能当成自己的。 */
+    const FORWARD = new Set(["s", "z", "y", "f"]);   // 落盘 / 撤销 / 重做 / 查找
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || !FORWARD.has(e.key.toLowerCase())) return;
+      /* 焦点已经在这个 iframe 里时**不转发** —— 插件自己会收到，转了就成两次。 */
+      if (document.activeElement === ref.current) return;
+      e.preventDefault();
+      ref.current?.contentWindow?.postMessage(
+        { t: "key", key: e.key.toLowerCase(), meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey }, "*");
+    };
+    if (role === "body") window.addEventListener("keydown", onKey);
     /* chrome 上被点了什么，回给插件。`Workbench` 画的按钮最终走到这儿 */
     if (role === "body") {
       setSender(key, (kind, a, b) =>
@@ -116,6 +136,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
     }
     return () => {
       window.removeEventListener("message", onMsg);
+      window.removeEventListener("keydown", onKey);
       /* 换文件 / 卸载时把这份 chrome 收掉 —— 不收的话编辑栏会停在上一个文件的状态 */
       if (role === "body") dropChrome(key);
     };

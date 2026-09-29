@@ -82,10 +82,11 @@
 
 /* ── 剩下三件（M11-9）── */
 (function (u) {
-  var changedCbs = [];
+  var changedCbs = [], keyCbs = [];
   window.addEventListener("message", function (e) {
     var m = e.data;
     if (m && m.t === "changed") changedCbs.forEach(function (cb) { cb(m.path); });
+    if (m && m.t === "key") keyCbs.forEach(function (cb) { cb(m); });
   });
   /** 有没有没落盘的改动。**归宿主管** —— 关页签要拦、退出要拦，
    *  这些都发生在插件的矩形之外，插件拦不住。 */
@@ -95,4 +96,10 @@
   /** 文件在盘上变了（AI 改的、别的编辑器改的）。**插件自己发现不了** ——
    *  它没有文件系统也没有事件流。收到就重读一次。 */
   u.onChanged = function (cb) { changedCbs.push(cb); };
+
+  /** 宿主转发过来的快捷键（M10-2）。**键盘事件不跨 iframe 边界** ——
+   *  焦点不在插件里时（用户刚点了 `⋯` 或别处），插件收不到任何 keydown。
+   *  宿主只转插件会用的那几个（⌘S / ⌘Z / ⌘Y / ⌘F），不转它自己的 ⌘B / ⌘\。
+   *  ⚠️ 插件**两边都要接**：焦点在自己身上时走本地 keydown，不在时走这一条。 */
+  u.onKey = function (cb) { keyCbs.push(cb); };
 })(window.umbra);

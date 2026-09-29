@@ -25,3 +25,20 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px ui-monospa
 .cm-activeLineGutter { background: var(--active); color: var(--fg); }
 .cm-selectionBackground, ::selection { background: var(--sel) !important; }
 .cm-cursor { border-left-color: var(--fg); }
+
+/* 未落盘横条。**留在正文里，不进编辑栏** —— 和 md 插件同一条理由：
+   它是一条状态提示，而编辑栏那一行装的是开关；混在一起的话横条一出现编辑栏就会跳。 */
+.bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--line); background: var(--active);
+  font: 12px system-ui, sans-serif; }
+.bar .sp { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  border-radius: 5px; padding: 3px 9px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.btn:hover { background: var(--active); }
+.btn.primary { background: #3a6df0; border-color: #3a6df0; color: #fff; }
+.btn.primary:disabled { opacity: .55; cursor: default; }
+.btn.ghost { background: transparent; }
+/* 有横条时正文要让出高度 —— 不减的话 CM 会被挤出可视区底部 */
+body.dirty #host { height: calc(100% - 33px); }
+/* 可改时光标要是文本插入符（只读时 CM 自己会设成 default） */
+.cm-editor.cm-focused { outline: none; }

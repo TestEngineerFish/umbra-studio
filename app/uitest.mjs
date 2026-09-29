@@ -226,6 +226,64 @@ await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
    要守住的不是某个像素，而是**三个环节各自还通**：视图（View）、面板（Panels）、状态行（Status）。
    哪一环断了，症状都是「这种文件打开后少了点东西」，而截图上很难一眼看出少了什么。 */
 console.log("\n格式注册表：每种文件的视图 / 面板 / 状态行（M8-14）");
+/** 回归自己造的样本清单。**显式，不用模糊匹配** ——
+ *  「凡是名字里带『验收』『样本』的都清掉」很好写，但它会误删用户的文件，
+ *  而**清理工具本身不能有破坏力**（和 M9-7 那条「兜底不该有破坏力」同一条）。
+ *  ⚠️ **新加回归样本时要么用 `_uitest` 前缀，要么加进这个清单** ——
+ *  不加的话它一轮一轮堆在用户的回收站里，§九十七 已经犯过一次（当时 18 条），
+ *  2026-09-29 这次抓到 **72 条**，是别的几节漏的。 */
+const SAMPLE_PATS = [
+  /^_uitest/,            // 约定前缀，新样本都该走这个
+  /^插件回归样本/,
+  /^_暂存验收/, /^_无地址验收/, /^_三档验收/, /^_穿透验证/, /^_加地址验证-/, /^点选验证样本/,
+];
+
+/** 扫掉回归留下的样本（项目根 + 回收站），返回清掉了什么。
+ *
+ *  ⚠️ **开头和结尾各调一次。** 只在结尾清不够：中间任何一步抛了，
+ *  样本就留到下一轮 —— 而下一轮会因为「样本已存在」建不出来，
+ *  那一整节被静默跳过（2026-09-29 实测：`uitest` 从 198 掉到 183，**看不出原因**）。
+ *  **回归要从干净状态开始，而不只是打扫干净再走。** */
+const sweepSamples = async () => await pg.evaluate(async (pats) => {
+  const b = window.__UD_APP;
+  const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+  const mine = (n) => pats.some((re) => new RegExp(re).test(n ?? ""));
+  const out = { files: [], trash: [] };
+  /* ⚠️ 字段叫 **`entries`** 不是 `items`（`files` 路由，去 `server/src/cap/files.ts` 查过）。
+     第一版写了 `items`，循环一个都没遍历到 —— **静默什么都没清**，
+     而判据「项目根干净」照样绿（它数的是 out.files.length，当然是 0）。
+     今天第三次猜字段名（前两次是 `sha256`、`snapshot`）。**字段名一律去声明处查。** */
+  /* ⚠️ **参数用 `&` 接，不能再写一个 `?`**：`u()` 已经带了 `?token=`，
+     写成 `u("files?dir=")` 会拼出 `files?dir=?token=xxx` —— 两个 `?`，
+     服务端把 `?token=xxx` 当成 dir 的值，列了一个不存在的目录，**回 0 条**。
+     而判据「项目根干净」照样绿（它数的是清掉了几个，当然是 0）——
+     **一条自己什么都没做的清理，和一条真的清干净了的清理，读数一模一样。** */
+  const ls = await fetch(u("files") + "&dir=").then((x) => x.json()).catch(() => null);
+  for (const f of ls?.data?.entries ?? []) {
+    if (f.isDir) continue;                       // 目录不碰
+    if (mine(f.name)) {
+      out.files.push(f.name);
+      await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: f.name }) });
+    }
+  }
+  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+  for (const it of t?.data?.items ?? []) {
+    if (mine(it.originalName)) {
+      out.trash.push(it.originalName);
+      await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+    }
+  }
+  return out;
+}, SAMPLE_PATS.map((r) => r.source));
+
+/* 开跑前先清 —— 上一轮可能抛在半路留下了东西 */
+{
+  const pre = await sweepSamples();
+  if (pre.files.length || pre.trash.length) {
+    console.log(`  · 开跑前扫掉了上一轮的残留：项目根 ${pre.files.length} 份 · 回收站 ${pre.trash.length} 条`);
+  }
+}
+
 const openByName = async (suffix) => {
   const row = pg.locator('[role="treeitem"]').filter({ hasText: suffix }).first();
   if (!(await row.count())) return false;
@@ -815,6 +873,16 @@ console.log("\n指针三档（M8-31 · 用户拍板）");
       const b = window.__UD_APP;
       await fetch(`${b.url.replace(/\/$/, "")}/__ud/delete_draft?token=${encodeURIComponent(b.token)}`,
         { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: name }) });
+      /* ⚠️ **`delete_draft` 只是扔进回收站，不算清干净**（§九十七 / 2026-09-29）：
+         回收站是用户的东西，每跑一轮堆一条，二十轮之后他打开回收站看到二十份。
+         所以扔完再彻底清掉那一条。 */
+      const t = await fetch(`${b.url.replace(/\/$/, "")}/__ud/trash?token=${encodeURIComponent(b.token)}`).then((x) => x.json()).catch(() => null);
+      for (const it of t?.data?.items ?? []) {
+        if (it.originalName === name) {
+          await fetch(`${b.url.replace(/\/$/, "")}/__ud/trash_purge?token=${encodeURIComponent(b.token)}`,
+            { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+        }
+      }
     }, { name: SAMPLE });
     await pg.waitForTimeout(800);
   }
@@ -975,6 +1043,17 @@ console.log("\n评论暂存区与画布钉（M8-32）");
     await openByName(".md");
     await pg.waitForTimeout(500);
     await call("delete_draft", { file: SAMPLE });
+    /* 同上：扔进回收站不算清干净 */
+    await pg.evaluate(async ({ name }) => {
+      const b = window.__UD_APP;
+      const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+      const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+      for (const it of t?.data?.items ?? []) {
+        if (it.originalName === name) {
+          await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+        }
+      }
+    }, { name: SAMPLE });
     const left = await pg.evaluate(async () => {
       const b = window.__UD_APP;
       const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/comments?token=${encodeURIComponent(b.token)}`);
@@ -1244,6 +1323,12 @@ console.log("\n插件 UI 的边界（M11-4）");
           return (await w.json()).ok;
         }, { name: TS });
         if (okMade) {
+          /* ⚠️ **清理放 `finally`**（2026-09-29 栽过）：判据里任何一步抛了
+             （选择器找不到、超时），下面的清理就跑不到 —— 样本**留在用户项目里**。
+             那一次 `.csv` 和 `.ts` 两份都留下了，下一轮回归因为「样本已存在」
+             建不出来，整个 A 面端到端那一节被跳过，`uitest` 从 198 掉到 183。
+             **回归弄脏用户项目是纪律⑥，比判据红一条严重得多。** */
+          try {
           await pg.waitForTimeout(1200);
           const tsRow = pg.locator('[role="treeitem"]').filter({ hasText: TS }).first();
           if (await tsRow.count()) {
@@ -1267,17 +1352,82 @@ console.log("\n插件 UI 的边界（M11-4）");
             /* 插件声明的那颗钮由**宿主代画**（chrome 那条路） */
             const btns = await pg.locator('[data-ud="file-toolbar"] button').allTextContents().catch(() => []);
             ok(btns.some((t) => t.includes("选中行给 AI")), "插件声明的钮出现在宿主的编辑栏里", btns.join("/") || "（空）");
+            /* 读数是**行数 + 大小**，不是「未改过」—— `read_file` 不返回快照号，
+               给一个看着像答案的假答案比留空更糟（`00` §一一八）。
+               ⚠️ **读数在 `⋯` 浮层头，不在编辑栏** —— issue #36 把 `Status` 那个出口删了，
+               插件报的 `chrome.status` 现在接到 `meta`（§一一四.5）。
+               判据第一版去编辑栏找，红了两条 —— **不是产品的问题，是我忘了自己刚改过出口。** */
+            const readMeta = async () => {
+              const more = pg.locator('button:has-text("⋯")').first();
+              if (!(await more.count())) return "（找不到 ⋯）";
+              await more.click(); await pg.waitForTimeout(500);
+              const t = (await pg.locator('[data-ud="more-meta"]').innerText().catch(() => "")).trim();
+              await pg.keyboard.press("Escape"); await pg.waitForTimeout(250);
+              return t;
+            };
+            ok(/6 行/.test(await readMeta()), "⋯ 浮层头的读数写的是真实行数（不是假的「未改过」）", await readMeta());
+
+            /* ═══ 「改」这一半（M10-2）═══ 端到端：打字 → 未落盘横条 → ⌘S → 盘上真变了。
+               ⚠️ 判据必须看**盘上那一份**，不能只看界面说「已落盘」——
+               那句话是我们自己印的，它证明不了文件真的写下去了。 */
+            const cmContent = codeFrame.locator(".cm-content");
+            await cmContent.click();
+            await pg.keyboard.press("End");
+            await pg.keyboard.type("\n// 改了一行");
+            await pg.waitForTimeout(600);
+            const barTxt = (await codeFrame.locator("#dirty:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
+            ok(/还没落盘/.test(barTxt), "**打字之后出未落盘横条**（带前后行数）", barTxt.slice(0, 50));
+            ok(/未落盘/.test(await readMeta()), "⋯ 浮层头的读数也跟着变成「未落盘」（一处算两处用）");
+            /* ⌘S 落盘 —— 挂在 window 上而不是 CM 的 keymap 里（点了横条上的钮再按也要生效） */
+            await pg.keyboard.press("Meta+s");
+            await pg.waitForTimeout(2200);
+            ok(await codeFrame.locator("#dirty:not([hidden])").count() === 0, "落盘之后横条收起来了");
+            /* **盘上真的变了吗** —— 这条才是落盘的证据 */
+            const onDisk = await pg.evaluate(async ({ name }) => {
+              const b = window.__UD_APP;
+              const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/file?path=${encodeURIComponent(name)}&token=${encodeURIComponent(b.token)}`);
+              const j = await r.json();
+              return { has: /改了一行/.test(j?.data?.content ?? ""), lines: j?.data?.lines ?? 0 };
+            }, { name: TS });
+            ok(onDisk.has && onDisk.lines === 7, "**盘上那一份真的多了那行**（不是只有界面说落盘了）", `${onDisk.lines} 行`);
+            /* sha 校验那一关：盘上被别人改过时**拒绝落盘**而不是覆盖。
+               ⚠️ **顺序要紧，第一版造错了**：我先绕过插件写盘、再让插件打字落盘 ——
+               而插件的 `onChanged` 收到「盘上变了」会**重读**，sha 跟着更新，
+               于是落盘成功，判据红了却不是产品的错。
+
+               对的顺序是**先让插件脏起来**：那时 `onChanged` 按设计**不重读**
+               （不覆盖用户正在改的东西），插件手里的 sha 就真的过时了。
+               这也正是真实的冲突场景：**用户正在改，AI 同时改了同一个文件。** */
+            await cmContent.click(); await pg.keyboard.press("End"); await pg.keyboard.type(" // 我也改");
+            await pg.waitForTimeout(500);
+            await pg.evaluate(async ({ name }) => {
+              const b = window.__UD_APP;
+              const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+              /* ⚠️ 同一个坑第二次：`u()` 已经带了 `?token=`，参数要用 `&` 接。
+                 写成 `u("file?path=…")` 拼出两个 `?`，服务端解析不出 path，
+                 `cur.data` 是 undefined，下一行读 `.content` 当场抛。 */
+              const cur = await fetch(u("file") + `&path=${encodeURIComponent(name)}`).then((x) => x.json());
+              await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ path: name, content: (cur.data.content ?? "") + "\n// 别人改的\n", expectSha256: cur.data.sha256 }) });
+            }, { name: TS });
+            await pg.waitForTimeout(1000);
+            await pg.keyboard.press("Meta+s");
+            await pg.waitForTimeout(2000);
+            const stillDirty = await codeFrame.locator("#dirty:not([hidden])").count() > 0;
+            ok(stillDirty, "**盘上被别人改过时落盘被拒**（横条还在，改动没被静默丢掉）");
           } else ok(false, "`.ts` 样本建好了但树里没刷出来");
+          } finally {
           /* 收尾：和 csv 样本同一套 —— 扔回收站再彻底清掉，不给用户留东西 */
-          await pg.evaluate(async ({ name }) => {
-            const b = window.__UD_APP;
-            const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
-            await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
-            const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
-            for (const it of t?.data?.items ?? []) if (it.originalName === name) {
-              await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
-            }
-          }, { name: TS });
+            await pg.evaluate(async ({ name }) => {
+              const b = window.__UD_APP;
+              const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+              await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+              const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+              for (const it of t?.data?.items ?? []) if (it.originalName === name) {
+                await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+              }
+            }, { name: TS });
+          }
         } else ok(false, "建不出 .ts 样本");
       }
 
@@ -1324,6 +1474,23 @@ console.log("\n令牌不写进页面（Q42 / issue #30）");
   const nowUrl = pg.url();
   ok(new URL(nowUrl).searchParams.get("token") === good, "**刷新之后地址里的令牌还在**（replaceState 没把 query 抹掉）", nowUrl.replace(good, "…"));
   ok(await pg.evaluate(() => document.querySelectorAll('[role="treeitem"]').length > 0), "刷新之后界面还起得来（不是「拿不到访问令牌」那一屏）");
+}
+
+/* ── 收尾自检：回归有没有把东西留在用户项目里（纪律⑥）──
+   逐段 `try/finally` 不够稳：判据里任何一步抛了，**它后面那一段的清理也跟着跳过**。
+   2026-09-29 就是这样 —— `.ts` 那段抛出去，连 `.csv` 的清理一起没跑，
+   两份样本留在用户项目里；下一轮回归因为「样本已存在」建不出来，
+   整个 A 面端到端那一节被跳过，`uitest` 从 198 掉到 183 而**看不出原因**。
+
+   所以这里兜一道：扫一遍、清干净、**并且把残留报出来** ——
+   有残留本身就是信息（说明中间抛过），不该被静默清掉。 */
+console.log("\n收尾：没给用户留东西（纪律⑥）");
+{
+  const left = await sweepSamples();
+  ok(left.files.length === 0, "**项目根下没有回归留下的样本**（有就是中间抛过，已清）",
+     left.files.length ? "清掉了：" + left.files.join("、") : "干净");
+  ok(left.trash.length === 0, "回收站里也没堆着（每跑一轮堆一条，二十轮之后用户会看到二十份）",
+     left.trash.length ? "清掉了：" + left.trash.join("、") : "干净");
 }
 
 console.log(`\n${fail ? "✗" : "✓"} 界面回归 ${pass}/${pass + fail}\n`);
