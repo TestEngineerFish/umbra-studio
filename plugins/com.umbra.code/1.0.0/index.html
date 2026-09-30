@@ -31,6 +31,10 @@
     <button id="draftBack" class="btn primary" hidden>回到盘上那份</button>
   </div>
   <div id="host"></div>
+  <!-- JSON 的树档（M10-4，S19 演示态 2/3）。**只用来看和挑，不在树上改值** ——
+       要改就按「在源码里看」跳回源码。这是设计侧定的：一份内容两处可改，
+       改法不一致时用户分不出哪一处才算数。 -->
+  <div id="tree" hidden></div>
   <!-- 只读下按了字键：光标下方出一行原因 + 解锁。**只出第一次** -->
   <div id="roHint" class="hint" hidden>
     <span id="roWhy"></span>

@@ -4,7 +4,6 @@ import { dc } from "./dc";
 import { dir } from "./dir";
 import { fallback } from "./fallback";
 import { image } from "./image";
-import { json } from "./json";
 
 /** **「有哪些格式」这件事只写在这里。** 加一种格式的全部工作是三步：
  *
@@ -23,7 +22,13 @@ import { json } from "./json";
    一种 kind 只能有一个模块，内置模块和插件都认领 `md` 会当场抛。
    内置插件跟主程序一起发、免费、卸不掉，所以对用户来说没有区别 —— 打开 `.md` 照样能编辑。
    代价写在 `doc/00` §八十八：markdown 渲染器在插件包里是第二份实例。 */
-const ALL: readonly KindModule[] = [dc, json, image, dir, fallback];
+/* ⚠️ `json` **不在这里了**（M10-4）：它归内置插件 `plugins/com.umbra.code/`。
+   设计侧 S19 的主张是「打开 `.json` **先给源码，就是 S18**」——
+   源码档和代码视图是同一份东西，分两处写的话 S18 的每一条改进
+   （草稿暂存、版本历史、差异标红）都得各写一遍。
+   而且用户 2026-09-28 定过「新格式一律做成插件」，理由是不想为了一种格式重发 PC 端。
+   一种 kind 只能有一个模块 —— 不让出来的话插件注册时当场抛。 */
+const ALL: readonly KindModule[] = [dc, image, dir, fallback];
 for (const m of ALL) register(m);
 
 /** 开发期自检：种类表里声明的每一种都得有模块认领。

@@ -13,6 +13,10 @@
  */
 const CM = "/__shared/codemirror.js";
 
+/* 位置感知 JSON 解析（M10-4）。**和插件一起发**，不走 `/__shared/` ——
+   那里只放「多个插件都要」的大依赖，这一份是这个插件自己的逻辑，才几 KB。 */
+import { parseWithPos, prettyPath, nodeAt } from "./jsonpos.mjs";
+
 const el = (id) => document.getElementById(id);
 
 /** 改过的行的装饰集。**放 StateField 而不是每次重建 view** ——
@@ -174,6 +178,159 @@ function changedLines(before, now) {
   for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) out.add(i + 1);
   return out;
 }
+/* ════ JSON 的树档（M10-4，S19）════ */
+
+/** 当前档：`"src"` 源码 · `"tree"` 树。**只有 `.json` 有树档。** */
+let mode = "src";
+/** 位置感知解析的结果（`jsonpos.mjs` 给的）。`null` = 还没解析 / 不是 json */
+let jparsed = null;
+/** 折叠起来的路径集合（存路径不存下标 —— 下标会随折叠变，路径不会） */
+let jcollapsed = new Set();
+/** 树上选中的那一行 */
+let jpick = null;
+
+const isJson = () => /\.jsonc?$/i.test(curPath || "");
+
+/** 这一行的祖先里有没有被折叠的。
+ *  ⚠️ **按路径前缀判，不按行号** —— 行号会随展开收起变，而路径不会。 */
+function jhidden(path) {
+  if (jcollapsed.has("")) return path !== "";
+  const segs = path.split(".");
+  for (let i = 1; i <= segs.length - 1; i++) if (jcollapsed.has(segs.slice(0, i).join("."))) return true;
+  return false;
+}
+
+const JVAL = {
+  string: (v) => ({ cls: "jstr", text: JSON.stringify(v) }),
+  number: (v) => ({ cls: "jnum", text: String(v) }),
+  boolean: (v) => ({ cls: "jbool", text: String(v) }),
+  null: () => ({ cls: "jnull", text: "null" }),
+};
+
+/** 从路径取值 —— 树上要显示叶子的值，而 `jsonpos` 只给位置不给值。 */
+function jvalueAt(root, path) {
+  if (!path) return root;
+  let cur = root;
+  for (const seg of path.split(".")) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = Array.isArray(cur) ? cur[Number(seg)] : cur[seg];
+  }
+  return cur;
+}
+
+/** 画树。**每次全画** —— 摊平之后行数就是可见行数，几百行的重建比维护增量差异便宜得多。 */
+function renderTree() {
+  const host = el("tree");
+  if (!jparsed || !jparsed.ok) { host.textContent = ""; return; }
+  const frag = document.createDocumentFragment();
+  for (const n of jparsed.nodes) {
+    if (jhidden(n.path)) continue;
+    const row = document.createElement("div");
+    row.className = "jrow" + (jpick === n.path ? " on" : "");
+    row.setAttribute("role", "treeitem");
+    row.dataset.path = n.path;
+    row.style.paddingLeft = (8 + n.depth * 16) + "px";
+    const canToggle = (n.kind === "object" || n.kind === "array") && n.count > 0;
+    row.setAttribute("aria-expanded", canToggle ? String(!jcollapsed.has(n.path)) : "false");
+
+    const tw = document.createElement("span");
+    tw.className = "jtw";
+    if (canToggle) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("aria-label", "展开或收起");
+      b.innerHTML = '<svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+      b.querySelector("svg").style.transform = jcollapsed.has(n.path) ? "rotate(0deg)" : "rotate(90deg)";
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (jcollapsed.has(n.path)) jcollapsed.delete(n.path); else jcollapsed.add(n.path);
+        renderTree();
+      });
+      tw.appendChild(b);
+    }
+    row.appendChild(tw);
+
+    const k = document.createElement("span");
+    k.className = "jkey" + (n.kind === "object" || n.kind === "array" ? " obj" : "");
+    k.textContent = n.path === "" ? "根" : n.key;
+    row.appendChild(k);
+
+    if (n.kind === "object" || n.kind === "array") {
+      const sum = document.createElement("span");
+      sum.className = "jsum";
+      sum.textContent = n.count ? `${n.kind === "array" ? "[" : "{"} ${n.count} 项 ${n.kind === "array" ? "]" : "}"}` : (n.kind === "array" ? "[ ]" : "{ }");
+      row.appendChild(sum);
+    } else {
+      const c = document.createElement("span");
+      c.className = "jcolon"; c.textContent = ": ";
+      row.appendChild(c);
+      const v = JVAL[n.kind](jvalueAt(jparsed.value, n.path));
+      const vs = document.createElement("span");
+      vs.className = v.cls;
+      /* 值太长就截 —— 一行几千字符会把树撑成横向滚动条 */
+      vs.textContent = v.text.length > 120 ? v.text.slice(0, 117) + "…" : v.text;
+      row.appendChild(vs);
+    }
+
+    /* 选中那一行才挂两颗钮（稿里就是这样，不是每行都挂） */
+    if (jpick === n.path) {
+      const act = document.createElement("span");
+      act.className = "jact";
+      const jump = document.createElement("button");
+      jump.type = "button"; jump.className = "jjump";
+      jump.innerHTML = "在源码里看 <em></em>";
+      jump.querySelector("em").textContent = n.line === n.endLine ? `L${n.line}` : `L${n.line}–${n.endLine}`;
+      jump.addEventListener("click", (e) => { e.stopPropagation(); jumpToNode(n); });
+      const ai = document.createElement("button");
+      ai.type = "button"; ai.className = "jai";
+      ai.innerHTML = '<span>给 AI</span><kbd style="font:400 10px ui-monospace,monospace;opacity:.7">⌘L</kbd>';
+      ai.addEventListener("click", (e) => { e.stopPropagation(); sendNode(n); });
+      act.appendChild(jump); act.appendChild(ai);
+      row.appendChild(act);
+    }
+
+    row.addEventListener("click", () => { jpick = n.path; renderTree(); paint(); });
+    frag.appendChild(row);
+  }
+  host.textContent = "";
+  host.appendChild(frag);
+}
+
+/** 从树跳回源码并选中那个节点占的几行 —— 「在源码里看 L12–17」。 */
+function jumpToNode(n) {
+  setMode("src");
+  if (!view) return;
+  const from = Math.min(n.from, view.state.doc.length);
+  const to = Math.min(n.to, view.state.doc.length);
+  view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true });
+  view.focus();
+}
+
+/** 把一个节点带进会话。**带的是它的原文**（`from`/`to` 切出来的那一段）。
+ *  太长照第十二轮 html 那条收骨架 —— 一份 3 MB 的 JSON 整个塞进会话没有意义。 */
+function sendNode(n) {
+  if (!jparsed || !disk) return;
+  const raw = disk.content.slice(n.from, n.to);
+  const p = prettyPath(n.path);
+  const body = raw.length > 4000
+    ? `${raw.slice(0, 3800)}\n… 这一段共 ${raw.length} 字符，${n.count} 个子项（已截断）`
+    : raw;
+  umbra.pick(
+    `json · ${(curPath || "").split("/").pop()} · ${p}`,
+    `${curPath} ${p}（L${n.line}${n.endLine !== n.line ? `–${n.endLine}` : ""}）：\n\n\`\`\`json\n${body}\n\`\`\`\n`,
+  );
+}
+
+/** 切档。**只有 `.json` 有树档**；解析不了的时候树钮是灰的（见 `paint`）。 */
+function setMode(m) {
+  if (m === "tree" && (!isJson() || !jparsed || !jparsed.ok)) return;
+  mode = m;
+  el("host").hidden = m !== "src";
+  el("tree").hidden = m !== "tree";
+  if (m === "tree") renderTree();
+  paint();
+}
+
 /* ════ 草稿暂存（M10-2c，S18 演示态 11/12）════ */
 
 /** 打开时查到的草稿（`null` = 没有）。存的是 `get_staged_draft` 的信封内容。 */
@@ -338,8 +495,34 @@ function paint() {
   el("save").textContent = busy ? "正在落盘…" : "落盘 ⌘S";
   /* **归宿主管**：关页签要拦、退出要拦，那些都发生在插件的矩形之外 */
   umbra.setDirty(dirty);
+  /* ── JSON 的两样（S19）：源码 / 树 切档 · 光标路径 ──
+     ⚠️ **切档放 `toolbar` 段而不是 `buttons`**：它是「用哪种方式看」的开关，
+     不是一个动作。放 buttons 里的话它会和「选中行给 AI」并排，
+     而那两件事的性质完全不同。
+     ⚠️ 解析不了时树钮 `disabled` 并说出原因 —— **不是藏起来**：
+     藏起来的话用户不知道这种文件本来有树，只会以为我们没做。 */
+  const jbad = isJson() && jparsed && !jparsed.ok;
+  const segs = isJson() ? [{
+    label: "怎么看",
+    items: [
+      { label: "源码", active: mode === "src", title: "改、落盘、给 AI 都在这一档" },
+      { label: "树", active: mode === "tree", disabled: !!jbad,
+        title: jbad ? `解析不了，树画不出来。先改好 L${jparsed.line}` : "按结构看；树上只看和挑，不改值" },
+    ],
+  }] : [];
+  /* 光标路径：源码档看光标，树档看选中那一行。**算不出来就不写** ——
+     写一个「$」在那里会让人以为光标真在根上。 */
+  let crumb = "";
+  if (isJson() && jparsed && jparsed.ok) {
+    if (mode === "tree" && jpick !== null) crumb = prettyPath(jpick);
+    else if (mode === "src" && view) {
+      const n = nodeAt(jparsed.nodes, view.state.selection.main.head);
+      if (n) crumb = prettyPath(n.path);
+    }
+  }
   umbra.setChrome(
     {
+      toolbar: segs,
       buttons: [{ label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" }],
       /* ⚠️ **读数是行数 + 大小，不是「未改过」。**
          `read_file` 不返回快照号，第一版我照抄 md 插件写了 `disk.snapshot ?? "未改过"` ——
@@ -349,9 +532,15 @@ function paint() {
       status: (curVersion
         ? `${(view?.state.doc.lines ?? 0)} 行 · 在看 ${curVersion}`
         : `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}`)
-        + (ro && !curVersion ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : ""),
+        + (ro && !curVersion ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : "")
+        + (jbad ? ` · 解析不了 L${jparsed.line}:${jparsed.col}` : "")
+        + (crumb ? ` · ${crumb}` : ""),
     },
-    (kind, a) => { if (kind === "button" && a === 0) askAboutSelection(); },
+    (kind, a, b) => {
+      if (kind === "button" && a === 0) askAboutSelection();
+      /* `seg` 回调给的是 (段下标, 项下标) —— 我们只有一段，所以只看第二个 */
+      if (kind === "seg" && a === 0) setMode(b === 0 ? "src" : "tree");
+    },
   );
 }
 
@@ -445,6 +634,11 @@ async function load(path, theme, opt = {}) {
   curVersion = opt.version ?? null;
   draftPreview = !!opt.draftPreview;
   roReason = readOnlyReason(path, disk.size, curVersion, draftPreview);
+  /* JSON：解析一次，树和光标路径都靠它。
+     ⚠️ **换文件要把树的状态清掉** —— 折叠集和选中行是按路径存的，
+     换了文件那些路径指的是别的东西了。 */
+  if (path !== curPath) { jcollapsed = new Set(); jpick = null; mode = "src"; }
+  jparsed = /\.jsonc?$/i.test(path) ? parseWithPos(shown ?? disk.content) : null;
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 
@@ -461,7 +655,15 @@ async function load(path, theme, opt = {}) {
     cm.highlightSelectionMatches(),
     /* 每一次改动都重画横条与读数。**不用 debounce** —— 只是几个 DOM 文本，
        而延迟会让「改了一个字横条还没出来」这种半秒的不一致被看见。 */
-    cm.EditorView.updateListener.of((u) => { if (u.docChanged) { paint(); markChanged(); scheduleStage(); } }),
+    /* ⚠️ **光标移动也要重画**（`selectionSet`）。
+       原来只听 `docChanged` —— 那对横条读数够用，但 S19 的**光标路径**
+       是跟着光标走的：不听选区变化的话它会一直停在上次打字的位置，
+       **而那看起来就像它算错了**。
+       改文档那一支照旧重算标记和暂存；只动光标那一支只重画读数（便宜）。 */
+    cm.EditorView.updateListener.of((u) => {
+      if (u.docChanged) { paint(); markChanged(); scheduleStage(); }
+      else if (u.selectionSet) paint();
+    }),
     changedField,
     diffField,
     /* 改过的行：行底 warn-soft + 行号边一道 warn 竖线（S18 §一.1，和 S13 源码视图同一套）。
@@ -539,6 +741,13 @@ async function load(path, theme, opt = {}) {
     const max = view.state.doc.length;
     view.dispatch({ selection: { anchor: Math.min(keep, max) } });
   }
+  /* ⚠️ 解析不了就回源码档并把树钮灰掉 —— 不回的话用户停在一个空白的树上，
+     而「树是空的」和「这个文件没内容」长得一样。 */
+  if (mode === "tree" && (!jparsed || !jparsed.ok)) mode = "src";
+  el("host").hidden = mode !== "src";
+  el("tree").hidden = mode !== "tree";
+  if (mode === "tree") renderTree();
+
   paint();
   markDiff();   // 看旧版时把差异标出来；看当前版时它自己清空
 

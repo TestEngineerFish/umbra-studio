@@ -84,6 +84,16 @@ ok("根是 `$`", prettyPath("") === "$");
 {
   const bad = parseWithPos(`{ "a": [1, 2, 3,] }`) as any;
   ok("**坏 JSON 说不行**（正确性以 `JSON.parse` 为准，不是我们自己判）", bad.ok === false, bad.why?.slice(0, 50));
+  ok("而且给得出行列（S19 那枚「解析不了 L12:5」标签点一下要跳过去）",
+     typeof bad.line === "number" && typeof bad.col === "number", `L${bad.line}:${bad.col}`);
+
+  /* ⚠️ **这一条钉的是 M8-14 实测栽过的坑**：V8 对这种写法报的消息里
+     **一个数字都没有**，只带着出错处周围的一段原文（换行被压成空格）。
+     只认 `position N` 的话会回退到「第 1 行第 1 列」，而真正的错在第 3 行 ——
+     **报错位置指错地方比不报更坏**，人会照着去看那一行。 */
+  const multi = parseWithPos(`{\n  "a": 1,\n  "b": [1, 2, 3,]\n}`) as any;
+  ok("**多行坏 JSON 指到真正出错那一行**（不是回退到第 1 行）",
+     multi.ok === false && multi.line === 3, `L${multi.line}:${multi.col} · ${String(multi.why).slice(0, 46)}`);
 }
 
 /* ── 空容器 / 深嵌套 ── */

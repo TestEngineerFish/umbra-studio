@@ -17,6 +17,52 @@
  *  而两个定义迟早会不一致，症状是「这里说没问题，那里说有问题」。
  */
 
+/** 把连续空白折成一个空格，并记下折叠后每个字符的原始下标 —— 给 `whereFailed` 的第三条路用 */
+function squeeze(text) {
+  let flat = "", ws = false;
+  const map = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") { if (!ws) { flat += " "; map.push(i); ws = true; } continue; }
+    ws = false; flat += c; map.push(i);
+  }
+  return { flat, map };
+}
+
+/** `JSON.parse` 失败在文件的哪一行。**从 `app/src/kinds/json.tsx` 原样搬过来**（M10-4）。
+ *
+ *  ⚠️ **不能只认 `position N`** —— 这是实测栽的一次（M8-14）：
+ *  V8 报 `Unexpected token ']', ..." [1, 2, 3,] } " is not valid JSON`，
+ *  整条消息里**一个数字都没有**，于是回退到「第 1 行第 1 列」，
+ *  而真正的错在第 3 行。**报错位置指错地方比不报更坏** —— 人会照着去看那一行。
+ *
+ *  所以三条路依次试：
+ *  ① 新引擎直接给 `line L column C`
+ *  ② 老格式给字节偏移 `position N`
+ *  ③ 两样都没有时，消息里带着出错处**周围的一段原文**。
+ *     它被压掉了换行（`]\n}` 变成 `] }`），所以两边都把空白折平了再找。
+ */
+export function whereFailed(text, err) {
+  const why = err instanceof Error ? err.message : String(err);
+  const at = (i) => {
+    const before = text.slice(0, i);
+    const nl = before.lastIndexOf("\n");
+    return { line: before.split("\n").length, col: i - nl, why };
+  };
+  const lc = /line (\d+) column (\d+)/.exec(why);
+  if (lc) return { line: Number(lc[1]), col: Number(lc[2]), why };
+  const pos = /position (\d+)/.exec(why);
+  if (pos) return at(Number(pos[1]));
+  const frag = /\.\.\."(.+?)"(?:\.\.\.)? is not valid JSON/s.exec(why) ?? /^(?:.*?)"(.+?)" is not valid JSON/s.exec(why);
+  const piece = (frag?.[1] ?? "").trim();
+  if (piece) {
+    const { flat, map } = squeeze(text);
+    const j = flat.indexOf(squeeze(piece).flat);
+    if (j >= 0 && map[j] !== undefined) return at(map[j]);
+  }
+  return { line: 1, col: 1, why };
+}
+
 /** 每一行换行符的偏移，用来把偏移换成行号。二分查。 */
 function lineIndex(text) {
   const nl = [];
@@ -140,7 +186,13 @@ function scan(text) {
 export function parseWithPos(text) {
   let value;
   try { value = JSON.parse(text); }
-  catch (e) { return { ok: false, why: e instanceof Error ? e.message : String(e) }; }
+  catch (e) {
+    /* ⚠️ **失败时要给出行列，不只是一句话。** S19 的「解析不了 L12:5」那枚标签
+       点一下要跳到出错的地方 —— 没有行列就跳不了，而一句
+       「Unexpected token」对用户等于没说。 */
+    const w = whereFailed(text, e);
+    return { ok: false, why: w.why, line: w.line, col: w.col };
+  }
   const nl = lineIndex(text);
   let nodes;
   try { nodes = scan(text); }

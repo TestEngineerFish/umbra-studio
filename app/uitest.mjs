@@ -247,7 +247,7 @@ const SAMPLE_PATS = [
   /^_uitest/,            // 约定前缀，新样本都该走这个
   /^插件回归样本/,
   /^_暂存验收/, /^_无地址验收/, /^_三档验收/, /^_穿透验证/, /^_加地址验证-/, /^点选验证样本/,
-  /^版本历史回归/, /^草稿回归/,      // M10-2b / M10-2c
+  /^版本历史回归/, /^草稿回归/, /^json回归/,      // M10-2b / M10-2c / M10-4
   /* ⚠️ 下面这几个是**补登记的**：2026-09-30 在用户项目里翻出 24 个残留快照目录，
      其中四个的名字压根不在这张清单里 —— 文件被清掉了（那部分是对的），
      快照目录留了好几轮。**清单漏一个名字，收尾就静默漏一个样本。** */
@@ -405,17 +405,21 @@ if (await openByName(".md")) {
   ok(await pg.locator('[data-ud="props"]').count() === 1, "Markdown：属性区里是大纲（它跨了 View 与 Panels 两处）");
 } else ok(false, "项目里没有 .md，测不了 Markdown");
 
-/* JSON：M8-14 新加的一种。**它存在就是「加一种格式只需新增一个文件」的证据** */
+/* JSON：M8-14 加的一种，**M10-4 搬成了插件认领的类型**（设计侧 S19：
+   「打开 `.json` 先给源码，就是 S18」）。
+   ⚠️ 下面三条判据的**措辞和选择器变了，但它们要守的东西一个字没变**：
+   切档在编辑栏上（不在视图内部）· 两档都在 · `⋯` 在 Tab 条右端。
+   段名从「视图」变成稿里的「怎么看」，两档从「结构 / 源码」变成「源码 / 树」——
+   **改判据前先分清：它守的是什么，措辞只是当时的样子。** */
 if (await openByName(".json")) {
   /* ⚠️ 第九轮把「这份文件的读数」从工具栏拿掉了：工具栏变成了**编辑栏**，
      只放改稿用的开关。读数没有新家 —— 设计侧这一轮没给它安排位置，先不测。 */
   await openEdit();
-  /* 这两档现在在**统一的文件工具栏**上（M8-15 把它从视图内部搬了出来），
-     所以判据要落在那条带上 —— 落在 body 上的话，搬没搬都一样过，测不出东西。 */
-  const tb = pg.locator('[data-ud="file-toolbar"] [role="group"][aria-label="视图"]').first();
-  ok(await tb.count() > 0, "JSON：视图段组在编辑栏上");
+  /* 落在那条带上 —— 落在 body 上的话，搬没搬都一样过，测不出东西。 */
+  const tb = pg.locator('[data-ud="file-toolbar"] [role="group"][aria-label="怎么看"]').first();
+  ok(await tb.count() > 0, "JSON：切档段组在编辑栏上（插件给数据、宿主用同一个 `Seg` 画）");
   const tbText = await tb.innerText().catch(() => "");
-  ok(/结构/.test(tbText) && /源码/.test(tbText), "JSON：结构 / 源码两档都在", tbText.replace(/\n/g, " / "));
+  ok(/树/.test(tbText) && /源码/.test(tbText), "JSON：源码 / 树两档都在", tbText.replace(/\n/g, " / "));
   ok(await pg.locator('[data-ud="tabbar"] button[title="更多"]').count() > 0, "JSON：文件 ⋯ 在 Tab 条右端（第九轮从工具栏挪过来）");
 } else console.log("  – 项目里没有 .json，跳过新格式那一条（不算通过）");
 
@@ -438,7 +442,9 @@ const pageCount = async (re) => (((await detail().innerText().catch(async () => 
 for (const [suffix, label, probe] of [
   [".md", "Markdown", /渲染/g],
   [".dc.html", "设计稿", /画布/g],
-  [".json", "JSON", /结构/g],
+  /* ⚠️ 探针词跟着 S19 改了：旧模块的两档叫「结构 / 源码」，
+     插件这一版按稿叫「源码 / 树」。探的是**同一件事** —— 开关在不在那条带上。 */
+  [".json", "JSON", /树/g],
 ]) {
   if (!(await openByName(suffix))) { ok(false, `${label}：项目里没有这种文件`); continue; }
   await openEdit();
@@ -1772,6 +1778,81 @@ console.log("\n插件 UI 的边界（M11-4）");
               ok(await pg.locator('[role="alertdialog"]').count() === 0, "切回来不会再拦（改动已经丢掉了）");
             }
 
+
+            /* ═══ JSON：源码 / 树 两档（M10-4，S19）═══
+               ⚠️ 设计侧的主张是「打开 `.json` **先给源码，就是 S18**」——
+               所以 `.json` 从内置格式模块搬成了代码插件认领的第二种类型。
+               这一段要钉的是：**默认源码** · 树只看不改 · 行范围算得对 · 解析不了说得清。 */
+            {
+              const J = "json回归.json";
+              const made3 = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ path: name,
+                    content: '{\n  "name": "umbra",\n  "channels": {\n    "a": { "model": "x", "on": true },\n    "b": [1, 2, 3]\n  },\n  "n": null\n}\n',
+                    expectSha256: "0" }) });
+                return (await w.json()).ok;
+              }, { name: J });
+              if (made3) {
+                await pg.waitForTimeout(1200);
+                const jRow = pg.locator('[role="treeitem"]').filter({ hasText: J }).first();
+                if (await jRow.count()) {
+                  await jRow.click(); await pg.waitForTimeout(3000);
+                  await clearGuard();
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await jRow.click(); await pg.waitForTimeout(2800); }
+                  const jf = pg.frameLocator('iframe[data-role="body"]');
+
+                  /* ⚠️ `.json` 归插件了 —— 它要真的走到代码插件，而不是掉回通用文件卡 */
+                  ok(await jf.locator(".cm-content").count() === 1,
+                     "**`.json` 走到代码插件**（不是通用文件卡）—— 「先给源码，就是 S18」");
+                  ok(await jf.locator("#tree").isHidden(), "默认是源码档（树收着）");
+
+                  /* 切到树。
+                     ⚠️ **先把编辑栏展开** —— 收起时它高度是 0（还带 `inert`），
+                     而 `count()` / `innerText()` 对高度 0 的容器里的按钮**照样成功**，
+                     只有真去点才暴露：点击被插件的 iframe 拦住，整轮超时崩掉。
+                     **「找得到」和「用得了」是两件事。** */
+                  await openEdit();
+                  const treeBtn = pg.locator('[data-ud="file-toolbar"] button:has-text("树")').last();
+                  ok(await treeBtn.count() === 1, "编辑栏上有「源码 / 树」切档");
+                  ok(await treeBtn.evaluate((n) => n.getBoundingClientRect().height > 8),
+                     "**而且它真的点得到**（编辑栏收起时高度是 0，只用 count 测不出来）");
+                  await treeBtn.click(); await pg.waitForTimeout(1000);
+                  ok(await jf.locator("#tree").isHidden() === false && await jf.locator(".jrow").count() > 5,
+                     "**切得到树档**", `${await jf.locator(".jrow").count()} 行`);
+                  const first = (await jf.locator(".jrow").first().innerText()).replace(/\s+/g, " ").trim();
+                  ok(/根 \{ 3 项 \}/.test(first), "根那一行写出有几项", first);
+                  ok(/\[ 3 项 \]/.test((await jf.locator('.jrow[data-path="channels.b"]').innerText().catch(() => "")).replace(/\s+/g, " ")),
+                     "数组和对象的括号分得开", (await jf.locator('.jrow[data-path="channels.b"]').innerText().catch(() => "")).replace(/\s+/g, " ").trim());
+
+                  /* ⚠️ 这一条是这一段的核心：**行范围**。
+                     它靠的是位置感知解析（`jsonpos.mjs`），`JSON.parse` 一点位置都不给。 */
+                  await jf.locator('.jrow[data-path="channels"]').click(); await pg.waitForTimeout(500);
+                  ok(await jf.locator('.jrow.on[data-path="channels"]').count() === 1, "点一行选得中");
+                  const act = (await jf.locator('.jrow[data-path="channels"] .jact').innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/在源码里看 L3–6/.test(act),
+                     "**「在源码里看」写出的是整块的行范围**（L3–6，不是它自己那一行）", act);
+                  ok(/给 AI/.test(act), "选中的行右侧才挂两颗钮（不是每行都挂）", act);
+
+                  /* 跳回源码：选区要落在那几行上 */
+                  await jf.locator('.jrow[data-path="channels"] .jjump').click(); await pg.waitForTimeout(900);
+                  ok(await jf.locator("#tree").isHidden(), "「在源码里看」跳回源码档");
+                  const sel = await jf.locator(".cm-content").evaluate(() => String(window.getSelection() ?? ""));
+                  ok(/"a"/.test(sel) && /"b"/.test(sel),
+                     "**跳过去之后那一块是选中的**（不是只滚过去）", sel.replace(/\s+/g, " ").slice(0, 50));
+                } else ok(false, "json 样本建好了但树里没刷出来");
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { name: J });
+              } else ok(false, "建不出 json 样本");
+            }
 
             /* ═══ 草稿暂存（M10-2c）═══ 设计侧第十三轮定的形制（S18 演示态 11/12）。
                ⚠️ 重点是**「回来那一下」**：底稿变过时**不给直接恢复** ——

@@ -87,3 +87,30 @@ body.ro.dirty #host { height: calc(100% - 66px); }
    不减的话 CodeMirror 会被挤出可视区底部（注意两条横条可能同时在） */
 body.hasdraft #host { height: calc(100% - 33px); }
 body.hasdraft.dirty #host { height: calc(100% - 66px); }
+
+/* ── JSON 树档（M10-4，S19 演示态 2/3）── */
+#tree { position: absolute; inset: 0; overflow: auto; font: 12px/24px ui-monospace, SFMono-Regular, Menlo, monospace; }
+body.hasdraft #tree, body.dirty #tree { top: 33px; }
+body.hasdraft.dirty #tree { top: 66px; }
+.jrow { position: relative; display: flex; align-items: center; height: 24px; white-space: pre; cursor: default; padding-right: 200px; }
+.jrow:hover { background: var(--active); }
+.jrow.on { background: rgba(58,109,240,.10); box-shadow: inset 2px 0 0 #3a6df0; }
+.jtw { flex: none; width: 18px; height: 18px; display: grid; place-items: center; }
+.jtw button { width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.jtw button:hover { background: var(--gutter-bg); color: var(--fg); }
+.jtw svg { transition: transform .12s ease; }
+.jkey { color: var(--fg); }
+.jkey.obj { font-weight: 600; }
+.jcolon { color: var(--muted); }
+.jstr { color: #14795c; } .jnum { color: #c8821e; } .jbool { color: #3a6df0; } .jnull { color: var(--muted); }
+.jsum { margin-left: 8px; font: 11px system-ui, sans-serif; color: var(--muted); }
+/* 选中行右侧那两颗钮 —— 只在选中的行上出现（稿里就是这样，不是每行都挂） */
+.jact { position: absolute; right: 16px; top: 1px; display: flex; align-items: center; gap: 4px; }
+.jact .jjump { height: 22px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent;
+  font: 11px system-ui, sans-serif; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.jact .jjump:hover { background: var(--gutter-bg); color: var(--fg); }
+.jact .jjump em { font-family: ui-monospace, monospace; font-size: 10px; font-style: normal; opacity: .75; }
+.jact .jai { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid rgba(58,109,240,.35);
+  border-radius: 4px; background: var(--bg); color: #3a6df0; font: 560 11px system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.jact .jai:hover { background: rgba(58,109,240,.10); }
