@@ -34,7 +34,7 @@ const bads: Array<[string, unknown, string]> = [
   ["hostApi 对不上", { ...raw, hostApi: "^99" }, `本机是 v${HOST_API_MAJOR}，插件独立更新，版本错配是常态`],
   ["没声明 permissions", (() => { const { permissions: _p, ...r } = raw; return r; })(), "默认不是「全给」，是「拒装」"],
   ["清单里写了 exec", { ...raw, permissions: { ...raw.permissions, exec: ["ffmpeg"] } }, "P1：连槽位都不留，写了当场拒"],
-  ["扩展名不带点", { ...raw, kinds: [{ ...raw.kinds[0], ext: ["csv"] }] }, "不带点会把 abc.mycsv 也认成 csv"],
+  ["扩展名不带点", { ...raw, kinds: [{ ...raw.kinds[0], ext: ["udemo"] }] }, "不带点会把 abc.myudemo 也认成 udemo"],
 ];
 for (const [what, m, why] of bads) {
   const r = checkManifest(m);
@@ -45,7 +45,7 @@ for (const [what, m, why] of bads) {
 const k = good.manifest!.kinds![0]!;
 registerKind({ id: k.id, label: k.label, icon: k.icon, priority: k.priority!, textual: k.textual,
   match: (n) => k.ext.some((e) => n.endsWith(e)), from: good.manifest!.id });
-ok(kindOf("data/表.csv") === "csv", "插件加的类型立刻生效");
+ok(kindOf("data/表.udemo") === "udemo", "插件加的类型立刻生效");
 ok(kindOf("x.dc.html") === BUILTIN.dc, "没动到内置类型");
 
 /* ── ③ 沙箱：先证明它活着，再看它关不关得住 ── */
@@ -64,11 +64,11 @@ if (started) {
   await rm(TMP, { recursive: true, force: true });
   await mkdir(TMP, { recursive: true });
   await writeFile(join(TMP, "project.json"), JSON.stringify({ name: "plugintest", title: "插件回归" }));
-  await writeFile(join(TMP, "表.csv"), "name,role\n甲,设计\n乙,开发\n");
+  await writeFile(join(TMP, "表.udemo"), "name,role\n甲,设计\n乙,开发\n");
   const p = await buildProject(TMP);
 
   let normal: Record<string, unknown> = {};
-  try { normal = await sb.invoke("com.umbra.demo.rows", { path: "表.csv" }, p) as Record<string, unknown>; }
+  try { normal = await sb.invoke("com.umbra.demo.rows", { path: "表.udemo" }, p) as Record<string, unknown>; }
   catch (e) { normal = { ok: false, why: (e as Error).message }; }
   ok(normal.ok === true && normal.rows === 3,
     "**对照组**：插件经 host.call 真读到了文件（这条不通，下面的「被拦」就不算数）",
@@ -114,7 +114,7 @@ ok(!names.includes("write_draft") && !names.includes("chat_send"),
   "白名单里没有设计稿写入口和会话 —— 没列的一律调不到，包括将来新加的能力");
 
 ok(unregisterKindsFrom("com.umbra.demo") === 1, "卸载把类型摘干净");
-ok(kindOf("data/表.csv") === BUILTIN.other, "卸载后退回 other（文件卡），不是打不开");
+ok(kindOf("data/表.udemo") === BUILTIN.other, "卸载后退回 other（文件卡），不是打不开");
 await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
 
 /* ── ⑤ A 面的 CSP：**真起一次 http 打穿看看** ──
@@ -187,7 +187,7 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   const r1 = await installPackage(pkg);
   ok(r1.id === "com.umbra.demo" && r1.previous === null, "首次安装", `${r1.id} ${r1.version}`);
   ok(r1.unsigned === false, "签过的包不标未签名");
-  ok(r1.kinds.includes("csv"), "**装完类型立刻注册上了，不用重启**（M11-10）", r1.kinds.join("/"));
+  ok(r1.kinds.includes("udemo"), "**装完类型立刻注册上了，不用重启**（M11-10）", r1.kinds.join("/"));
 
   /* ⑥ 装第二版 → 切回第一版 */
   const v2 = JSON.parse(JSON.stringify(pkg)) as typeof pkg;

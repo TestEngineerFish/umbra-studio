@@ -22,6 +22,17 @@
       "ext": [],
       "textual": true,
       "priority": 10
+    },
+    {
+      "id": "csv",
+      "label": "CSV",
+      "icon": "▦",
+      "ext": [
+        ".csv",
+        ".tsv"
+      ],
+      "textual": true,
+      "priority": 10
     }
   ],
   "permissions": {

@@ -16,6 +16,7 @@ const CM = "/__shared/codemirror.js";
 /* 位置感知 JSON 解析（M10-4）。**和插件一起发**，不走 `/__shared/` ——
    那里只放「多个插件都要」的大依赖，这一份是这个插件自己的逻辑，才几 KB。 */
 import { parseWithPos, prettyPath, nodeAt } from "./jsonpos.mjs";
+import { parseCsv, sniffEncoding, decodeAs, rowAt, colAt } from "./csvpos.mjs";
 
 const el = (id) => document.getElementById(id);
 
@@ -173,12 +174,17 @@ let roReason = null;
  *  ⚠️ 这不是「保护」，是**省去一次误会**：这些文件改了也没用（下次生成就覆盖），
  *  而用户要花几秒才意识到这一点。所以只读下**照样能选中、复制、给 AI** ——
  *  只读不等于「这个文件与你无关」。 */
-function readOnlyReason(path, size, version, previewingDraft) {
+function readOnlyReason(path, size, version, previewingDraft, encUnsure) {
   /* ⚠️ **看草稿差异时也一律只读**，理由和看历史版一样：
      编辑区里放的不是「当前这份文件」，让人改它得不出正确结果 ——
      改完算谁的？存回哪？按 ⌘S 会把草稿当成新内容盖掉盘上那份，
      而他以为自己在改的是「当前」。 */
   if (previewingDraft) return "在看草稿";
+  /* ⚠️ **编码没确定之前只读**（S20 演示态 7）。
+     理由是它自己写的：「按错的编码落盘会把原文写坏」——
+     我们读进来的是按 UTF-8 解过的文本，里面已经有替换字符了，
+     照这个落盘等于把用户的原文**永久改成一串问号**。 */
+  if (encUnsure) return "编码还没确定";
   /* ⚠️ **看历史版本时一律只读，而且这一条要排在最前面。**
      让人改一份历史快照没有任何意义 —— 改了往哪写？写回去就把当前版覆盖了，
      而他以为自己在改「当前」。这不是保护，是**消除一个不可能有正确结果的操作**。
@@ -203,6 +209,126 @@ function changedLines(before, now) {
   for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) out.add(i + 1);
   return out;
 }
+/* ════ CSV 的表档（M10-5，S20）════ */
+
+/** 解析结果（`csvpos.mjs` 给的）。`null` = 不是 csv */
+let cparsed = null;
+/** 只看有问题的行（S20 演示态 6）。⚠️ **行号不重排** —— 改的时候要对得上源码 */
+let cfilter = false;
+/** 选中的行区间 `[起, 止]`（都是 `rows` 的下标），`null` = 没选 */
+let csel = null;
+/** 选中的列下标，`-1` = 没选 */
+let ccol = -1;
+/** 编码：`null` = 按 UTF-8 且有把握；否则是嗅探结果 */
+let cenc = null;
+/** 用户点「按 GBK 重读」之后换的编码 */
+let creadAs = null;
+
+const isCsv = () => /\.(csv|tsv)$/i.test(curPath || "");
+
+/** 画表。**每次全画** —— 和 JSON 树同一条：摊平之后行数就是可见行数。
+ *
+ *  ⚠️ **行号用的是源码行号**（`row.line`），不是数组下标。
+ *  过滤之后更要这样 —— S20 的原话：「行号不重排，改的时候对得上源码」。
+ *  用下标的话，只看坏行时第 3 行会显示成「1」，而用户照着去源码里找会找错。 */
+function renderTable() {
+  const host = el("table");
+  host.textContent = "";
+  if (!cparsed) return;
+
+  /* 编码没确定：顶上一条，给「按 GBK 重读」。**只换读法不改文件** */
+  if (cenc && !cenc.confident) {
+    const bar = document.createElement("div");
+    bar.className = "encbar";
+    bar.id = "encbar";
+    const t = document.createElement("span");
+    t.textContent = creadAs ? `正在按 ${creadAs} 读 · 原文一个字节都没动` : cenc.why;
+    bar.appendChild(t);
+    const sp = document.createElement("span"); sp.style.flex = "1"; bar.appendChild(sp);
+    for (const alt of (cenc.alternatives ?? []).slice(0, 2)) {
+      if (alt === creadAs) continue;
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn sm"; b.textContent = `按 ${alt.toUpperCase()} 重读`;
+      b.addEventListener("click", () => { creadAs = alt; void load(curPath, document.documentElement.dataset.theme, { keepDraft: true }); });
+      bar.appendChild(b);
+    }
+    if (creadAs) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn sm ghost"; b.textContent = "回到 UTF-8";
+      b.addEventListener("click", () => { creadAs = null; void load(curPath, document.documentElement.dataset.theme, { keepDraft: true }); });
+      bar.appendChild(b);
+    }
+    host.appendChild(bar);
+  }
+
+  const rows = cparsed.rows;
+  if (!rows.length) return;
+  const width = Math.max(...rows.map((r) => r.cells.length));
+  const grid = document.createElement("div");
+  grid.className = "cgrid";
+  grid.setAttribute("role", "table");
+  /* 行号列固定 52px，数据列按内容但有上下限 —— 一列几千字符不该把表撑到屏幕外 */
+  grid.style.gridTemplateColumns = `52px repeat(${width}, minmax(80px, max-content))`;
+
+  const head = rows[0];
+  const headRow = document.createElement("div");
+  headRow.className = "chead";
+  headRow.style.display = "contents";
+  const hn = document.createElement("div");
+  hn.className = "cnum"; hn.textContent = String(head.line);
+  headRow.appendChild(hn);
+  for (let c = 0; c < width; c++) {
+    const d = document.createElement("div");
+    d.className = "ccell" + (ccol === c ? " colon" : "");
+    d.setAttribute("role", "columnheader");
+    d.dataset.col = String(c);
+    d.textContent = head.cells[c] ?? "";
+    d.title = "点一下选中这一列";
+    d.addEventListener("click", () => { ccol = ccol === c ? -1 : c; csel = null; renderTable(); paint(); });
+    headRow.appendChild(d);
+  }
+  grid.appendChild(headRow);
+
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (cfilter && !r.bad) continue;
+    const inSel = csel && i >= csel[0] && i <= csel[1];
+    const row = document.createElement("div");
+    row.className = "crow" + (r.bad ? " bad" : "") + (inSel ? " on" : "");
+    row.style.display = "contents";
+    row.dataset.row = String(i);
+    row.dataset.line = String(r.line);
+
+    const num = document.createElement("div");
+    num.className = "cnum";
+    /* 跨行的记录写范围（引号里有换行时）—— 不写的话用户去源码里找会找不到 */
+    num.textContent = r.endLine > r.line ? `${r.line}–${r.endLine}` : String(r.line);
+    num.title = r.bad ? r.bad : "点一下选中这一行，⇧ 点扩成一段";
+    num.addEventListener("click", (e) => {
+      if (e.shiftKey && csel) csel = [Math.min(csel[0], i), Math.max(csel[1], i)];
+      else csel = csel && csel[0] === i && csel[1] === i ? null : [i, i];
+      ccol = -1;
+      renderTable(); paint();
+    });
+    row.appendChild(num);
+    for (let c = 0; c < width; c++) {
+      const d = document.createElement("div");
+      d.className = "ccell" + (ccol === c ? " colon" : "");
+      d.textContent = r.cells[c] ?? "";
+      row.appendChild(d);
+    }
+    grid.appendChild(row);
+    /* 坏行：行尾一句原因，单独占一行铺满（S20 演示态 5） */
+    if (r.bad) {
+      const why = document.createElement("div");
+      why.className = "cwhy";
+      why.textContent = r.bad;
+      grid.appendChild(why);
+    }
+  }
+  host.appendChild(grid);
+}
+
 /* ════ JSON 的树档（M10-4，S19）════ */
 
 /** 当前档：`"src"` 源码 · `"tree"` 树。**只有 `.json` 有树档。** */
@@ -413,10 +539,13 @@ function sendNode(n) {
 /** 切档。**只有 `.json` 有树档**；解析不了的时候树钮是灰的（见 `paint`）。 */
 function setMode(m) {
   if (m === "tree" && (!isJson() || !jparsed || !jparsed.ok)) return;
+  if (m === "table" && (!isCsv() || !cparsed)) return;
   mode = m;
   el("host").hidden = m !== "src";
   el("tree").hidden = m !== "tree";
+  el("table").hidden = m !== "table";
   if (m === "tree") renderTree();
+  if (m === "table") renderTable();
   paint();
 }
 
@@ -591,6 +720,16 @@ function paint() {
      ⚠️ 解析不了时树钮 `disabled` 并说出原因 —— **不是藏起来**：
      藏起来的话用户不知道这种文件本来有树，只会以为我们没做。 */
   const jbad = isJson() && jparsed && !jparsed.ok;
+  /* CSV 的切档与坏行按钮（S20）。
+     ⚠️ 两种格式共用同一个 `mode` 变量，值不同（`tree` / `table`）——
+     **一个文件不可能既是 json 又是 csv**，所以不会撞。 */
+  const csegs = isCsv() && cparsed ? [{
+    label: "怎么看",
+    items: [
+      { label: "源码", active: mode === "src", title: "改、落盘、给 AI 都在这一档" },
+      { label: "表", active: mode === "table", title: "按表看；表里只看和挑，不改值" },
+    ],
+  }] : [];
   const segs = isJson() ? [{
     label: "怎么看",
     items: [
@@ -611,11 +750,17 @@ function paint() {
   }
   umbra.setChrome(
     {
-      toolbar: segs,
+      toolbar: isCsv() ? csegs : segs,
       buttons: [
         /* 解析不了那一颗**要能点**（稿里点它跳到出错的地方）——
            所以放 `buttons` 而不是写进 `status`：status 是读数，点不动。 */
         ...(jbad ? [{ label: `解析不了 L${jparsed.line}:${jparsed.col}`, title: `${jparsed.say} · 点一下跳过去` }] : []),
+        /* CSV 的「N 行有问题」：点一下只留坏行，再点回到全部（S20 演示态 6）。
+           ⚠️ **行号不重排** —— 过滤只是少画几行，源码行号照旧。 */
+        ...(isCsv() && cparsed && cparsed.badCount
+          ? [{ label: cfilter ? `只看有问题的 ${cparsed.badCount} 行 · 回到全部` : `${cparsed.badCount} 行有问题`,
+               title: "只留有问题的行；行号不重排，改的时候对得上源码" }]
+          : []),
         { label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" },
       ],
       /* ⚠️ **读数是行数 + 大小，不是「未改过」。**
@@ -628,18 +773,28 @@ function paint() {
         : `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}`)
         + (ro && !curVersion ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : "")
         + (jbad ? ` · 解析不了 L${jparsed.line}:${jparsed.col}` : "")
-        + (crumb ? ` · ${crumb}` : ""),
+        + (crumb ? ` · ${crumb}` : "")
+        + (isCsv() && cparsed && cparsed.rows.length
+            ? ` · ${cparsed.rows.length} 行 · ${Math.max(...cparsed.rows.map((r) => r.cells.length))} 列`
+              + ` · 分隔符 ${cparsed.delimiter === "\t" ? "制表符" : cparsed.delimiter}`
+              + (cenc && !cenc.confident ? " · 编码没确定" : "")
+            : ""),
     },
     (kind, a, b) => {
       /* ⚠️ **下标会随「解析不了」那一颗的有无而移位** —— 写死 0 的话
          JSON 出错时点「选中行给 AI」会变成跳到出错行。按当下的按钮表算。 */
-      const names = [...(jbad ? ["err"] : []), "ask"];
+      const names = [
+        ...(jbad ? ["err"] : []),
+        ...(isCsv() && cparsed && cparsed.badCount ? ["badfilter"] : []),
+        "ask",
+      ];
       if (kind === "button") {
         if (names[a] === "err") jumpToError();
+        if (names[a] === "badfilter") { cfilter = !cfilter; if (mode !== "table") setMode("table"); else { renderTable(); paint(); } }
         if (names[a] === "ask") askAboutSelection();
       }
       /* `seg` 回调给的是 (段下标, 项下标) —— 我们只有一段，所以只看第二个 */
-      if (kind === "seg" && a === 0) setMode(b === 0 ? "src" : "tree");
+      if (kind === "seg" && a === 0) setMode(b === 0 ? "src" : isCsv() ? "table" : "tree");
     },
   );
 }
@@ -733,14 +888,28 @@ async function load(path, theme, opt = {}) {
   disk = { content: r.data?.content ?? "", sha: r.data?.sha256 ?? "", lines: r.data?.lines ?? null, size: r.data?.size ?? 0 };
   curVersion = opt.version ?? null;
   draftPreview = !!opt.draftPreview;
-  roReason = readOnlyReason(path, disk.size, curVersion, draftPreview);
+  roReason = readOnlyReason(path, disk.size, curVersion, draftPreview, !!(cenc && !cenc.confident));
   /* JSON：解析一次，树和光标路径都靠它。
      ⚠️ **换文件要把树的状态清掉** —— 折叠集和选中行是按路径存的，
      换了文件那些路径指的是别的东西了。 */
   const freshOpen = path !== curPath;
-  if (freshOpen) { jcollapsed = new Set(); jpick = null; jshown = new Map(); mode = "src"; }
+  if (freshOpen) {
+    jcollapsed = new Set(); jpick = null; jshown = new Map(); mode = "src";
+    cfilter = false; csel = null; ccol = -1; creadAs = null;
+  }
   opt = { ...opt, freshOpen };
   jparsed = /\.jsonc?$/i.test(path) ? parseWithPos(shown ?? disk.content) : null;
+  /* CSV：先判编码，再解析。
+     ⚠️ **编码没确定之前只读**（S20 的原话：「按错的编码落盘会把原文写坏」）——
+     我们手上只有已经按 UTF-8 解过的文本，所以嗅探拿它的替换字符密度来判。
+     真要按 GBK 重读得拿原始字节，那要走宿主一趟（`read_file` 现在只给 UTF-8 文本），
+     ⚠️ **这一步还没接** —— 现在只做到「认出不像 UTF-8 并且转成只读」，
+     「按 GBK 重读」那颗钮点了会说清它还没通。**不画一个按了没反应的钮。** */
+  if (/\.(csv|tsv)$/i.test(path)) {
+    const text = shown ?? disk.content;
+    cenc = sniffEncoding(text);
+    cparsed = parseCsv(text);
+  } else { cenc = null; cparsed = null; }
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 
@@ -852,13 +1021,18 @@ async function load(path, theme, opt = {}) {
   /* ⚠️ 解析不了就回源码档并把树钮灰掉 —— 不回的话用户停在一个空白的树上，
      而「树是空的」和「这个文件没内容」长得一样。 */
   if (mode === "tree" && (!jparsed || !jparsed.ok)) mode = "src";
+  /* CSV **默认给表**（S20：「它是拿来看的数据，不是拿来改的配置」）。
+     只在第一次打开时定 —— 之后切到源码就留在源码，同 JSON 大文件那一条。 */
+  if (opt.freshOpen && isCsv() && cparsed && cparsed.rows.length) mode = "table";
   /* 大文件**先给树**（S19 演示态 6）。理由是几 MB 的 JSON 铺成源码没法看 ——
      几万行里找一个键不如按结构点进去。**只在第一次打开时定**，
      之后用户切到源码就留在源码（切档是他的选择，不该每次重载又被拽回来）。 */
   if (opt.freshOpen && isJson() && jparsed && jparsed.ok && disk.size > 1024 * 1024) mode = "tree";
   el("host").hidden = mode !== "src";
   el("tree").hidden = mode !== "tree";
+  el("table").hidden = mode !== "table";
   if (mode === "tree") renderTree();
+  if (mode === "table") renderTable();
 
   paint();
   markDiff();   // 看旧版时把差异标出来；看当前版时它自己清空

@@ -117,3 +117,31 @@ body.hasdraft.dirty #tree { top: 66px; }
 .jrow.jmore { cursor: default; }
 .jrow.jmore:hover { background: transparent; }
 .jrow.jmore .jjump { margin-left: 10px; border: 1px solid var(--line); }
+
+/* ── CSV 表档（M10-5，S20）── */
+#table { position: absolute; inset: 0; overflow: auto; font: 12px/24px ui-monospace, SFMono-Regular, Menlo, monospace; }
+body.hasdraft #table, body.dirty #table, body.ro #table { top: 33px; }
+body.hasdraft.dirty #table, body.ro.dirty #table { top: 66px; }
+.cgrid { display: grid; width: max-content; min-width: 100%; }
+/* 行号列：吸左，因为横向滚动时它得一直在 */
+.cnum { position: sticky; left: 0; z-index: 2; padding: 0 8px; text-align: right;
+  color: var(--muted); background: var(--gutter-bg); user-select: none; cursor: pointer;
+  font-variant-numeric: tabular-nums; }
+.chead .cnum { z-index: 3; }
+/* 表头：吸顶 —— grid 子项上比 <th> 上好使（这也是换 grid 顺带得到的） */
+.chead > * { position: sticky; top: 0; z-index: 1; background: var(--active);
+  border-bottom: 1px solid var(--line); font-weight: 600; cursor: pointer; }
+.chead > .cnum { z-index: 3; }
+.ccell { padding: 0 10px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.crow:hover .ccell { background: var(--active); }
+/* 选中的行 / 列 */
+.crow.on .ccell, .crow.on .cnum { background: rgba(58,109,240,.10); }
+.ccell.colon { background: rgba(58,109,240,.07); }
+/* 坏行：行号边一道 warn 竖线 + 行尾一句原因（S20 演示态 5） */
+.crow.bad .cnum { box-shadow: inset -2px 0 0 #c8821e; color: #c8821e; }
+.cwhy { grid-column: 1 / -1; padding: 0 10px 0 56px; color: #c8821e;
+  font: 11px system-ui, sans-serif; background: rgba(210,140,40,.07); }
+/* 编码没确定时那一条 */
+.encbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid #c8821e; background: rgba(210,140,40,.10);
+  font: 12px system-ui, sans-serif; color: #c8821e; }

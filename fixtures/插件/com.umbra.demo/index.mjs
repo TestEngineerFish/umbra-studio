@@ -7,7 +7,7 @@ export default function register(host) {
   host.defineCap({
     name: "com.umbra.demo.rows",
     title: "数一数 CSV 有几行",
-    summary: "读一个 csv 文件，返回行数和第一行的列名。用来验证插件能通过宿主读文件。",
+    summary: "读一个分隔符文本文件，返回行数和第一行的列名。用来验证插件能通过宿主读文件。",
     input: { path: "string" },
     async run({ path }) {
       const out = await host.call("read_file", { path });

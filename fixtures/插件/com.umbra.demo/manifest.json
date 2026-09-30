@@ -9,12 +9,11 @@
   ],
   "kinds": [
     {
-      "id": "csv",
-      "label": "表格",
+      "id": "udemo",
+      "label": "演示",
       "icon": "▦",
       "ext": [
-        ".csv",
-        ".tsv"
+        ".udemo"
       ],
       "textual": true
     }

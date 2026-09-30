@@ -247,7 +247,8 @@ const SAMPLE_PATS = [
   /^_uitest/,            // 约定前缀，新样本都该走这个
   /^插件回归样本/,
   /^_暂存验收/, /^_无地址验收/, /^_三档验收/, /^_穿透验证/, /^_加地址验证-/, /^点选验证样本/,
-  /^版本历史回归/, /^草稿回归/, /^json回归/,      // M10-2b / M10-2c / M10-4
+  /^版本历史回归/, /^草稿回归/, /^json回归/, /^csv回归/,      // M10-2b / M10-2c / M10-4 / M10-5
+  /^插件chrome样本/,   // 演示插件的（名字里带扩展名，前缀匹配就够）
   /* ⚠️ 下面这几个是**补登记的**：2026-09-30 在用户项目里翻出 24 个残留快照目录，
      其中四个的名字压根不在这张清单里 —— 文件被清掉了（那部分是对的），
      快照目录留了好几轮。**清单漏一个名字，收尾就静默漏一个样本。** */
@@ -1324,7 +1325,12 @@ console.log("\n插件 UI 的边界（M11-4）");
      ⚠️ 样本由回归**自己建自己收**（走产品自己的写入口，收进回收站）——
      不往用户项目里留东西（纪律⑥）。 */
   if (r.ui.s === 200) {
-    const SAMPLE = "插件回归样本.csv";
+    /* ⚠️ 演示插件的样本从 `.csv` 换成了 `.udemo`（2026-09-30）。
+       原因：M10-5 让代码插件认领了 `.csv`（那是真功能），而**一种类型只能注册一次** ——
+       两边撞上之后先注册的赢，后注册的被 `loader` catch 成「这个插件没能接上」，
+       症状是**演示插件那一整批判据全红，而红的原因在别处**。
+       夹具本来就不该占用一个真实格式。 */
+    const SAMPLE = "插件回归样本.udemo";
     const made = await pg.evaluate(async ({ name }) => {
       const b = window.__UD_APP;
       const u = (route) => `${b.url.replace(/\/$/, "")}/__ud/${route}?token=${encodeURIComponent(b.token)}`;
@@ -1778,6 +1784,87 @@ console.log("\n插件 UI 的边界（M11-4）");
               ok(await pg.locator('[role="alertdialog"]').count() === 0, "切回来不会再拦（改动已经丢掉了）");
             }
 
+
+            /* ═══ CSV：源码 / 表 两档（M10-5，S20）═══
+               ⚠️ 样本是**专门挑出来的**：引号里有换行（L3–L4）+ 少一列 + 多一列。
+               「引号里的换行」那一条按 `\n` 粗暴切会多出一条假坏行 ——
+               而那正是「报一个根本不存在的问题」。 */
+            {
+              const C = "csv回归.csv";
+              const mkc = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ path: name,
+                    content: 'order_id,city,note\n1,北京,ok\n2,上海,"第一行\n第二行"\n3,广州\n4,深圳,x,多余\n',
+                    expectSha256: "0" }) });
+                return (await w.json()).ok;
+              }, { name: C });
+              if (mkc) {
+                await pg.waitForTimeout(1200);
+                const cRow = pg.locator('[role="treeitem"]').filter({ hasText: C }).first();
+                if (await cRow.count()) {
+                  await cRow.click(); await pg.waitForTimeout(3000);
+                  await clearGuard();
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cgrid").count().catch(() => 0) === 0) { await cRow.click(); await pg.waitForTimeout(2800); }
+                  const cf = pg.frameLocator('iframe[data-role="body"]');
+
+                  ok(await cf.locator("#table").isHidden() === false,
+                     "**`.csv` 默认给表**（S20：它是拿来看的数据，不是拿来改的配置）");
+                  ok(await cf.locator(".cgrid").count() === 1, "用的是 grid 不是 table（和稿一致）");
+
+                  /* ⚠️ 这一条是这一段的核心 */
+                  const nums = [];
+                  for (let q = 0; q < await cf.locator(".crow .cnum").count(); q++) {
+                    nums.push((await cf.locator(".crow .cnum").nth(q).innerText()).trim());
+                  }
+                  ok(JSON.stringify(nums) === JSON.stringify(["2", "3–4", "5", "6"]),
+                     "**行号是源码行号，跨行的那条给范围**（按 \\n 粗暴切会多出一条假坏行）", nums.join(" / "));
+
+                  ok(await cf.locator(".crow.bad").count() === 2, "两条坏行都标出来了", `${await cf.locator(".crow.bad").count()} 行`);
+                  const whys = [];
+                  for (let q = 0; q < await cf.locator(".cwhy").count(); q++) whys.push((await cf.locator(".cwhy").nth(q).innerText()).trim());
+                  ok(whys.some((w) => /少 1 列/.test(w)) && whys.some((w) => /多 1 列/.test(w)),
+                     "**行尾那句话说出差多少**（CSV 没规定每行一样长，所以不说「这一行错了」）", whys.join(" | "));
+
+                  await openEdit();
+                  /* ⚠️ **选择器落在结构上，不落在文案上。**
+                     手验时我用 `button:has-text("行有问题")` 在点击**之后**再读它，
+                     而那时文案已经变成「只看有问题的…」——匹配不到，读成空，
+                     差点当成「按钮坏了」。**文案正是会变的那个东西。** */
+                  const bar = pg.locator('[data-ud="file-toolbar"]');
+                  const btnAt = (i) => bar.locator("button").nth(i);
+                  const labels = async () => {
+                    const out = [];
+                    for (let q = 0; q < await bar.locator("button").count(); q++) out.push((await btnAt(q).innerText()).trim());
+                    return out;
+                  };
+                  const before = await labels();
+                  ok(before.includes("源码") && before.includes("表"), "编辑栏上有「源码 / 表」切档", before.join(" · "));
+                  const badIdx = before.findIndex((t) => /行有问题/.test(t));
+                  ok(badIdx >= 0, "有「N 行有问题」那一颗", before[badIdx]);
+
+                  await btnAt(badIdx).click(); await pg.waitForTimeout(900);
+                  const after = await labels();
+                  ok(/只看有问题的/.test(after[badIdx] ?? ""), "点了之后它自己变成「回到全部」", after[badIdx]);
+                  const n2 = [];
+                  for (let q = 0; q < await cf.locator(".crow .cnum").count(); q++) n2.push((await cf.locator(".crow .cnum").nth(q).innerText()).trim());
+                  ok(JSON.stringify(n2) === JSON.stringify(["5", "6"]),
+                     "**只看坏行时行号不重排**（改的时候要对得上源码）", n2.join(" / "));
+                  await btnAt(badIdx).click(); await pg.waitForTimeout(700);
+                  ok(await cf.locator(".crow").count() === 4, "再点回到全部", `${await cf.locator(".crow").count()} 行`);
+                } else ok(false, "csv 样本建好了但树里没刷出来");
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { name: C });
+              } else ok(false, "建不出 csv 样本");
+            }
 
             /* ═══ JSON：源码 / 树 两档（M10-4，S19）═══
                ⚠️ 设计侧的主张是「打开 `.json` **先给源码，就是 S18**」——

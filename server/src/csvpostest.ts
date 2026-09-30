@@ -99,6 +99,22 @@ console.log("\nCSV 解析与位置（M10-5）");
   ok("**按 GBK 真的读得出中文**（Node 的 TextDecoder 原生支持）",
      decodeAs(gbk, "gbk") === "订单,金额\n", JSON.stringify(decodeAs(gbk, "gbk")));
   ok("不认识的编码说不行，不静默回退成 UTF-8", decodeAs(gbk, "没这个编码") === null);
+
+  /* ⚠️ **插件那边走的是字符串这条路，不是 Buffer。**
+     浏览器里没有 `Buffer` —— 接线时当场撞上：这一份判据 30/30 全绿，
+     而插件一跑就 `Buffer is not defined`。
+     **「测试环境能跑」和「运行环境能跑」是两件事**，纯逻辑判据验不出这一条，
+     所以把运行环境真正走的那条路也钉一次。 */
+  const asText = gbk.toString("utf8");          // 宿主 read_file 给插件的就是这个
+  const e3 = sniffEncoding(asText) as any;
+  ok("**接字符串也判得出来**（插件那边只有解过的文本，没有原始字节）",
+     e3.confident === false && Array.isArray(e3.alternatives), e3.why);
+  ok("干净的文本接字符串也说有把握", (sniffEncoding("订单,金额\n") as any).confident === true);
+  /* Uint8Array 那条（浏览器里真要拿字节时走它） */
+  ok("接 Uint8Array 也行（浏览器里没有 Buffer）",
+     (sniffEncoding(new Uint8Array(gbk)) as any).confident === false);
+  ok("拿不到字节时说判不了，不假装有把握",
+     (sniffEncoding(null) as any).confident === false, (sniffEncoding(null) as any).why);
 }
 
 /* ── 光标落在哪一行哪一列（源码档的状态行要它）── */

@@ -66,6 +66,15 @@ export function sniffDelimiter(text) {
  *  **不要为了给一个答案而猜**。
  */
 export function sniffEncoding(buf) {
+  /* ⚠️ **浏览器里没有 `Buffer`。** 这个文件同时跑在两个环境里：
+     判据在 node 里（有 Buffer），插件在 iframe 里（只有 Uint8Array / 字符串）。
+     接线时当场撞上 —— 判据 30/30 全绿，而插件一跑就 `Buffer is not defined`。
+     **「测试环境能跑」和「运行环境能跑」是两件事**，纯逻辑判据验不出这一条。
+     所以接受三种输入：字符串（已按 UTF-8 解过）/ Uint8Array / Buffer。 */
+  if (typeof buf === "string") return sniffDecodedText(buf);
+  if (!buf || typeof buf.length !== "number") {
+    return { encoding: "utf-8", confident: false, why: "拿不到原始字节，判不了编码" };
+  }
   if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
     return { encoding: "utf-8", confident: true, why: "开头有 UTF-8 的 BOM" };
   }
@@ -75,19 +84,29 @@ export function sniffEncoding(buf) {
   if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
     return { encoding: "utf-16be", confident: true, why: "开头有 UTF-16BE 的 BOM" };
   }
-  /* 没有 BOM：按 UTF-8 解一遍，看有没有替换字符。
-     ⚠️ `Buffer.toString("utf8")` 遇到非法字节会换成 U+FFFD 而**不报错** ——
-     所以判据是「替换字符的密度」，不是「有没有抛异常」。 */
-  const asUtf8 = buf.toString("utf8");
-  const bad = (asUtf8.match(/�/g) ?? []).length;
+  /* 没有 BOM：按 UTF-8 解一遍，看有没有替换字符。 */
+  const asUtf8 = typeof buf.toString === "function" && buf.constructor && buf.constructor.name === "Buffer"
+    ? buf.toString("utf8")
+    : new TextDecoder("utf-8").decode(buf);
+  return sniffDecodedText(asUtf8);
+}
+
+/** 已经按 UTF-8 解过的文本里有多少替换字符 —— 这就是「它不是 UTF-8」的证据。
+ *
+ *  ⚠️ 判据是**替换字符的密度**，不是「有没有抛异常」：
+ *  按 UTF-8 解非法字节**不报错**，它把每个坏字节换成 U+FFFD 就过去了。
+ *  这也正是为什么拿到的文本里一旦有替换字符，**照它落盘会把原文永久写坏** ——
+ *  坏字节已经在解码那一步丢了，再写回去写的是问号。 */
+function sniffDecodedText(text) {
+  const bad = (text.match(/�/g) ?? []).length;
   if (bad === 0) return { encoding: "utf-8", confident: true, why: "按 UTF-8 解得干净" };
-  const ratio = bad / Math.max(1, asUtf8.length);
+  const ratio = bad / Math.max(1, text.length);
   return {
     encoding: "utf-8",
     confident: false,
     why: `按 UTF-8 解出 ${bad} 个乱码字符（占 ${(ratio * 100).toFixed(1)}%）—— 多半不是 UTF-8`,
-    /* 给出可以试的几种，界面上那颗「按 GBK 重读」用它。
-       ⚠️ **只列 Node 原生支持的**（实测过：gbk / gb18030 / big5 / shift_jis 都在）。 */
+    /* 界面上那颗「按 X 重读」用它。**只列实测支持的**：
+       gbk / gb18030 / big5 / shift_jis 在 Node 和浏览器的 TextDecoder 里都在。 */
     alternatives: ["gbk", "gb18030", "big5", "shift_jis"],
   };
 }
