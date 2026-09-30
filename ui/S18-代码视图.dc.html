@@ -31,7 +31,7 @@
   <sc-if value="{{ showDemoBar }}" hint-placeholder-val="{{ true }}">
   <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border);">
     <span style="font-size: 11px; color: var(--tool-muted); flex: none;">演示态</span>
-    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="7">
+    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="10">
       <button type="button" onClick="{{ st.pick }}" title="{{ st.name }}" aria-pressed="{{ st.active }}" style="display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 9px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; cursor: pointer; font-size: 11px; white-space: nowrap; transition: background .13s ease, border-color .13s ease, color .13s ease; background: {{ st.bg }}; border-color: {{ st.bd }}; color: {{ st.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
         <span style="font-family: var(--tool-mono); opacity: 0.6;">{{ st.n }}</span>
         <span style="font-weight: {{ st.fw }};">{{ st.short }}</span>
@@ -55,10 +55,79 @@
     <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--tool-panel); border-bottom: 1px solid var(--tool-border); position: relative; z-index: 4;">
       <span style="color: var(--tool-text-2); display: grid;"><dc-import name="IconGlyph" d="M5.6 4.4L2 8l3.6 3.6M10.4 4.4L14 8l-3.6 3.6" size="14" hint-size="14px,14px"></dc-import></span>
       <span style="font-weight: 600; white-space: nowrap;">{{ path }}</span>
-      <span title="快照：{{ snapCount }} 版" style="display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 1px solid var(--tool-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-family: var(--tool-mono); font-size: 11px; color: var(--tool-text-2);">
-        {{ snapVersion }}
-        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-      </span>
+      <!-- 快照药丸 → 版本历史下拉。宿主代画，行的写法沿用 S2 顶栏版本号那一面；
+           代码只多一列行 diff 摘要（+3 −1），完整差异不进下拉，点一行去编辑区里看 -->
+      <div style="position: relative; flex: none;">
+        <button type="button" onClick="{{ toggleVer }}" aria-expanded="{{ verOpen }}" title="{{ snapTip }}" style="display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 7px 0 8px; border: 1px solid; border-radius: var(--tool-radius-sm); font-family: var(--tool-mono); font-size: 11px; cursor: pointer; white-space: nowrap; transition: background .13s ease, border-color .13s ease; background: {{ verBtnBg }}; border-color: {{ verBtnBd }}; color: {{ verBtnFg }};" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+          {{ snapPillLabel }}
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </button>
+        <sc-if value="{{ verOpen }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ closeVer }}" style="position: fixed; inset: 0; z-index: 30;"></div>
+          <div style="position: absolute; top: 29px; left: 0; z-index: 31; width: 372px; max-height: 440px; display: flex; flex-direction: column; background: var(--tool-panel); border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-lg); box-shadow: var(--tool-shadow-2); overflow: hidden; font-family: var(--tool-sans);">
+            <div style="flex: none; display: flex; align-items: baseline; gap: 8px; padding: 9px 13px; border-bottom: 1px solid var(--tool-border);">
+              <span style="font-size: 13px; font-weight: 600;">快照</span>
+              <span style="font-size: 11px; color: var(--tool-muted);">{{ verCountLabel }}</span>
+              <span style="flex: 1;"></span>
+              <span style="font-size: 11px; color: var(--tool-muted);">点一行看那一版</span>
+            </div>
+            <!-- 被 .gitignore 忽略：只在这里说，不在落盘时说。快照不受影响，所以口气是「少了一道兜底」，不是报错 -->
+            <sc-if value="{{ ignored }}" hint-placeholder-val="{{ false }}">
+              <div style="flex: none; display: flex; gap: 8px; padding: 8px 13px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border); font-size: 12px; line-height: 1.55; color: var(--tool-text-2);">
+                <span style="flex: none; color: var(--tool-warn); display: grid; padding-top: 2px;"><dc-import name="IconGlyph" d="M8 2.5l6 10.5H2zM8 6.6v3M8 11.4v.1" size="12" hint-size="12px,12px"></dc-import></span>
+                <span>这个文件被 <span style="font-family: var(--tool-mono);">.gitignore</span> 忽略了，外部改动没有 git 兜底。这里的快照和回退不受影响。</span>
+              </div>
+            </sc-if>
+            <div style="flex: 1; min-height: 0; overflow: auto;">
+              <sc-for list="{{ versions }}" as="v" hint-placeholder-count="5">
+                <div onClick="{{ v.view }}" style="display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 9px; padding: 9px 13px; border-bottom: 1px solid var(--tool-border); cursor: {{ v.cursor }}; background: {{ v.bg }};" style-hover="background: {{ v.hoverBg }};">
+                  <div style="display: flex; flex-direction: column; align-items: center; padding-top: 4px;">
+                    <span style="width: 7px; height: 7px; border-radius: 999px; flex: none; background: {{ v.dot }}; box-shadow: 0 0 0 3px {{ v.ring }};"></span>
+                    <span style="flex: 1; width: 1px; min-height: 12px; margin-top: 4px; background: var(--tool-border);"></span>
+                  </div>
+                  <div style="min-width: 0;">
+                    <div style="display: flex; align-items: center; gap: 7px; min-width: 0;">
+                      <span style="font-family: var(--tool-mono); font-size: 12px; font-weight: {{ v.fw }};">{{ v.label }}</span>
+                      <span style="font-size: 11px; padding: 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; background: {{ v.srcBg }}; border-color: {{ v.srcBd }}; color: {{ v.srcFg }}; flex: none;">{{ v.src }}</span>
+                      <span style="font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ v.time }}</span>
+                      <span style="display: inline-flex; gap: 5px; font-family: var(--tool-mono); font-size: 11px; font-variant-numeric: tabular-nums; flex: none;"><span style="color: var(--tool-ok);">{{ v.plus }}</span><span style="color: var(--tool-err);">{{ v.minus }}</span></span>
+                      <span style="flex: 1;"></span>
+                      <sc-if value="{{ v.isCurrent }}" hint-placeholder-val="{{ true }}">
+                        <span style="font-size: 11px; font-weight: 560; color: var(--tool-accent); flex: none;">当前</span>
+                      </sc-if>
+                      <sc-if value="{{ v.canRevert }}" hint-placeholder-val="{{ false }}">
+                        <button type="button" onClick="{{ v.ask }}" style="flex: none; height: 22px; padding: 0 8px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border-strong); background: var(--tool-panel); color: var(--tool-text-2); font-size: 11px; cursor: pointer;" style-hover="background: var(--tool-hover); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">回到这一版</button>
+                      </sc-if>
+                    </div>
+                    <sc-if value="{{ v.hasNote }}" hint-placeholder-val="{{ true }}">
+                      <div style="margin-top: 3px; font-size: 12px; color: var(--tool-text-2); line-height: 1.5;">{{ v.note }}</div>
+                    </sc-if>
+                    <sc-if value="{{ v.confirming }}" hint-placeholder-val="{{ false }}">
+                      <div onClick="{{ v.stop }}" style="margin-top: 8px; padding: 9px 10px; border-radius: var(--tool-radius); background: var(--tool-warn-soft); border: 1px solid var(--tool-warn-border); cursor: default;">
+                        <div style="font-size: 12px; color: var(--tool-warn); line-height: 1.55;">{{ v.confirmText }}</div>
+                        <div style="display: flex; gap: 6px; margin-top: 8px;">
+                          <button type="button" onClick="{{ v.go }}" style="height: 26px; padding: 0 11px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 12px; font-weight: 560; cursor: pointer;" style-hover="background: var(--tool-accent-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 2px;">{{ v.confirmLabel }}</button>
+                          <button type="button" onClick="{{ v.cancel }}" style="height: 26px; padding: 0 11px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-warn-border); background: transparent; color: var(--tool-warn); font-size: 12px; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 2px;">取消</button>
+                        </div>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <!-- 看旧版：编辑区换成那一版的原文，只读；工具条上说清在看哪一版、和当前差多少、怎么回来 -->
+      <sc-if value="{{ viewing }}" hint-placeholder-val="{{ false }}">
+        <div role="status" style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+          <span style="font-size: 12px; color: var(--tool-text-2); white-space: nowrap;">只读 · 和当前 {{ snapVersion }} 比</span>
+          <span style="display: inline-flex; gap: 5px; font-family: var(--tool-mono); font-size: 11px; font-variant-numeric: tabular-nums;"><span style="color: var(--tool-ok);">{{ viewPlus }}</span><span style="color: var(--tool-err);">{{ viewMinus }}</span></span>
+          <button type="button" onClick="{{ askFromView }}" style="height: 22px; padding: 0 8px; border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 11px; color: var(--tool-text-2); cursor: pointer; white-space: nowrap;" style-hover="color: var(--tool-text); border-color: var(--tool-text-2);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">回到这一版</button>
+          <button type="button" onClick="{{ backToCurrent }}" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 11px; font-weight: 560; cursor: pointer; white-space: nowrap;" style-hover="background: var(--tool-accent-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">回到当前 <kbd style="font-family: var(--tool-mono); font-size: 10px; opacity: .8;">Esc</kbd></button>
+        </div>
+      </sc-if>
 
       <!-- 1. 未落盘：一颗点 + 一行读数 + 两颗小钮，贴在文件名后面 -->
       <sc-if value="{{ unsaved }}" hint-placeholder-val="{{ false }}">
@@ -104,6 +173,9 @@
               </sc-if>
               <sc-if value="{{ l.sentTag }}" hint-placeholder-val="{{ false }}">
                 <span style="position: absolute; right: 16px; top: 1px; font-family: var(--tool-mono); font-size: 10px; padding: 0 6px; height: 18px; line-height: 16px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-panel); color: var(--tool-accent);">{{ selRange }} · 已带进会话</span>
+              </sc-if>
+              <sc-if value="{{ l.diffTag }}" hint-placeholder-val="{{ false }}">
+                <span style="position: absolute; right: 16px; top: 1px; font-family: var(--tool-mono); font-size: 10px; padding: 0 6px; height: 18px; line-height: 16px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-err-border); background: var(--tool-panel); color: var(--tool-err);">{{ l.diffTag }}</span>
               </sc-if>
               <sc-if value="{{ l.roHint }}" hint-placeholder-val="{{ false }}">
                 <span style="position: absolute; left: 62px; top: 22px; z-index: 2; display: inline-flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px; border-radius: var(--tool-radius); border: 1px solid var(--tool-border-strong); background: var(--tool-panel); box-shadow: var(--tool-shadow-2); font-family: var(--tool-sans); font-size: 12px; color: var(--tool-text-2); white-space: nowrap;">
@@ -194,8 +266,23 @@ const DEMOS = [
   { n: 4, short: "选区", name: "有选区 → 给 AI", note: "选中几行，末行右侧出「给 AI ⌘L」；不用先按 ⌘E。不自动带进会话（代码里选中多半是要剪切、缩进）。⌘L：有选区时带上选区再聚焦会话，没选区时只聚焦（合并了工作台原有的「聚焦会话」）", sel: [7, 13], caret: 13 },
   { n: 5, short: "已带进", name: "已带进会话", note: "输入条出 range 药丸并聚焦；选区保留高亮 + 「已带进会话」角标，同 S13", sel: [7, 13], sent: true },
   { n: 6, short: "只读", name: "只读 · 锁文件", note: "按文件名自动只读（锁文件、生成物、> 1 MB）。可选中、可给 AI，不能改。*.lock 归进代码类型，会打开到这里", ro: true, caret: 12 },
-  { n: 7, short: "只读下打字", name: "只读下打字", note: "按了字键：标签抖一下，光标下出一行原因 + 解锁。解锁只对这一个页签生效", ro: true, nudge: true, caret: 12 }
+  { n: 7, short: "只读下打字", name: "只读下打字", note: "按了字键：标签抖一下，光标下出一行原因 + 解锁。解锁只对这一个页签生效", ro: true, nudge: true, caret: 12 },
+  { n: 8, short: "快照", name: "快照下拉", note: "宿主代画。行 = 版本号 · 来源 · 时间 · 行 diff 摘要 · 一句话；点一行是「看」，「回到这一版」是另一颗钮，行内二次确认，同 S2", ver: true },
+  { n: 9, short: "看旧版", name: "看 s5", note: "编辑区换成 s5 原文，只读。和当前不同的行标红并写当前是什么，当前多出来的行在原位插一条绿线。Esc 回到当前", view: "s5" },
+  { n: 10, short: "被忽略", name: "被 .gitignore 忽略", note: "只在下拉头上说一句，药丸悬停也有；落盘时不说。演示里假定 src/snapshots.ts 被忽略", ver: true, ignored: true }
 ];
+const VERS = [
+  { v: "s7", src: "人手改", time: "刚刚", plus: 1, minus: 0 },
+  { v: "s6", src: "AI", time: "14:02", plus: 3, minus: 1, note: "按时间倒序，只留最近 50 份" },
+  { v: "s5", src: "回退", time: "13:40", plus: 0, minus: 4, note: "回到 s3" },
+  { v: "s4", src: "人手改", time: "昨天 18:21", plus: 4, minus: 0 },
+  { v: "s3", src: "AI", time: "昨天 17:55", plus: 12, minus: 0, note: "新建 listSnapshots" }
+];
+const LOCK_VERS = [
+  { v: "s2", src: "人手改", time: "09-28", plus: 6, minus: 2 },
+  { v: "s1", src: "AI", time: "09-27", plus: 40, minus: 0 }
+];
+const VIEW_S5 = TS.slice(0, 3).concat(["const MAX_KEEP = 20;", ""], TS.slice(6));
 const KW = /^(import|from|type|const|export|async|function|return|await|if)$/;
 const TYPES = /^(string|Promise|Snapshot|JSON)$/;
 const tok = (v, fg, fs, fw) => ({ v: v, fg: fg || "var(--tool-text)", fs: fs || "normal", fw: fw || "400" });
@@ -218,15 +305,22 @@ const lexYaml = (line) => {
 };
 
 class Component extends DCLogic {
-  state = { demo: 1, unlocked: false, leaveKind: "close" };
-  go(n) { this.setState({ demo: n, unlocked: false }); }
+  state = { demo: 1, unlocked: false, leaveKind: "close", verOpen: null, armed: null, viewing: null };
+  go(n) { this.setState({ demo: n, unlocked: false, verOpen: null, armed: null, viewing: null }); }
+  componentDidMount() {
+    this.onKey = (e) => { if (e.key === "Escape") this.setState({ viewing: false, verOpen: false, armed: null }); };
+    document.addEventListener("keydown", this.onKey);
+  }
+  componentWillUnmount() { document.removeEventListener("keydown", this.onKey); }
 
   renderVals() {
     const s = this.state;
     const dm = DEMOS[s.demo - 1];
     const ro = !!dm.ro && !s.unlocked;
     const isLock = !!dm.ro;
-    const src = isLock ? LOCK : dm.edit ? TS_EDIT : TS;
+    const viewing = s.viewing === null ? (dm.view || null) : s.viewing || null;
+    const verOpen = s.verOpen === null ? !!dm.ver : s.verOpen;
+    const src = viewing ? VIEW_S5 : isLock ? LOCK : dm.edit ? TS_EDIT : TS;
     const sel = dm.sel || null;
     const inSel = (n) => sel && n >= sel[0] && n <= sel[1];
     const path = isLock ? "pnpm-lock.yaml" : "src/snapshots.ts";
@@ -259,6 +353,45 @@ class Component extends DCLogic {
       lang: isLock ? "YAML" : "TypeScript",
       snapVersion: isLock ? "s2" : "s7",
       snapCount: isLock ? "2" : "7",
+      snapPillLabel: viewing ? "看 " + viewing : isLock ? "s2" : "s7",
+      snapTip: "快照：" + (isLock ? "2" : "7") + " 版" + (dm.ignored ? " · 这个文件被 .gitignore 忽略，外部改动没有 git 兜底" : ""),
+      verOpen: verOpen,
+      verBtnBg: verOpen || viewing ? "var(--tool-accent-soft)" : "var(--tool-panel)",
+      verBtnBd: verOpen || viewing ? "var(--tool-accent-border)" : "var(--tool-border)",
+      verBtnFg: verOpen || viewing ? "var(--tool-accent)" : "var(--tool-text-2)",
+      toggleVer: () => this.setState({ verOpen: !verOpen, armed: null }),
+      closeVer: () => this.setState({ verOpen: false, armed: null }),
+      ignored: !!dm.ignored,
+      verCountLabel: (isLock ? LOCK_VERS : VERS).length + " 版在手边",
+      versions: (isLock ? LOCK_VERS : VERS).map((r, i) => {
+        const cur = i === 0, ai = r.src === "AI", seen = r.v === viewing;
+        return { label: r.v, src: r.src, time: r.time,
+          plus: "+" + r.plus, minus: "−" + r.minus,
+          note: r.note || "", hasNote: !!r.note,
+          fw: cur || seen ? "700" : "500",
+          bg: seen ? "var(--tool-accent-soft)" : "transparent",
+          hoverBg: cur ? "transparent" : seen ? "var(--tool-accent-soft)" : "var(--tool-hover)",
+          cursor: cur ? "default" : "pointer",
+          dot: cur || seen ? "var(--tool-accent)" : "var(--tool-border-strong)",
+          ring: cur || seen ? "var(--tool-accent-soft)" : "transparent",
+          srcBg: ai ? "var(--tool-accent-soft)" : "var(--tool-panel-2)",
+          srcBd: ai ? "var(--tool-accent-border)" : "var(--tool-border)",
+          srcFg: ai ? "var(--tool-accent)" : "var(--tool-text-2)",
+          isCurrent: cur,
+          canRevert: !cur && s.armed !== r.v,
+          confirming: s.armed === r.v,
+          confirmLabel: "回到 " + r.v,
+          confirmText: "现在的 " + (isLock ? "s2" : "s7") + " 会先存成一版，历史不删；回退本身也能再回退。",
+          view: () => { if (!cur) this.setState({ viewing: r.v === "s5" || isLock ? r.v : "s5", verOpen: false, armed: null }); },
+          ask: (e) => { e.stopPropagation(); this.setState({ armed: r.v }); },
+          stop: (e) => e.stopPropagation(),
+          cancel: (e) => { e.stopPropagation(); this.setState({ armed: null }); },
+          go: (e) => { e.stopPropagation(); this.go(1); } };
+      }),
+      viewing: !!viewing,
+      viewPlus: "+1", viewMinus: "−1",
+      askFromView: () => this.setState({ verOpen: true, armed: viewing }),
+      backToCurrent: () => this.setState({ viewing: false }),
       unsaved: !!dm.edit,
       unsavedDelta: TS.length + " → " + TS_EDIT.length + " 行",
       save: () => this.go(1),
@@ -280,13 +413,14 @@ class Component extends DCLogic {
       lines: src.map((t, i) => {
         const n = i + 1, edited = dm.edit && n === 9, cur = dm.caret === n && !sel, sl = inSel(n);
         return { n: String(n), toks: isLock ? lexYaml(t) : lexTs(t),
-          caret: dm.caret === n && !dm.leave,
+          caret: dm.caret === n && !dm.leave && !viewing,
+          diffTag: viewing && n === 4 ? "当前是 MAX_KEEP = 50" : viewing && n === 5 ? "当前这之后多 1 行：// 读最近的快照…" : "",
           chip: !!(sl && n === sel[1] && !dm.sent),
           sentTag: !!(sl && n === sel[0] && dm.sent),
           roHint: !!(dm.nudge && ro && n === dm.caret),
-          bg: sl ? "var(--tool-accent-soft)" : edited ? "var(--tool-warn-soft)" : cur ? "var(--tool-panel-2)" : "transparent",
+          bg: viewing && n === 4 ? "var(--tool-err-soft)" : sl ? "var(--tool-accent-soft)" : edited ? "var(--tool-warn-soft)" : cur ? "var(--tool-panel-2)" : "transparent",
           gutter: sl ? "inset -2px 0 0 var(--tool-accent)" : "none",
-          rowBar: edited && !sl ? "inset 2px 0 0 var(--tool-warn)" : "none",
+          rowBar: viewing && n === 4 ? "inset 2px 0 0 var(--tool-err)" : viewing && n === 5 ? "inset 0 -2px 0 var(--tool-ok)" : edited && !sl ? "inset 2px 0 0 var(--tool-warn)" : "none",
           numFg: sl ? "var(--tool-accent)" : cur ? "var(--tool-text)" : "var(--tool-muted)" };
       })
     };

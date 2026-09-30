@@ -224,11 +224,32 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
   }
   steps.push(exists ? `写前校验通过（${nowSha.slice(0, 8)}）` : "新建文件");
 
-  // ② 存上一版：先留住旧的，再写新的 —— 顺序反了就没得退
+  /* ② 存上一版：先留住旧的，再写新的 —— 顺序反了就没得退。
+   *
+   *  ⚠️ **但盘上这份和我们最近存的那一版一样时就不用再存一遍**（2026-09-30）。
+   *  原来无条件存，于是**每次写都产生一个完全重复的快照**：
+   *  上一次写的 ③ 已经把这份内容存过了，② 又存一遍。
+   *  后果不在磁盘上（gzip 过，很小），在**版本列表上** ——
+   *  设计侧第十三轮定了「每行写 `+N −M`」，而一半的行会是 `+0 −0`，
+   *  用户看到的是一串没有意义的条目。
+   *
+   *  这一步**不能删**：盘上内容和我们最近一版**不同**时，它救的正是
+   *  「别人在 VS Code 里改的那一版」。而且这条兜底**不受 `.gitignore` 影响**，
+   *  比 git 那条可靠（git 那条对被忽略的文件会静默失效，§126.1）。
+   *  所以答案是「先比一下」，不是「别存了」。 */
   let previous: string | null = null;
   if (before !== null) {
-    previous = await saveSnapshot(p, clean, before, opts.origin ?? "人手改", opts.note);
-    steps.push(`存快照 ${previous}`);
+    const latest = (await listSnapshots(p, clean)).at(-1) ?? null;
+    let same = false;
+    if (latest) {
+      try { same = (await readSnapshotContent(p, clean, latest)) === before.toString("utf8"); }
+      catch { same = false; }   // 读不出来就当不一样，宁可多存一版
+    }
+    if (same) { previous = latest; steps.push(`上一版已经是 ${latest}，没重复存`); }
+    else {
+      previous = await saveSnapshot(p, clean, before, opts.origin ?? "人手改", opts.note);
+      steps.push(latest ? `盘上这份不是我们最近存的那版，先存下来 ${previous}` : `存快照 ${previous}`);
+    }
   }
 
   await mkdir(dirname(abs), { recursive: true });
@@ -243,7 +264,43 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
   return { path: clean, written: true, snapshot, previous, bytes: Buffer.byteLength(content, "utf8"), sha256: sha256(content), steps };
 }
 
-export interface FileSnapshotMeta { version: string; src: string; at: string; bytes: number; note?: string }
+export interface FileSnapshotMeta {
+  version: string; src: string; at: string; bytes: number; note?: string;
+  /** 和**上一版**比，增了几行 / 删了几行。第一版没有上一版，所以是「全新增」。
+   *  `null` = 没算（文件太大，见 `lineDelta`）。
+   *  ⚠️ **后端算，不让界面算**（设计侧第十三轮问过这一条）：
+   *  快照全在我们手里，算一次就够；界面现算的话，5 个版本要拉 6 份原文下来。 */
+  delta?: { plus: number; minus: number } | null;
+}
+
+/** 两段文本之间增删了几行。**只回个数，不回 diff** —— 下拉里那行 `+3 −1` 要的就是这个。
+ *
+ *  ⚠️ **有上限**：LCS 是 O(n×m)，两份三万行的文件能把主线程卡死几秒。
+ *  超了就回 `null`，让界面说「没算」而不是让人等 —— 给不出数比卡住好。
+ *  完整的差异不走这条路（设计侧的裁决是「去编辑区里看那一版」）。 */
+const DELTA_MAX_LINES = 4000;
+export function lineDelta(from: string, to: string): { plus: number; minus: number } | null {
+  const a = from.split("\n"), b = to.split("\n");
+  if (a.length > DELTA_MAX_LINES || b.length > DELTA_MAX_LINES) return null;
+  /* 掐头去尾：真实的改动多半集中在中间，先把两头相同的行剥掉，LCS 的规模常降一两个数量级 */
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const x = a.slice(head, a.length - tail), y = b.slice(head, b.length - tail);
+  if (!x.length || !y.length) return { plus: y.length, minus: x.length };
+  /* 滚动一维的 LCS 长度（只要长度，不要回溯路径） */
+  let prev = new Array<number>(y.length + 1).fill(0);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = new Array<number>(y.length + 1).fill(0);
+    for (let j = 1; j <= y.length; j++) {
+      cur[j] = x[i - 1] === y[j - 1] ? prev[j - 1]! + 1 : Math.max(prev[j]!, cur[j - 1]!);
+    }
+    prev = cur;
+  }
+  const lcs = prev[y.length]!;
+  return { plus: y.length - lcs, minus: x.length - lcs };
+}
 
 /** 这个文件的快照号，升序。只认 `s<N>` —— `v<N>` 是稿的语义快照，两套不混。 */
 export async function listSnapshots(p: Project, rel: string): Promise<string[]> {
@@ -257,11 +314,24 @@ export async function listSnapshots(p: Project, rel: string): Promise<string[]> 
   return ns.sort((a, b) => a - b).map((n) => `s${n}`);
 }
 
-export async function listSnapshotMeta(p: Project, rel: string): Promise<FileSnapshotMeta[]> {
+export async function listSnapshotMeta(p: Project, rel: string, withDelta = true): Promise<FileSnapshotMeta[]> {
   const dir = snapDir(p, rel);
   const out: FileSnapshotMeta[] = [];
   for (const v of await listSnapshots(p, rel)) {
     try { out.push(JSON.parse(await readFile(join(dir, `${v}.json`), "utf8")) as FileSnapshotMeta); } catch { /* 坏了就跳过 */ }
+  }
+  if (!withDelta) return out;
+  /* 每一版和它的**上一版**比。原文都在手边（`s<N>.src.gz`），解压一趟就够。
+     ⚠️ 一版读不出来不能毁掉整个列表（§九十二 那条「一个坏数据毁掉整个列表」）——
+     读不出来就这一行没有 delta，别的照给。 */
+  let prevSrc: string | null = null;
+  for (const m of out) {
+    let cur: string | null = null;
+    try { cur = await readSnapshotContent(p, rel, m.version); } catch { cur = null; }
+    m.delta = cur === null ? null : prevSrc === null
+      ? { plus: cur.split("\n").length, minus: 0 }   // 第一版：全是新增
+      : lineDelta(prevSrc, cur);
+    prevSrc = cur ?? prevSrc;
   }
   return out;
 }

@@ -186,5 +186,40 @@ for (const n of wasHttpOnly) {
   ok(missing.length === 0, "**界面稿用到的路由一条都没少**（改路由前先想想稿在不在用）", missing.join(" · "));
 }
 
+/* ── 源码里不许有裸 NUL（2026-09-30）──
+   这条不测功能，测的是**别的判据还看不看得见源码**。
+   `server/src/diff.ts` 里原来有一个字面 NUL（`const SEP = "␀"`，当分隔符用，
+   语义没错），于是 `file` 把整份源码判成 `data`，而 ugrep / ripgrep 这类
+   带「跳过二进制」的工具**整个跳掉这个文件** —— grep 它永远返回
+   「什么都没有」而不是报错。
+
+   ⚠️ 这是**判据层面**的缺陷，不是运行时的：代码跑得好好的，
+   而所有拿 grep 当仪器的检查在这个文件上都静默失明。
+   写成 `"\u0000"` 跑起来一模一样，文件又是纯文本了。 */
+{
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const bad: string[] = [];
+  let scanned = 0;
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      if (e === "node_modules" || e === "dist" || e.startsWith(".")) continue;
+      const f = join(dir, e);
+      if (statSync(f).isDirectory()) { walk(f); continue; }
+      if (!/\.(ts|tsx|mts|cts|js|mjs|cjs|json|md|css|html)$/.test(e)) continue;
+      scanned++;
+      const b = readFileSync(f);
+      const i = b.indexOf(0);
+      if (i >= 0) bad.push(`${f}:${b.subarray(0, i).toString("utf8").split("\n").length}`);
+    }
+  };
+  for (const root of ["src", join("..", "app", "src"), join("..", "plugins")]) {
+    try { walk(root); } catch { /* 没这个目录就跳过 */ }
+  }
+  ok(scanned > 100, "源码扫到了（判据自己得先有东西可扫）", `${scanned} 个文件`);
+  ok(bad.length === 0,
+     "**源码里没有裸 NUL 字节**（有的话 grep 类工具会静默跳过整个文件）",
+     bad.length ? bad.join(" · ") : `${scanned} 个文件都是纯文本`);
+}
+
 console.log(fail === 0 ? `\n✓ 能力注册表 ${pass}/${pass + fail}` : `\n✗ 能力注册表 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

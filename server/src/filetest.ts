@@ -14,8 +14,8 @@ import { join } from "node:path";
 import { buildProject } from "./project.js";
 import { listVersions } from "./history.js";
 import {
-  countTypes, listFiles, listSnapshotMeta, listSnapshots, moveFile,
-  readAnyFile, referencesOf, revertFile, trashFile, writeAnyFile,
+  countTypes, lineDelta, listFiles, listSnapshotMeta, listSnapshots, moveFile,
+  readAnyFile, readSnapshotContent, referencesOf, revertFile, trashFile, writeAnyFile,
 } from "./files.js";
 import { ToolError } from "./envelope.js";
 
@@ -62,10 +62,15 @@ catch (e) { ok("过期 sha 被拒，且说清两边是什么", /被改过/.test(
 ok("frontmatter 逐字节不变（H5）", (await readFile(join(DIR, "需求.md"), "utf8")).startsWith("---\nowner: sam\nstatus: draft\n---\n"));
 
 const rv = await revertFile(p, "需求.md", "s1");
-ok("回到 s1：内容回来，历史不删（s1..s4）",
-  (await readFile(join(DIR, "需求.md"), "utf8")).includes("正文。\n") && rv.snapshot === "s4" && (await listSnapshots(p, "需求.md")).length === 4);
+/* ⚠️ 这两条原来钉的是 **4 版**（`s1..s4`）。数字从 4 变 3 不是回归 ——
+   第 4 版是个**和 s2 一模一样的重复快照**（回退时「存旧」存的就是 s2 的内容，
+   而 s2 刚刚才存过）。2026-09-30 消掉了那个重复。
+   这两条真正要守的是「**回退不删历史**」：s1 和 s2 都还在，这一点没变。 */
+ok("回到 s1：内容回来，历史不删（s1、s2 都还在）",
+  (await readFile(join(DIR, "需求.md"), "utf8")).includes("正文。\n") && rv.snapshot === "s3"
+  && (await listSnapshots(p, "需求.md")).join(" ") === "s1 s2 s3");
 const meta = await listSnapshotMeta(p, "需求.md");
-ok("快照元数据：version / src / at 齐", meta.length === 4 && meta[0]!.version === "s1" && !!meta[0]!.at && meta[3]!.note === "回到 s1");
+ok("快照元数据：version / src / at 齐", meta.length === 3 && meta[0]!.version === "s1" && !!meta[0]!.at && meta[2]!.note === "回到 s1");
 
 ok("referencesOf 找到引用的文件与行号", (await referencesOf(p, "图.png")).some((r) => r.file === "稿.dc.html" && r.line > 0));
 const t = await countTypes(p);
@@ -233,6 +238,71 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**用户那个大仓库一条提交都没多**（他的主项目历史没被插东西）",
      g(["rev-parse", "HEAD"]) === bigHeadBefore, { 前: bigHeadBefore.slice(0, 7), 后: g(["rev-parse", "HEAD"]).slice(0, 7) });
   await rm(BIG, { recursive: true, force: true });
+}
+
+/* ── 版本历史的两块底座（M10-2b 前置，设计侧第十三轮问出来的）──
+   它定的形制是「点一行 = 看那一版」+ 每行一个 `+N −M` 摘要。
+   ⚠️ 这两样原来**都拿不到**：`file_versions` 只给元数据，
+   而读某一版原文的函数存在却从没暴露成能力 ——
+   于是界面能显示「有 7 版」却打不开其中任何一版。 */
+{
+  const proj = await buildProject(DIR);
+  const F = "版本历史样本.ts";
+  await writeAnyFile(proj, F, "一\n二\n三\n", { expectSha256: "0" });
+  await writeAnyFile(proj, F, "一\n二改了\n三\n四\n五\n", { expectSha256: (await readAnyFile(proj, F)).sha256 });
+  await writeAnyFile(proj, F, "一\n三\n四\n五\n", { expectSha256: (await readAnyFile(proj, F)).sha256 });
+
+  /* 1. 读得到某一版的原文（不是盘上那份） */
+  const s1 = await readSnapshotContent(proj, F, "s1");
+  ok("**读得到某一版的原文**（「看那一版」的底座）", s1 === "一\n二\n三\n", JSON.stringify(s1));
+  const now = (await readAnyFile(proj, F)).content;
+  ok("它给的是那一版，不是盘上现在那份", s1 !== now, { s1版: s1.length, 盘上: now?.length ?? null });
+
+  /* 2. `+N −M` 由后端算好，逐版对 */
+  const metas = await listSnapshotMeta(proj, F);
+  /* ⚠️ **三次写就该是三版**。原来是**五**版 —— 每次写都存两遍
+     （存旧 + 存新，而「旧」就是上次的「新」），于是一半的行 delta 是 `+0 −0`。
+     设计侧刚定了每行写 `+N −M`，那样一半的行没有意义。 */
+  ok("**写三次就是三版**（不是每次写都留一个重复的）", metas.length === 3, metas.map((m) => m.version).join(" "));
+  ok("没有一条是 `+0 −0` 的空行", metas.every((m) => (m.delta?.plus ?? 1) + (m.delta?.minus ?? 1) > 0),
+     metas.map((m) => `${m.version}:${JSON.stringify(m.delta)}`).join(" "));
+  ok("**第一版是「全新增」**（它没有上一版可比）",
+     metas[0]?.delta?.plus === 4 && metas[0]?.delta?.minus === 0, JSON.stringify(metas[0]?.delta));
+  /* s1「一 二 三 ␊」→ 「一 二改了 三 四 五 ␊」：改一行 = +1 −1，再加两行 = +2 */
+  ok("**改一行 + 加两行 算成 +3 −1**（不是按字节、也不是整份重算）",
+     metas[1]?.delta?.plus === 3 && metas[1]?.delta?.minus === 1, JSON.stringify(metas[1]?.delta));
+  ok("**删一行算成 +0 −1**", metas[2]?.delta?.plus === 0 && metas[2]?.delta?.minus === 1, JSON.stringify(metas[2]?.delta));
+
+  /* ⚠️ 去重**不许把外部改动一起省掉** —— 那一步存在的理由就是它。
+     模拟「别人在 VS Code 里改了这份文件」：绕过写入口直接改盘上那份。 */
+  const absF = join(DIR, F);
+  await writeFile(absF, "别的编辑器改成这样\n", "utf8");
+  await writeAnyFile(proj, F, "工具接着写\n", { expectSha256: (await readAnyFile(proj, F)).sha256 });
+  const metas2 = await listSnapshotMeta(proj, F);
+  const rescuedSrc = await Promise.all(metas2.map((m) => readSnapshotContent(proj, F, m.version).catch(() => "")));
+  ok("**外部改的那一版被存下来了**（去重只省重复的，不省真不一样的）",
+     rescuedSrc.includes("别的编辑器改成这样\n"),
+     metas2.map((m) => m.version).join(" "));
+  ok("这条兜底和 git 无关，所以 `.gitignore` 忽略了也照样有",
+     metas2.length === 5, `${metas2.length} 版`);
+
+  /* 3. 掐头去尾那段优化不许改答案 —— 拿一份两头一大片相同、中间动一行的来对 */
+  const pad = Array.from({ length: 50 }, (_, i) => `第${i}行`);
+  const big1 = [...pad, "中间", ...pad].join("\n");
+  const big2 = [...pad, "中间改了", ...pad].join("\n");
+  ok("**掐头去尾没把答案改掉**（两头各 50 行相同，中间改一行）",
+     JSON.stringify(lineDelta(big1, big2)) === JSON.stringify({ plus: 1, minus: 1 }), JSON.stringify(lineDelta(big1, big2)));
+
+  /* 4. 太大就明说没算，而不是卡住 */
+  const huge = Array.from({ length: 4100 }, (_, i) => `x${i}`).join("\n");
+  ok("**超过上限回 `null`（明说没算），不是硬算到卡死**", lineDelta(huge, huge + "\ny") === null);
+
+  /* 5. 一版坏掉不许毁掉整个列表（§九十二 那条） */
+  await rm(join(DIR, ".umbrastudio", "snapshots", F, "s2.src.gz"), { force: true });
+  const after = await listSnapshotMeta(proj, F);
+  ok("**一版的原文丢了，别的版照样列出来**（不是整个列表变空）",
+     after.length === 5 && after[1]?.delta === null && after[2]?.delta !== undefined,
+     after.map((m) => `${m.version}:${m.delta === null ? "没算" : JSON.stringify(m.delta)}`).join(" "));
 }
 
 await rm(DIR, { recursive: true, force: true });

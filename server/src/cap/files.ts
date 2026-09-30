@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { envelope } from "../envelope.js";
-import { countTypes, listFiles, listSnapshotMeta, moveFile, readAnyFile, referencesOf, revertFile, trashFile, writeAnyFile } from "../files.js";
+import { countTypes, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { defineCap } from "./registry.js";
 import { originOf, type CapCtx } from "./types.js";
 
@@ -72,6 +72,23 @@ defineCap({
   input: { path: z.string() },
   http: { route: "file_versions", method: "GET" },
   run: async ({ path }, c) => envelope({ path, snapshots: await listSnapshotMeta(p(c), path) }),
+});
+
+defineCap({
+  name: "read_file_version", title: "读一个文件的某一个历史版本", scope: "project",
+  summary: [
+    "读某一版快照里存的**原文**，不动盘上那份。",
+    "这是「**看**那一版」和「**比**那一版」的底座 —— 在它之前只能列出版本号、读不到内容，",
+    "于是界面能显示「有 7 版」却打不开其中任何一版。",
+    "`list_file_versions` 给的 `delta`（`+N −M`）**已经由后端算好**，不必为了算它来调这一件。",
+  ].join("\n"),
+  input: { path: z.string(), version: z.string().describe("快照号，`list_file_versions` 给的那个，形如 s3") },
+  http: { route: "file_version", method: "GET" },
+  run: async ({ path, version }, c) => {
+    const content = await readSnapshotContent(p(c), path, version);
+    return envelope({ path, version, content, sha256: sha256(content), bytes: Buffer.byteLength(content, "utf8"),
+      lines: content.split("\n").length });
+  },
 });
 
 defineCap({
