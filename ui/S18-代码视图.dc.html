@@ -31,7 +31,7 @@
   <sc-if value="{{ showDemoBar }}" hint-placeholder-val="{{ true }}">
   <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border);">
     <span style="font-size: 11px; color: var(--tool-muted); flex: none;">演示态</span>
-    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="10">
+    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="12">
       <button type="button" onClick="{{ st.pick }}" title="{{ st.name }}" aria-pressed="{{ st.active }}" style="display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 9px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; cursor: pointer; font-size: 11px; white-space: nowrap; transition: background .13s ease, border-color .13s ease, color .13s ease; background: {{ st.bg }}; border-color: {{ st.bd }}; color: {{ st.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
         <span style="font-family: var(--tool-mono); opacity: 0.6;">{{ st.n }}</span>
         <span style="font-weight: {{ st.fw }};">{{ st.short }}</span>
@@ -90,7 +90,12 @@
                       <span style="font-family: var(--tool-mono); font-size: 12px; font-weight: {{ v.fw }};">{{ v.label }}</span>
                       <span style="font-size: 11px; padding: 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; background: {{ v.srcBg }}; border-color: {{ v.srcBd }}; color: {{ v.srcFg }}; flex: none;">{{ v.src }}</span>
                       <span style="font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ v.time }}</span>
-                      <span style="display: inline-flex; gap: 5px; font-family: var(--tool-mono); font-size: 11px; font-variant-numeric: tabular-nums; flex: none;"><span style="color: var(--tool-ok);">{{ v.plus }}</span><span style="color: var(--tool-err);">{{ v.minus }}</span></span>
+                      <sc-if value="{{ v.hasDelta }}" hint-placeholder-val="{{ true }}">
+                        <span style="display: inline-flex; gap: 5px; font-family: var(--tool-mono); font-size: 11px; font-variant-numeric: tabular-nums; flex: none;"><span style="color: var(--tool-ok);">{{ v.plus }}</span><span style="color: var(--tool-err);">{{ v.minus }}</span></span>
+                      </sc-if>
+                      <sc-if value="{{ v.noDelta }}" hint-placeholder-val="{{ false }}">
+                        <span title="超过 4000 行不算行差异，点进去看原文" style="font-size: 11px; color: var(--tool-muted); flex: none;">没算</span>
+                      </sc-if>
                       <span style="flex: 1;"></span>
                       <sc-if value="{{ v.isCurrent }}" hint-placeholder-val="{{ true }}">
                         <span style="font-size: 11px; font-weight: 560; color: var(--tool-accent); flex: none;">当前</span>
@@ -154,6 +159,29 @@
       <span style="flex: 1;"></span>
       <span style="font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ lang }}</span>
     </div>
+
+    <!-- 草稿暂存：打开时先给盘上的，顶上一条齐边横条。只在打开那一下出现，选完就收起 -->
+    <sc-if value="{{ draft }}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px 8px 16px; background: {{ draftBg }}; border-bottom: 1px solid {{ draftBd }}; font-size: 12px;">
+        <span style="width: 7px; height: 7px; border-radius: 999px; background: var(--tool-warn); flex: none;"></span>
+        <span style="color: {{ draftFg }}; min-width: 0;">{{ draftText }}</span>
+        <span style="font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ draftDelta }}</span>
+        <span style="flex: 1;"></span>
+        <sc-if value="{{ draftStale }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <button type="button" onClick="{{ draftDiscard }}" style="height: 24px; padding: 0 9px; border: 0; border-radius: var(--tool-radius-sm); background: transparent; color: var(--tool-text-2); font-size: 12px; cursor: pointer;" style-hover="background: var(--tool-hover); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">丢掉</button>
+            <button type="button" onClick="{{ draftOverwrite }}" title="盘上的 s7 会先存成一版，覆盖错了还能退回来" style="height: 24px; padding: 0 9px; border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 12px; cursor: pointer;" style-hover="border-color: var(--tool-text-2);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">用草稿覆盖</button>
+            <button type="button" onClick="{{ draftDiff }}" title="在 S6 版本对比里打开：左边盘上 s7，右边草稿" style="height: 24px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 12px; font-weight: 560; cursor: pointer;" style-hover="background: var(--tool-accent-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">看差异</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ draftFresh }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <button type="button" onClick="{{ draftDiscard }}" style="height: 24px; padding: 0 9px; border: 0; border-radius: var(--tool-radius-sm); background: transparent; color: var(--tool-text-2); font-size: 12px; cursor: pointer;" style-hover="background: var(--tool-hover); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">丢掉</button>
+            <button type="button" onClick="{{ draftRestore }}" style="height: 24px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 12px; font-weight: 560; cursor: pointer;" style-hover="background: var(--tool-accent-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">恢复</button>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
 
     <div style="flex: 1 1 0; min-height: 0; position: relative; display: flex;">
       <div style="flex: 1 1 0; min-width: 0; overflow: auto; background: var(--tool-panel);">
@@ -269,18 +297,20 @@ const DEMOS = [
   { n: 7, short: "只读下打字", name: "只读下打字", note: "按了字键：标签抖一下，光标下出一行原因 + 解锁。解锁只对这一个页签生效", ro: true, nudge: true, caret: 12 },
   { n: 8, short: "快照", name: "快照下拉", note: "宿主代画。行 = 版本号 · 来源 · 时间 · 行 diff 摘要 · 一句话；点一行是「看」，「回到这一版」是另一颗钮，行内二次确认，同 S2", ver: true },
   { n: 9, short: "看旧版", name: "看 s5", note: "编辑区换成 s5 原文，只读。和当前不同的行标红并写当前是什么，当前多出来的行在原位插一条绿线。Esc 回到当前", view: "s5" },
-  { n: 10, short: "被忽略", name: "被 .gitignore 忽略", note: "只在下拉头上说一句，药丸悬停也有；落盘时不说。演示里假定 src/snapshots.ts 被忽略", ver: true, ignored: true }
+  { n: 10, short: "被忽略", name: "被 .gitignore 忽略", note: "只在下拉头上说一句，药丸悬停也有；落盘时不说。演示里假定 src/snapshots.ts 被忽略", ver: true, ignored: true },
+  { n: 11, short: "有草稿", name: "打开时有暂存草稿", note: "编辑区是盘上的 s7。恢复 = 草稿铺回编辑区，进「未落盘」，不自动落盘；丢掉 = 删暂存。不选就一直挂着，关页签也不丢草稿", draft: "fresh", caret: 8 },
+  { n: 12, short: "底稿变了", name: "草稿的底稿变过", note: "不给直接恢复。看差异 → S6（盘上 s7 对草稿）；用草稿覆盖前 s7 先存一版，覆盖后直接落盘（它就是一次写）", draft: "stale", caret: 8 }
 ];
 const VERS = [
   { v: "s7", src: "人手改", time: "刚刚", plus: 1, minus: 0 },
   { v: "s6", src: "AI", time: "14:02", plus: 3, minus: 1, note: "按时间倒序，只留最近 50 份" },
   { v: "s5", src: "回退", time: "13:40", plus: 0, minus: 4, note: "回到 s3" },
-  { v: "s4", src: "人手改", time: "昨天 18:21", plus: 4, minus: 0 },
+  { v: "s4", src: "外部改动", time: "昨天 18:21", plus: 4, minus: 0, note: "盘上内容和上一版不同，落盘前先存下的" },
   { v: "s3", src: "AI", time: "昨天 17:55", plus: 12, minus: 0, note: "新建 listSnapshots" }
 ];
 const LOCK_VERS = [
   { v: "s2", src: "人手改", time: "09-28", plus: 6, minus: 2 },
-  { v: "s1", src: "AI", time: "09-27", plus: 40, minus: 0 }
+  { v: "s1", src: "AI", time: "09-27", plus: null, minus: null }
 ];
 const VIEW_S5 = TS.slice(0, 3).concat(["const MAX_KEEP = 20;", ""], TS.slice(6));
 const KW = /^(import|from|type|const|export|async|function|return|await|if)$/;
@@ -366,7 +396,7 @@ class Component extends DCLogic {
       versions: (isLock ? LOCK_VERS : VERS).map((r, i) => {
         const cur = i === 0, ai = r.src === "AI", seen = r.v === viewing;
         return { label: r.v, src: r.src, time: r.time,
-          plus: "+" + r.plus, minus: "−" + r.minus,
+          plus: "+" + r.plus, minus: "−" + r.minus, hasDelta: r.plus !== null, noDelta: r.plus === null,
           note: r.note || "", hasNote: !!r.note,
           fw: cur || seen ? "700" : "500",
           bg: seen ? "var(--tool-accent-soft)" : "transparent",
@@ -388,6 +418,18 @@ class Component extends DCLogic {
           cancel: (e) => { e.stopPropagation(); this.setState({ armed: null }); },
           go: (e) => { e.stopPropagation(); this.go(1); } };
       }),
+      draft: !!dm.draft && !s.draftDone,
+      draftStale: dm.draft === "stale",
+      draftFresh: dm.draft === "fresh",
+      draftText: dm.draft === "stale" ? "有一份 2 小时前没落盘的草稿。草稿是在 s6 上改的，盘上已经变成 s7 了" : "有一份 23 分钟前没落盘的草稿",
+      draftDelta: TS.length + " → " + TS_EDIT.length + " 行",
+      draftBg: dm.draft === "stale" ? "var(--tool-warn-soft)" : "var(--tool-panel-2)",
+      draftBd: dm.draft === "stale" ? "var(--tool-warn-border)" : "var(--tool-border)",
+      draftFg: dm.draft === "stale" ? "var(--tool-warn)" : "var(--tool-text)",
+      draftRestore: () => this.go(2),
+      draftDiscard: () => this.go(1),
+      draftOverwrite: () => this.go(1),
+      draftDiff: () => {},
       viewing: !!viewing,
       viewPlus: "+1", viewMinus: "−1",
       askFromView: () => this.setState({ verOpen: true, armed: viewing }),
