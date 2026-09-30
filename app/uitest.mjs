@@ -1842,6 +1842,134 @@ console.log("\n插件 UI 的边界（M11-4）");
                   ok(/"a"/.test(sel) && /"b"/.test(sel),
                      "**跳过去之后那一块是选中的**（不是只滚过去）", sel.replace(/\s+/g, " ").slice(0, 50));
                 } else ok(false, "json 样本建好了但树里没刷出来");
+
+                /* ── 解析不了（S19 演示态 5）──
+                   ⚠️ 这一档最要紧的不是「报错」，是**报得准 + 改好之后要自己消失**。 */
+                {
+                  const BAD = "json回归坏的.json";
+                  const mk = await pg.evaluate(async ({ name }) => {
+                    const b = window.__UD_APP;
+                    const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                    const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ path: name, content: '{\n  "a": 1\n  "b": 2\n}\n', expectSha256: "0" }) });
+                    return (await w.json()).ok;
+                  }, { name: BAD });
+                  if (mk) {
+                    await pg.waitForTimeout(1100);
+                    const bRow = pg.locator('[role="treeitem"]').filter({ hasText: BAD }).first();
+                    if (await bRow.count()) {
+                      await bRow.click(); await pg.waitForTimeout(2800);
+                      await clearGuard();
+                      if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await bRow.click(); await pg.waitForTimeout(2600); }
+                      await openEdit();
+                      const bf = pg.frameLocator('iframe[data-role="body"]');
+                      const marked = bf.locator(".cm-line.ud-diff-changed");
+                      ok(await marked.count() === 1, "**出错那一行标出来了**", `标了 ${await marked.count()} 行`);
+                      ok(/"b": 2/.test((await marked.first().innerText().catch(() => "")).trim()),
+                         "标的是**真正出错那一行**（不是回退到第 1 行）", (await marked.first().innerText().catch(() => "")).trim());
+                      const why = await marked.first().getAttribute("data-diff");
+                      ok(/少了逗号/.test(why ?? ""),
+                         "**下面那句原因说的是人话**（说不出才给 V8 的英文，不编）", why);
+                      const jbar = pg.locator('[data-ud="file-toolbar"]');
+                      ok(/解析不了 L3:3/.test((await jbar.innerText().catch(() => "")).replace(/\s+/g, " ")),
+                         "工具条上出「解析不了 L3:3」", (await jbar.innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 60));
+                      const tb2 = pg.locator('[data-ud="file-toolbar"] button:has-text("树")').last();
+                      ok(await tb2.isDisabled(), "**树钮灰掉**（不是藏起来 —— 藏了用户不知道这种文件本来有树）");
+                      ok(/先改好 L3/.test(await tb2.getAttribute("title") ?? ""), "而且说得出为什么灰", await tb2.getAttribute("title"));
+                      /* 点那颗跳过去 */
+                      await pg.locator('[data-ud="file-toolbar"] button:has-text("解析不了")').first().click();
+                      await pg.waitForTimeout(700);
+                      const at = await bf.locator(".cm-content").evaluate(() => {
+                        const s = window.getSelection();
+                        const l = s?.anchorNode?.parentElement?.closest(".cm-line");
+                        return l ? l.textContent.trim() : "";
+                      });
+                      ok(/"b": 2/.test(at), "**点它跳到出错的地方**（工具条上那颗要能点，所以放 buttons 不放 status）", at);
+                      /* ⚠️ 改好之后标记要自己消失 —— 不消失的话用户会以为自己没改对 */
+                      await bf.locator(".cm-line").nth(1).click();
+                      await pg.keyboard.press("End");
+                      await pg.keyboard.type(",");
+                      await pg.waitForTimeout(1100);
+                      ok(await marked.count() === 0,
+                         "**补好之后红线自己消失**（不消失的话用户会以为自己没改对，回头再改一遍）",
+                         `还剩 ${await marked.count()} 行`);
+                      ok(!(await tb2.isDisabled()), "树钮跟着活过来");
+                      ok(!/解析不了/.test((await jbar.innerText().catch(() => "")).replace(/\s+/g, " ")), "工具条上那颗也收掉了");
+                      /* ⚠️ **自己弄脏的自己清。**（2026-09-30 栽过）
+                         上面为了测「改好之后红线消失」打了一个逗号 —— 那是**未落盘**状态。
+                         不清的话下一节切文件会被确认卡拦住，`clearGuard` 按「回去接着改」=
+                         不切走，于是**下一节的判据在看着这一节的界面**：
+                         草稿那一段当场红了 6 条，而根因在这里。
+                         「自己建的样本自己清」的延伸 —— **留一个脏编辑器比留一个文件更隐蔽**，
+                         文件收尾扫得到，脏状态只会表现成别人的判据红。 */
+                      await bf.locator("#discard").click();
+                      await pg.waitForTimeout(600);
+                    } else ok(false, "坏 json 样本建好了但树里没刷出来");
+                    await pg.evaluate(async ({ name }) => {
+                      const b = window.__UD_APP;
+                      const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                      await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                      await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                      const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                      for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                        await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                    }, { name: BAD });
+                  } else ok(false, "建不出坏 json 样本");
+                }
+
+                /* ── 大文件（S19 演示态 6）──
+                   ⚠️ 截断**不是为了省内存，是为了不把树变成一条几万行的带子** ——
+                   一个 300 项的数组全画出来，用户既滚不到底也找不到东西。 */
+                {
+                  const BIG = "json回归大的.json";
+                  const bytes = await pg.evaluate(async ({ name }) => {
+                    const b = window.__UD_APP;
+                    const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                    const arr = Array.from({ length: 300 }, (_, i) => ({ i, pad: "x".repeat(3600) }));
+                    const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ path: name, content: JSON.stringify({ 名字: "大的", 列表: arr }, null, 2), expectSha256: "0" }) });
+                    const j = await w.json();
+                    return j.ok ? j.data.bytes : 0;
+                  }, { name: BIG });
+                  ok(bytes > 1024 * 1024, "（前置）造出一份 > 1 MB 的 JSON", `${(bytes / 1024 / 1024).toFixed(2)} MB`);
+                  if (bytes > 1024 * 1024) {
+                    await pg.waitForTimeout(1500);
+                    const gRow = pg.locator('[role="treeitem"]').filter({ hasText: BIG }).first();
+                    if (await gRow.count()) {
+                      await gRow.click(); await pg.waitForTimeout(4500);
+                      await clearGuard();
+                      if (await pg.frameLocator('iframe[data-role="body"]').locator(".jrow").count().catch(() => 0) === 0) { await gRow.click(); await pg.waitForTimeout(4000); }
+                      const gf = pg.frameLocator('iframe[data-role="body"]');
+                      ok(await gf.locator("#tree").isHidden() === false,
+                         "**大文件默认就给树**（几万行的源码里找一个键不如按结构点进去）");
+                      ok(/超过 1 MB/.test((await gf.locator("#roText").innerText().catch(() => "")).trim()),
+                         "而且自动只读，并说出为什么", (await gf.locator("#roText").innerText().catch(() => "")).trim());
+                      ok(/\[ 300 项 \]/.test((await gf.locator('.jrow[data-path="列表"]').innerText().catch(() => "")).replace(/\s+/g, " ")),
+                         "数组那一行写出真实的项数（300，不是截断后的 100）",
+                         (await gf.locator('.jrow[data-path="列表"]').innerText().catch(() => "")).replace(/\s+/g, " ").trim());
+                      const moreRow = gf.locator(".jrow.jmore");
+                      ok(await moreRow.count() === 1, "**超出的用一行「还有 N 项」代替**（不是默默不画）");
+                      ok(/已显示 100 项，还有 200 项/.test((await moreRow.innerText().catch(() => "")).replace(/\s+/g, " ")),
+                         "那一行说清**已显示几项、还有几项**", (await moreRow.innerText().catch(() => "")).replace(/\s+/g, " ").trim());
+                      const n1 = await gf.locator(".jrow").count();
+                      await moreRow.locator("button").click(); await pg.waitForTimeout(800);
+                      const n2 = await gf.locator(".jrow").count();
+                      ok(n2 > n1, "**「再显示 100 项」真的追加**（不是没反应）", `${n1} → ${n2} 行`);
+                      ok(/已显示 200 项，还有 100 项/.test((await gf.locator(".jrow.jmore").innerText().catch(() => "")).replace(/\s+/g, " ")),
+                         "追加之后那一行跟着变", (await gf.locator(".jrow.jmore").innerText().catch(() => "")).replace(/\s+/g, " ").trim());
+                    } else ok(false, "大 json 样本建好了但树里没刷出来");
+                  }
+                  await pg.evaluate(async ({ name }) => {
+                    const b = window.__UD_APP;
+                    const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                    await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                    await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                    const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                    for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                      await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                  }, { name: BIG });
+                }
+
                 await pg.evaluate(async ({ name }) => {
                   const b = window.__UD_APP;
                   const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;

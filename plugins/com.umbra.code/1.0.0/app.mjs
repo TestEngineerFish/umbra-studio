@@ -51,7 +51,9 @@ function ensureDiffField(cm) {
           if (d.changed.has(n)) {
             cls.push("ud-diff-changed");
             const now = d.changed.get(n);
-            tags.push(now == null ? "当前没有这一行" : `当前是 ${String(now).trim().slice(0, 44)}`);
+            /* `errText` 在 = 这是「解析不了」那一档借用（S19 演示态 5），标签写原因；
+               不在 = 看旧版的差异标红，标签写「当前是什么」。 */
+            tags.push(d.errText ? d.errText : now == null ? "当前没有这一行" : `当前是 ${String(now).trim().slice(0, 44)}`);
           }
           if (d.extra.has(n)) {
             cls.push("ud-diff-extra");
@@ -67,6 +69,29 @@ function ensureDiffField(cm) {
     },
     provide: (f) => cm.EditorView.decorations.from(f),
   });
+}
+
+/** 解析不了时，把出错那一行标出来并写一句原因（S19 演示态 5）。
+ *
+ *  ⚠️ **和差异标红共用 `diffField`** —— 它们不会同时出现：
+ *  看旧版 / 看草稿时编辑器是只读的，那时用户改不出语法错；
+ *  而解析不了只发生在当前档。共用一个 field 省掉一套状态，
+ *  也省掉「两个 field 抢同一行」这种只在边角上出现的问题。 */
+function markJsonError() {
+  if (!view || !setDiffEffect) return;
+  /* 看旧版 / 看草稿那两档由 `markDiff` 全权管 —— 那时编辑器只读，改不出语法错 */
+  if (curVersion || draftPreview || !isJson()) return;
+  /* ⚠️ **解析好了要把标记清掉。**
+     第一版写的是「没错就 return」，理由写着「差异那边可能正用着」——
+     可在当前档差异标红本来就是空的，于是上一次的红线**永远留着**：
+     用户补好了逗号，红线还在，**他会以为自己没改对，回头再改一遍**。
+     在当前档这个 field 归这里全权管：有错就标，没错就清。 */
+  if (!jparsed || jparsed.ok) { view.dispatch({ effects: setDiffEffect.of(null) }); return; }
+  const n = view.state.doc.lines;
+  const line = Math.min(Math.max(1, jparsed.line || 1), n);
+  const changed = new Map([[line, null]]);
+  /* 借 `changed` 那一档的样式（err 底 + 左竖线 + 右侧标签），标签写原因 */
+  view.dispatch({ effects: setDiffEffect.of({ changed, extra: new Map(), errText: jparsed.say }) });
 }
 
 /** 把差异推进编辑器。看当前版时清空。 */
@@ -186,6 +211,12 @@ let mode = "src";
 let jparsed = null;
 /** 折叠起来的路径集合（存路径不存下标 —— 下标会随折叠变，路径不会） */
 let jcollapsed = new Set();
+/** 一次最多画多少个同级子项（S19 演示态 6）。
+ *  ⚠️ **不是为了省内存，是为了不把树变成一条几万行的带子** ——
+ *  一个 5000 项的数组全画出来，用户既滚不到底也找不到东西。 */
+const PAGE = 100;
+/** 哪些容器「再显示 100 项」点过几次：`路径 → 已放开到第几项` */
+let jshown = new Map();
 /** 树上选中的那一行 */
 let jpick = null;
 
@@ -223,8 +254,31 @@ function renderTree() {
   const host = el("tree");
   if (!jparsed || !jparsed.ok) { host.textContent = ""; return; }
   const frag = document.createDocumentFragment();
+  /* 每个容器只放开前 N 个子项 —— 超出的用一行「还有 M 项」代替。
+     ⚠️ 判断「第几个子项」看的是**路径最后一段**（数组是下标，对象是键名）：
+     数组才截（对象的键名不是数字，一个对象有几百个键也不该截 ——
+     那时候用户要找的多半就是某个键名，截掉等于把它藏起来）。 */
+  const limitOf = (parent) => jshown.get(parent) ?? PAGE;
+  const cutAt = new Map();          // 父路径 → 这个父下面被截掉了几项
+  for (const n of jparsed.nodes) {
+    if (!n.path) continue;
+    const i = n.path.lastIndexOf(".");
+    const parent = i < 0 ? "" : n.path.slice(0, i);
+    const last = i < 0 ? n.path : n.path.slice(i + 1);
+    if (!/^\d+$/.test(last)) continue;                     // 只截数组
+    if (Number(last) >= limitOf(parent)) cutAt.set(parent, (cutAt.get(parent) ?? 0) + 1);
+  }
+  const overLimit = (path) => {
+    if (!path) return false;
+    const i = path.lastIndexOf(".");
+    const parent = i < 0 ? "" : path.slice(0, i);
+    const last = i < 0 ? path : path.slice(i + 1);
+    return /^\d+$/.test(last) && Number(last) >= limitOf(parent);
+  };
+
   for (const n of jparsed.nodes) {
     if (jhidden(n.path)) continue;
+    if (overLimit(n.path)) continue;
     const row = document.createElement("div");
     row.className = "jrow" + (jpick === n.path ? " on" : "");
     row.setAttribute("role", "treeitem");
@@ -291,9 +345,44 @@ function renderTree() {
 
     row.addEventListener("click", () => { jpick = n.path; renderTree(); paint(); });
     frag.appendChild(row);
+
+    /* 这个容器被截了就在它最后一个可见子项之后补一行（S19 演示态 6） */
+    const cut = cutAt.get(n.path);
+    if (cut && !jcollapsed.has(n.path)) {
+      const shown = limitOf(n.path);
+      const more = document.createElement("div");
+      more.className = "jrow jmore";
+      more.style.paddingLeft = (8 + (n.depth + 1) * 16 + 18) + "px";
+      const t = document.createElement("span");
+      t.className = "jsum";
+      t.textContent = `已显示 ${shown} 项，还有 ${cut} 项`;
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "jjump"; btn.textContent = `再显示 ${Math.min(PAGE, cut)} 项`;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        jshown.set(n.path, shown + PAGE);
+        renderTree();
+      });
+      more.appendChild(t); more.appendChild(btn);
+      frag.appendChild(more);
+    }
   }
   host.textContent = "";
   host.appendChild(frag);
+}
+
+/** 跳到解析出错的那一行（S19 演示态 5：工具条上那颗点一下跳过去）。 */
+function jumpToError() {
+  if (!jparsed || jparsed.ok) return;
+  setMode("src");
+  if (!view) return;
+  const n = view.state.doc.lines;
+  const line = Math.min(Math.max(1, jparsed.line || 1), n);
+  const l = view.state.doc.line(line);
+  /* 光标落在报错的**列**上，不是行首 —— 报错列多半就是要改的那个字符 */
+  const at = Math.min(l.from + Math.max(0, (jparsed.col || 1) - 1), l.to);
+  view.dispatch({ selection: { anchor: at }, scrollIntoView: true });
+  view.focus();
 }
 
 /** 从树跳回源码并选中那个节点占的几行 —— 「在源码里看 L12–17」。 */
@@ -523,7 +612,12 @@ function paint() {
   umbra.setChrome(
     {
       toolbar: segs,
-      buttons: [{ label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" }],
+      buttons: [
+        /* 解析不了那一颗**要能点**（稿里点它跳到出错的地方）——
+           所以放 `buttons` 而不是写进 `status`：status 是读数，点不动。 */
+        ...(jbad ? [{ label: `解析不了 L${jparsed.line}:${jparsed.col}`, title: `${jparsed.say} · 点一下跳过去` }] : []),
+        { label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" },
+      ],
       /* ⚠️ **读数是行数 + 大小，不是「未改过」。**
          `read_file` 不返回快照号，第一版我照抄 md 插件写了 `disk.snapshot ?? "未改过"` ——
          那会永远显示「未改过」，而文件可能改过一百次，我们只是不知道。
@@ -537,7 +631,13 @@ function paint() {
         + (crumb ? ` · ${crumb}` : ""),
     },
     (kind, a, b) => {
-      if (kind === "button" && a === 0) askAboutSelection();
+      /* ⚠️ **下标会随「解析不了」那一颗的有无而移位** —— 写死 0 的话
+         JSON 出错时点「选中行给 AI」会变成跳到出错行。按当下的按钮表算。 */
+      const names = [...(jbad ? ["err"] : []), "ask"];
+      if (kind === "button") {
+        if (names[a] === "err") jumpToError();
+        if (names[a] === "ask") askAboutSelection();
+      }
       /* `seg` 回调给的是 (段下标, 项下标) —— 我们只有一段，所以只看第二个 */
       if (kind === "seg" && a === 0) setMode(b === 0 ? "src" : "tree");
     },
@@ -637,7 +737,9 @@ async function load(path, theme, opt = {}) {
   /* JSON：解析一次，树和光标路径都靠它。
      ⚠️ **换文件要把树的状态清掉** —— 折叠集和选中行是按路径存的，
      换了文件那些路径指的是别的东西了。 */
-  if (path !== curPath) { jcollapsed = new Set(); jpick = null; mode = "src"; }
+  const freshOpen = path !== curPath;
+  if (freshOpen) { jcollapsed = new Set(); jpick = null; jshown = new Map(); mode = "src"; }
+  opt = { ...opt, freshOpen };
   jparsed = /\.jsonc?$/i.test(path) ? parseWithPos(shown ?? disk.content) : null;
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
@@ -661,7 +763,13 @@ async function load(path, theme, opt = {}) {
        **而那看起来就像它算错了**。
        改文档那一支照旧重算标记和暂存；只动光标那一支只重画读数（便宜）。 */
     cm.EditorView.updateListener.of((u) => {
-      if (u.docChanged) { paint(); markChanged(); scheduleStage(); }
+      if (u.docChanged) {
+        /* ⚠️ JSON 边改边重新解析 —— 不重解的话「解析不了」那一行会**停在旧位置**，
+           用户改好了它还红着，而那会让人以为自己没改对。
+           几百 KB 的 JSON 解析一次是毫秒级，不值得为它上防抖。 */
+        if (isJson()) { jparsed = parseWithPos(view.state.doc.toString()); if (mode === "tree") renderTree(); }
+        paint(); markChanged(); scheduleStage(); markJsonError();
+      }
       else if (u.selectionSet) paint();
     }),
     changedField,
@@ -744,12 +852,17 @@ async function load(path, theme, opt = {}) {
   /* ⚠️ 解析不了就回源码档并把树钮灰掉 —— 不回的话用户停在一个空白的树上，
      而「树是空的」和「这个文件没内容」长得一样。 */
   if (mode === "tree" && (!jparsed || !jparsed.ok)) mode = "src";
+  /* 大文件**先给树**（S19 演示态 6）。理由是几 MB 的 JSON 铺成源码没法看 ——
+     几万行里找一个键不如按结构点进去。**只在第一次打开时定**，
+     之后用户切到源码就留在源码（切档是他的选择，不该每次重载又被拽回来）。 */
+  if (opt.freshOpen && isJson() && jparsed && jparsed.ok && disk.size > 1024 * 1024) mode = "tree";
   el("host").hidden = mode !== "src";
   el("tree").hidden = mode !== "tree";
   if (mode === "tree") renderTree();
 
   paint();
   markDiff();   // 看旧版时把差异标出来；看当前版时它自己清空
+  markJsonError();   // 解析不了：出错那一行标 err + 一句原因
 
   /* ⚠️ **只在「看当前版」时查草稿。** 看旧版 / 看草稿差异时编辑区放的不是当前内容，
      这时候弹一条「有一份没落盘的草稿」会让人不知道那条说的是哪一份。 */

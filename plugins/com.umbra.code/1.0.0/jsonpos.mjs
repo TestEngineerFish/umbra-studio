@@ -63,6 +63,35 @@ export function whereFailed(text, err) {
   return { line: 1, col: 1, why };
 }
 
+/** 把 `JSON.parse` 的英文消息说成人话（S19 演示态 5 要「下面一句原因」）。
+ *
+ *  ⚠️ **说不出就给原文，不编。** 稿里那句「这里少了一个逗号」是它举的例子 ——
+ *  而我们只有 V8 给的消息，它并不总能推出那么具体的结论。
+ *  猜错一个原因比给一句英文糟得多：**人会照着我们说的去改，改错地方再回来**，
+ *  那时他连「是不是我理解错了」都判断不了。
+ *
+ *  所以：认得出的几种说人话，认不出的**原样给 V8 的消息**
+ *  （有些用户看得懂，而且能拿去搜）。
+ */
+export function sayWhy(msg) {
+  const m = String(msg);
+  /* 位置那一段（`in JSON at position 13 (line 3 column 3)`）对人没用，先剥掉 ——
+     行列我们已经单独给了，重复一遍只是噪声。 */
+  const core = m.replace(/\s*in JSON at position \d+.*$/, "").replace(/\s*at position \d+.*$/, "").trim();
+  if (/Expected ',' or '}'/.test(core)) return "上一个值后面少了逗号，或者这里该用 `}` 收尾";
+  if (/Expected ',' or ']'/.test(core)) return "上一个值后面少了逗号，或者这里该用 `]` 收尾";
+  if (/Expected property name or '}'/.test(core)) return "这里该是一个键名（要用双引号包起来），或者 `}`";
+  if (/Expected double-quoted property name/.test(core)) return "键名要用双引号包起来（JSON 不认单引号）";
+  if (/Unexpected non-whitespace character after JSON/.test(core)) return "JSON 已经结束了，后面还有多余的东西";
+  if (/Unexpected end of JSON input/.test(core)) return "文件到这里就结束了 —— 有括号没闭上";
+  if (/Unterminated string/.test(core)) return "字符串没有收尾的引号";
+  if (/Bad escaped character|Bad control character/.test(core)) return "字符串里有不能直接写的字符（换行、制表符要写成 \\n \\t）";
+  if (/Expected ':' after property name/.test(core)) return "键名后面少了冒号";
+  const tok = /Unexpected token '?(.)'?/.exec(core);
+  if (tok) return `这里多了一个 \`${tok[1]}\``;
+  return core || m;
+}
+
 /** 每一行换行符的偏移，用来把偏移换成行号。二分查。 */
 function lineIndex(text) {
   const nl = [];
@@ -191,7 +220,7 @@ export function parseWithPos(text) {
        点一下要跳到出错的地方 —— 没有行列就跳不了，而一句
        「Unexpected token」对用户等于没说。 */
     const w = whereFailed(text, e);
-    return { ok: false, why: w.why, line: w.line, col: w.col };
+    return { ok: false, why: w.why, say: sayWhy(w.why), line: w.line, col: w.col };
   }
   const nl = lineIndex(text);
   let nodes;

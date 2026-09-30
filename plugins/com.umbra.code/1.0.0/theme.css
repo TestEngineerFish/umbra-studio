@@ -114,3 +114,6 @@ body.hasdraft.dirty #tree { top: 66px; }
 .jact .jai { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid rgba(58,109,240,.35);
   border-radius: 4px; background: var(--bg); color: #3a6df0; font: 560 11px system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
 .jact .jai:hover { background: rgba(58,109,240,.10); }
+.jrow.jmore { cursor: default; }
+.jrow.jmore:hover { background: transparent; }
+.jrow.jmore .jjump { margin-left: 10px; border: 1px solid var(--line); }

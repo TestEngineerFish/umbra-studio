@@ -113,5 +113,21 @@ ok("根是 `$`", prettyPath("") === "$");
   ok("顶层是裸数字也行（`JSON.parse` 认它）", rr2.ok && rr2.nodes[0]?.kind === "number");
 }
 
+/* ── 把报错说成人话（S19 演示态 5 的「下面一句原因」）──
+   ⚠️ **说不出就给原文，不编。** 猜错一个原因比给一句英文糟得多：
+   人会照着我们说的去改，改错地方再回来，那时他连「是不是我理解错了」都判断不了。 */
+{
+  const say = (t: string) => (parseWithPos(t) as any).say as string;
+  ok("**少逗号说得出来**", /少了逗号/.test(say(`{\n  "a": 1\n  "b": 2\n}`)), say(`{\n  "a": 1\n  "b": 2\n}`));
+  ok("多一个符号说得出是哪个", /多了一个/.test(say(`{\n  "a": [1, 2, 3,]\n}`)), say(`{\n  "a": [1, 2, 3,]\n}`));
+  ok("没闭合说得出来", /少了逗号|没闭上/.test(say(`{\n  "a": 1`)), say(`{\n  "a": 1`));
+  ok("**单引号那一种说得出「JSON 不认单引号」这类话**", /键名/.test(say(`{\n  a: 1\n}`)), say(`{\n  a: 1\n}`));
+  ok("尾部多余说得出来", /已经结束/.test(say(`{"a":1} xx`)), say(`{"a":1} xx`));
+  ok("字符串没收尾说得出来", /引号/.test(say(`{"a": "没收尾`)), say(`{"a": "没收尾`));
+  /* ⚠️ 位置那一段要剥掉 —— 行列我们已经单独给了，重复一遍只是噪声 */
+  ok("**说的话里不再带 `at position N`**（行列另外给，重复是噪声）",
+     !/at position/.test(say(`{\n  "a": 1\n  "b": 2\n}`)), say(`{\n  "a": 1\n  "b": 2\n}`));
+}
+
 console.log(fail === 0 ? `\n✓ 位置感知 JSON ${pass}/${pass + fail}\n` : `\n✗ 位置感知 JSON ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
