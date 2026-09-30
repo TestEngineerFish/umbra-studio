@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet><style>html,body{margin:0;padding:0}</style></helmet>
+<!-- 这一份钉的是 E_CONTROL_IN_TABLE 的「不该报」那一面（2026-09-30 犯过）。
+     单元格和标题格里面是「in cell / in caption」插入模式，任何元素都放得下,
+     浏览器不会把它们踢出去。最小复现读数：sc-if 在单元格里留在表内,
+     而 sc-for 在表体或行的骨架上被踢到表前面。
+
+     原来的判据不分层级，对设计侧一份合法的 S20 报了 9 条、其中 6 条是假的,
+     而我当时已经准备写退回说明了。一条假的必改项能让设计侧白改上百处（纪律③）。 -->
+<div>
+  <table>
+    <caption><sc-if value="{{ hasCap }}">标题</sc-if></caption>
+    <thead>
+      <tr><th><sc-if value="{{ sortable }}"><button>排序</button></sc-if></th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><sc-if value="{{ bad }}"><span>坏</span></sc-if></td>
+        <td><sc-for list="{{ tags }}" as="t"><span>{{ t }}</span></sc-for></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+class Component extends DCLogic {
+  renderVals() {
+    return { hasCap: true, sortable: true, bad: false, tags: ["a"] };
+  }
+}
+</script>
+</body>
+</html>

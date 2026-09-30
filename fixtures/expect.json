@@ -93,5 +93,9 @@
   "静态/19-数字框的minmax与文本框不报.dc.html": {
     "codes": [],
     "why": "边界：实测 6 个探针，**只有** input[type=number] 的 value 会报；min / max / step 不报，type=range 不报（静默夹取），type=text 不报，progress / meter 的 value 不报。这一份钉住「判据没有外推」。"
+  },
+  "静态/09-td里的控制元素不报.dc.html": {
+    "codes": [],
+    "why": "`<td>`/`<th>`/`<caption>` 是「in cell / in caption」插入模式，浏览器不会把控制元素踢出去 —— 实测：sc-if 在 td 里留在 table 里，而 sc-for 在 tbody/tr 下被踢到 table 前面。原判据不分层级，对设计侧一份合法的 S20 报了 9 条其中 6 条是假的，而我已经准备写退回说明了。一条假的必改项能让设计侧白改上百处（纪律③）。"
   }
 }

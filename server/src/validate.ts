@@ -472,16 +472,39 @@ function checkControlInTable(d: Draft, f: string): Diagnostic[] {
       const close = tpl.toLowerCase().indexOf(`</${host}>`, m.index);
       const end = close < 0 ? tpl.length : close;
       const inner = tpl.slice(m.index, end);
-      CONTROL.lastIndex = 0;
+      /* ⚠️ **只报真正会被 foster parenting 踢出去的位置。**（2026-09-30 实测修正）
+         `<td>` / `<th>` / `<caption>` 里面是「in cell / in caption」插入模式，
+         任何元素都放得下。最小复现的读数：
+         `sc-if` 在 `<td>` 里 → **留在 table 里**；`sc-for` 在 `<tbody>` / `<tr>` 下 → **被踢到 table 前面**。
+
+         原来这里不分层级，对设计侧一份**合法的** S20 报了 9 条，其中 6 条是假的。
+         **一条假的必改项能让设计侧白改上百处**（纪律③）——
+         而我当时已经准备写退回说明了，是先去实测才没发出去。
+
+         做法：把「单元格的开闭」和「控制元素」放在一条时间线上走一遍，
+         `depth > 0` 就说明现在在单元格里，安全。 */
+      const TOKENS = /<(\/?)(td|th|caption)\b|<(sc-if|sc-for|dc-import|x-import)\b/gi;
+      TOKENS.lastIndex = 0;
+      let depth = 0;
       let c: RegExpExecArray | null;
-      while ((c = CONTROL.exec(inner))) {
+      while ((c = TOKENS.exec(inner))) {
         const abs = d.template.start + m.index + c.index;
         if (d.comments.some((x) => abs >= x.start && abs < x.end)) continue;
-        out.push(err(E.CONTROL_IN_TABLE, f, { kind: "tag", name: c[1] as string },
-          `<${c[1]}> 落在 <${host}> 里面 —— HTML 解析会把它搬到 <${host}> 外面，于是这一段静默不渲染`,
+        if (c[2]) { depth = Math.max(0, depth + (c[1] ? -1 : 1)); continue; }
+        if (depth > 0) continue;                 // 在 td / th / caption 里，浏览器不会踢它
+        const tag = c[3] as string;
+        out.push(err(E.CONTROL_IN_TABLE, f, { kind: "tag", name: tag },
+          `<${tag}> 直接落在 <${host}> 的骨架里 —— HTML 解析会把它搬到 <${host}> 外面`,
           { ...d.at(abs),
+            /* ⚠️ 文案别说死「静默不渲染」——**现在有一条异步回退路兜着**：
+               没有 `__resources` 的稿会 `fetch(location.href)` 再按字符串切一次模板，
+               绕过了 DOM 解析。但那条路**只在没有 `__resources` 时走**，
+               而 `__resources` 是写入口必注的（断网白屏那条纪律）。
+               所以这是**一颗定时的雷**，不是「现在就坏」——说准了它才治得对。 */
             fix: `改用 div + CSS grid 排版（ui/S1-稿件索引.dc.html 就是这么做的，全稿零 <table>）；` +
-                 `确实要 table 就把 <${c[1]}> 提到 <${host}> 外面，在 renderVals() 里把行拼好` }));
+                 `确实要 table 就把 <${tag}> 提到 <${host}> 外面，在 renderVals() 里把行拼好。` +
+                 `⚠️ 现在可能看着是好的 —— 没有 __resources 的稿靠一条 fetch 回退路绕过了它，` +
+                 `而经写入口落盘（注入 __resources）或离线时那条路不生效，表就空了` }));
       }
       if (close < 0) break;
       open.lastIndex = close;
