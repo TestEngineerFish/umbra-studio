@@ -19,7 +19,12 @@ export interface PluginChrome {
   /** 编辑栏里的段组。空 = 这种格式没有 ✎ 那颗钮 */
   toolbar: PluginSeg[];
   /** 编辑栏右端那几颗散钮 */
-  buttons: Array<{ label: string; title?: string; primary?: boolean; disabled?: boolean }>;
+  /** 编辑栏右端那几颗散钮。
+   *  `warn` = 警示档（S20 的「warn 档」：warn 边 + warn 字 + 一颗点）——
+   *  给「这份文件有点问题，但照样打开了」那一类。
+   *  `pressed` 是**开关态**，走 `aria-pressed` 而不是另加一个 class：
+   *  屏幕阅读器要的就是这个属性，而样式顺带也能挂上去。 */
+  buttons: Array<{ label: string; title?: string; primary?: boolean; warn?: boolean; pressed?: boolean; disabled?: boolean }>;
   /** 状态行中间那一段 */
   status: string;
   /** `⋯` 里属于这种格式的项。公共尾巴由工作台补 */

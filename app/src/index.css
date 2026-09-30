@@ -13,6 +13,15 @@ body { margin: 0; background: var(--tool-bg); color: var(--tool-text); font-fami
   .btn.primary { @apply bg-accent border-accent text-onAccent font-semibold hover:opacity-90; }
   .btn.ghost { @apply border-transparent bg-transparent text-text2; }
   .btn.danger { @apply border-err text-err; }
+  /* 按钮组的**警示档**（设计侧第十四轮 S20 演示态 5 / 7 定的「warn 档」）。
+     ⚠️ 这是**宿主的通用能力**，不是 csv 插件私有的 —— 第十三轮我们就问过
+     「要 err 色得给按钮组加一档，那会影响别的插件」，S20 明确回答了要加。
+     形制取稿里的真值：1px warn 边、warn 文字、按下时底色换 warn-soft，
+     标签前一颗 6px 的点（它才是「有事」那一眼，不靠颜色深浅）。 */
+  .btn.warn { border-color: var(--tool-warn-border); color: var(--tool-warn); }
+  .btn.warn:hover { background: var(--tool-warn-soft); }
+  .btn.warn[aria-pressed="true"] { background: var(--tool-warn-soft); }
+  .btn.warn::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--tool-warn); flex: none; }
   .btn.on { @apply bg-accentSoft border-accent text-accent; }
   .ib { @apply inline-grid place-items-center w-7 h-7 rounded text-text2 hover:bg-hover hover:text-text; }
   .seg { @apply inline-flex p-0.5 gap-0.5 rounded border border-border bg-panel2; }

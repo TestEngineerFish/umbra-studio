@@ -25,8 +25,10 @@ export const PluginToolbar = (pluginId: string): FC<{ ctx: ViewContext }> =>
         }))}
         <span className="flex-1" />
         {c.buttons.map((b, i) => (
-          <button key={b.label} className={`btn sm shrink-0 ${b.primary ? "primary" : ""}`}
-            title={b.title} disabled={b.disabled} onClick={() => fire(key, "button", i)}>{b.label}</button>
+          <button key={b.label} className={`btn sm shrink-0 ${b.primary ? "primary" : ""} ${b.warn ? "warn" : ""}`}
+            title={b.title} disabled={b.disabled}
+            aria-pressed={b.pressed === undefined ? undefined : b.pressed}
+            onClick={() => fire(key, "button", i)}>{b.label}</button>
         ))}
       </>
     );

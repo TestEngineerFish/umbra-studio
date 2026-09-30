@@ -1848,7 +1848,29 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const badIdx = before.findIndex((t) => /行有问题/.test(t));
                   ok(badIdx >= 0, "有「N 行有问题」那一颗", before[badIdx]);
 
+                  /* ── 按钮组的**警示档**（S20 演示态 5「warn 档」，2026-09-30 加的宿主通用能力）──
+                     ⚠️ **不验 class 名** —— `className.includes("warn")` 测的是我们自己写的字符串，
+                     样式表删掉它照样绿。验的是**算出来的效果**：
+                     文字颜色等于 `--tool-warn` 的真值，而标签前那颗点真的画出来了。
+                     那颗点是 `::before`，DOM 里数不到 —— 只能问计算样式。 */
+                  const warnLook = await btnAt(badIdx).evaluate((n) => {
+                    const cs = getComputedStyle(n);
+                    const want = getComputedStyle(document.documentElement).getPropertyValue("--tool-warn").trim();
+                    const probe = document.createElement("span");
+                    probe.style.color = want; document.body.appendChild(probe);
+                    const wantRGB = getComputedStyle(probe).color; probe.remove();
+                    const dot = getComputedStyle(n, "::before");
+                    return { colorMatchesWarn: cs.color === wantRGB, color: cs.color, want: wantRGB, dotW: dot.width, dotBG: dot.backgroundColor };
+                  });
+                  ok(warnLook.colorMatchesWarn,
+                     "**那颗钮走警示档**（文字色算出来就是 `--tool-warn`，不是普通钮）", `${warnLook.color} vs ${warnLook.want}`);
+                  ok(warnLook.dotW === "6px" && warnLook.dotBG === warnLook.want,
+                     "**标签前那颗 6px warn 点真的画出来了**（一眼看出「这份文件有事」靠的是它，不是颜色深浅）", `${warnLook.dotW} · ${warnLook.dotBG}`);
+                  ok(await btnAt(badIdx).getAttribute("aria-pressed") === "false",
+                     "开关态走 `aria-pressed`（屏幕阅读器要的就是这个属性）", String(await btnAt(badIdx).getAttribute("aria-pressed")));
+
                   await btnAt(badIdx).click(); await pg.waitForTimeout(900);
+                  ok(await btnAt(badIdx).getAttribute("aria-pressed") === "true", "点下去之后 `aria-pressed` 跟着翻");
                   const after = await labels();
                   ok(/只看有问题的/.test(after[badIdx] ?? ""), "点了之后它自己变成「回到全部」", after[badIdx]);
                   const n2 = [];
