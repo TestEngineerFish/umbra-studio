@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="./_ds-tool/tokens.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { background: var(--tool-bg); }
+  * { box-sizing: border-box; }
+  a { color: var(--tool-accent); text-decoration: none; }
+  a:hover { color: var(--tool-accent-hover); text-decoration: underline; }
+  input, button { font: inherit; color: inherit; }
+</style>
+</helmet>
+
+<div data-tool-theme="{{ theme }}" style="height: 100vh; display: flex; flex-direction: column; background: var(--tool-bg); color: var(--tool-text); font-family: var(--tool-sans); font-size: 13px; -webkit-font-smoothing: antialiased;">
+
+  <sc-if value="{{ showDemoBar }}" hint-placeholder-val="{{ true }}">
+  <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border);">
+    <span style="font-size: 11px; color: var(--tool-muted); flex: none;">演示态</span>
+    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="7">
+      <button type="button" onClick="{{ st.pick }}" title="{{ st.name }}" aria-pressed="{{ st.active }}" style="display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 9px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; cursor: pointer; font-size: 11px; white-space: nowrap; background: {{ st.bg }}; border-color: {{ st.bd }}; color: {{ st.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+        <span style="font-family: var(--tool-mono); opacity: 0.6;">{{ st.n }}</span>
+        <span style="font-weight: {{ st.fw }};">{{ st.short }}</span>
+      </button>
+    </sc-for>
+    <span style="color: var(--tool-border-strong); flex: none;">·</span>
+    <span style="color: var(--tool-muted); min-width: 0;">{{ demoNote }}</span>
+  </div>
+  </sc-if>
+
+  <div style="flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--tool-bg);">
+
+    <!-- 工具条：同 S19。光标位置按第十四轮裁定进状态行，这里不放 -->
+    <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--tool-panel); border-bottom: 1px solid var(--tool-border); min-width: 0;">
+      <span style="color: var(--tool-text-2); display: grid;"><dc-import name="IconGlyph" d="M2.5 3h11v10h-11zM2.5 6.3h11M2.5 9.7h11M6.2 3v10" size="14" hint-size="14px,14px"></dc-import></span>
+      <span style="font-weight: 600; white-space: nowrap;">{{ path }}</span>
+      <span title="快照：{{ snapCount }} 版" style="display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 1px solid var(--tool-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-family: var(--tool-mono); font-size: 11px; color: var(--tool-text-2);">
+        {{ snapVersion }}
+        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      </span>
+
+      <sc-if value="{{ readOnly }}" hint-placeholder-val="{{ false }}">
+        <span title="编码没确定之前只读：按错的编码落盘会把原文写坏" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border); background: var(--tool-panel-2); color: var(--tool-text-2); font-size: 11px; white-space: nowrap;">
+          <dc-import name="IconGlyph" d="M4.5 7.2h7v5.6h-7zM6 7.2V5.4a2 2 0 014 0v1.8" size="12" hint-size="12px,12px"></dc-import>
+          只读 · 编码没确定
+        </span>
+      </sc-if>
+
+      <!-- 按钮组警示态 · warn 档：有坏行，表照样打开 -->
+      <sc-if value="{{ hasBad }}" hint-placeholder-val="{{ false }}">
+        <button type="button" onClick="{{ toggleFilter }}" aria-pressed="{{ filtered }}" title="点一下只看这几行，再点一下回到全部" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-warn-border); background: {{ badBg }}; color: var(--tool-warn); font-size: 11px; white-space: nowrap; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+          <span style="width: 6px; height: 6px; border-radius: 999px; background: var(--tool-warn);"></span>
+          {{ badLabel }}
+        </button>
+      </sc-if>
+
+      <sc-if value="{{ encBad }}" hint-placeholder-val="{{ false }}">
+        <button type="button" onClick="{{ reread }}" title="只换读法，不改盘上的文件" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-warn-border); background: var(--tool-warn-soft); color: var(--tool-warn); font-size: 11px; white-space: nowrap; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+          <span style="width: 6px; height: 6px; border-radius: 999px; background: var(--tool-warn);"></span>
+          不像 UTF-8 · 按 GBK 重读
+        </button>
+      </sc-if>
+
+      <span style="flex: 1; min-width: 8px;"></span>
+
+      <div role="tablist" aria-label="怎么看" style="flex: none; display: flex; padding: 2px; gap: 2px; border-radius: var(--tool-radius); background: var(--tool-panel-2); border: 1px solid var(--tool-border);">
+        <button type="button" role="tab" aria-selected="{{ isSrc }}" onClick="{{ toSrc }}" style="height: 22px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); font-size: 11px; cursor: pointer; background: {{ srcBg }}; color: {{ srcFg }}; box-shadow: {{ srcSh }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">源码</button>
+        <button type="button" role="tab" aria-selected="{{ isTable }}" onClick="{{ toTable }}" style="height: 22px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); font-size: 11px; cursor: pointer; background: {{ tblBg }}; color: {{ tblFg }}; box-shadow: {{ tblSh }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">表</button>
+      </div>
+      <span style="flex: none; font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ lang }}</span>
+    </div>
+
+    <div style="flex: 1 1 0; min-height: 0; overflow: auto; background: var(--tool-panel);">
+
+      <!-- 表：只看、只挑。行号就是源码行号（表头是 L1） -->
+      <sc-if value="{{ isTable }}" hint-placeholder-val="{{ true }}">
+        <!-- div + grid：sc-for 不能放在表骨架上（退回说明 56） -->
+        <div role="table" style="display: grid; grid-template-columns: {{ gridCols }}; width: max-content; min-width: 100%; font-size: 12px;">
+          <div role="row" style="display: contents;">
+              <div role="columnheader" style="position: sticky; top: 0; left: 0; z-index: 3; height: 28px; line-height: 27px; padding: 0 12px 0 0; text-align: right; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border-strong); border-right: 1px solid var(--tool-border); font-family: var(--tool-mono); font-size: 11px; font-weight: 400; color: var(--tool-muted);">1</div>
+              <sc-for list="{{ cols }}" as="c" hint-placeholder-count="7">
+                <div role="columnheader" onClick="{{ c.pick }}" title="{{ c.tip }}" style="position: sticky; top: 0; z-index: 2; height: 28px; line-height: 27px; padding: 0 12px; text-align: {{ c.align }}; white-space: nowrap; background: {{ c.bg }}; color: {{ c.fg }}; border-bottom: 1px solid var(--tool-border-strong); border-right: 1px solid var(--tool-border); font-weight: 600; font-style: {{ c.fs }}; cursor: pointer; box-shadow: {{ c.bar }};" style-hover="background: var(--tool-hover);">{{ c.name }}</div>
+              </sc-for>
+              <div role="columnheader" style="position: sticky; top: 0; z-index: 2; height: 28px; display: flex; align-items: center; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border-strong);">
+                <sc-if value="{{ colChip }}" hint-placeholder-val="{{ false }}">
+                  <button type="button" onClick="{{ send }}" style="margin-left: 12px; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 6px; border: 1px solid var(--tool-accent-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); color: var(--tool-accent); font-size: 11px; font-weight: 560; box-shadow: var(--tool-shadow-1); cursor: pointer; white-space: nowrap;" style-hover="background: var(--tool-accent-soft);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+                    <dc-import name="IconGlyph" d="M3 3.5h10v7H7.5L4.5 13v-2.5H3z" size="12" hint-size="12px,12px"></dc-import>
+                    给 AI
+                    <kbd style="font-family: var(--tool-mono); font-size: 10px; font-weight: 400; color: var(--tool-muted);">⌘L</kbd>
+                  </button>
+                </sc-if>
+              </div>
+          </div>
+            <sc-for list="{{ rows }}" as="r" hint-placeholder-count="14">
+              <div role="row" style="display: contents;">
+                <div role="rowheader" onClick="{{ r.pick }}" style="position: sticky; left: 0; z-index: 1; height: 26px; line-height: 25px; padding: 0 12px 0 0; text-align: right; font-family: var(--tool-mono); font-size: 11px; color: {{ r.numFg }}; background: {{ r.numBg }}; border-bottom: 1px solid var(--tool-border); border-right: 1px solid var(--tool-border); box-shadow: {{ r.gutter }}; cursor: pointer; user-select: none; font-variant-numeric: tabular-nums;">{{ r.n }}</div>
+                <sc-for list="{{ r.cells }}" as="c" hint-placeholder-count="7">
+                  <div role="cell" title="{{ c.tip }}" style="height: 26px; line-height: 25px; padding: 0 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: {{ c.align }}; color: {{ c.fg }}; background: {{ c.bg }}; border-bottom: 1px solid var(--tool-border); border-right: 1px solid var(--tool-border); font-variant-numeric: tabular-nums;">{{ c.v }}</div>
+                </sc-for>
+                <div role="cell" style="height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 12px; white-space: nowrap; background: {{ r.bg }}; border-bottom: 1px solid var(--tool-border);">
+                  <sc-if value="{{ r.note }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-size: 12px; color: var(--tool-warn);">{{ r.noteText }}</span>
+                  </sc-if>
+                  <sc-if value="{{ r.chip }}" hint-placeholder-val="{{ false }}">
+                    <button type="button" onClick="{{ send }}" title="带进去的是表头 + 这几行原文" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 6px; border: 1px solid var(--tool-accent-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); color: var(--tool-accent); font-size: 11px; font-weight: 560; box-shadow: var(--tool-shadow-1); cursor: pointer;" style-hover="background: var(--tool-accent-soft);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+                      <dc-import name="IconGlyph" d="M3 3.5h10v7H7.5L4.5 13v-2.5H3z" size="12" hint-size="12px,12px"></dc-import>
+                      给 AI
+                      <kbd style="font-family: var(--tool-mono); font-size: 10px; font-weight: 400; color: var(--tool-muted);">⌘L</kbd>
+                    </button>
+                  </sc-if>
+                  <sc-if value="{{ r.sentTag }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-family: var(--tool-mono); font-size: 10px; padding: 0 6px; height: 18px; line-height: 16px; display: inline-block; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-panel); color: var(--tool-accent);">{{ selLabel }} · 已带进会话</span>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- 源码：S18 原样 -->
+      <sc-if value="{{ isSrc }}" hint-placeholder-val="{{ false }}">
+        <div style="padding: 10px 0 48px; font-family: var(--tool-mono); font-size: 12px; line-height: 20px; min-width: max-content;">
+          <sc-for list="{{ lines }}" as="l" hint-placeholder-count="15">
+            <div style="display: grid; grid-template-columns: 52px minmax(0, 1fr); min-height: 20px; background: {{ l.bg }};">
+              <span style="padding-right: 14px; text-align: right; color: {{ l.numFg }}; user-select: none; font-variant-numeric: tabular-nums; box-shadow: {{ l.gutter }};">{{ l.n }}</span>
+              <span style="padding: 0 48px 0 10px; white-space: pre;"><sc-for list="{{ l.toks }}" as="t" hint-placeholder-count="5"><span style="color: {{ t.fg }};">{{ t.v }}</span></sc-for><sc-if value="{{ l.caret }}" hint-placeholder-val="{{ false }}"><span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--tool-text);"></span></sc-if></span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+    </div>
+
+    <!-- 状态行（示意 S11）：读数在这里，第十四轮裁定 -->
+    <div style="flex: none; height: 24px; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: var(--tool-panel-2); border-top: 1px solid var(--tool-border); font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap; overflow: hidden;">
+      <span>{{ stat }}</span>
+      <sc-if value="{{ hasCursor }}" hint-placeholder-val="{{ false }}">
+        <span style="color: var(--tool-border-strong);">·</span>
+        <span style="color: var(--tool-text-2); user-select: text;">{{ cursor }}</span>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{ sent }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--tool-panel); border-top: 1px solid var(--tool-border);">
+        <span title="带进去的是表头 + 这几行的原文" style="flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-accent-soft); color: var(--tool-accent); font-size: 11px;">
+          <dc-import name="IconGlyph" d="M2.5 3h11v10h-11zM2.5 6.3h11M2.5 9.7h11M6.2 3v10" size="12" hint-size="12px,12px"></dc-import>
+          <span style="font-family: var(--tool-mono); font-weight: 600;">csv</span>
+          <span style="font-family: var(--tool-mono); color: var(--tool-text-2); white-space: nowrap;">{{ path }} {{ selLabel }}</span>
+        </span>
+        <input type="text" placeholder="问这几行，或者说要怎么改… ⏎ 发送" style="flex: 1 1 0; min-width: 120px; height: 30px; padding: 0 10px; border: 1px solid var(--tool-accent); box-shadow: 0 0 0 3px var(--tool-accent-soft); border-radius: var(--tool-radius); background: var(--tool-panel); outline: none;">
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;跟随外层&quot;, &quot;dark&quot;], &quot;default&quot;: &quot;跟随外层&quot;, &quot;tsType&quot;: &quot;'dark'|null&quot;, &quot;section&quot;: &quot;工具皮肤&quot;}}">
+const HEAD = "order_id,date,customer,city,items,amount,status";
+const CLEAN = [
+  "10001,2026-09-21,林知夏,上海,3,258.00,paid",
+  "10002,2026-09-21,陈一舟,杭州,1,49.90,paid",
+  '10003,2026-09-22,"周, 小满",南京,2,168.00,refunded',
+  "10004,2026-09-22,王砚,苏州,5,612.50,paid",
+  "10005,2026-09-23,赵听雨,上海,1,39.00,pending",
+  "10006,2026-09-24,孙既白,北京,2,,paid",
+  "10007,2026-09-24,钱晚,上海,4,301.20,paid",
+  "10008,2026-09-25,李青禾,广州,1,88.00,paid",
+  "10009,2026-09-26,吴未央,深圳,2,176.00,paid",
+  "10010,2026-09-27,郑南枝,成都,3,245.80,paid",
+  "10011,2026-09-28,冯初,杭州,2,168.00,paid",
+  "10012,2026-09-28,褚明远,武汉,1,59.00,cancelled",
+  "10013,2026-09-29,卫疏影,上海,2,132.00,paid",
+  "10014,2026-09-30,蒋照野,西安,6,720.00,pending"
+];
+const BAD = CLEAN.slice();
+BAD[6] = "10007,2026-09-24,钱晚,上海,4,301.20";
+BAD[8] = "10009,2026-09-26,吴未央,深圳,2,176.00,paid,备注：加急";
+BAD[10] = '10011,2026-09-28,"冯 初,杭州,2,168.00,paid';
+
+const DEMOS = [
+  { n: 1, short: "表", name: "表 · 默认", note: "CSV 默认给表：它是拿来看的数据，不是拿来改的配置。表只看和挑；行号就是源码行号，表头是 L1", view: "table" },
+  { n: 2, short: "源码", name: "源码", note: "S18 原样：改、落盘、只读、给 AI 都照旧。状态行给光标所在的行和列名", view: "src" },
+  { n: 3, short: "挑几行", name: "挑几行 → 给 AI", note: "点行号选中一行，⇧ 点扩成一段；末行右侧出「给 AI」。点列名选一列，钮出在表头末尾", view: "table", sel: { k: "rows", a: 8, b: 10 } },
+  { n: 4, short: "已带进", name: "已带进会话", note: "药丸写 csv · 文件 · L8–10。带进去的总是「表头 + 这几行原文」，不然 AI 不知道每列是什么", view: "table", sel: { k: "rows", a: 8, b: 10 }, sent: true },
+  { n: 5, short: "有坏行", name: "有坏行", note: "一行坏不影响整张表：坏行照样画，行号边一道 warn 竖线，行尾一句原因。工具条出按钮组警示态（warn 档）", view: "table", bad: true },
+  { n: 6, short: "只看坏行", name: "只看坏行", note: "点「3 行有问题」只留坏行，再点回到全部。行号不重排，改的时候对得上源码", view: "table", bad: true, filter: true },
+  { n: 7, short: "编码不对", name: "编码不对", note: "不像 UTF-8：给一颗「按 GBK 重读」，只换读法不改文件。编码没确定之前只读——按错的编码落盘会把原文写坏", view: "table", enc: true }
+];
+
+const parse = (line) => {
+  const out = []; let i = 0, cur = "", q = false, quoted = false;
+  while (i < line.length) {
+    const ch = line[i];
+    if (q) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i += 2; continue; } if (ch === '"') { q = false; i++; continue; } cur += ch; i++; continue; }
+    if (ch === '"' && cur === "") { q = true; quoted = true; i++; continue; }
+    if (ch === ",") { out.push(cur); cur = ""; i++; continue; }
+    cur += ch; i++;
+  }
+  out.push(cur);
+  return { cells: out, unclosed: q };
+};
+const NUM = /^-?\d+(\.\d+)?$/;
+const MOJI = (s) => /[\u4e00-\u9fff]/.test(s) ? s.replace(/[\u4e00-\u9fff]+/g, (m) => "\uFFFD".repeat(Math.ceil(m.length * 1.5))) : s;
+const lexCsv = (line) => {
+  const out = []; const re = /("(?:[^"]|"")*"?)|(,)|(-?\d+(?:\.\d+)?(?=,|$))|([^,"]+)/g; let m;
+  while ((m = re.exec(line))) {
+    if (m[1]) out.push({ v: m[1], fg: "var(--tool-ok)" });
+    else if (m[2]) out.push({ v: m[2], fg: "var(--tool-muted)" });
+    else if (m[3]) out.push({ v: m[3], fg: "var(--tool-warn)" });
+    else out.push({ v: m[4], fg: "var(--tool-text)" });
+  }
+  return out;
+};
+
+class Component extends DCLogic {
+  state = { demo: 1, sel: undefined, filter: undefined, reread: false };
+  go(n) { this.setState({ demo: n, sel: undefined, filter: undefined, reread: false }); }
+
+  renderVals() {
+    const s = this.state;
+    const dm = DEMOS[s.demo - 1];
+    const table = dm.view === "table";
+    const body = dm.bad ? BAD : CLEAN;
+    const head = parse(HEAD).cells;
+    const W = head.length;
+    const sel = s.sel !== undefined ? s.sel : dm.sel || null;
+    const filter = s.filter !== undefined ? s.filter : !!dm.filter;
+    const enc = !!dm.enc && !s.reread;
+    const path = dm.enc ? "export/订单-导出.csv" : "data/orders.csv";
+
+    const parsed = body.map((line, i) => {
+      const p = parse(line), n = i + 2;
+      let issue = null;
+      if (p.unclosed) issue = "引号没闭上 · 按行尾截断了；严格读的话 L" + (n + 1) + "–" + (body.length + 1) + " 都会并进这一格";
+      else if (p.cells.length < W) issue = p.cells.length + " 列，表头是 " + W + " 列 · 少了 " + head.slice(p.cells.length).join("、");
+      else if (p.cells.length > W) issue = p.cells.length + " 列，表头是 " + W + " 列 · 多了 " + (p.cells.length - W) + " 列";
+      return { n: n, p: p, issue: issue, line: line };
+    });
+    const badRows = parsed.filter((r) => r.issue);
+    const extra = Math.max(0, ...parsed.map((r) => r.p.cells.length - W));
+    const numCol = head.map((h, c) => parsed.every((r) => { const v = r.p.cells[c]; return v === undefined || v === "" || NUM.test(v) || r.issue; }) && c !== 0);
+    const inSel = (n) => sel && sel.k === "rows" && n >= sel.a && n <= sel.b;
+    const colSel = sel && sel.k === "col" ? sel.c : -1;
+    const selLabel = !sel ? "" : sel.k === "rows" ? (sel.a === sel.b ? "L" + sel.a : "L" + sel.a + "–" + sel.b) : "列 " + head[sel.c];
+
+    const cols = head.map((h, c) => ({
+      name: h, align: numCol[c] ? "right" : "left", fs: "normal",
+      tip: "点一下选中这一列",
+      bg: c === colSel ? "var(--tool-accent-soft)" : "var(--tool-panel-2)",
+      fg: c === colSel ? "var(--tool-accent)" : "var(--tool-text)",
+      bar: c === colSel ? "inset 0 -2px 0 var(--tool-accent)" : "none",
+      pick: () => this.setState({ sel: { k: "col", c: c } })
+    })).concat(Array.from({ length: extra }, () => ({
+      name: "（多出来的）", align: "left", fs: "italic", tip: "表头里没有这一列", bg: "var(--tool-panel-2)", fg: "var(--tool-warn)", bar: "none", pick: () => {}
+    })));
+
+    const shown = filter ? badRows : parsed;
+    const rows = shown.map((r) => {
+      const on = inSel(r.n), bad = !!r.issue;
+      const cells = [];
+      for (let c = 0; c < W + extra; c++) {
+        const v = r.p.cells[c];
+        const missing = v === undefined && c < W, over = c >= W;
+        const txt = v === undefined ? "" : enc ? MOJI(v) : v;
+        cells.push({
+          v: missing ? "" : txt, align: numCol[c] ? "right" : "left",
+          tip: missing ? "这一行没有这一格" : r.p.unclosed && c === r.p.cells.length - 1 ? "这一格从引号开始一直到行尾" : txt,
+          fg: over ? "var(--tool-warn)" : enc && txt.includes("\uFFFD") ? "var(--tool-muted)" : "var(--tool-text)",
+          bg: missing ? "repeating-linear-gradient(135deg, var(--tool-warn-soft) 0 4px, transparent 4px 8px)" : (over && v !== undefined) || (r.p.unclosed && c === r.p.cells.length - 1) ? "var(--tool-warn-soft)" : c === colSel || on ? "var(--tool-accent-soft)" : "transparent"
+        });
+      }
+      const last = sel && sel.k === "rows" && r.n === sel.b;
+      return {
+        n: String(r.n), cells: cells,
+        bg: on ? "var(--tool-accent-soft)" : "transparent",
+        numBg: on ? "var(--tool-accent-soft)" : bad ? "var(--tool-warn-soft)" : "var(--tool-panel)",
+        numFg: on ? "var(--tool-accent)" : bad ? "var(--tool-warn)" : "var(--tool-muted)",
+        gutter: on ? "inset -2px 0 0 var(--tool-accent)" : bad ? "inset -2px 0 0 var(--tool-warn)" : "none",
+        note: bad, noteText: r.issue || "",
+        chip: !!(last && !dm.sent), sentTag: !!(last && dm.sent),
+        pick: () => this.setState({ sel: { k: "rows", a: r.n, b: r.n } })
+      };
+    });
+
+    const srcLines = [HEAD].concat(body).map((t, i) => {
+      const n = i + 1, pr = parsed[i - 1], bad = !!(pr && pr.issue), cur = n === 8;
+      return { n: String(n), toks: lexCsv(enc ? MOJI(t) : t), caret: cur,
+        bg: bad ? "var(--tool-warn-soft)" : cur ? "var(--tool-panel-2)" : "transparent",
+        gutter: bad ? "inset -2px 0 0 var(--tool-warn)" : "none",
+        numFg: bad ? "var(--tool-warn)" : cur ? "var(--tool-text)" : "var(--tool-muted)" };
+    });
+
+    const cursor = table ? (sel ? (sel.k === "rows" ? selLabel + " · 选中 " + (sel.b - sel.a + 1) + " 行" : "列 " + head[sel.c] + " · " + parsed.length + " 格") : "") : "L8 · 第 6 列 amount";
+
+    return {
+      theme: this.props.theme === "dark" ? "dark" : null,
+      showDemoBar: true,
+      demoNote: s.reread ? "按 GBK 重读了：只换了读法，盘上的文件没动。以后落盘也按 GBK 写回" : dm.note,
+      demoStates: DEMOS.map((m) => {
+        const on = m.n === s.demo;
+        return { n: m.n, name: m.name, short: m.short, active: on, fw: on ? "600" : "400",
+          bg: on ? "var(--tool-accent)" : "var(--tool-panel)", bd: on ? "var(--tool-accent)" : "var(--tool-border-strong)",
+          fg: on ? "var(--tool-on-accent)" : "var(--tool-text-2)", pick: () => this.go(m.n) };
+      }),
+      path: path,
+      lang: "CSV · " + (dm.enc && s.reread ? "GBK" : "UTF-8") + " · 逗号",
+      snapVersion: "s3", snapCount: "3",
+      readOnly: enc,
+      encBad: enc,
+      reread: () => this.setState({ reread: true }),
+      hasBad: badRows.length > 0,
+      filtered: filter,
+      badLabel: filter ? "只看有问题的 " + badRows.length + " 行 · 回到全部" : badRows.length + " 行有问题",
+      badBg: filter ? "var(--tool-warn-soft)" : "var(--tool-panel)",
+      toggleFilter: () => this.setState({ filter: !filter }),
+      isSrc: !table, isTable: table,
+      toSrc: () => this.setState({ demo: 2, sel: undefined, filter: undefined }),
+      toTable: () => this.setState({ demo: dm.view === "table" ? s.demo : 1, sel: undefined, filter: undefined }),
+      srcBg: table ? "transparent" : "var(--tool-panel)", srcFg: table ? "var(--tool-text-2)" : "var(--tool-text)", srcSh: table ? "none" : "var(--tool-shadow-1)",
+      tblBg: table ? "var(--tool-panel)" : "transparent", tblFg: table ? "var(--tool-text)" : "var(--tool-text-2)", tblSh: table ? "var(--tool-shadow-1)" : "none",
+      gridCols: "52px repeat(" + cols.length + ", max-content) minmax(300px, 1fr)",
+      cols: cols, rows: table ? rows : [], colChip: colSel >= 0 && !dm.sent,
+      lines: table ? [] : srcLines,
+      send: () => this.setState({ demo: 4, sel: sel }),
+      sent: !!dm.sent, selLabel: selLabel,
+      stat: (body.length + 1) + " 行 · " + W + " 列 · 1.1 KB",
+      hasCursor: !!cursor, cursor: cursor
+    };
+  }
+}
+</script>
+</body>
+</html>
