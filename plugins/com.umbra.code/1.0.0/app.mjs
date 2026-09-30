@@ -18,6 +18,66 @@ const el = (id) => document.getElementById(id);
 /** 改过的行的装饰集。**放 StateField 而不是每次重建 view** ——
  *  重建会丢掉光标、选区和撤销栈，而用户正在打字。 */
 let changedField = null, setChangedEffect = null;
+/** 差异标记（看旧版时）。**和 `changedField` 分开** ——
+ *  那个是「我改了还没落盘」（warn 色），这个是「这一版和当前不一样」（err / ok 色）。
+ *  合成一个的话两种语义会互相覆盖，而**用户分不出「我改的」和「别人改的」是最坏的一种混淆**。
+ *
+ *  ⚠️ **标签不用 widget**：共享库没导出 `WidgetType`（查过，不是猜的 ——
+ *  直接 `extends cm.WidgetType` 会抛 `Class extends value undefined`）。
+ *  改成行装饰带 `data-diff` 属性、CSS `::after` 画出来，
+ *  正好对上稿里「标签 `position:absolute; right:16px`」那一套，而且不用扩共享库的导出面。 */
+let diffField = null, setDiffEffect = null;
+function ensureDiffField(cm) {
+  if (diffField) return;
+  setDiffEffect = cm.StateEffect.define();
+  diffField = cm.StateField.define({
+    create: () => cm.RangeSet.empty,
+    update(set, tr) {
+      for (const e of tr.effects) {
+        if (!e.is(setDiffEffect)) continue;
+        const d = e.value;                       // null = 清空
+        if (!d) return cm.RangeSet.empty;
+        const b = new cm.RangeSetBuilder();
+        /* RangeSetBuilder 要求按 from 升序 add，所以先把行号排好 */
+        const lines = [...new Set([...d.changed.keys(), ...d.extra.keys()])].sort((x, y) => x - y);
+        for (const n of lines) {
+          if (n < 1 || n > tr.state.doc.lines) continue;
+          const cls = [];
+          const tags = [];
+          if (d.changed.has(n)) {
+            cls.push("ud-diff-changed");
+            const now = d.changed.get(n);
+            tags.push(now == null ? "当前没有这一行" : `当前是 ${String(now).trim().slice(0, 44)}`);
+          }
+          if (d.extra.has(n)) {
+            cls.push("ud-diff-extra");
+            const x = d.extra.get(n);
+            tags.push(`当前这之后多 ${x.n} 行：${String(x.first).trim().slice(0, 30)}`);
+          }
+          b.add(tr.state.doc.line(n).from, tr.state.doc.line(n).from,
+            cm.Decoration.line({ class: cls.join(" "), attributes: { "data-diff": tags.join(" · ") } }));
+        }
+        return b.finish();
+      }
+      return set.map(tr.changes);
+    },
+    provide: (f) => cm.EditorView.decorations.from(f),
+  });
+}
+
+/** 把差异推进编辑器。看当前版时清空。 */
+function markDiff() {
+  if (!view || !setDiffEffect) return;
+  if (!curVersion || !disk) { view.dispatch({ effects: setDiffEffect.of(null) }); return; }
+  const d = diffVsCurrent(view.state.doc.toString(), disk.content);
+  view.dispatch({ effects: setDiffEffect.of(d) });
+  /* ⚠️ **算不出来要说出来**（行数超上限）。不说的话画面上一个标记都没有，
+     而「没有差异」和「没算差异」长得一模一样 —— 后者会让人以为这一版和当前一样。 */
+  el("roText").textContent = d
+    ? `只读 · 在看 ${curVersion}`
+    : `只读 · 在看 ${curVersion}（文件太大，差异没标）`;
+}
+
 function ensureChangedField(cm) {
   if (changedField) return;
   setChangedEffect = cm.StateEffect.define();
@@ -108,6 +168,81 @@ function changedLines(before, now) {
   for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) out.add(i + 1);
   return out;
 }
+/* ════ 看旧版时的差异标红（S18 演示态 9）════ */
+
+/** 掐头去尾之后中间还这么多行就不算了。
+ *  ⚠️ **这个上限比 `+N −M` 那个小**（4000 → 1200），因为这里要**回溯**而不只要长度：
+ *  长度可以滚动一维（两行数组），回溯要整张表 —— 1200×1200 的 Int32 表约 5.8 MB，
+ *  4000×4000 就是 64 MB，在一个 iframe 里申请那么大一块是不负责的。
+ *  算不出来就说「差异太大没标」，**给不出标记比让页面卡住好**。 */
+const DIFF_MAX = 1200;
+
+/** 旧版和当前版的行级差异，**映射到旧版的行号上**（编辑器里显示的正是旧版）。
+ *
+ *  回两张表：
+ *  - `changed`：旧版这一行在当前版里不一样。值 = 当前是什么（`null` = 当前没有这一行）
+ *  - `extra`：当前版在旧版这一行**之后**多出了几行。值 = `{ n, first }`
+ *
+ *  ⚠️ **必须做真 LCS，不能按行比。** 上面 `changedLines` 那个按行比是给
+ *  「我刚改的几行」用的（改动少、位置也对得上）；这里比的是两个版本，
+ *  中间可能插入过一整个函数 —— 按行比会把插入点之后的**每一行**都标成改过，
+ *  满屏红色，而实际只动了一处。**标多了不只是难看，是在说谎。**
+ */
+function diffVsCurrent(oldText, newText) {
+  const a = oldText.split("\n"), b = newText.split("\n");
+  /* 掐头去尾：两头相同的行先剥掉，中间那段常小一两个数量级 */
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const x = a.slice(head, a.length - tail), y = b.slice(head, b.length - tail);
+  if (x.length > DIFF_MAX || y.length > DIFF_MAX) return null;
+
+  const n = x.length, m = y.length, W = m + 1;
+  const T = new Int32Array((n + 1) * W);
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      T[i * W + j] = x[i - 1] === y[j - 1]
+        ? T[(i - 1) * W + j - 1] + 1
+        : Math.max(T[(i - 1) * W + j], T[i * W + j - 1]);
+    }
+  }
+  /* 回溯成 keep / del / ins 的序列 */
+  const ops = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && x[i - 1] === y[j - 1]) { ops.push({ t: "keep", i: i - 1 }); i--; j--; }
+    else if (j > 0 && (i === 0 || T[i * W + j - 1] >= T[(i - 1) * W + j])) { ops.push({ t: "ins", j: j - 1 }); j--; }
+    else { ops.push({ t: "del", i: i - 1 }); i--; }
+  }
+  ops.reverse();
+
+  const changed = new Map(), extra = new Map();
+  /* 旧版行号（1-based）= head + 段内下标 + 1 */
+  const lineOf = (k) => head + k + 1;
+  let lastKeptLine = head;   // 最近一个"两版都有"的旧版行号；插入挂在它之后
+  for (let k = 0; k < ops.length; ) {
+    const op = ops[k];
+    if (op.t === "keep") { lastKeptLine = lineOf(op.i); k++; continue; }
+    /* 把相邻的一段 del 和一段 ins 配成「替换」—— 逐行配对，多出来的各自单列。
+       不配对的话「改了一行」会报成「删一行 + 加一行」，而用户看到的是一行变了。 */
+    const dels = [], inss = [];
+    while (k < ops.length && ops[k].t === "del") dels.push(ops[k++].i);
+    while (k < ops.length && ops[k].t === "ins") inss.push(ops[k++].j);
+    const pair = Math.min(dels.length, inss.length);
+    for (let q = 0; q < pair; q++) changed.set(lineOf(dels[q]), y[inss[q]]);
+    /* 旧版有、当前没有 → 标红并说「当前没有这一行」 */
+    for (let q = pair; q < dels.length; q++) changed.set(lineOf(dels[q]), null);
+    /* 当前多出来的 → 挂在「这一段之前最后一个共有行」之后 */
+    if (inss.length > pair) {
+      const anchor = dels.length ? lineOf(dels[dels.length - 1]) : lastKeptLine;
+      extra.set(anchor, { n: inss.length - pair, first: y[inss[pair]] ?? "" });
+    }
+    if (dels.length) lastKeptLine = lineOf(dels[dels.length - 1]);
+  }
+  return { changed, extra };
+}
+
 /** 盘上那一版：内容 + sha + 快照号。**改动判定靠它** —— 不留这一份的话
  *  没法回答「改过没」，只能靠一个 boolean，而那个 boolean 在「改了又改回来」时是错的。 */
 let disk = null;
@@ -228,6 +363,7 @@ async function load(path, theme, opt = {}) {
   }
   el("err").hidden = true; el("host").hidden = false;
   ensureChangedField(cm);
+  ensureDiffField(cm);
   /* 换文件就回到只读（解锁只对一个页签生效，S18 §一.4） */
   if (path !== curPath) unlocked = false;
   /* `read_file` 给的是 path / kind / size / updatedAt / **sha256** / content / lines
@@ -254,6 +390,7 @@ async function load(path, theme, opt = {}) {
        而延迟会让「改了一个字横条还没出来」这种半秒的不一致被看见。 */
     cm.EditorView.updateListener.of((u) => { if (u.docChanged) { paint(); markChanged(); } }),
     changedField,
+    diffField,
     /* 改过的行：行底 warn-soft + 行号边一道 warn 竖线（S18 §一.1，和 S13 源码视图同一套）。
        ⚠️ 颜色走 CSS 变量并**带兜底值** —— 插件的 iframe 拿不到宿主的 token 表。 */
     cm.EditorView.theme({
@@ -261,6 +398,40 @@ async function load(path, theme, opt = {}) {
         background: "var(--warn-soft, rgba(210, 140, 40, .10))",
         /* 左边那道竖线：贴在行的最左侧，和稿里「行号右边一道 2px warn 竖线」等价 */
         boxShadow: "inset 2px 0 0 var(--warn, #c8821e)",
+      },
+      /* ── 看旧版时的差异（S18 演示态 9）──
+         `.cm-line` 默认是 static，标签要绝对定位，所以这一行必须先 relative。
+         ⚠️ 只给**带差异的行**加 relative，不全局加 —— 全局改 `.cm-line` 的定位
+         是在动 CodeMirror 的布局基座，出问题的地方会离这里很远。 */
+      ".cm-line.ud-diff-changed, .cm-line.ud-diff-extra": { position: "relative" },
+      /* 这一行在当前版里不一样：err 底 + 左侧一道 err 竖线 */
+      ".cm-line.ud-diff-changed": {
+        background: "var(--err-soft, rgba(190, 60, 60, .10))",
+        boxShadow: "inset 2px 0 0 var(--err, #c0392b)",
+      },
+      /* 当前版在这一行之后多了几行：行底一道 ok 线（稿里 `inset 0 -2px 0 var(--tool-ok)`） */
+      ".cm-line.ud-diff-extra": { boxShadow: "inset 0 -2px 0 var(--ok, #14795c)" },
+      /* 两样都有的行：两道线都要（后面的规则会整体覆盖 boxShadow，所以显式写全） */
+      ".cm-line.ud-diff-changed.ud-diff-extra": {
+        boxShadow: "inset 2px 0 0 var(--err, #c0392b), inset 0 -2px 0 var(--ok, #14795c)",
+      },
+      /* 右侧那枚标签。`attr()` 只取得到纯文本，正好够 —— 稿里它也只有一行字。
+         ⚠️ `pointer-events: none`：它盖在代码上，能点就会挡住选中。 */
+      ".cm-line[data-diff]::after": {
+        content: "attr(data-diff)",
+        position: "absolute", right: "16px", top: "1px",
+        font: "10px var(--mono, ui-monospace, monospace)",
+        padding: "0 6px", height: "18px", lineHeight: "16px",
+        borderRadius: "3px",
+        border: "1px solid var(--err-border, rgba(190, 60, 60, .35))",
+        background: "var(--panel, #fff)", color: "var(--err, #c0392b)",
+        whiteSpace: "nowrap", pointerEvents: "none",
+      },
+      /* 只多出行、没改这一行时，标签跟着变成 ok 色 —— 颜色和那道线要一致，
+         不然「绿线 + 红标签」会让人以为这一行也改过。 */
+      ".cm-line.ud-diff-extra:not(.ud-diff-changed)[data-diff]::after": {
+        border: "1px solid var(--ok-border, rgba(20, 121, 92, .35))",
+        color: "var(--ok, #14795c)",
       },
     }),
     /* ⚠️ **行号那道竖线不走 `gutterLineClass`**（2026-09-29 实测）。
@@ -296,6 +467,7 @@ async function load(path, theme, opt = {}) {
     view.dispatch({ selection: { anchor: Math.min(keep, max) } });
   }
   paint();
+  markDiff();   // 看旧版时把差异标出来；看当前版时它自己清空
 }
 
 /** 解锁。**只对这一个页签** —— 换文件回到只读（`load` 里重置）。

@@ -5,8 +5,19 @@
  *  （⌘B 收起再展开后，树的三角是展开的、子项却一个都没有）。**判据要跟着补，不是补完就算。**
  *
  *  用法：
- *    npm --prefix server run ui -- <项目名>        # 另开一个终端起服务
- *    node app/uitest.mjs http://127.0.0.1:<端口>/__app/
+ *    UMBRASTUDIO_NO_GIT=1 npm --prefix server run ui -- <项目名>   # 另开一个终端起服务
+ *    node app/uitest.mjs "http://127.0.0.1:<端口>/__app/?token=<令牌>"
+ *
+ *  ⚠️ **`UMBRASTUDIO_NO_GIT=1` 不是可选的。**（2026-09-30 实测抓到）
+ *  M9-7 之后每一次落盘都会往项目的 git 里记一版 —— 那对用户是对的，
+ *  但**回归一轮下来会塞几十上百个提交进他的仓库**。实测：一天跑几轮之后
+ *  用户项目从 0 提交变成 **101 个**，全是回归样本的。
+ *  留几个文件是脏，**污染他的版本历史是另一个量级**（纪律⑥）——
+ *  而且收尾那三条判据一条都抓不到它：它们数文件、数回收站、数快照，
+ *  **没有一条数提交**。
+ *
+ *  ⚠️ 令牌也别忘（Q42）：`/__app/` 不再无条件注入令牌，
+ *  不带 `?token=` 的话页面会停在「拿不到访问令牌」，而判据只会报「等不到 treeitem」。
  *
  *  判据一律「能在盘上/DOM 里数出来」，不看截图判对错（纪律②）。
  */
@@ -236,6 +247,11 @@ const SAMPLE_PATS = [
   /^_uitest/,            // 约定前缀，新样本都该走这个
   /^插件回归样本/,
   /^_暂存验收/, /^_无地址验收/, /^_三档验收/, /^_穿透验证/, /^_加地址验证-/, /^点选验证样本/,
+  /^版本历史回归/,      // M10-2b
+  /* ⚠️ 下面这几个是**补登记的**：2026-09-30 在用户项目里翻出 24 个残留快照目录，
+     其中四个的名字压根不在这张清单里 —— 文件被清掉了（那部分是对的），
+     快照目录留了好几轮。**清单漏一个名字，收尾就静默漏一个样本。** */
+  /^代码插件样本/, /^插件chrome样本/, /^✎回归样本/, /^差异标红验/, /^git真验/, /^版本历史手验/, /^诊断\.ts/,
 ];
 
 /** 扫掉回归留下的样本（项目根 + 回收站），返回清掉了什么。
@@ -273,14 +289,41 @@ const sweepSamples = async () => await pg.evaluate(async (pats) => {
       await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
     }
   }
+  out.dir = b.dir ?? null;
   return out;
 }, SAMPLE_PATS.map((r) => r.source));
+
+/** 判据留下的**快照目录**也要清（2026-09-30）。
+ *
+ *  ⚠️ `file_trash` + `trash_purge` 清的是**文件和回收站**，
+ *  `.umbrastudio/snapshots/<样本名>/` 留在原地 —— 于是：
+ *  ① 用户项目里一轮一轮堆快照（纪律⑥）；
+ *  ② **下一轮的读数是错的** —— 「写三次就是三版」量到 5 版，
+ *     因为 s1/s2 是上一轮留下的。**判据在污染自己，而症状看着像功能坏了。**
+ *
+ *  没有「删快照」这件能力，也不该为判据加一个后门 ——
+ *  uitest 跑在 node 里，直接用 fs 删。**只删名字对得上样本清单的那些目录。** */
+const sweepSnapshots = async (dir) => {
+  if (!dir) return [];
+  const { readdirSync, rmSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = join(dir, ".umbrastudio", "snapshots");
+  if (!existsSync(root)) return [];
+  const gone = [];
+  for (const name of readdirSync(root)) {
+    if (!SAMPLE_PATS.some((re) => re.test(name))) continue;
+    rmSync(join(root, name), { recursive: true, force: true });
+    gone.push(name);
+  }
+  return gone;
+};
 
 /* 开跑前先清 —— 上一轮可能抛在半路留下了东西 */
 {
   const pre = await sweepSamples();
-  if (pre.files.length || pre.trash.length) {
-    console.log(`  · 开跑前扫掉了上一轮的残留：项目根 ${pre.files.length} 份 · 回收站 ${pre.trash.length} 条`);
+  const snaps = await sweepSnapshots(pre.dir);
+  if (pre.files.length || pre.trash.length || snaps.length) {
+    console.log(`  · 开跑前扫掉了上一轮的残留：项目根 ${pre.files.length} 份 · 回收站 ${pre.trash.length} 条 · 快照 ${snaps.length} 份`);
   }
 }
 
@@ -1701,6 +1744,119 @@ console.log("\n插件 UI 的边界（M11-4）");
             }
 
 
+            /* ═══ 版本历史：药丸 / 下拉 / 看旧版 / 差异标红（M10-2b）═══
+               设计侧第十三轮定的形制。⚠️ 这一段的样本是**专门用来抓误标的**：
+               当前版在中间插了两行，按行比会把插入点之后的每一行都标成改过。 */
+            {
+              const V = "版本历史回归.ts";
+              const mk = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                const post = (r, body) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
+                const get = (r) => fetch(u(r)).then((x) => x.json());
+                const w1 = await post("file_write", { path: name, content: "const L1 = 1;\nconst L2 = 2;\nconst L3 = 3;\nconst L4 = 4;\nconst L5 = 5;\n", expectSha256: "0" });
+                if (!w1.ok) return false;
+                const cur = await get(`file?path=${encodeURIComponent(name)}`);
+                const w2 = await post("file_write", { path: name, content: "const L1 = 1;\nconst L2 = 2;\nconst NEW1 = 9;\nconst NEW2 = 9;\nconst L3 = 3;\nconst L4 = 44444;\nconst L5 = 5;\n", expectSha256: cur.data.sha256 });
+                if (!w2.ok) return false;
+                /* ⚠️ 第三版把 L4 **改回去**并在末尾加一行 —— 这是为了让
+                   「s1 和当前比」**算不出相邻 delta 的累加值**：
+                   累加是 +5 −2，而真值是 +3 −0（`−0` 累加永远给不出来）。
+                   两版的样本验不出这一条：那时 s1 的下一版就是当前，两个数恰好相等。 */
+                const cur2 = await get(`file?path=${encodeURIComponent(name)}`);
+                const w3 = await post("file_write", { path: name, content: "const L1 = 1;\nconst L2 = 2;\nconst NEW1 = 9;\nconst NEW2 = 9;\nconst L3 = 3;\nconst L4 = 4;\nconst L5 = 5;\nconst L6 = 6;\n", expectSha256: cur2.data.sha256 });
+                return w3.ok;
+              }, { name: V });
+              if (mk) {
+                await pg.waitForTimeout(1200);
+                const vRow = pg.locator('[role="treeitem"]').filter({ hasText: V }).first();
+                if (await vRow.count()) {
+                  await vRow.click(); await pg.waitForTimeout(2800);
+                  await clearGuard();
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await vRow.click(); await pg.waitForTimeout(2500); }
+
+                  const pill = pg.locator('[data-ud="version-pill"]');
+                  ok(await pill.count() === 1, "**代码文件有版本历史药丸**（M10-2b）", (await pill.innerText().catch(() => "")).trim());
+                  await pill.click(); await pg.waitForTimeout(700);
+                  const vRows = pg.locator('[data-ud="version-row"]');
+                  ok(await vRows.count() === 3, "**写三次就是三版**（没有重复快照）", `${await vRows.count()} 行`);
+                  const listText = (await pg.locator('[data-ud="versions"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+                  /* `+N −M` 由后端算 —— 第一版「全新增」，第二版「+2 −1」（插两行 + 改一行） */
+                  ok(/\+6/.test(listText), "第一版算「全新增」（6 行）", listText.slice(0, 90));
+                  ok(/\+3\s*−1/.test(listText), "**第二版算 +3 −1**（插两行 + 改一行，不是整份重算）", listText.slice(0, 120));
+                  ok(/\+2\s*−1/.test(listText), "第三版算 +2 −1（改回一行 + 末尾加一行）", listText.slice(0, 140));
+
+                  /* 点最老那一行 = 看那一版 */
+                  await vRows.last().click(); await pg.waitForTimeout(3200);
+                  const fr = pg.frameLocator('iframe[data-role="body"]');
+                  const shown = (await fr.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/L4 = 4;/.test(shown) && !/NEW1/.test(shown),
+                     "**编辑区真换成了那一版的原文**（不是还显示当前那份）", shown.slice(0, 70));
+                  ok(await pg.locator('[data-ud="viewing-bar"]').count() === 1, "工具条上出「只读 · 和当前 … 比」那一条");
+                  const vbar = (await pg.locator('[data-ud="viewing-bar"]').innerText().catch(() => "")).replace(/\s+/g, " ");
+                  /* ⚠️ **这一条只有三版才验得出来。**
+                     s1 vs 当前的真值是 `+3 −0`；而相邻 delta 的累加是 `+5 −2` ——
+                     **`−0` 是累加永远给不出的数**（L4 改走又改回来，累加会把它算两次）。
+                     两版的样本里「和当前比」恰好等于「相邻 delta」，判据会通过而什么都没验到
+                     （第一版我就是这么写的，读数对了而判据是空的）。 */
+                  ok(/\+3\s*−0/.test(vbar),
+                     "**「和当前比」是单独算的**（真值 +3 −0；拿相邻 delta 累加会得 +5 −2）", vbar.slice(0, 60));
+
+                  /* 只读：看历史版不能改 */
+                  await fr.locator(".cm-content").click();
+                  await pg.keyboard.type("ZZ");
+                  await pg.waitForTimeout(500);
+                  ok(!(await fr.locator(".cm-content").innerText().catch(() => "")).includes("ZZ"),
+                     "**看历史版时改不进去**（改一份快照没有正确结果）");
+
+                  /* ⚠️ 这几条是这一段的**核心**：真 LCS 不许误标。
+                     现在看的是 s1，它和当前的差别全是「当前多出来的行」——
+                     L2 之后多 2 行（NEW1/NEW2）、L5 之后多 1 行（L6），
+                     而 **L3 / L4 / L5 一行都不该标**：按行比会把它们全标成改过。 */
+                  const changed = fr.locator(".cm-line.ud-diff-changed");
+                  const extra = fr.locator(".cm-line.ud-diff-extra");
+                  ok(await changed.count() === 0,
+                     "**纯插入不标任何「改过的行」**（按行比会把插入点之后的 3 行全标成改过）",
+                     `标红 ${await changed.count()} 行`);
+                  ok(await extra.count() === 2, "两处插入各标一道，位置分开", `${await extra.count()} 处`);
+                  const tags = [];
+                  for (let q = 0; q < await extra.count(); q++) tags.push(await extra.nth(q).getAttribute("data-diff"));
+                  ok(tags.some((t) => /多 2 行/.test(t ?? "")) && tags.some((t) => /多 1 行/.test(t ?? "")),
+                     "**每一处说清自己多了几行**（不是给一个总数）", tags.join(" | "));
+                  /* 标签是 CSS `::after` 画的 —— 要验它**真的有宽度**，
+                     不然「class 挂上了但看不见」会全部通过（§一〇〇 那条「缓存结论总会被绕过」同族）。 */
+                  const tagW = await extra.first().evaluate((n) => parseFloat(getComputedStyle(n, "::after").width) || 0);
+                  ok(tagW > 40, "**标签真画出来了**（不是 class 挂上了而看不见）", `::after 宽 ${tagW}px`);
+
+                  /* ── 换看中间那一版（s2）：它和当前差一行内容，验「改过的行」+ 标签 ── */
+                  await pill.click(); await pg.waitForTimeout(700);
+                  await pg.locator('[data-ud="version-row"]').nth(1).click(); await pg.waitForTimeout(3200);
+                  ok(await changed.count() === 1,
+                     "**改过一行的那一版：只标那一行**", `标红 ${await changed.count()} 行`);
+                  ok(/当前是 const L4 = 4;/.test(await changed.first().getAttribute("data-diff") ?? ""),
+                     "标签写出**当前是什么**（不只是「这行变了」）", await changed.first().getAttribute("data-diff"));
+
+                  /* Esc 回到当前：标记要全清 */
+                  await pg.keyboard.press("Escape"); await pg.waitForTimeout(2800);
+                  ok(await pg.locator('[data-ud="viewing-bar"]').count() === 0, "**Esc 回到当前**（焦点在插件 iframe 里也管用）");
+                  ok(await changed.count() === 0 && await extra.count() === 0, "回到当前之后差异标记全清");
+                  const back = (await fr.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/NEW1/.test(back), "编辑区回到当前那一份", back.slice(0, 60));
+                } else ok(false, "版本历史样本建好了但树里没刷出来");
+                /* ⚠️ **自己建的自己清。** 第一版漏了这一段，于是收尾那三条判据全红
+                   并报出 `版本历史回归.ts` —— 收尾抓住了，但那是最后一道，
+                   不该指望它替每一节兜。 */
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { name: V });
+              } else ok(false, "建不出版本历史样本");
+            }
+
             /* ═══ 非 dc 的 `.html`：预览 + 点选（M10-3）═══
                ⚠️ 这一条端到端穿过**三层 iframe**：工作台 → 插件 → 预览页。
                判据数的是**真的渲染出来了、真的点中了**，不是「iframe 标签在」。 */
@@ -1832,6 +1988,34 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
      left.files.length ? "清掉了：" + left.files.join("、") : "干净");
   ok(left.trash.length === 0, "回收站里也没堆着（每跑一轮堆一条，二十轮之后用户会看到二十份）",
      left.trash.length ? "清掉了：" + left.trash.join("、") : "干净");
+  /* 快照目录：`trash_purge` 不带走它，而**没有哪一节负责清它** ——
+     这里是唯一的清理者，所以「清掉了几个」是正常读数，不是缺陷。
+     ⚠️ 判据要问的是**清完之后还剩没有**：
+     第一版我判「清掉了几个 === 0」，于是收尾一清东西判据就红 ——
+     **那是把「清理动作」当成了「有问题的证据」。**
+     留着的真代价是下一轮读数会错（「写三次就是三版」量到 5 版），所以清干净就够。 */
+  const swept = await sweepSnapshots(left.dir);
+  const stillThere = await sweepSnapshots(left.dir);
+  ok(stillThere.length === 0, "**快照目录清干净了**（留着会让下一轮读数变错，不只是脏）",
+     `这一轮清掉 ${swept.length} 份 · 再扫一次剩 ${stillThere.length} 份`);
+
+  /* ⚠️ **数一次 git 提交。** 2026-09-30 实测：用户项目从 0 提交变成 101 个，
+     全是回归样本落盘时 `commitAfterWrite` 记的 —— 而上面三条判据
+     **一条都抓不到**（它们数文件、数回收站、数快照，没有一条数提交）。
+     修法是起服务时带 `UMBRASTUDIO_NO_GIT=1`，这条判据钉住「真的带了」。
+     **清不掉就明说** —— 撤别人的提交不是判据该干的事，报出来让人处理。 */
+  if (left.dir) {
+    const { execFileSync } = await import("node:child_process");
+    const mine = (() => {
+      try {
+        const log = execFileSync("git", ["log", "--oneline", "--all"], { cwd: left.dir, encoding: "utf8" });
+        return log.split("\n").filter((l) => SAMPLE_PATS.some((re) => re.test(l.replace(/^\S+\s+(写入 )?/, "")))).length;
+      } catch { return 0; }
+    })();
+    ok(mine === 0,
+       "**没往用户的 git 仓库塞提交**（起服务要带 `UMBRASTUDIO_NO_GIT=1`）",
+       mine ? `有 ${mine} 个提交是回归样本的，请自己 git 收拾（判据不替你撤别人的提交）` : "干净");
+  }
 }
 
 console.log(`\n${fail ? "✗" : "✓"} 界面回归 ${pass}/${pass + fail}\n`);

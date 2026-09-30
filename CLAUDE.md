@@ -268,6 +268,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run plugintest` | 插件机制回归（M11-4）：**重点不是「能跑」是「关不关得住」** —— 演示插件同时是攻击样本 |
 | `npm --prefix server run rendertest` | 渲染回归（要浏览器） |
 | `npm --prefix server run ui -- <项目名>` | 起界面给人用 |
+| `UMBRASTUDIO_NO_GIT=1 npm --prefix server run ui -- <项目名>` | **跑 uitest 时一律这么起。** M9-7 之后每次落盘都往项目 git 记一版，而回归一轮会塞几十上百个提交进用户仓库（2026-09-30 实测：他项目从 0 提交变 **101** 个）。留文件是脏，**污染版本历史是另一个量级** |
 | `npm --prefix server run outgoing` | 给设计侧打包 ui/（每份稿插 baseline 行），产出 `outgoing/UmbraStudio-ui-<时间>.zip`；**每一轮交办都要随附这个包**（`doc/00` §三十二） |
 | `npm --prefix server run incoming` | 接设计侧交回来的稿（`ui/_incoming/`），先查底稿（正确 / 过时 / 不明），再查合法性与接线标记；加 `-- --apply` 把过关的稿并入 `ui/` |
 | `npm --prefix shell start` / `run dist` | 起 Electron 壳 / 打包 mac arm64（`doc/00` §五十三、§六十三）；`run dist:all` 出四份产物（mac arm64/x64 dmg+zip、win x64/arm64 zip） |
