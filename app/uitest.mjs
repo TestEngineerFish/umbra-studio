@@ -22,6 +22,10 @@
  *  判据一律「能在盘上/DOM 里数出来」，不看截图判对错（纪律②）。
  */
 import { chromium } from "../server/node_modules/playwright-core/index.mjs";
+/* ⚠️ **GBK 样本只能用 fs 写。** 写入口只收字符串，而字符串落盘一定是 UTF-8 ——
+   拿它写不出一份「不是 UTF-8 的文件」，也就测不了「认出编码不对」这件事。
+   绕过写入口在这里是对的：样本不是产品行为，**它是仪器**。 */
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
 
 const URL_ = process.argv[2];
 if (!URL_) { console.error("用法：node app/uitest.mjs <__app 的 URL>"); process.exit(2); }
@@ -1853,6 +1857,44 @@ console.log("\n插件 UI 的边界（M11-4）");
                      "**只看坏行时行号不重排**（改的时候要对得上源码）", n2.join(" / "));
                   await btnAt(badIdx).click(); await pg.waitForTimeout(700);
                   ok(await cf.locator(".crow").count() === 4, "再点回到全部", `${await cf.locator(".crow").count()} 行`);
+
+                  /* ── 挑几行 → 给 AI（S20 演示态 3/4）── */
+                  const aiIdx = (await labels()).findIndex((t) => /选中行给 AI/.test(t));
+                  ok(aiIdx >= 0 && await btnAt(aiIdx).isDisabled(),
+                     "**没选中时那颗钮是灰的**（一颗点了没反应的钮比一颗灰的更糟）");
+                  ok(/先点左边的行号/.test(await btnAt(aiIdx).getAttribute("title") ?? ""),
+                     "而且说得出要先做什么", await btnAt(aiIdx).getAttribute("title"));
+
+                  await cf.locator('.crow[data-row="1"] .cnum').click(); await pg.waitForTimeout(350);
+                  await cf.locator('.crow[data-row="3"] .cnum').click({ modifiers: ["Shift"] }); await pg.waitForTimeout(350);
+                  ok(await cf.locator(".crow.on").count() === 3, "**⇧ 点扩成一段**", `选中 ${await cf.locator(".crow.on").count()} 行`);
+                  ok(!(await btnAt(aiIdx).isDisabled()), "选中之后钮亮了");
+
+                  /* ⚠️ **只看点击后新出现的文字，不读整个会话栏。**
+                     手验时我先读 `[data-ud="chat"]`（选错了）读成空，
+                     又读整个 `aside` 读到一屏历史消息 —— 而那一段的注释（§1541）
+                     早就警告过「找药丸本身，不找会话栏里随便什么文字」。
+                     差集比选择器稳：它不依赖任何 class 名。 */
+                  const snapAside = () => pg.evaluate(() =>
+                    [...document.querySelectorAll("aside *")].map((n) => (n.textContent || "").trim()).filter((t) => t && t.length < 80));
+                  const beforePill = new Set(await snapAside());
+                  await btnAt(aiIdx).click(); await pg.waitForTimeout(1100);
+                  const freshPill = (await snapAside()).filter((t) => !beforePill.has(t));
+                  ok(freshPill.some((t) => /^csv · csv回归\.csv · L\d/.test(t)),
+                     "**挂出 csv 药丸**（写 `csv · 文件 · 行范围`，不是直接发给 AI）",
+                     freshPill.find((t) => /csv ·/.test(t)) ?? freshPill.slice(0, 2).join(" | "));
+                  /* ⚠️ 这一条不能用差集：`range` 这个词**本轮之前就出现过**
+                     （上面 S18 那颗药丸也是 range），所以它不在「新出现」里。
+                     差集只对**这一次才有的文字**有效 —— 类型名是复用的，得直接问那颗药丸。 */
+                  const pillWhole = freshPill.find((t) => /csv回归\.csv/.test(t) && t.length > 20) ?? "";
+                  ok(/range/.test(pillWhole),
+                     "药丸的类型是 range（和 S18 选区那颗同一种，AI 那边按同一套读）", pillWhole);
+
+                  /* 选一整列 */
+                  await cf.locator('.chead [data-col="2"]').click(); await pg.waitForTimeout(450);
+                  ok(await cf.locator(".ccell.colon").count() > 1, "**点列名选中一整列**", `${await cf.locator(".ccell.colon").count()} 格高亮`);
+                  ok(/这一列的值/.test(await btnAt(aiIdx).getAttribute("title") ?? ""),
+                     "选列时那颗钮说的是「带表头 + 这一列的值」", await btnAt(aiIdx).getAttribute("title"));
                 } else ok(false, "csv 样本建好了但树里没刷出来");
                 await pg.evaluate(async ({ name }) => {
                   const b = window.__UD_APP;
@@ -1864,6 +1906,92 @@ console.log("\n插件 UI 的边界（M11-4）");
                     await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
                 }, { name: C });
               } else ok(false, "建不出 csv 样本");
+            }
+
+            /* ═══ CSV 演示态 7：编码不对（M10-5，S20）═══
+               设计侧的原话是「**编码没确定之前只读 —— 按错的编码落盘会把原文写坏**」。
+               这一节钉三件事，顺序就是用户会碰到的顺序：
+                 ① 认出来并说出证据（不是一句「编码有问题」）
+                 ② **第一次打开就只读**，而且说得出为什么
+                 ③ 换读法真的换对了，而**盘上一个字节都没动**
+
+               ⚠️ ② 那一条是钉一个实测栽过的顺序 bug（2026-09-30）：
+               `roReason` 原来算在编码嗅探**之前**，用的是上一个文件的编码结论。
+               手上先开过别的文件时它恰好是对的 —— **只有「第一次就打开乱码 CSV」才漏**。
+               所以这一节必须自己开一份新文件点进去，不能接着上一节的状态测。 */
+            {
+              const G = "gbk回归.csv";
+              const dir = await pg.evaluate(() => window.__UD_APP.dir);
+              /* `订单,金额\n1,100\n2,200\n` 的 GBK 字节。**写死字节不写转码** ——
+                 Node 的 `Buffer` 没有 GBK 编码器（`TextEncoder` 只有 UTF-8），
+                 而为一份三行的夹具引一个转码库不值得。 */
+              const bytes = Buffer.from([
+                0xb6, 0xa9, 0xb5, 0xa5, 0x2c, 0xbd, 0xf0, 0xb6, 0xee, 0x0a,
+                0x31, 0x2c, 0x31, 0x30, 0x30, 0x0a,
+                0x32, 0x2c, 0x32, 0x30, 0x30, 0x0a,
+              ]);
+              writeFileSync(`${dir}/${G}`, bytes);
+              await pg.waitForTimeout(1600);
+              const grow = pg.locator('[role="treeitem"]').filter({ hasText: G }).first();
+              if (await grow.count()) {
+                await grow.click(); await pg.waitForTimeout(3200);
+                /* 上一节留了未落盘的东西就会被确认卡拦住 —— 回去再点一次 */
+                if (await pg.locator('[role="alertdialog"]').count()) {
+                  await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click();
+                  await pg.waitForTimeout(400); await grow.click(); await pg.waitForTimeout(2800);
+                }
+                const gf = pg.frameLocator('iframe[data-role="body"]');
+                const encbar = () => gf.locator("#encbar").innerText().catch(() => "").then((t) => t.replace(/\s+/g, " ").trim());
+                /* ⚠️ **只读要连「横条真的显示出来了」一起验。**
+                   `#roText` 的静态文案就是「只读」—— 横条 `hidden` 时读它照样拿到那两个字，
+                   于是一条「只读了吗」的判据会在**根本没只读**的情况下通过。
+                   2026-09-30 手验时就被这两个字骗过一次（§一三二）。 */
+                const roNow = async () => {
+                  const shown = await gf.locator("#ro").evaluate((n) => !n.hidden && getComputedStyle(n).display !== "none").catch(() => false);
+                  return shown ? (await gf.locator("#roText").textContent().catch(() => "")).trim() : "";
+                };
+                const head3 = async () => {
+                  const out = [];
+                  for (let i = 0; i < Math.min(3, await gf.locator(".ccell").count()); i++) out.push((await gf.locator(".ccell").nth(i).innerText()).trim());
+                  return out;
+                };
+
+                const bar0 = await encbar();
+                ok(/不是 UTF-8/.test(bar0) && /\d+ 个乱码字符/.test(bar0),
+                   "**认出来并摆出证据**（说出几个乱码字符、占多少，不是一句「编码有问题」）", bar0.slice(0, 60));
+                ok(/按 GBK 重读/.test(bar0), "给出出路（列的是实测支持的编码，不是一个下拉框）");
+
+                const ro0 = await roNow();
+                ok(/编码还没确定/.test(ro0),
+                   "**第一次打开就只读，而且说得出为什么**（钉 2026-09-30 那条顺序 bug：只读判定要排在编码嗅探之后）", ro0 || "（没只读）");
+
+                ok((await head3()).some((t) => /\uFFFD/.test(t)), "重读前表头是乱码", JSON.stringify(await head3()));
+
+                await gf.locator('#encbar button:has-text("GBK")').first().click();
+                await pg.waitForTimeout(2600);
+                const after = await head3();
+                ok(after[0] === "订单" && after[1] === "金额",
+                   "**按 GBK 重读真的读对了**（表头从乱码变成 订单 / 金额）", JSON.stringify(after));
+
+                const bar1 = await encbar();
+                /* ⚠️ **重读成功之后提示条要留着。** 第一版它消失了 ——
+                   因为 `cenc` 是对已解码文本重新嗅探的，读对了就没有乱码、`confident` 变真。
+                   而那意味着用户点完按钮**画面上什么都不剩**：他既看不到「现在按什么读的」，
+                   也没有回到 UTF-8 的出路，只能以为自己没点成。 */
+                ok(/正在按 GBK 读/.test(bar1), "**重读之后提示条留着并说出现在按什么读**", bar1.slice(0, 50));
+                ok(/回到 UTF-8/.test(bar1), "而且留着回头的路");
+
+                const ro1 = await roNow();
+                ok(/落盘会存成 UTF-8/.test(ro1),
+                   "**读对了也还是只读，原因换成后果**（我们的落盘只写 UTF-8 —— 改一个字整份 GBK 被静默转码）", ro1 || "（不只读了）");
+
+                ok(Buffer.compare(readFileSync(`${dir}/${G}`), bytes) === 0,
+                   "**盘上那份一个字节都没动**（换读法不是改文件）");
+              } else ok(false, "gbk 样本写进去了但树里没刷出来");
+              /* 收尾：这一份是 fs 写进去的（没走写入口，所以没有快照没有 git），
+                 fs 删掉就干净了 —— 不进回收站，免得用户那里多一份。 */
+              rmSync(`${dir}/${G}`, { force: true });
+              await pg.waitForTimeout(600);
             }
 
             /* ═══ JSON：源码 / 树 两档（M10-4，S19）═══

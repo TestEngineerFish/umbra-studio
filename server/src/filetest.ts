@@ -437,6 +437,54 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await clearStagedDraft(proj, F);
 }
 
+/* ── 按别的编码读（M10-5，S20 演示态 7「编码不对」）──
+   ⚠️ S20 的原话：「只换读法不改文件」「编码没确定之前只读 ——
+   按错的编码落盘会把原文写坏」。所以这一段要钉两件：
+   **读得对**，以及**沿着这条路进来的写不会绕过写前校验**。 */
+{
+  const proj = await buildProject(DIR);
+  /* ⚠️ **先把 csv 类型注册上** —— 它由内置插件声明（`plugins/com.umbra.code/`），
+     而这个判据跑在一个独立的 node 进程里，没走插件注册那条路。
+     不注册的话 `.csv` 判成 `other`，`readAnyFile` 当场以「不是文本文件」返回，
+     **而那和「按 GBK 读不出来」长得一模一样** —— 第一版我就是这么被读数骗了一下。
+     注册一次就是在**模拟用户的真实状态**（代码插件是内置的，卸不掉）。 */
+  const { registerKind, unregisterKindsFrom } = await import("./shared/kinds.js");
+  registerKind({ id: "csv", label: "CSV", icon: "▦", priority: 10, textual: true,
+    match: (n: string) => n.endsWith(".csv") || n.endsWith(".tsv"), from: "filetest" });
+  const G = "gbk样本.csv";
+  /* GBK 的「订单,金额\n1,100\n」—— 直接写字节，不经写入口（它只收字符串） */
+  const bytes = Buffer.from([
+    0xb6, 0xa9, 0xb5, 0xa5, 0x2c, 0xbd, 0xf0, 0xb6, 0xee, 0x0a,   // 订单,金额\n
+    0x31, 0x2c, 0x31, 0x30, 0x30, 0x0a,                             // 1,100\n
+  ]);
+  await writeFile(join(DIR, G), bytes);
+
+  const asUtf8 = await readAnyFile(proj, G);
+  ok("**按 UTF-8 读是乱码**（这就是用户看到的症状）",
+     /\uFFFD/.test(asUtf8.content ?? ""), (asUtf8.content ?? "").slice(0, 14));
+  const asGbk = await readAnyFile(proj, G, "gbk");
+  ok("**按 GBK 读就对了**", asGbk.content === "订单,金额\n1,100\n", JSON.stringify(asGbk.content));
+  ok("而且说得出是按哪种编码读的", asGbk.encoding === "gbk", asGbk.encoding);
+
+  /* ⚠️ 这一条是这一段的核心：**sha 是原始字节的，不随编码变**。
+     不这样的话「按 GBK 读 → 拿它的 sha 去写」会绕过写前校验那道闸。 */
+  ok("**sha256 不随编码变**（它是原始字节的 —— 否则按别的编码读就绕过了写前校验）",
+     asGbk.sha256 === asUtf8.sha256, `${asGbk.sha256.slice(0, 12)} vs ${asUtf8.sha256.slice(0, 12)}`);
+
+  /* 盘上一个字节都没动 */
+  const after = await readFile(join(DIR, G));
+  ok("**盘上那份一个字节都没动**（只换读法）", Buffer.compare(after, bytes) === 0, `${after.length} 字节`);
+
+  /* 白名单：不认识的编码要说不行，不能静默回退成 UTF-8 */
+  const weird = await readAnyFile(proj, G, "没这个编码");
+  ok("不支持的编码说不行，并列出能用的（不静默回退成 UTF-8）",
+     weird.content === null && /不支持按/.test(weird.why ?? ""), weird.why);
+  /* utf-8 显式传也行，且不设 encoding 字段（它只在「不是默认」时才有意义） */
+  const explicit = await readAnyFile(proj, G, "utf-8");
+  ok("显式传 utf-8 等于不传", explicit.content === asUtf8.content && explicit.encoding === undefined);
+  unregisterKindsFrom("filetest");         // 自己注册的自己摘掉，别影响后面的判据
+}
+
 /* ── 插件调得到 `read_file_version` 吗（白名单是白名单，新加的能力默认进不来）── */
 {
   const { allowedCapNames } = await import("./plugin/host.js");

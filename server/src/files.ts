@@ -160,9 +160,17 @@ export interface ReadFileResult {
   snapshot?: string;
   /** 图片：原始尺寸 */
   width?: number; height?: number;
+  /** 按哪种编码读出来的（只在不是 utf-8 时给）。
+   *  ⚠️ 它是**读法**不是文件属性 —— 盘上那份一个字节都没动。 */
+  encoding?: string;
 }
 
-export async function readAnyFile(p: Project, rel: string): Promise<ReadFileResult> {
+/** 允许按哪些编码读。**白名单，不是「随便传什么都试」** ——
+ *  `TextDecoder` 认得几十种，而我们只为「中文 CSV 被当成 UTF-8」这一类真实需求开口子。
+ *  实测过这几种在 Node 和浏览器里都在（M10-5）。 */
+const READ_ENCODINGS = new Set(["utf-8", "gbk", "gb18030", "big5", "shift_jis", "utf-16le", "windows-1252"]);
+
+export async function readAnyFile(p: Project, rel: string, encoding?: string): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
   const buf = await readFile(abs);
@@ -175,7 +183,24 @@ export async function readAnyFile(p: Project, rel: string): Promise<ReadFileResu
   if (out.kind === "image") Object.assign(out, await imageSize(abs));
   if (!isTextual(rel)) { out.why = "不是文本文件"; return out; }
   if (st.size > TEXT_MAX) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${TEXT_MAX / 1024 / 1024} MB 上限`; return out; }
-  out.content = buf.toString("utf8");
+  /* ⚠️ **`sha256` 算的是原始字节，不随编码变**（上面 `sha256(buf)`）——
+     所以按 GBK 读出来的文本，拿这个 sha 回去做写前校验仍然是对的。
+     这一点不成立的话「按别的编码读」就会把写入口的那道闸绕过去。 */
+  if (encoding && encoding !== "utf-8") {
+    if (!READ_ENCODINGS.has(encoding)) {
+      out.why = `不支持按 ${encoding} 读（能用的：${[...READ_ENCODINGS].join(" / ")}）`;
+      return out;
+    }
+    try {
+      out.content = new TextDecoder(encoding).decode(buf);
+      out.encoding = encoding;
+    } catch (e) {
+      out.why = `按 ${encoding} 读不出来：${e instanceof Error ? e.message : String(e)}`;
+      return out;
+    }
+  } else {
+    out.content = buf.toString("utf8");
+  }
   out.lines = out.content.length ? out.content.split("\n").length : 0;
   return out;
 }

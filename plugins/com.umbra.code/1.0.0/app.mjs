@@ -174,7 +174,7 @@ let roReason = null;
  *  ⚠️ 这不是「保护」，是**省去一次误会**：这些文件改了也没用（下次生成就覆盖），
  *  而用户要花几秒才意识到这一点。所以只读下**照样能选中、复制、给 AI** ——
  *  只读不等于「这个文件与你无关」。 */
-function readOnlyReason(path, size, version, previewingDraft, encUnsure) {
+function readOnlyReason(path, size, version, previewingDraft, encUnsure, readAs) {
   /* ⚠️ **看草稿差异时也一律只读**，理由和看历史版一样：
      编辑区里放的不是「当前这份文件」，让人改它得不出正确结果 ——
      改完算谁的？存回哪？按 ⌘S 会把草稿当成新内容盖掉盘上那份，
@@ -185,6 +185,14 @@ function readOnlyReason(path, size, version, previewingDraft, encUnsure) {
      我们读进来的是按 UTF-8 解过的文本，里面已经有替换字符了，
      照这个落盘等于把用户的原文**永久改成一串问号**。 */
   if (encUnsure) return "编码还没确定";
+  /* ⚠️ **按别的编码读对了，也还是只读。**（2026-09-30 想清楚的一条）
+     重读成功之后 `encUnsure` 就不成立了，照上面那条会自动放开编辑 ——
+     **而我们的落盘只会写 UTF-8**。那意味着用户改一个字，
+     整份 GBK 文件被**静默转成 UTF-8**：他的改动是对的，文件的编码变了，
+     而别的按 GBK 读它的程序从此看到乱码。
+     这不是「保护」，是**把一个后果说出来**：原因里写明会变成 UTF-8，
+     真想这么做的人点「解锁编辑」——那时候他是知情的。 */
+  if (readAs) return `按 ${String(readAs).toUpperCase()} 读的 · 落盘会存成 UTF-8`;
   /* ⚠️ **看历史版本时一律只读，而且这一条要排在最前面。**
      让人改一份历史快照没有任何意义 —— 改了往哪写？写回去就把当前版覆盖了，
      而他以为自己在改「当前」。这不是保护，是**消除一个不可能有正确结果的操作**。
@@ -236,16 +244,21 @@ function renderTable() {
   host.textContent = "";
   if (!cparsed) return;
 
-  /* 编码没确定：顶上一条，给「按 GBK 重读」。**只换读法不改文件** */
-  if (cenc && !cenc.confident) {
+  /* 编码这一条：没确定时给「按 X 重读」；**重读成功之后也要留着**。
+     ⚠️ 不留的话用户点完按钮那条说明连同「正在按 GBK 读」一起消失 ——
+     **他会以为自己什么都没干成**，而实际上刚刚成功了。
+     留着还有第二个用处：它是唯一能告诉他「现在是按什么读的」的地方。 */
+  if (creadAs || (cenc && !cenc.confident)) {
     const bar = document.createElement("div");
     bar.className = "encbar";
     bar.id = "encbar";
     const t = document.createElement("span");
-    t.textContent = creadAs ? `正在按 ${creadAs} 读 · 原文一个字节都没动` : cenc.why;
+    t.textContent = creadAs
+      ? `正在按 ${creadAs.toUpperCase()} 读 · 盘上那份一个字节都没动`
+      : cenc.why;
     bar.appendChild(t);
     const sp = document.createElement("span"); sp.style.flex = "1"; bar.appendChild(sp);
-    for (const alt of (cenc.alternatives ?? []).slice(0, 2)) {
+    for (const alt of ((cenc && cenc.alternatives) ?? ["gbk", "gb18030"]).slice(0, 2)) {
       if (alt === creadAs) continue;
       const b = document.createElement("button");
       b.type = "button"; b.className = "btn sm"; b.textContent = `按 ${alt.toUpperCase()} 重读`;
@@ -536,6 +549,43 @@ function sendNode(n) {
   );
 }
 
+/** 把选中的几行带进会话（S20 演示态 3/4）。
+ *
+ *  ⚠️ **带的是「表头 + 这几行原文」**（S20 的原话：「不然 AI 不知道每列是什么」）。
+ *  只给几行数据的话，AI 看到的是一堆没有列名的值 —— 它连「第三列是金额还是数量」都不知道。
+ */
+function sendCsvRows() {
+  if (!cparsed || !disk) return;
+  const rows = cparsed.rows;
+  let picked = [];
+  if (csel) for (let i = csel[0]; i <= csel[1]; i++) { if (rows[i]) picked.push(rows[i]); }
+  else if (ccol >= 0) {
+    /* 选了一列：带表头 + 这一列的值（带行号，不然对不回去） */
+    const name = cparsed.header?.cells[ccol] ?? `第 ${ccol + 1} 列`;
+    const vals = rows.slice(1).map((r) => `L${r.line}\t${r.cells[ccol] ?? ""}`);
+    umbra.pick(
+      `csv · ${(curPath || "").split("/").pop()} · 列 ${name}`,
+      `${curPath} 的「${name}」这一列（共 ${vals.length} 行）：\n\n\`\`\`\n${name}\n${vals.slice(0, 200).join("\n")}${vals.length > 200 ? `\n… 还有 ${vals.length - 200} 行` : ""}\n\`\`\`\n`,
+    );
+    return;
+  } else {
+    /* ⚠️ **没选中就说一句，别静默 return。**
+       自查时抓到的：点了「选中行给 AI」什么都不发生 —— 这正是我们反复在修的那一类。
+       按钮那边已经置灰了，但 ⌘L 走的是同一条路，键盘按下来时得有人说话。 */
+    umbra.toast("先选几行", "点左边的行号选一行，⇧ 点扩成一段；点列名选一整列", "error");
+    return;
+  }
+  if (!picked.length) { umbra.toast("选中的行不见了", "文件可能刚被改过，重新选一次", "error"); return; }
+  const head = cparsed.header ? disk.content.slice(cparsed.header.from, cparsed.header.to) : "";
+  const body = picked.map((r) => disk.content.slice(r.from, r.to)).join("");
+  const first = picked[0], last = picked[picked.length - 1];
+  const range = first.line === last.endLine ? `L${first.line}` : `L${first.line}–${last.endLine}`;
+  umbra.pick(
+    `csv · ${(curPath || "").split("/").pop()} · ${range}`,
+    `${curPath} ${range}（${picked.length} 行，**第一行是表头**）：\n\n\`\`\`\n${head}${body}\`\`\`\n`,
+  );
+}
+
 /** 切档。**只有 `.json` 有树档**；解析不了的时候树钮是灰的（见 `paint`）。 */
 function setMode(m) {
   if (m === "tree" && (!isJson() || !jparsed || !jparsed.ok)) return;
@@ -761,7 +811,15 @@ function paint() {
           ? [{ label: cfilter ? `只看有问题的 ${cparsed.badCount} 行 · 回到全部` : `${cparsed.badCount} 行有问题`,
                title: "只留有问题的行；行号不重排，改的时候对得上源码" }]
           : []),
-        { label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" },
+        /* CSV 表档时这颗按钮的语义不同：带的是选中的**记录**，不是编辑器选区。
+           ⚠️ 没选中就**置灰并说清原因** —— 一颗点了没反应的钮比一颗灰的更糟。 */
+        isCsv() && mode === "table"
+          ? { label: "选中行给 AI",
+              disabled: !csel && ccol < 0,
+              title: !csel && ccol < 0
+                ? "先点左边的行号选几行，或者点列名选一整列"
+                : csel ? "带表头 + 选中那几行的原文（不然 AI 不知道每列是什么）" : "带表头 + 这一列的值" }
+          : { label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" },
       ],
       /* ⚠️ **读数是行数 + 大小，不是「未改过」。**
          `read_file` 不返回快照号，第一版我照抄 md 插件写了 `disk.snapshot ?? "未改过"` ——
@@ -791,7 +849,10 @@ function paint() {
       if (kind === "button") {
         if (names[a] === "err") jumpToError();
         if (names[a] === "badfilter") { cfilter = !cfilter; if (mode !== "table") setMode("table"); else { renderTable(); paint(); } }
-        if (names[a] === "ask") askAboutSelection();
+        if (names[a] === "ask") {
+          /* CSV 在表档时，「选中行给 AI」带的是选中的**记录**，不是编辑器里的选区 */
+          if (isCsv() && mode === "table") sendCsvRows(); else askAboutSelection();
+        }
       }
       /* `seg` 回调给的是 (段下标, 项下标) —— 我们只有一段，所以只看第二个 */
       if (kind === "seg" && a === 0) setMode(b === 0 ? "src" : isCsv() ? "table" : "tree");
@@ -860,7 +921,10 @@ async function load(path, theme, opt = {}) {
   /* 看当前版走 `read_file`，看历史版走 `read_file_version`。
      ⚠️ 两条路都要读**当前版**：历史版要和当前比（差异标红），
      而落盘要用当前版的 sha 做写前校验。所以先读当前，再按需读历史。 */
-  const r = await umbra.call("read_file", { path });
+  /* `creadAs` 有值 = 用户点了「按 X 重读」。**只换读法，盘上一个字节都没动**
+     （宿主的 `read_file` 收 `encoding`，而它回的 `sha256` 仍是原始字节的 ——
+     所以写前校验那道闸不会被绕过，M10-5）。 */
+  const r = await umbra.call("read_file", creadAs ? { path, encoding: creadAs } : { path });
   if (!r || !r.ok) {
     fail("读不出这个文件", (r && r.errors && r.errors[0] && r.errors[0].message) || "宿主没给出原因");
     return;
@@ -888,7 +952,6 @@ async function load(path, theme, opt = {}) {
   disk = { content: r.data?.content ?? "", sha: r.data?.sha256 ?? "", lines: r.data?.lines ?? null, size: r.data?.size ?? 0 };
   curVersion = opt.version ?? null;
   draftPreview = !!opt.draftPreview;
-  roReason = readOnlyReason(path, disk.size, curVersion, draftPreview, !!(cenc && !cenc.confident));
   /* JSON：解析一次，树和光标路径都靠它。
      ⚠️ **换文件要把树的状态清掉** —— 折叠集和选中行是按路径存的，
      换了文件那些路径指的是别的东西了。 */
@@ -902,14 +965,19 @@ async function load(path, theme, opt = {}) {
   /* CSV：先判编码，再解析。
      ⚠️ **编码没确定之前只读**（S20 的原话：「按错的编码落盘会把原文写坏」）——
      我们手上只有已经按 UTF-8 解过的文本，所以嗅探拿它的替换字符密度来判。
-     真要按 GBK 重读得拿原始字节，那要走宿主一趟（`read_file` 现在只给 UTF-8 文本），
-     ⚠️ **这一步还没接** —— 现在只做到「认出不像 UTF-8 并且转成只读」，
-     「按 GBK 重读」那颗钮点了会说清它还没通。**不画一个按了没反应的钮。** */
+     按别的编码重读要拿原始字节 —— 走宿主一趟（`read_file` 收 `encoding`，M10-5 加的）。
+     ⚠️ 它回的 `sha256` **仍然是原始字节的**，所以换读法**绕不过写前校验**。 */
   if (/\.(csv|tsv)$/i.test(path)) {
     const text = shown ?? disk.content;
     cenc = sniffEncoding(text);
     cparsed = parseCsv(text);
   } else { cenc = null; cparsed = null; }
+  /* ⚠️ **只读判定要排在编码嗅探之后。**（2026-09-30 实测修正）
+     原来它排在前面，于是 `cenc` 用的是**上一个文件**的值 ——
+     症状是「第一次打开一份乱码 CSV 不给只读，切一次文件再回来才给」。
+     这一类顺序错在开发时几乎撞不上（手上通常已经开过别的文件），
+     而它把一道**保护**变成了时序赌博。 */
+  roReason = readOnlyReason(path, disk.size, curVersion, draftPreview, !!(cenc && !cenc.confident), creadAs);
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 
@@ -1181,7 +1249,10 @@ document.addEventListener("keydown", (e) => {
 /* ⌘L：工作台的键，插件有话要说 —— 有选区就带上（`00` §121.3 · S18 §一.3）。
    ⚠️ **没选区时什么都不做，不要 toast**：那一下用户的意图是「聚焦输入框」，
    工作台已经在做了；这时候弹一句「先选中几行」是在怪他没做一件他没打算做的事。 */
-umbra.onSendSelection(() => { if (view && !view.state.selection.main.empty) askAboutSelection(); });
+umbra.onSendSelection(() => {
+  if (isCsv() && mode === "table") { sendCsvRows(); return; }
+  if (view && !view.state.selection.main.empty) askAboutSelection();
+});
 /* ⚠️ **⌘L 也要在插件自己这边听一次**（2026-09-29 实测）：
    焦点在这个 iframe 里时，**工作台顶层的监听器收不到** —— 键盘事件不跨 iframe 边界。
    和 ⌘S 是同一条病、相反的方向：⌘S 是工作台转给插件，⌘L 是插件自己先收到。

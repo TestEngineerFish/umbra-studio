@@ -27,10 +27,17 @@ defineCap({
 
 defineCap({
   name: "read_file", title: "读一个文件（非设计稿）", scope: "project",
-  summary: "读文本文件，返回内容与 sha256。**写回去要把这个 sha256 原样带上** —— 盘上被别人改过就会被拒绝，不会把改动盖掉。",
-  input: { path: z.string().describe("相对项目根的文件路径") },
+  summary: [
+    "读文本文件，返回内容与 sha256。**写回去要把这个 sha256 原样带上** —— 盘上被别人改过就会被拒绝，不会把改动盖掉。",
+    "`encoding` 给别的编码时**只换读法，盘上那份一个字节都没动**（M10-5，中文 CSV 常被当成 UTF-8 读成乱码）。",
+    "⚠️ `sha256` 永远是**原始字节**的，不随编码变 —— 所以按 GBK 读出来的文本，拿这个 sha 回去校验仍然对得上。",
+  ].join("\n"),
+  input: {
+    path: z.string().describe("相对项目根的文件路径"),
+    encoding: z.string().optional().describe("按哪种编码读；不给就是 utf-8。能用的：gbk / gb18030 / big5 / shift_jis / utf-16le / windows-1252"),
+  },
   http: { route: "file", method: "GET" },
-  run: async ({ path }, c) => envelope(await readAnyFile(p(c), path)),
+  run: async ({ path, encoding }, c) => envelope(await readAnyFile(p(c), path, encoding)),
 });
 
 defineCap({
