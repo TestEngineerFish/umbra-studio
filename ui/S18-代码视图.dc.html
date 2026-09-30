@@ -38,6 +38,13 @@
       </button>
     </sc-for>
     <span style="color: var(--tool-border-strong); flex: none;">·</span>
+    <sc-if value="{{ isLeaveDemo }}" hint-placeholder-val="{{ false }}">
+      <div role="group" aria-label="离开的触发" style="display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--tool-radius-sm); background: var(--tool-panel); border: 1px solid var(--tool-border); flex: none;">
+        <sc-for list="{{ leaveKinds }}" as="k" hint-placeholder-count="3">
+          <button type="button" onClick="{{ k.pick }}" aria-pressed="{{ k.active }}" style="height: 19px; padding: 0 8px; border: 0; border-radius: 3px; font-size: 11px; cursor: pointer; white-space: nowrap; background: {{ k.bg }}; color: {{ k.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">{{ k.label }}</button>
+        </sc-for>
+      </div>
+    </sc-if>
     <span style="color: var(--tool-muted); min-width: 0;">{{ demoNote }}</span>
   </div>
   </sc-if>
@@ -83,7 +90,7 @@
       <div style="flex: 1 1 0; min-width: 0; overflow: auto; background: var(--tool-panel);">
         <div style="padding: 10px 0 48px; font-family: var(--tool-mono); font-size: 12px; line-height: 20px; min-width: max-content;">
           <sc-for list="{{ lines }}" as="l" hint-placeholder-count="14">
-            <div style="position: relative; display: grid; grid-template-columns: 52px minmax(0, 1fr); min-height: 20px; background: {{ l.bg }};">
+            <div style="position: relative; display: grid; grid-template-columns: 52px minmax(0, 1fr); min-height: 20px; background: {{ l.bg }}; box-shadow: {{ l.rowBar }};">
               <span style="padding-right: 14px; text-align: right; color: {{ l.numFg }}; user-select: none; font-variant-numeric: tabular-nums; box-shadow: {{ l.gutter }};">{{ l.n }}</span>
               <span style="padding: 0 180px 0 10px; white-space: pre;"><sc-for list="{{ l.toks }}" as="t" hint-placeholder-count="3"><span style="color: {{ t.fg }}; font-style: {{ t.fs }}; font-weight: {{ t.fw }};">{{ t.v }}</span></sc-for><sc-if value="{{ l.caret }}" hint-placeholder-val="{{ false }}"><span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--tool-text);"></span></sc-if></span>
 
@@ -109,17 +116,17 @@
         </div>
       </div>
 
-      <!-- 离开前再问：关页签 / 切快照 / 切文件都走这一张 -->
+      <!-- 离开前再问：由工作台画，关页签 / 切文件 / 切快照都走这一张，话跟着触发变 -->
       <sc-if value="{{ leaving }}" hint-placeholder-val="{{ false }}">
         <div style="position: absolute; inset: 0; background: rgba(15, 18, 24, 0.24); display: flex; justify-content: center; align-items: flex-start; padding-top: 56px;">
           <div role="alertdialog" aria-label="还没落盘" style="width: 360px; padding: 14px 16px; background: var(--tool-panel); border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-lg); box-shadow: var(--tool-shadow-2);">
             <div style="font-weight: 600; margin-bottom: 4px;">{{ path }} 还没落盘</div>
-            <div style="font-size: 12px; line-height: 1.6; color: var(--tool-text-2); margin-bottom: 12px;">{{ unsavedDelta }}。关掉以后这些改动不会留。</div>
+            <div style="font-size: 12px; line-height: 1.6; color: var(--tool-text-2); margin-bottom: 12px;">{{ unsavedDelta }}。{{ leaveVerb }}以后这些改动不会留。</div>
             <div style="display: flex; align-items: center; gap: 6px;">
               <button type="button" onClick="{{ discard }}" style="height: 26px; padding: 0 10px; border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 12px; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">不要了</button>
               <span style="flex: 1;"></span>
               <button type="button" onClick="{{ cancelLeave }}" style="height: 26px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: transparent; font-size: 12px; color: var(--tool-text-2); cursor: pointer;" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">回去接着改</button>
-              <button type="button" onClick="{{ save }}" style="display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 12px; font-weight: 560; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">落盘再关 <kbd style="font-family: var(--tool-mono); font-size: 10px; opacity: .8;">⌘S</kbd></button>
+              <button type="button" onClick="{{ save }}" style="display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); background: var(--tool-accent); color: var(--tool-on-accent); font-size: 12px; font-weight: 560; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">{{ leaveSaveLabel }} <kbd style="font-family: var(--tool-mono); font-size: 10px; opacity: .8;">⌘S</kbd></button>
             </div>
           </div>
         </div>
@@ -182,11 +189,11 @@ const LOCK = [
 ];
 const DEMOS = [
   { n: 1, short: "看", name: "看 · 干净", note: "CodeMirror 原样：高亮、行号、当前行底色。没有横条", caret: 8 },
-  { n: 2, short: "改动中", name: "改动中", note: "不出横条：文件名后面一颗点 + 「未落盘 · 13 → 14 行」+ 放弃 / 落盘；改过的行在行号边上一道 warn 竖线", edit: true, caret: 9 },
-  { n: 3, short: "离开前", name: "关页签 / 切快照前", note: "只有要离开时才拦一次：落盘再关 / 回去接着改 / 不要了", edit: true, leave: true, caret: 9 },
-  { n: 4, short: "选区", name: "有选区 → 给 AI", note: "选中几行，末行右侧出「给 AI ⌘L」；不用先按 ⌘E。不自动带进会话（代码里选中多半是要剪切、缩进）", sel: [7, 13], caret: 13 },
+  { n: 2, short: "改动中", name: "改动中", note: "不出横条：文件名后面一颗点 + 「未落盘 · 13 → 14 行」+ 放弃 / 落盘；改过的行在行的最左侧一道 warn 竖线（CodeMirror 内容区紧贴行号栏右缘，位置和行号边上差不多）", edit: true, caret: 9 },
+  { n: 3, short: "离开前", name: "关页签 / 切文件 / 切快照前", note: "", edit: true, leave: true, caret: 9 },
+  { n: 4, short: "选区", name: "有选区 → 给 AI", note: "选中几行，末行右侧出「给 AI ⌘L」；不用先按 ⌘E。不自动带进会话（代码里选中多半是要剪切、缩进）。⌘L：有选区时带上选区再聚焦会话，没选区时只聚焦（合并了工作台原有的「聚焦会话」）", sel: [7, 13], caret: 13 },
   { n: 5, short: "已带进", name: "已带进会话", note: "输入条出 range 药丸并聚焦；选区保留高亮 + 「已带进会话」角标，同 S13", sel: [7, 13], sent: true },
-  { n: 6, short: "只读", name: "只读 · 锁文件", note: "按文件名自动只读（锁文件、生成物、> 1 MB）。可选中、可给 AI，不能改", ro: true, caret: 12 },
+  { n: 6, short: "只读", name: "只读 · 锁文件", note: "按文件名自动只读（锁文件、生成物、> 1 MB）。可选中、可给 AI，不能改。*.lock 归进代码类型，会打开到这里", ro: true, caret: 12 },
   { n: 7, short: "只读下打字", name: "只读下打字", note: "按了字键：标签抖一下，光标下出一行原因 + 解锁。解锁只对这一个页签生效", ro: true, nudge: true, caret: 12 }
 ];
 const KW = /^(import|from|type|const|export|async|function|return|await|if)$/;
@@ -211,7 +218,7 @@ const lexYaml = (line) => {
 };
 
 class Component extends DCLogic {
-  state = { demo: 1, unlocked: false };
+  state = { demo: 1, unlocked: false, leaveKind: "close" };
   go(n) { this.setState({ demo: n, unlocked: false }); }
 
   renderVals() {
@@ -224,11 +231,24 @@ class Component extends DCLogic {
     const inSel = (n) => sel && n >= sel[0] && n <= sel[1];
     const path = isLock ? "pnpm-lock.yaml" : "src/snapshots.ts";
     const selRange = sel ? "L" + sel[0] + "–" + sel[1] : "";
+    const LK = {
+      close: { label: "关页签", verb: "关掉", btn: "落盘再关", note: "关页签前拦一次：落盘再关 / 回去接着改 / 不要了（丢掉改动并关掉）。卡由工作台画" },
+      switch: { label: "切文件", verb: "切走", btn: "落盘再切", note: "切文件前拦一次：落盘再切 / 回去接着改 / 不要了（丢掉改动并切过去，页签不关）。卡由工作台画" },
+      revert: { label: "切快照", verb: "退回", btn: "落盘再退", note: "切快照前拦一次：落盘再退 / 回去接着改 / 不要了（丢掉改动并退回）。卡由工作台画" }
+    };
+    const lk = LK[s.leaveKind];
 
     return {
       theme: this.props.theme === "dark" ? "dark" : null,
       showDemoBar: true,
-      demoNote: s.unlocked ? "已解锁：这个页签里能改了，关掉再开又是只读" : dm.note,
+      demoNote: s.unlocked ? "已解锁：这个页签里能改了，关掉再开又是只读" : dm.leave ? lk.note : dm.note,
+      isLeaveDemo: !!dm.leave,
+      leaveKinds: Object.keys(LK).map((k) => {
+        const on = k === s.leaveKind;
+        return { label: LK[k].label, active: on, bg: on ? "var(--tool-accent-soft)" : "transparent", fg: on ? "var(--tool-accent)" : "var(--tool-text-2)", pick: () => this.setState({ leaveKind: k }) };
+      }),
+      leaveVerb: lk.verb,
+      leaveSaveLabel: lk.btn,
       demoStates: DEMOS.map((m) => {
         const on = m.n === s.demo;
         return { n: m.n, name: m.name, short: m.short, active: on, fw: on ? "600" : "400",
@@ -265,7 +285,8 @@ class Component extends DCLogic {
           sentTag: !!(sl && n === sel[0] && dm.sent),
           roHint: !!(dm.nudge && ro && n === dm.caret),
           bg: sl ? "var(--tool-accent-soft)" : edited ? "var(--tool-warn-soft)" : cur ? "var(--tool-panel-2)" : "transparent",
-          gutter: sl ? "inset -2px 0 0 var(--tool-accent)" : edited ? "inset -2px 0 0 var(--tool-warn)" : "none",
+          gutter: sl ? "inset -2px 0 0 var(--tool-accent)" : "none",
+          rowBar: edited && !sl ? "inset 2px 0 0 var(--tool-warn)" : "none",
           numFg: sl ? "var(--tool-accent)" : cur ? "var(--tool-text)" : "var(--tool-muted)" };
       })
     };
