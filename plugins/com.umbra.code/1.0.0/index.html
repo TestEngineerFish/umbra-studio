@@ -16,6 +16,20 @@
     <span class="sp"></span>
     <button id="unlock" class="btn">解锁编辑</button>
   </div>
+  <!-- 草稿暂存（M10-2c，S18 演示态 11/12）：打开时先给盘上的，顶上一条齐边横条。
+       ⚠️ 两态的「丢掉」合成一颗放在外面 —— 稿里 fresh / stale 各画了一颗，
+       但功能一模一样，而重复的 id 是错的。视觉上没有差别。 -->
+  <div id="draft" class="bar draft" hidden>
+    <span class="dot"></span>
+    <span id="draftText"></span>
+    <span id="draftDelta" class="mono"></span>
+    <span class="sp"></span>
+    <button id="draftDiscard" class="btn ghost">丢掉</button>
+    <button id="draftOverwrite" class="btn" title="盘上那一版会先存成一版，覆盖错了还能退回来" hidden>用草稿覆盖</button>
+    <button id="draftDiff" class="btn primary" hidden>看差异</button>
+    <button id="draftRestore" class="btn primary" hidden>恢复</button>
+    <button id="draftBack" class="btn primary" hidden>回到盘上那份</button>
+  </div>
   <div id="host"></div>
   <!-- 只读下按了字键：光标下方出一行原因 + 解锁。**只出第一次** -->
   <div id="roHint" class="hint" hidden>

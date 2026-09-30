@@ -216,10 +216,22 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
        现在左边一直有树，详情区再铺一份同样的内容就是重复 ——
        用户实测提的：「预览页面如果没有选中任何文件或者目录时，不应显示目录列表」。
        所以这里什么都不做，让详情区停在占位态。 */
+    /* ⚠️ **先看页签。**（2026-09-30 实测抓到的既存缺陷）
+       原来这里是 `store.drafts.find((d) => d.file === last) ?? store.drafts[0]` ——
+       而 **`store.drafts` 只装 `.dc.html` 设计稿**（`list_drafts` 的口径）。
+       上次开着的是一个 `.ts`？在里面找不到 → fallback 到「第一份稿」→
+       **用户刷新之后看到的是一份随机设计稿，他上次那个页签被顶掉了。**
+       实测读数：刷新前 `store诊断.ts`，刷新后变成 `PC 吐司.dc.html`。
+
+       页签是我们自己维护的、**不限格式**，所以它才是「上次开着什么」的出处。
+       这一条也是草稿暂存（M10-2c）的前提：刷新回来得先回到那个文件，
+       才看得到「有一份没落盘的草稿」。 */
+    const fromTabs = tabs.length ? tabs[tabs.length - 1]!.path : null;
+    const last = fromTabs ?? mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
+    if (last) { open(last); return; }
+    /* 一个页签都没有（第一次进这个项目）：给第一份设计稿，那是这个软件最深的类型 */
     if (!store.drafts.length) return;
-    const last = mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
-    const pick = store.drafts.find((d) => d.file === last) ?? store.drafts[0];
-    if (pick) open(pick.file);
+    if (store.drafts[0]) open(store.drafts[0].file);
   }, [store.drafts]);   // eslint-disable-line react-hooks/exhaustive-deps
   /* 用 ResizeObserver 量详情区自己 —— 它能同时捕捉「窗口变了」和「旁边的列变宽了」。
      监听 window.resize 只能捕捉前者。 */

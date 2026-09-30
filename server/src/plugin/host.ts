@@ -34,6 +34,13 @@ const ALLOWED: Record<string, { need: "read" | "write" }> = {
   compare_file_versions: { need: "read" },
   list_file_refs:     { need: "read" },
   count_file_types:   { need: "read" },
+  /* 草稿暂存（M10-2c）。⚠️ `stage_draft` / `clear_staged_draft` 要 **write** ——
+     它们确实在往盘上写东西（工具状态），而**「往盘上写」这件事的权限不该按
+     「写的是谁的文件」分级**：分级一旦开始按对象走，白名单就守不住了。
+     读那一件只要 read。 */
+  get_staged_draft:   { need: "read" },
+  stage_draft:        { need: "write" },
+  clear_staged_draft: { need: "write" },
   write_file:         { need: "write" },
   move_file:          { need: "write" },
   trash_file:         { need: "write" },

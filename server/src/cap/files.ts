@@ -2,6 +2,7 @@ import { z } from "zod";
 import { envelope } from "../envelope.js";
 import { countTypes, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { gitFallbackOf } from "../gitkeep.js";
+import { clearStagedDraft, getStagedDraft, listStagedDrafts, stageDraft } from "../staged.js";
 import { defineCap } from "./registry.js";
 import { originOf, type CapCtx } from "./types.js";
 
@@ -133,6 +134,57 @@ defineCap({
   input: { path: z.string(), version: z.string() },
   http: { route: "file_revert", method: "POST" },
   run: async ({ path, version }, c) => envelope(await revertFile(p(c), path, version)),
+});
+
+/* ════ 草稿暂存（M10-2c）════
+   ⚠️ 这三件**不是**写入口的例外：它们写的是 `.umbrastudio/staged/` 下的工具状态，
+   和 `snapshots/` 同类，不是用户的文件。草稿要变成用户文件里的内容时
+   （「用草稿覆盖」）走的是 `write_file`，一样都不少。 */
+
+defineCap({
+  name: "stage_draft", title: "暂存一份没落盘的草稿", scope: "project",
+  summary: [
+    "把编辑器里还没落盘的内容存起来，**刷新 / 崩溃 / 关窗之后还找得回来**。",
+    "⚠️ 插件自己存不了 —— 它在不透明源的 iframe 里，`localStorage` 访问会抛，所以这一层由宿主兜。",
+    "**内容和盘上那份一样时不存，反而清掉已有的草稿** —— 「改了又改回来」不该留下一条",
+    "点了恢复什么都不变的提示。",
+    "每一份草稿都记着它是在哪一版上改的，所以下次打开答得出「还能不能直接恢复」。",
+  ].join("\n"),
+  input: { path: z.string(), content: z.string() },
+  http: { route: "draft_stage", method: "POST" },
+  run: async ({ path, content }, c) => envelope(await stageDraft(p(c), path, content)),
+});
+
+defineCap({
+  name: "get_staged_draft", title: "这个文件有没有暂存的草稿", scope: "project",
+  summary: [
+    "回草稿内容、什么时候存的、相对盘上那份增删了几行，以及**还能不能直接恢复**。",
+    "`stale: true` = 草稿的底稿和现在盘上那份不是同一个（别的编辑器改过、AI 改过、回退过）。",
+    "**这时候不该直接恢复** —— 那会静默盖掉别人的改动。",
+  ].join("\n"),
+  input: { path: z.string() },
+  http: { route: "draft_staged", method: "GET" },
+  run: async ({ path }, c) => envelope(await getStagedDraft(p(c), path)),
+});
+
+defineCap({
+  name: "clear_staged_draft", title: "丢掉暂存的草稿", scope: "project",
+  summary: "落盘之后、或者用户点「丢掉」时调。本来就没有也算成功。",
+  input: { path: z.string() },
+  http: { route: "draft_clear", method: "POST" },
+  run: async ({ path }, c) => envelope(await clearStagedDraft(p(c), path)),
+});
+
+defineCap({
+  name: "list_staged_drafts", title: "这个项目里还挂着哪些草稿", scope: "project",
+  summary: "「哪些文件我改了还没落盘」——**给 AI 和秘书用的**：它们看不见编辑器，只能问这一件。",
+  input: {},
+  http: { route: "drafts_staged", method: "GET" },
+  run: async (_i, c) => {
+    const rows = await listStagedDrafts(p(c));
+    return envelope({ rows, count: rows.length, stale: rows.filter((r) => r.stale).length },
+      [], { count: rows.length });
+  },
 });
 
 defineCap({

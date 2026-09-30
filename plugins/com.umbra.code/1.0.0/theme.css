@@ -28,6 +28,19 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 13px ui-monospa
 
 /* 未落盘横条。**留在正文里，不进编辑栏** —— 和 md 插件同一条理由：
    它是一条状态提示，而编辑栏那一行装的是开关；混在一起的话横条一出现编辑栏就会跳。 */
+/* ⚠️ **`[hidden]` 要自己声明一次。**（2026-09-30 实测抓到）
+   UA 样式表里的 `[hidden] { display: none }` 优先级只有 0-0-1，
+   而 `.bar { display: flex }` 是 0-1-0 —— **类选择器压过它**，
+   于是 `el.hidden = true` 设了属性而元素照样显示。
+   实测：打开一个干净的代码文件时，`#dirty` / `#ro` / `#draft`
+   **三条空横条全在画面上**，各 36px，总共占掉 109px。
+
+   ⚠️ 而 `uitest` 里 8 处判据用的是 `#dirty:not([hidden])` ——
+   **按属性判断，而属性是对的**，所以它们全部通过而画面是错的。
+   和 §七十二 那条「目录列被页签条压着，DOM 判据 33 条全过、截图一眼看出」同一族。
+   已另加一条量真实高度的判据钉住它。 */
+[hidden] { display: none !important; }
+
 .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
   border-bottom: 1px solid var(--line); background: var(--active);
   font: 12px system-ui, sans-serif; }
@@ -60,3 +73,17 @@ body { position: relative; }
 /* 有只读条时正文也要让出高度 —— 和 .dirty 同一条理由 */
 body.ro #host { height: calc(100% - 33px); }
 body.ro.dirty #host { height: calc(100% - 66px); }
+
+/* ── 草稿暂存的横条（M10-2c，S18 演示态 11/12）──
+   两态只差配色：`fresh` 走中性（panel-2 / border / text），
+   `stale` 走 warn（warn-soft / warn-border / warn）—— 稿里的真值。
+   ⚠️ 配色**不是随便选的**：`stale` 是「你得先看一眼再决定」，
+   而 `fresh` 只是「有东西等着你」，用同一个颜色会让前者被当成后者随手点过去。 */
+.bar.draft { background: var(--gutter-bg); }
+.bar.draft .dot { width: 7px; height: 7px; border-radius: 999px; background: #c8821e; flex: none; }
+.bar.draft.stale { background: rgba(210,140,40,.10); border-bottom-color: #c8821e; color: #c8821e; }
+.bar.draft .mono { font: 11px ui-monospace, monospace; color: var(--muted); white-space: nowrap; }
+/* 有草稿横条时正文也要让出高度 —— 和 `body.dirty` 同一条，
+   不减的话 CodeMirror 会被挤出可视区底部（注意两条横条可能同时在） */
+body.hasdraft #host { height: calc(100% - 33px); }
+body.hasdraft.dirty #host { height: calc(100% - 66px); }

@@ -68,14 +68,15 @@ function ensureDiffField(cm) {
 /** 把差异推进编辑器。看当前版时清空。 */
 function markDiff() {
   if (!view || !setDiffEffect) return;
-  if (!curVersion || !disk) { view.dispatch({ effects: setDiffEffect.of(null) }); return; }
+  /* 两种情况要标差异：**看某个历史版本** 和 **看草稿**。
+     两者问的是同一件事 ——「编辑区里这份和盘上那份差在哪」。 */
+  const what = curVersion ? `在看 ${curVersion}` : draftPreview ? "在看草稿" : null;
+  if (!what || !disk) { view.dispatch({ effects: setDiffEffect.of(null) }); return; }
   const d = diffVsCurrent(view.state.doc.toString(), disk.content);
   view.dispatch({ effects: setDiffEffect.of(d) });
   /* ⚠️ **算不出来要说出来**（行数超上限）。不说的话画面上一个标记都没有，
      而「没有差异」和「没算差异」长得一模一样 —— 后者会让人以为这一版和当前一样。 */
-  el("roText").textContent = d
-    ? `只读 · 在看 ${curVersion}`
-    : `只读 · 在看 ${curVersion}（文件太大，差异没标）`;
+  el("roText").textContent = d ? `只读 · ${what}` : `只读 · ${what}（文件太大，差异没标）`;
 }
 
 function ensureChangedField(cm) {
@@ -143,7 +144,12 @@ let roReason = null;
  *  ⚠️ 这不是「保护」，是**省去一次误会**：这些文件改了也没用（下次生成就覆盖），
  *  而用户要花几秒才意识到这一点。所以只读下**照样能选中、复制、给 AI** ——
  *  只读不等于「这个文件与你无关」。 */
-function readOnlyReason(path, size, version) {
+function readOnlyReason(path, size, version, previewingDraft) {
+  /* ⚠️ **看草稿差异时也一律只读**，理由和看历史版一样：
+     编辑区里放的不是「当前这份文件」，让人改它得不出正确结果 ——
+     改完算谁的？存回哪？按 ⌘S 会把草稿当成新内容盖掉盘上那份，
+     而他以为自己在改的是「当前」。 */
+  if (previewingDraft) return "在看草稿";
   /* ⚠️ **看历史版本时一律只读，而且这一条要排在最前面。**
      让人改一份历史快照没有任何意义 —— 改了往哪写？写回去就把当前版覆盖了，
      而他以为自己在改「当前」。这不是保护，是**消除一个不可能有正确结果的操作**。
@@ -168,6 +174,65 @@ function changedLines(before, now) {
   for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) out.add(i + 1);
   return out;
 }
+/* ════ 草稿暂存（M10-2c，S18 演示态 11/12）════ */
+
+/** 打开时查到的草稿（`null` = 没有）。存的是 `get_staged_draft` 的信封内容。 */
+let draft = null;
+/** 正在看草稿和盘上那份的差异（「看差异」那一档）。 */
+let draftPreview = false;
+let stageTimer = null;
+
+/** 把编辑器里的内容暂存起来。**防抖** —— 每敲一个字都发一次请求没必要。
+ *
+ *  ⚠️ **看旧版时什么都不做。** 那时 `isDirty()` 恒为 false（编辑器里是历史版内容），
+ *  如果照「不脏就清掉草稿」走，用户会这样丢数据：
+ *  改了几行（有草稿）→ 去看旧版 → 防抖触发 → 清掉 → **草稿没了**。
+ *  两条各自正确的规则叠起来会丢数据，所以这里必须**先问「现在算不算在编辑」**。 */
+function scheduleStage() {
+  if (stageTimer) clearTimeout(stageTimer);
+  if (curVersion || draftPreview) return;      // 看旧版 / 看草稿差异：不碰暂存
+  stageTimer = setTimeout(async () => {
+    stageTimer = null;
+    if (curVersion || draftPreview || !view || !disk) return;
+    const now = view.state.doc.toString();
+    if (now === disk.content) { await umbra.call("clear_staged_draft", { path: curPath }); return; }
+    await umbra.call("stage_draft", { path: curPath, content: now });
+  }, 800);
+}
+
+/** 画草稿横条。三种样子：可直接恢复 / 底稿变过 / 正在看差异。 */
+function paintDraft() {
+  const on = !!draft && draft.has;
+  document.body.classList.toggle("hasdraft", on);
+  el("draft").hidden = !on;
+  if (!on) return;
+  const stale = !!draft.stale;
+  el("draft").classList.toggle("stale", stale && !draftPreview);
+  const ago = timeAgo(draft.at);
+  el("draftText").textContent = draftPreview
+    ? "正在看草稿和盘上那份的差异"
+    : stale
+      ? `有一份${ago}没落盘的草稿。草稿是在 ${draft.baseVersion ?? "更早一版"} 上改的，盘上已经变成 ${draft.currentVersion ?? "新的一版"} 了`
+      : `有一份${ago}没落盘的草稿`;
+  const d = draft.delta;
+  el("draftDelta").textContent = draftPreview ? "" : d ? `草稿比盘上 +${d.plus} −${d.minus} 行` : "";
+  /* 按钮按档露出。⚠️ **`stale` 不给「恢复」** —— 直接恢复会静默盖掉别人的改动（设计侧的裁决） */
+  el("draftDiscard").hidden = draftPreview;
+  el("draftOverwrite").hidden = draftPreview || !stale;
+  el("draftDiff").hidden = draftPreview || !stale;
+  el("draftRestore").hidden = draftPreview || stale;
+  el("draftBack").hidden = !draftPreview;
+}
+
+/** 多久以前。**只到分钟** —— 「2 小时前」和「2 小时 13 分前」对这个决定没区别。 */
+function timeAgo(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+
 /* ════ 看旧版时的差异标红（S18 演示态 9）════ */
 
 /** 掐头去尾之后中间还这么多行就不算了。
@@ -253,7 +318,7 @@ let busy = false;
    不加这一条的话横条会写「还没落盘 · 13 行 → 9 行」，
    而**那句话会让人以为自己的改动还在，其实一个字都没改过**。
    顺带也就不会拦关页签了（那张卡问的是「这些改动不要了吗」，这里没有改动）。 */
-const isDirty = () => !curVersion && !!disk && !!view && view.state.doc.toString() !== disk.content;
+const isDirty = () => !curVersion && !draftPreview && !!disk && !!view && view.state.doc.toString() !== disk.content;
 
 /** 横条 + chrome 的读数。**一处算、两处用** —— 分开算迟早对不上。 */
 function paint() {
@@ -314,6 +379,7 @@ function askAboutSelection() {
 async function save() {
   if (!isDirty() || busy) return;
   busy = true; paint();
+  if (stageTimer) { clearTimeout(stageTimer); stageTimer = null; }   // 别让防抖在落盘之后又存一份回去
   const r = await umbra.call("write_file", { path: curPath, content: view.state.doc.toString(), expectSha256: disk.sha });
   busy = false;
   if (!r || !r.ok) {
@@ -326,6 +392,11 @@ async function save() {
   }
   umbra.toast("已落盘 · 快照 " + r.data.snapshot,
     r.data.previous ? `上一版 ${r.data.previous} 还在，可以退回` : undefined, "ok");
+  /* 落盘了，草稿的使命就结束了。⚠️ **要清** —— 不清的话下次打开还会弹
+     「有一份没落盘的草稿」，而那份草稿的内容已经进盘了，
+     用户看到的是一条**在说已经做完的事**的提示。 */
+  await umbra.call("clear_staged_draft", { path: curPath });
+  draft = null; paintDraft();
   /* 重读盘上那一版（拿到新 sha 与快照号）。**不能只把 disk.content 改成当前文本** ——
      写入口会做归一化，盘上那一版和我们发过去的未必逐字节相同，
      sha 也只有它能给。猜一个的话下一次落盘就会被 sha 拦住。 */
@@ -351,6 +422,7 @@ async function load(path, theme, opt = {}) {
     return;
   }
   let shown = null;
+  if (opt.draftPreview && draft && draft.has) shown = draft.content;
   if (opt.version) {
     const v = await umbra.call("read_file_version", { path, version: opt.version });
     if (!v || !v.ok) {
@@ -371,7 +443,8 @@ async function load(path, theme, opt = {}) {
      每次落盘都会被写前校验拦住，而错误信息只说「校验不过」，很难想到是字段名）。 */
   disk = { content: r.data?.content ?? "", sha: r.data?.sha256 ?? "", lines: r.data?.lines ?? null, size: r.data?.size ?? 0 };
   curVersion = opt.version ?? null;
-  roReason = readOnlyReason(path, disk.size, curVersion);
+  draftPreview = !!opt.draftPreview;
+  roReason = readOnlyReason(path, disk.size, curVersion, draftPreview);
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 
@@ -388,7 +461,7 @@ async function load(path, theme, opt = {}) {
     cm.highlightSelectionMatches(),
     /* 每一次改动都重画横条与读数。**不用 debounce** —— 只是几个 DOM 文本，
        而延迟会让「改了一个字横条还没出来」这种半秒的不一致被看见。 */
-    cm.EditorView.updateListener.of((u) => { if (u.docChanged) { paint(); markChanged(); } }),
+    cm.EditorView.updateListener.of((u) => { if (u.docChanged) { paint(); markChanged(); scheduleStage(); } }),
     changedField,
     diffField,
     /* 改过的行：行底 warn-soft + 行号边一道 warn 竖线（S18 §一.1，和 S13 源码视图同一套）。
@@ -468,6 +541,15 @@ async function load(path, theme, opt = {}) {
   }
   paint();
   markDiff();   // 看旧版时把差异标出来；看当前版时它自己清空
+
+  /* ⚠️ **只在「看当前版」时查草稿。** 看旧版 / 看草稿差异时编辑区放的不是当前内容，
+     这时候弹一条「有一份没落盘的草稿」会让人不知道那条说的是哪一份。 */
+  if (!opt.version && !opt.keepDraft) {
+    draft = null;
+    const q = await umbra.call("get_staged_draft", { path });
+    if (q && q.ok && q.data && q.data.has) draft = q.data;
+    paintDraft();
+  } else if (opt.keepDraft) paintDraft();
 }
 
 /** 解锁。**只对这一个页签** —— 换文件回到只读（`load` 里重置）。
@@ -479,6 +561,78 @@ function doUnlock() {
   void load(curPath, document.documentElement.dataset.theme, { keepCursor: true, version: curVersion });
 }
 el("unlock").addEventListener("click", doUnlock);
+
+/* ════ 草稿横条的四条出路 ════ */
+
+/** 丢掉：清暂存、收横条。编辑器保持盘上那份 —— **不动内容**。 */
+el("draftDiscard").addEventListener("click", async () => {
+  await umbra.call("clear_staged_draft", { path: curPath });
+  draft = null; paintDraft();
+});
+
+/** 恢复：草稿铺回编辑器，进「未落盘」，**不自动落盘**（设计侧的裁决）。
+ *  ⚠️ **暂存不清掉** —— 铺回来之后如果用户又刷新一次，草稿还得在。
+ *  它会被防抖继续维护（内容没变就是同一份）。 */
+el("draftRestore").addEventListener("click", () => {
+  if (!draft || !view) return;
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: draft.content } });
+  draft = null; paintDraft();
+  paint(); markChanged();
+  umbra.toast("草稿铺回来了", "还没落盘 —— 看一眼再按 ⌘S", "ok");
+});
+
+/** 用草稿覆盖（只在底稿变过时出现）：**它就是一次写** ——
+ *  走 `write_file`，盘上那一版会先存成一版，覆盖错了还能退回来。 */
+el("draftOverwrite").addEventListener("click", async () => {
+  if (!draft || busy) return;
+  busy = true; paint();
+  const r = await umbra.call("write_file", { path: curPath, content: draft.content, expectSha256: disk.sha });
+  busy = false;
+  if (!r || !r.ok) {
+    const e = (r && r.errors && r.errors[0]) || {};
+    umbra.toast("没覆盖成", e.fix || e.message || "宿主没给出原因", "error");
+    paint();
+    return;
+  }
+  await umbra.call("clear_staged_draft", { path: curPath });
+  draft = null;
+  umbra.toast("已用草稿覆盖 · 快照 " + r.data.snapshot,
+    r.data.previous ? `覆盖前那一版是 ${r.data.previous}，可以退回` : undefined, "ok");
+  await load(curPath, document.documentElement.dataset.theme, {});
+});
+
+/** 看差异（只在底稿变过时出现）。
+ *
+ *  ⚠️ **这一处偏离了设计侧的形制，理由要说清。**
+ *  它写的是「看差异 → 进 S6 版本对比」，但 **S6 是 `.dc.html` 的语义对比**
+ *  （比的是节点和属性），代码文件没有那套语义，进去什么都看不到。
+ *  所以改成**复用「看那一版」那一套**：把草稿铺进编辑区、只读、
+ *  和盘上那份的差异逐行标出来，Esc / 「回到盘上那份」退出。
+ *  收获是用户不用学第二套东西 —— 他刚在版本历史里学过这一模一样的动作。 */
+el("draftDiff").addEventListener("click", async () => {
+  if (!draft || !view) return;
+  /* ⚠️ **走 `load` 而不是 `dispatch` 铺内容。**
+     第一版我直接 dispatch 把草稿塞进编辑器 —— 内容对了，但**编辑器还是可改的**，
+     于是用户能改这份草稿预览，而 `isDirty` 会说「未落盘」，按 ⌘S 会把草稿
+     当成新内容盖掉盘上那份 —— 他以为自己在改的是「当前」。
+     只读是建 state 时定的，所以必须重新 load。这一来它和「看旧版」完全同构。 */
+  await load(curPath, document.documentElement.dataset.theme, { draftPreview: true, keepDraft: true });
+  paintDraft();
+});
+
+/** 从「看差异」回来：重新读盘上那份，草稿横条回到原来那一档。 */
+el("draftBack").addEventListener("click", async () => {
+  await load(curPath, document.documentElement.dataset.theme, { keepDraft: true });
+  paintDraft();
+});
+/* Esc 也退出「看差异」—— 和看旧版那一档同一个键，用户只学一次。
+   ⚠️ 挂在这个 document 上：焦点就在编辑器里，而键盘事件不跨 iframe（§八十一）。 */
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && draftPreview) {
+    e.preventDefault();
+    el("draftBack").click();
+  }
+});
 el("unlock2").addEventListener("click", doUnlock);
 
 /* 只读下按了字键：标签抖一下 + 光标下方说原因（S18 §一.4）。

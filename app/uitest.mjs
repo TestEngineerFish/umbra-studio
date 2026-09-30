@@ -247,7 +247,7 @@ const SAMPLE_PATS = [
   /^_uitest/,            // 约定前缀，新样本都该走这个
   /^插件回归样本/,
   /^_暂存验收/, /^_无地址验收/, /^_三档验收/, /^_穿透验证/, /^_加地址验证-/, /^点选验证样本/,
-  /^版本历史回归/,      // M10-2b
+  /^版本历史回归/, /^草稿回归/,      // M10-2b / M10-2c
   /* ⚠️ 下面这几个是**补登记的**：2026-09-30 在用户项目里翻出 24 个残留快照目录，
      其中四个的名字压根不在这张清单里 —— 文件被清掉了（那部分是对的），
      快照目录留了好几轮。**清单漏一个名字，收尾就静默漏一个样本。** */
@@ -307,13 +307,18 @@ const sweepSnapshots = async (dir) => {
   if (!dir) return [];
   const { readdirSync, rmSync, existsSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const root = join(dir, ".umbrastudio", "snapshots");
-  if (!existsSync(root)) return [];
   const gone = [];
-  for (const name of readdirSync(root)) {
-    if (!SAMPLE_PATS.some((re) => re.test(name))) continue;
-    rmSync(join(root, name), { recursive: true, force: true });
-    gone.push(name);
+  /* ⚠️ **两个目录都要扫。** `staged/` 是 M10-2c 新增的一类残留 ——
+     判据一改文件就会留一份草稿，而 `file_trash` + `trash_purge` 不带走它。
+     加一种会落盘的东西就要问一句：**收尾扫不扫得到它**。 */
+  for (const sub of ["snapshots", "staged"]) {
+    const root = join(dir, ".umbrastudio", sub);
+    if (!existsSync(root)) continue;
+    for (const name of readdirSync(root)) {
+      if (!SAMPLE_PATS.some((re) => re.test(name))) continue;
+      rmSync(join(root, name), { recursive: true, force: true });
+      gone.push(`${sub}/${name}`);
+    }
   }
   return gone;
 };
@@ -334,6 +339,20 @@ const sweepSnapshots = async (dir) => {
  *  所以给点击加一道「先把挡路的收掉」。**只按 Esc，不替用户做选择** ——
  *  Esc = 「回去接着改」，是三条出路里**唯一不改变任何东西**的那条。
  *  判据不该替用户决定丢不丢改动。 */
+/** 一条横条**真正占了多少高度**（`display:none` 就是 0）。
+ *
+ *  ⚠️ **不能只看 `hidden` 属性。**（2026-09-30 实测抓到）
+ *  插件那边这一族判据原来一律写 `#dirty:not([hidden])` —— 而属性是**对的**，
+ *  错的是 CSS：`.bar { display: flex }`（0-1-0）压过 UA 的 `[hidden] { display: none }`（0-0-1），
+ *  于是打开一个干净的代码文件时**三条空横条全在画面上、占掉 109px**，
+ *  而 8 条 DOM 判据全部通过。
+ *  **属性判据和画面判据是两种判据，谁也代替不了谁**（§七十二 那条「目录列被页签条压着，
+ *  DOM 判据 33 条全过、截图一眼看出」是同一族）。 */
+const barH = async (frame, id) => await frame.locator("#" + id).evaluate((el) => {
+  const st = getComputedStyle(el);
+  return st.display === "none" ? 0 : Math.round(el.getBoundingClientRect().height);
+}).catch(() => -1);
+
 const clearGuard = async () => {
   if (await pg.locator('[role="alertdialog"]').count()) {
     await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click().catch(() => {});
@@ -1479,6 +1498,16 @@ console.log("\n插件 UI 的边界（M11-4）");
             await pg.keyboard.press("Meta+s");
             await pg.waitForTimeout(2200);
             ok(await codeFrame.locator("#dirty:not([hidden])").count() === 0, "落盘之后横条收起来了");
+            /* 同一件事量两次：属性（上面那条）+ **真实高度**（这一条）。
+               只有后者能抓住「属性设了而 CSS 没让它消失」。 */
+            ok(await barH(codeFrame, "dirty") === 0,
+               "**而且它真的不占高度了**（只看 `hidden` 属性会漏掉 CSS 盖过它的情况）",
+               `高 ${await barH(codeFrame, "dirty")}px`);
+            {
+              const hs = { dirty: await barH(codeFrame, "dirty"), ro: await barH(codeFrame, "ro"), draft: await barH(codeFrame, "draft") };
+              ok(hs.dirty === 0 && hs.ro === 0 && hs.draft === 0,
+                 "**干净文件上三条横条一条都不占高度**（原来三条空条压着编辑器 109px）", JSON.stringify(hs));
+            }
             /* **盘上真的变了吗** —— 这条才是落盘的证据 */
             const onDisk = await pg.evaluate(async ({ name }) => {
               const b = window.__UD_APP;
@@ -1743,6 +1772,94 @@ console.log("\n插件 UI 的边界（M11-4）");
               ok(await pg.locator('[role="alertdialog"]').count() === 0, "切回来不会再拦（改动已经丢掉了）");
             }
 
+
+            /* ═══ 草稿暂存（M10-2c）═══ 设计侧第十三轮定的形制（S18 演示态 11/12）。
+               ⚠️ 重点是**「回来那一下」**：底稿变过时**不给直接恢复** ——
+               直接恢复会静默盖掉别人的改动。 */
+            {
+              const D = "草稿回归.ts";
+              const back = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                const post = (r, body) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
+                const get = (r) => fetch(u(r)).then((x) => x.json());
+                const w = await post("file_write", { path: name, content: "const a = 1;\nconst b = 2;\n", expectSha256: "0" });
+                if (!w.ok) return null;
+                /* 存一份草稿（在 s1 上），然后**绕过编辑器**改盘上那份 —— 模拟「别的编辑器/AI 改过」 */
+                await post("draft_stage", { path: name, content: "const a = 1;\nconst b = 2;\nconst 草稿加的 = 3;\n" });
+                const cur = await get(`file?path=${encodeURIComponent(name)}`);
+                await post("file_write", { path: name, content: "const a = 1;\nconst b = 别人改的;\n", expectSha256: cur.data.sha256 });
+                return get(`draft_staged?path=${encodeURIComponent(name)}`);
+              }, { name: D });
+              if (back?.ok) {
+                ok(back.data?.stale === true && back.data?.baseVersion === "s1" && back.data?.currentVersion === "s2",
+                   "**后端认出「草稿的底稿已经不是盘上那份了」**", `${back.data?.baseVersion} → ${back.data?.currentVersion}`);
+                await pg.waitForTimeout(1200);
+                const dRow = pg.locator('[role="treeitem"]').filter({ hasText: D }).first();
+                if (await dRow.count()) {
+                  await dRow.click(); await pg.waitForTimeout(3000);
+                  await clearGuard();
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await dRow.click(); await pg.waitForTimeout(2800); }
+                  const cf = pg.frameLocator('iframe[data-role="body"]');
+
+                  const bar = (await cf.locator("#draft").innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/没落盘的草稿/.test(bar), "**打开时出草稿横条**（编辑区仍是盘上那份）", bar.slice(0, 60));
+                  ok(/在 s1 上改的/.test(bar) && /已经变成 s2/.test(bar),
+                     "**说清「草稿在哪一版、盘上已经是哪一版」**（不是只说「过期了」）", bar.slice(0, 80));
+                  ok(await cf.locator("#draft.stale").count() === 1, "底稿变过时横条走 warn 态（和「有东西等着你」区分开）");
+                  ok(await barH(cf, "draft") > 10, "**横条真占了高度**（只看 hidden 属性会漏掉 CSS 盖过它）", `高 ${await barH(cf, "draft")}px`);
+                  /* ⚠️ 这一条是形制的核心 */
+                  ok(await cf.locator("#draftRestore").isVisible() === false,
+                     "**底稿变过就不给「恢复」**（直接恢复会静默盖掉别人的改动）");
+                  ok(await cf.locator("#draftOverwrite").isVisible() === true && await cf.locator("#draftDiff").isVisible() === true,
+                     "给的是「用草稿覆盖」和「看差异」两条出路");
+                  const shownNow = (await cf.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/别人改的/.test(shownNow), "**编辑区是盘上那份**（草稿不自动铺上去）", shownNow.slice(0, 50));
+
+                  /* 看差异：草稿铺进编辑区、只读、逐行标出和盘上的差别 */
+                  await cf.locator("#draftDiff").click(); await pg.waitForTimeout(2800);
+                  const inDiff = (await cf.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ");
+                  ok(/草稿加的/.test(inDiff), "「看差异」把草稿铺进编辑区", inDiff.slice(0, 50));
+                  ok(/在看草稿/.test((await cf.locator("#roText").innerText().catch(() => "")).trim()),
+                     "**看草稿时只读**（改一份预览得不出正确结果）", (await cf.locator("#roText").innerText().catch(() => "")).trim());
+                  const dTags = [];
+                  for (let q = 0; q < await cf.locator("[data-diff]").count(); q++) dTags.push(await cf.locator("[data-diff]").nth(q).getAttribute("data-diff"));
+                  ok(dTags.some((t) => /当前是 const b = 别人改的;/.test(t ?? "")),
+                     "**差异标出「盘上现在是什么」**（复用看旧版那一套，不用学第二遍）", dTags.join(" | "));
+                  await cf.locator(".cm-content").click();
+                  await pg.keyboard.type("QQ"); await pg.waitForTimeout(400);
+                  ok(!(await cf.locator(".cm-content").innerText().catch(() => "")).includes("QQ"), "看草稿时改不进去");
+                  await pg.keyboard.press("Escape"); await pg.waitForTimeout(2600);
+                  ok(/别人改的/.test((await cf.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ")),
+                     "**Esc 回到盘上那份**（和看旧版同一个键）");
+                  ok(await cf.locator("#draft.stale").count() === 1, "回来之后横条还在 stale 档");
+
+                  /* 用草稿覆盖：它就是一次写 —— 覆盖前那一版要还在 */
+                  await cf.locator("#draftOverwrite").click(); await pg.waitForTimeout(3200);
+                  const done = await pg.evaluate(async ({ name }) => {
+                    const b = window.__UD_APP;
+                    const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                    const get = (r) => fetch(u(r)).then((x) => x.json());
+                    return { f: await get(`file?path=${encodeURIComponent(name)}`), v: await get(`file_versions?path=${encodeURIComponent(name)}`), d: await get(`draft_staged?path=${encodeURIComponent(name)}`) };
+                  }, { name: D });
+                  ok(/草稿加的/.test(done.f.data?.content ?? ""), "**「用草稿覆盖」真把草稿写进盘里**", (done.f.data?.content ?? "").slice(0, 40));
+                  ok((done.v.data?.snapshots?.length ?? 0) === 3,
+                     "**覆盖前那一版还在**（它就是一次写，走写入口存旧版）", `${done.v.data?.snapshots?.length} 版`);
+                  ok(done.d.data?.has === false, "覆盖之后草稿清掉了（不留一条在说已经做完的事的提示）");
+                  ok(await barH(cf, "draft") === 0, "横条收起来了，而且不占高度");
+                } else ok(false, "草稿样本建好了但树里没刷出来");
+                /* 自己建的自己清 */
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { name: D });
+              } else ok(false, "建不出草稿样本");
+            }
 
             /* ═══ 版本历史：药丸 / 下拉 / 看旧版 / 差异标红（M10-2b）═══
                设计侧第十三轮定的形制。⚠️ 这一段的样本是**专门用来抓误标的**：

@@ -360,6 +360,69 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await rm(join(G, ".git", "MERGE_HEAD"), { force: true });
 }
 
+/* ── 草稿暂存（M10-2c）──
+   设计侧的形制：打开时**先给盘上的**，顶上一条横条；底稿变过则不给直接恢复。
+   ⚠️ 这一段的重点是**「回来那一下」**，不是「存得下来」—— 存是容易的部分。 */
+{
+  const { stageDraft, getStagedDraft, clearStagedDraft, listStagedDrafts } = await import("./staged.js");
+  const proj = await buildProject(DIR);
+  const F = "草稿样本.ts";
+  await writeAnyFile(proj, F, "一\n二\n三\n", { expectSha256: "0" });
+
+  ok("没草稿时就说没有", (await getStagedDraft(proj, F)).has === false);
+
+  /* 存一份：在盘上那份的基础上加两行 */
+  const st = await stageDraft(proj, F, "一\n二\n三\n四\n五\n");
+  ok("存得下来", st.staged === true);
+  const g1 = await getStagedDraft(proj, F);
+  ok("**拿回来的是草稿内容**（不是盘上那份）", g1.content === "一\n二\n三\n四\n五\n", JSON.stringify(g1.content));
+  ok("底稿没变 → 可以直接恢复（`stale` 为假）", g1.stale === false);
+  ok("**横条上那个读数是「草稿相对盘上」**（不是相对某一版）",
+     g1.delta?.plus === 2 && g1.delta?.minus === 0, JSON.stringify(g1.delta));
+  ok("记着它是在哪一版上改的", g1.baseVersion === "s1" && g1.currentVersion === "s1",
+     `base=${g1.baseVersion} cur=${g1.currentVersion}`);
+
+  /* ⚠️ 核心：**别人改了盘上那份之后，草稿就不能直接恢复了** */
+  await writeAnyFile(proj, F, "一\n二改了\n三\n", { expectSha256: (await readAnyFile(proj, F)).sha256 });
+  const g2 = await getStagedDraft(proj, F);
+  ok("**盘上那份被改过之后，草稿变成不可直接恢复**（不然会静默盖掉别人的改动）",
+     g2.stale === true, `stale=${g2.stale}`);
+  ok("这时候说得出「草稿是在哪一版、盘上已经是哪一版」",
+     g2.baseVersion === "s1" && g2.currentVersion === "s2", `${g2.baseVersion} → ${g2.currentVersion}`);
+  ok("草稿内容还在（不是因为过期就丢掉）", g2.content === "一\n二\n三\n四\n五\n");
+
+  /* ⚠️ 「改了又改回来」不该留下一条点了没反应的提示 */
+  const back = await stageDraft(proj, F, (await readAnyFile(proj, F)).content ?? "");
+  ok("**内容和盘上一样时不存，还把旧草稿清掉**（不留「点恢复什么都不变」的提示）",
+     back.staged === false && (await getStagedDraft(proj, F)).has === false,
+     back.why ?? "");
+
+  /* 列表：给 AI / 秘书回答「哪些文件我改了没落盘」 */
+  await stageDraft(proj, F, "又改了\n");
+  const rows = await listStagedDrafts(proj);
+  ok("列得出还挂着哪些草稿（AI 看不见编辑器，只能问这一件）",
+     rows.length === 1 && rows[0]?.path === F, JSON.stringify(rows));
+
+  /* 丢掉 */
+  ok("丢得掉", (await clearStagedDraft(proj, F)).cleared === true);
+  ok("丢完就说没有了", (await getStagedDraft(proj, F)).has === false);
+  ok("本来没有再丢一次也不报错", (await clearStagedDraft(proj, F)).cleared === false);
+
+  /* 坏掉的草稿要自己清掉并说一句 —— 留着的话每次打开都弹一条恢复不了的提示 */
+  const { writeFile: wf2, mkdir: mk2 } = await import("node:fs/promises");
+  await mk2(join(DIR, ".umbrastudio", "staged"), { recursive: true });
+  await wf2(join(DIR, ".umbrastudio", "staged", `${F}.json`), "{坏的", "utf8");
+  const bad2 = await getStagedDraft(proj, F);
+  ok("**坏掉的草稿自己清掉并说一句**（不留一条永远消不掉的提示）",
+     bad2.has === false && !!bad2.note, bad2.note ?? "");
+
+  /* 路径规范化要和快照那边**同一套** —— 两处不一致的话「有没有草稿」永远查不到 */
+  await stageDraft(proj, `./${F}`, "用带点的路径存\n");
+  ok("**`./x` 和 `x` 是同一份草稿**（路径规范化和快照那边共用一份）",
+     (await getStagedDraft(proj, F)).content === "用带点的路径存\n");
+  await clearStagedDraft(proj, F);
+}
+
 /* ── 插件调得到 `read_file_version` 吗（白名单是白名单，新加的能力默认进不来）── */
 {
   const { allowedCapNames } = await import("./plugin/host.js");
@@ -367,6 +430,9 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**`read_file_version` 在插件白名单里**（编辑区是插件的，它得自己读那一版）",
      names.includes("read_file_version"), names.join(" "));
   ok("白名单没顺手放开写权限的东西", !names.includes("revert_draft") && !names.includes("delete_draft"));
+  ok("**草稿暂存三件也在白名单里**（插件自己存不了，只能调宿主）",
+     names.includes("stage_draft") && names.includes("get_staged_draft") && names.includes("clear_staged_draft"),
+     names.filter((n) => /staged|stage_/.test(n)).join(" "));
 }
 
 await rm(DIR, { recursive: true, force: true });

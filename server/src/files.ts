@@ -461,7 +461,11 @@ export async function referencesOf(p: Project, rel: string): Promise<Array<{ fil
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const clean = (rel: string) => rel.split(/[\\/]/).filter((x) => x && x !== "." && x !== "..").join("/");
 
-function normalizeRel(p: Project, rel: string): string {
+/** 把调用方给的路径规范成「相对项目根的干净路径」。
+ *  ⚠️ **导出它是有意的**（M10-2c）：草稿暂存要用**同一套**规范化 ——
+ *  两处各写一份的话，同一个文件在快照那边叫 `a/b.ts`、在草稿那边叫 `./a/b.ts`，
+ *  于是「有没有草稿」永远查不到。 */
+export function normalizeRel(p: Project, rel: string): string {
   const c = clean(rel);
   if (!c) {
     throw new ToolError(err(X.IO, rel, { kind: "path", name: rel }, "路径是空的",
