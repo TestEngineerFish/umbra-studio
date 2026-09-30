@@ -49,11 +49,26 @@ const FALLBACK_NOTE: Record<Exclude<GitFallback, "on">, { head: string; fix: str
   },
 };
 
-const SRC_IS_AI = (s: string) => /AI/i.test(s);
+/** 来源标签的配色。三类分开 ——
+ *  **`外部改动` 要和别的分开**：它说的是「这一版不是在这个软件里改的」，
+ *  而那恰恰是用户最想一眼认出来的一种（设计侧第十三轮问出来的）。 */
+function srcTone(src: string): string {
+  if (/AI/i.test(src)) return "bg-accentSoft border-accent text-accent";
+  if (src === "外部改动") return "border-warn text-warn";
+  return "bg-panel2 border-border text-text2";
+}
 
-/** `+N −M`。**没算出来要说「没算」，不要显示 `+0 −0`** —— 后者是「没改」的意思。 */
+/** `+N −M`。**没算出来要说「没算」，不要显示 `+0 −0`** —— 后者是「没改」的意思。
+ *  ⚠️ 而且要**说得出为什么没算**（设计侧要的）：只写「没算」会让人以为出错了。 */
 function Delta({ d }: { d: Snap["delta"] }) {
-  if (d === null || d === undefined) return <span className="text-[11px] text-muted shrink-0">没算</span>;
+  if (d === null || d === undefined) {
+    return (
+      <span className="text-[11px] text-muted shrink-0 underline decoration-dotted decoration-muted/50"
+        title="这个文件太大（超过 4000 行），逐行比一次要几秒，所以没算。快照和回退都不受影响。">
+        没算
+      </span>
+    );
+  }
   return (
     <span className="inline-flex gap-[5px] font-mono text-[11px] tabular-nums shrink-0">
       <span className="text-ok">+{d.plus}</span>
@@ -171,7 +186,7 @@ export function VersionPill({ core, path, viewing, onView, onRevertDone, confirm
             )}
             {/* **最新的在最上面**：升序存、倒序显示，同 S2 的版本历史 */}
             {[...(snaps ?? [])].reverse().map((s, i) => {
-              const cur = i === 0, seen = s.version === viewing, ai = SRC_IS_AI(s.src);
+              const cur = i === 0, seen = s.version === viewing;
               return (
                 <div key={s.version} data-ud="version-row" data-version={s.version}
                   onClick={() => { if (!cur) { onView(s.version); pop.close("pick"); } }}
@@ -184,8 +199,8 @@ export function VersionPill({ core, path, viewing, onView, onRevertDone, confirm
                   <div className="min-w-0">
                     <div className="flex items-center gap-[7px] min-w-0">
                       <span className={`font-mono text-xs ${cur || seen ? "font-bold" : "font-medium"}`}>{s.version}</span>
-                      <span className={`text-[11px] px-1.5 rounded-sm border shrink-0
-                        ${ai ? "bg-accentSoft border-accent text-accent" : "bg-panel2 border-border text-text2"}`}>{s.src}</span>
+                      <span className={`text-[11px] px-1.5 rounded-sm border shrink-0 ${srcTone(s.src)}`}
+                        title={s.src === "外部改动" ? "盘上内容和上一版不同，落盘前先存下的 —— 多半是别的编辑器改过" : undefined}>{s.src}</span>
                       <span className="text-[11px] text-muted whitespace-nowrap">{timeAgo(s.at)}</span>
                       <Delta d={s.delta} />
                       <span className="flex-1" />

@@ -247,7 +247,15 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
     }
     if (same) { previous = latest; steps.push(`上一版已经是 ${latest}，没重复存`); }
     else {
-      previous = await saveSnapshot(p, clean, before, opts.origin ?? "人手改", opts.note);
+      /* ⚠️ **这一版打标「外部改动」，不是调用方的 `origin`。**
+         能走到这一支只有两种情况，两种都不是调用方写的：
+         ① 我们有快照，但盘上那份和最近一版**不同** → 别人在外面改过
+         ② 我们一份快照都没有 → 这份文件的内容我们从来没经手过
+         原来这里填 `opts.origin ?? "人手改"` —— 于是版本历史里那一行说「人手改」，
+         而它恰恰是**别人改的那一版**。设计侧第十三轮一眼看出来的：
+         「『外部改动』这个来源值后端有没有打标？没打的话这一行会显示成『人手改』。」 */
+      previous = await saveSnapshot(p, clean, before, "外部改动",
+        opts.note ?? "盘上内容和上一版不同，落盘前先存下的");
       steps.push(latest ? `盘上这份不是我们最近存的那版，先存下来 ${previous}` : `存快照 ${previous}`);
     }
   }

@@ -19,7 +19,15 @@ export const CHANGELOG = "CHANGELOG-设计侧.md";
 /** 谁改的这一版。⚠️ **「插件」是独立的一类**（Q37）——
  *  买来装上的格式插件也会写盘，把它算进 AI 或人手改，变更清单就会说谎：
  *  用户看到「AI 改的」会去翻会话记录，而那一次根本没有会话。 */
-export type VersionOrigin = "AI" | "人手改" | "新建" | "插件";
+/** 这一版是**谁产生的**。
+ *
+ *  ⚠️ **不是「谁调的这次写」**（2026-09-30，设计侧一眼看出来的）。
+ *  泛型文件层落盘时会先把盘上那份存一版 —— 而那一版多半**不是调用方写的**，
+ *  是别人在 VS Code 里改的。原来它按 `opts.origin` 打标，于是
+ *  「别人改的那一版」被标成「人手改」，**而救下这一版正是那条兜底存在的全部理由**。
+ *  §九十三 那次把写死的 `"人手改"` 改成 `originOf(via)`，修的是「调用方是谁」，
+ *  没修「这一版是谁产生的」—— 两个问题长得像，答案不在同一个地方。 */
+export type VersionOrigin = "AI" | "人手改" | "新建" | "插件" | "外部改动";
 export interface VersionMeta { origin: VersionOrigin; capturedAt: string; summary: string }
 
 function metaFile(p: Project, relPath: string): string {

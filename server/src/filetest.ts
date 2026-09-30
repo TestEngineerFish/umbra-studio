@@ -283,6 +283,20 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**外部改的那一版被存下来了**（去重只省重复的，不省真不一样的）",
      rescuedSrc.includes("别的编辑器改成这样\n"),
      metas2.map((m) => m.version).join(" "));
+  /* ⚠️ **而且它得标成「外部改动」，不能标成调用方的 origin。**（设计侧第十三轮问出来的）
+     原来这里填 `opts.origin ?? "人手改"` —— 于是版本历史里那一行说「人手改」，
+     而它恰恰是**别人改的那一版**。**救下这一版正是这条兜底存在的全部理由，
+     而它把自己救下来的东西标错了。** */
+  {
+    const i = rescuedSrc.indexOf("别的编辑器改成这样\n");
+    ok("**外部改的那一版标成「外部改动」**（不是调用方的 origin）",
+       i >= 0 && metas2[i]?.src === "外部改动", `${metas2[i]?.version} 标成 ${metas2[i]?.src}`);
+    ok("而它说得出为什么被存下来", !!metas2[i]?.note, metas2[i]?.note ?? "（没有 note）");
+    /* 同一批里**调用方写的那一版**仍然按调用方打标 —— 两件事不能混 */
+    const mine = metas2[metas2.length - 1];
+    ok("而调用方自己写的那一版照旧按调用方打标（两件事不混）",
+       mine?.src === "人手改", `${mine?.version} 标成 ${mine?.src}`);
+  }
   ok("这条兜底和 git 无关，所以 `.gitignore` 忽略了也照样有",
      metas2.length === 5, `${metas2.length} 版`);
 
