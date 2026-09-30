@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="./_ds-tool/tokens.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body { background: var(--tool-bg); }
+  * { box-sizing: border-box; }
+  a { color: var(--tool-accent); text-decoration: none; }
+  a:hover { color: var(--tool-accent-hover); text-decoration: underline; }
+  input, button { font: inherit; color: inherit; }
+</style>
+</helmet>
+
+<div data-tool-theme="{{ theme }}" style="height: 100vh; display: flex; flex-direction: column; background: var(--tool-bg); color: var(--tool-text); font-family: var(--tool-sans); font-size: 13px; -webkit-font-smoothing: antialiased;">
+
+  <sc-if value="{{ showDemoBar }}" hint-placeholder-val="{{ true }}">
+  <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border);">
+    <span style="font-size: 11px; color: var(--tool-muted); flex: none;">演示态</span>
+    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="6">
+      <button type="button" onClick="{{ st.pick }}" title="{{ st.name }}" aria-pressed="{{ st.active }}" style="display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 9px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; cursor: pointer; font-size: 11px; white-space: nowrap; background: {{ st.bg }}; border-color: {{ st.bd }}; color: {{ st.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+        <span style="font-family: var(--tool-mono); opacity: 0.6;">{{ st.n }}</span>
+        <span style="font-weight: {{ st.fw }};">{{ st.short }}</span>
+      </button>
+    </sc-for>
+    <span style="color: var(--tool-border-strong); flex: none;">·</span>
+    <span style="color: var(--tool-muted); min-width: 0;">{{ demoNote }}</span>
+  </div>
+  </sc-if>
+
+  <div style="flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; background: var(--tool-bg);">
+
+    <!-- 视图工具条：S18 那一条原样，多两样：源码/树 切换、光标所在路径 -->
+    <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 16px; background: var(--tool-panel); border-bottom: 1px solid var(--tool-border); position: relative; z-index: 4; min-width: 0;">
+      <span style="color: var(--tool-text-2); display: grid;"><dc-import name="IconGlyph" d="M6 2.5H5a1.5 1.5 0 00-1.5 1.5v2.2L2.3 8l1.2 1.8V12A1.5 1.5 0 005 13.5h1M10 2.5h1A1.5 1.5 0 0112.5 4v2.2L13.7 8l-1.2 1.8V12a1.5 1.5 0 01-1.5 1.5h-1" size="14" hint-size="14px,14px"></dc-import></span>
+      <span style="font-weight: 600; white-space: nowrap;">{{ path }}</span>
+      <span title="快照：{{ snapCount }} 版" style="display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 1px solid var(--tool-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-family: var(--tool-mono); font-size: 11px; color: var(--tool-text-2);">
+        {{ snapVersion }}
+        <svg width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      </span>
+
+      <sc-if value="{{ readOnly }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span title="{{ roTip }}" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border); background: var(--tool-panel-2); color: var(--tool-text-2); font-size: 11px; white-space: nowrap;">
+            <dc-import name="IconGlyph" d="M4.5 7.2h7v5.6h-7zM6 7.2V5.4a2 2 0 014 0v1.8" size="12" hint-size="12px,12px"></dc-import>
+            <span>只读 · 超过 1 MB</span>
+          </span>
+          <button type="button" style="height: 22px; padding: 0 8px; border: 1px solid var(--tool-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 11px; color: var(--tool-text-2); cursor: pointer; white-space: nowrap;" style-hover="border-color: var(--tool-border-strong); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">解锁编辑</button>
+        </div>
+      </sc-if>
+
+      <!-- 解析不了：一枚 err 标签，点它跳到出错那一行 -->
+      <sc-if value="{{ bad }}" hint-placeholder-val="{{ false }}">
+        <button type="button" onClick="{{ jumpErr }}" title="点一下跳到出错的地方" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-err-border); background: var(--tool-err-soft); color: var(--tool-err); font-size: 11px; white-space: nowrap; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+          <span style="width: 6px; height: 6px; border-radius: 999px; background: var(--tool-err);"></span>
+          解析不了
+          <span style="font-family: var(--tool-mono); font-size: 10px;">{{ errAt }}</span>
+        </button>
+      </sc-if>
+
+      <span style="flex: 1; min-width: 8px;"></span>
+
+      <span title="光标所在的路径 · 点一下复制" style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--tool-mono); font-size: 11px; color: var(--tool-text-2); cursor: copy;">{{ crumb }}</span>
+
+      <div role="tablist" aria-label="怎么看" style="flex: none; display: flex; padding: 2px; gap: 2px; border-radius: var(--tool-radius); background: var(--tool-panel-2); border: 1px solid var(--tool-border);">
+        <button type="button" role="tab" aria-selected="{{ isSrc }}" onClick="{{ toSrc }}" style="height: 22px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); font-size: 11px; cursor: pointer; background: {{ srcBg }}; color: {{ srcFg }}; box-shadow: {{ srcSh }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">源码</button>
+        <button type="button" role="tab" aria-selected="{{ isTree }}" aria-disabled="{{ bad }}" onClick="{{ toTree }}" title="{{ treeTip }}" style="height: 22px; padding: 0 10px; border: 0; border-radius: var(--tool-radius-sm); font-size: 11px; cursor: {{ treeCur }}; background: {{ treeBg }}; color: {{ treeFg }}; box-shadow: {{ treeSh }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">树</button>
+      </div>
+      <span style="flex: none; font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ lang }}</span>
+    </div>
+
+    <div style="flex: 1 1 0; min-height: 0; display: flex;">
+      <div style="flex: 1 1 0; min-width: 0; overflow: auto; background: var(--tool-panel);">
+
+        <!-- 源码：就是 S18（CodeMirror），只换了高亮 -->
+        <sc-if value="{{ isSrc }}" hint-placeholder-val="{{ true }}">
+        <div style="padding: 10px 0 48px; font-family: var(--tool-mono); font-size: 12px; line-height: 20px; min-width: max-content;">
+          <sc-for list="{{ lines }}" as="l" hint-placeholder-count="20">
+            <div style="position: relative; display: grid; grid-template-columns: 52px minmax(0, 1fr); min-height: 20px; background: {{ l.bg }};">
+              <span style="padding-right: 14px; text-align: right; color: {{ l.numFg }}; user-select: none; font-variant-numeric: tabular-nums; box-shadow: {{ l.gutter }};">{{ l.n }}</span>
+              <span style="padding: 0 180px 0 10px; white-space: pre;"><sc-for list="{{ l.toks }}" as="t" hint-placeholder-count="3"><span style="color: {{ t.fg }}; font-weight: {{ t.fw }}; text-decoration: {{ t.ul }};">{{ t.v }}</span></sc-for><sc-if value="{{ l.caret }}" hint-placeholder-val="{{ false }}"><span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--tool-text);"></span></sc-if></span>
+              <sc-if value="{{ l.errNote }}" hint-placeholder-val="{{ false }}">
+                <span style="position: absolute; left: 62px; top: 21px; z-index: 2; display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: var(--tool-radius); border: 1px solid var(--tool-err-border); background: var(--tool-panel); box-shadow: var(--tool-shadow-2); font-family: var(--tool-sans); font-size: 12px; color: var(--tool-text-2); white-space: nowrap;">
+                  <span style="color: var(--tool-err); font-weight: 560;">{{ errMsg }}</span>
+                  <span style="color: var(--tool-muted);">上一行 L{{ errPrev }} 结尾要一个 <code style="font-family: var(--tool-mono); color: var(--tool-text);">,</code></span>
+                </span>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        </sc-if>
+
+        <!-- 树：只看、只挑，不在树上改值 -->
+        <sc-if value="{{ isTree }}" hint-placeholder-val="{{ false }}">
+        <div role="tree" style="padding: 8px 0 48px; font-family: var(--tool-mono); font-size: 12px; min-width: max-content;">
+          <sc-for list="{{ rows }}" as="r" hint-placeholder-count="16">
+            <div role="treeitem" aria-expanded="{{ r.open }}" onClick="{{ r.pick }}" style="position: relative; display: flex; align-items: center; height: 24px; padding: 0 200px 0 {{ r.pad }}; background: {{ r.bg }}; box-shadow: {{ r.bar }}; cursor: default; white-space: pre;" style-hover="background: var(--tool-hover);">
+              <sc-if value="{{ r.isMore }}" hint-placeholder-val="{{ false }}">
+                <span style="display: inline-flex; align-items: center; gap: 10px; font-family: var(--tool-sans); font-size: 12px; color: var(--tool-muted);">
+                  {{ r.moreText }}
+                  <button type="button" style="height: 22px; padding: 0 8px; border: 1px solid var(--tool-border-strong); border-radius: var(--tool-radius-sm); background: var(--tool-panel); font-size: 11px; color: var(--tool-text-2); cursor: pointer;" style-hover="border-color: var(--tool-accent); color: var(--tool-accent);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">再显示 100 项</button>
+                </span>
+              </sc-if>
+              <sc-if value="{{ r.isNode }}" hint-placeholder-val="{{ true }}">
+                <span style="flex: none; width: 18px; height: 18px; display: grid; place-items: center;">
+                  <sc-if value="{{ r.canToggle }}" hint-placeholder-val="{{ false }}">
+                    <button type="button" onClick="{{ r.toggle }}" aria-label="展开或收起" style="width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--tool-radius-sm); background: transparent; color: var(--tool-muted); cursor: pointer;" style-hover="background: var(--tool-panel-3); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 0;">
+                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true" style="transform: {{ r.rot }}; transition: transform .12s ease;"><path d="M4.5 3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                  </sc-if>
+                </span>
+                <span style="color: {{ r.keyFg }}; font-weight: {{ r.keyFw }};">{{ r.key }}</span>
+                <span style="color: var(--tool-text-2);">{{ r.colon }}</span>
+                <span style="color: {{ r.valFg }};">{{ r.val }}</span>
+                <span style="margin-left: 8px; font-family: var(--tool-sans); font-size: 11px; color: var(--tool-muted);">{{ r.sum }}</span>
+              </sc-if>
+
+              <sc-if value="{{ r.actions }}" hint-placeholder-val="{{ false }}">
+                <span style="position: absolute; right: 16px; top: 1px; display: flex; align-items: center; gap: 4px;">
+                  <button type="button" onClick="{{ r.jump }}" style="height: 22px; padding: 0 8px; border: 0; border-radius: var(--tool-radius-sm); background: transparent; font-family: var(--tool-sans); font-size: 11px; color: var(--tool-text-2); cursor: pointer; white-space: nowrap;" style-hover="background: var(--tool-panel-3); color: var(--tool-text);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">在源码里看 <span style="font-family: var(--tool-mono); font-size: 10px; color: var(--tool-muted);">{{ r.lines }}</span></button>
+                  <button type="button" onClick="{{ sendNode }}" title="把 {{ r.jpath }} 带进会话" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 6px; border: 1px solid var(--tool-accent-border); border-radius: var(--tool-radius-sm); background: var(--tool-panel); color: var(--tool-accent); font-family: var(--tool-sans); font-size: 11px; font-weight: 560; box-shadow: var(--tool-shadow-1); cursor: pointer; white-space: nowrap;" style-hover="background: var(--tool-accent-soft);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+                    <dc-import name="IconGlyph" d="M3 3.5h10v7H7.5L4.5 13v-2.5H3z" size="12" hint-size="12px,12px"></dc-import>
+                    给 AI
+                    <kbd style="font-family: var(--tool-mono); font-size: 10px; font-weight: 400; color: var(--tool-muted);">⌘L</kbd>
+                  </button>
+                </span>
+              </sc-if>
+              <sc-if value="{{ r.sentTag }}" hint-placeholder-val="{{ false }}">
+                <span style="position: absolute; right: 16px; top: 3px; font-family: var(--tool-mono); font-size: 10px; padding: 0 6px; height: 18px; line-height: 16px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-panel); color: var(--tool-accent);">{{ r.lines }} · 已带进会话</span>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <sc-if value="{{ sent }}" hint-placeholder-val="{{ false }}">
+      <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--tool-panel); border-top: 1px solid var(--tool-border);">
+        <span title="{{ sentTip }}" style="flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-accent-border); background: var(--tool-accent-soft); color: var(--tool-accent); font-size: 11px;">
+          <dc-import name="IconGlyph" d="M6 2.5H5a1.5 1.5 0 00-1.5 1.5v2.2L2.3 8l1.2 1.8V12A1.5 1.5 0 005 13.5h1M10 2.5h1A1.5 1.5 0 0112.5 4v2.2L13.7 8l-1.2 1.8V12a1.5 1.5 0 01-1.5 1.5h-1" size="12" hint-size="12px,12px"></dc-import>
+          <span style="font-family: var(--tool-mono); font-weight: 600;">json</span>
+          <span style="font-family: var(--tool-mono); color: var(--tool-text-2); white-space: nowrap;">{{ sentLabel }}</span>
+        </span>
+        <input type="text" placeholder="问这一段，或者说要怎么改… ⏎ 发送" style="flex: 1 1 0; min-width: 120px; height: 30px; padding: 0 10px; border: 1px solid var(--tool-accent); box-shadow: 0 0 0 3px var(--tool-accent-soft); border-radius: var(--tool-radius); background: var(--tool-panel); outline: none;">
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;跟随外层&quot;, &quot;dark&quot;], &quot;default&quot;: &quot;跟随外层&quot;, &quot;tsType&quot;: &quot;'dark'|null&quot;, &quot;section&quot;: &quot;工具皮肤&quot;}, &quot;jsonc&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;文件&quot;}}">
+const PKG = {
+  name: "umbra-studio", version: "0.14.0", private: true, type: "module",
+  scripts: { dev: "vite", build: "tsc -b && vite build", uitest: "node test/ui.mjs", selftest: "node test/self.mjs" },
+  dependencies: { "@codemirror/state": "^6.4.1", "@codemirror/view": "^6.34.1", react: "^18.3.1", "react-dom": "^18.3.1" },
+  devDependencies: { typescript: "^5.6.2", vite: "^5.4.8" },
+  engines: { node: ">=20" }
+};
+const TYPES = ["snapshot.save", "file.open", "snapshot.save", "draft.stage", "file.open", "plugin.load"];
+const FILES = ["src/snapshots.ts", "package.json", "S18-代码视图.dc.html", "src/store诊断.ts"];
+const EVENTS = Array.from({ length: 12 }, (_, i) => ({
+  id: "ev_" + String(2440 - i).padStart(5, "0"), type: TYPES[i % 6],
+  at: "2026-09-30T08:" + String(59 - i * 3).padStart(2, "0") + ":04Z",
+  file: FILES[i % 4], bytes: 412 + i * 37, ok: i !== 3
+}));
+const DEMOS = [
+  { n: 1, short: "源码", name: "源码 · 默认", note: "打开 .json 先给源码，就是 S18：改、落盘、只读、给 AI 全部照旧。多两样：右边的光标路径、源码 / 树 切换", view: "src", caretKey: "react" },
+  { n: 2, short: "树", name: "树", note: "树只用来看和挑：展开收起、看类型、数有几项。不在树上改值——要改就「在源码里看」", view: "tree" },
+  { n: 3, short: "挑一个节点", name: "树 · 挑一个节点", note: "点一行选中它：右侧出「在源码里看 L12–17」和「给 AI ⌘L」；路径跟着变", view: "tree", pick: "$.dependencies" },
+  { n: 4, short: "已带进", name: "已带进会话", note: "药丸写 json · 文件 · 路径；悬停看行号。带进去的是这个节点的原文，太长照第十二轮 html 那条收骨架", view: "tree", pick: "$.dependencies", sent: true },
+  { n: 5, short: "解析不了", name: "解析不了", note: "源码里出错那一行标 err，下面一句原因；树钮灰掉。照样能 ⌘S——用户自己按的，不拦", view: "src", bad: true },
+  { n: 6, short: "大文件", name: "大文件 · 3.2 MB", note: "超过 1 MB：自动只读，先给树。数组只画前 100 项，其余按需加载", view: "tree", big: true }
+];
+
+const q = (s) => JSON.stringify(s);
+const tok = (v, fg, fw, ul) => ({ v: v, fg: fg || "var(--tool-text)", fw: fw || "400", ul: ul || "none" });
+const lexJson = (line) => {
+  const out = []; const re = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?)|(true|false|null)|(\s+)|(.)/g; let m;
+  while ((m = re.exec(line))) {
+    if (m[1] && m[2]) { out.push(tok(m[1], "var(--tool-accent)", "500")); out.push(tok(m[2], "var(--tool-text-2)")); }
+    else if (m[1]) out.push(tok(m[1], "var(--tool-ok)"));
+    else if (m[3]) out.push(tok(m[3], "var(--tool-warn)"));
+    else if (m[4]) out.push(tok(m[4], "var(--tool-accent)"));
+    else if (m[5]) out.push(tok(m[5]));
+    else out.push(tok(m[6], "var(--tool-text-2)"));
+  }
+  return out;
+};
+const fmtN = (n) => n.toLocaleString("en-US");
+const typeOf = (v) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+const valFg = (v) => ({ string: "var(--tool-ok)", number: "var(--tool-warn)", boolean: "var(--tool-accent)", null: "var(--tool-muted)" })[typeOf(v)] || "var(--tool-text-2)";
+
+class Component extends DCLogic {
+  state = { demo: 1, open: null, pick: null };
+  go(n) { this.setState({ demo: n, open: null, pick: null }); }
+
+  defaultsOpen(dm) {
+    return dm.big ? { "$": 1, "$[2]": 1 } : { "$": 1, "$.scripts": 1, "$.dependencies": 1 };
+  }
+
+  buildRows(dm, root, open, pick, lineOf) {
+    const rows = [];
+    const walk = (v, key, jp, depth, isIdx) => {
+      const t = typeOf(v), box = t === "object" || t === "array";
+      const kids = box ? (t === "array" ? v.map((x, i) => [i, x]) : Object.entries(v)) : [];
+      const isOpen = box && !!open[jp];
+      const sel = pick === jp;
+      let val = "", sum = "";
+      if (box) {
+        if (isOpen) val = t === "array" ? "[" : "{";
+        else {
+          const keys = t === "object" ? Object.keys(v) : [];
+          val = t === "array" ? "[ … ]" : "{ " + keys.slice(0, 3).join(", ") + (keys.length > 3 ? ", …" : "") + " }";
+        }
+        const cnt = dm.big && jp === "$" ? 2440 : kids.length;
+        sum = t === "array" ? fmtN(cnt) + " 项" : cnt + " 个键";
+      } else val = t === "string" ? q(v) : String(v);
+      const ln = lineOf(jp);
+      rows.push({
+        isNode: true, isMore: false, open: box ? isOpen : null, canToggle: box && kids.length > 0,
+        rot: isOpen ? "rotate(90deg)" : "none", pad: (12 + depth * 18) + "px",
+        key: key === null ? "" : isIdx ? String(key) : q(key),
+        keyFg: isIdx ? "var(--tool-muted)" : "var(--tool-accent)", keyFw: isIdx ? "400" : "500",
+        colon: key === null ? "" : ": ", val: val, valFg: box ? "var(--tool-text-2)" : valFg(v), sum: sum,
+        bg: sel ? "var(--tool-accent-soft)" : "transparent",
+        bar: sel ? "inset 2px 0 0 var(--tool-accent)" : "none",
+        actions: sel && !dm.sent, sentTag: sel && !!dm.sent, jpath: jp, lines: ln,
+        toggle: (e) => { e && e.stopPropagation && e.stopPropagation(); const o = Object.assign({}, this.curOpen()); if (o[jp]) delete o[jp]; else o[jp] = 1; this.setState({ open: o }); },
+        pick: () => this.setState({ pick: jp }),
+        jump: (e) => { e && e.stopPropagation && e.stopPropagation(); this.setState({ demo: 1, open: null, pick: null }); }
+      });
+      if (isOpen) {
+        kids.forEach(([k, x]) => walk(x, k, t === "array" ? jp + "[" + k + "]" : jp + "." + k, depth + 1, t === "array"));
+        if (dm.big && jp === "$") rows.push({ isNode: false, isMore: true, moreText: "前 " + kids.length + " 项 · 还有 " + fmtN(2440 - kids.length) + " 项", pad: (12 + (depth + 1) * 18 + 18) + "px", bg: "transparent", bar: "none", actions: false, sentTag: false, pick: () => {} });
+      }
+    };
+    walk(root, null, "$", 0, false);
+    return rows;
+  }
+
+  curOpen() { return this.state.open || this.defaultsOpen(DEMOS[this.state.demo - 1]); }
+
+  renderVals() {
+    const s = this.state;
+    const dm = DEMOS[s.demo - 1];
+    const root = dm.big ? EVENTS : PKG;
+    const src = JSON.stringify(PKG, null, 2).split("\n");
+    const lineOf = (jp) => {
+      if (dm.big) return "";
+      const k = jp.split(".").pop();
+      const i = src.findIndex((l) => l.trim().startsWith(q(k) + ":"));
+      if (i < 0) return "L1–" + src.length;
+      if (!/[{[]\s*$/.test(src[i])) return "L" + (i + 1);
+      const ind = src[i].match(/^\s*/)[0].length;
+      let j = i + 1; while (j < src.length && !(src[j].match(/^\s*/)[0].length === ind && /^[\s]*[}\]]/.test(src[j]))) j++;
+      return "L" + (i + 1) + "–" + (j + 1);
+    };
+    let lines = src.slice();
+    let errLine = -1;
+    if (dm.bad) {
+      const i = lines.findIndex((l) => l.includes('"@codemirror/view"'));
+      lines[i] = lines[i].replace(/,$/, "");
+      errLine = i + 1;
+    }
+    const caretLine = dm.caretKey ? lines.findIndex((l) => l.trim().startsWith(q(dm.caretKey))) : -1;
+    const pick = s.pick !== null ? s.pick : dm.pick || null;
+    const tree = dm.view === "tree";
+    const path = dm.big ? "data/events.json" : "package.json";
+    const crumb = tree ? (pick || (dm.big ? "$[2].type" : "$")) : dm.bad ? "$.dependencies" : "$.dependencies.react";
+    const errCol = errLine > 0 ? lines[errLine].match(/^\s*/)[0].length + 1 : 0;
+
+    return {
+      theme: this.props.theme === "dark" ? "dark" : null,
+      showDemoBar: true,
+      demoNote: dm.note,
+      demoStates: DEMOS.map((m) => {
+        const on = m.n === s.demo;
+        return { n: m.n, name: m.name, short: m.short, active: on, fw: on ? "600" : "400",
+          bg: on ? "var(--tool-accent)" : "var(--tool-panel)", bd: on ? "var(--tool-accent)" : "var(--tool-border-strong)",
+          fg: on ? "var(--tool-on-accent)" : "var(--tool-text-2)", pick: () => this.go(m.n) };
+      }),
+      path: path,
+      lang: this.props.jsonc ? "JSON with Comments" : "JSON",
+      snapVersion: dm.big ? "s1" : "s4",
+      snapCount: dm.big ? "1" : "4",
+      readOnly: !!dm.big,
+      roTip: "超过 1 MB 自动只读；规则同 S18",
+      bad: !!dm.bad,
+      errAt: "L" + (errLine + 1) + ":" + errCol,
+      errMsg: "这里少了一个逗号",
+      errPrev: String(errLine),
+      jumpErr: () => {},
+      crumb: crumb,
+      isSrc: !tree, isTree: tree,
+      toSrc: () => this.setState({ demo: dm.bad ? 5 : 1, open: null, pick: null }),
+      toTree: () => { if (!dm.bad) this.setState({ demo: dm.big ? 6 : 2, open: null, pick: null }); },
+      treeTip: dm.bad ? "解析不了，树画不出来。先改好 " + "L" + (errLine + 1) : "按结构看",
+      srcBg: tree ? "transparent" : "var(--tool-panel)", srcFg: tree ? "var(--tool-text-2)" : "var(--tool-text)", srcSh: tree ? "none" : "var(--tool-shadow-1)",
+      treeBg: tree ? "var(--tool-panel)" : "transparent", treeFg: dm.bad ? "var(--tool-muted)" : tree ? "var(--tool-text)" : "var(--tool-text-2)", treeSh: tree ? "var(--tool-shadow-1)" : "none",
+      treeCur: dm.bad ? "not-allowed" : "pointer",
+      lines: tree ? [] : lines.map((t, i) => {
+        const n = i + 1, isErr = n === errLine + 1, cur = i === caretLine;
+        const toks = lexJson(t);
+        if (isErr) { const k = toks.findIndex((x) => x.v.trim()); if (k >= 0) toks[k] = Object.assign({}, toks[k], { ul: "underline wavy var(--tool-err)" }); }
+        return { n: String(n), toks: toks, caret: cur, errNote: isErr,
+          bg: isErr ? "var(--tool-err-soft)" : cur ? "var(--tool-panel-2)" : "transparent",
+          gutter: isErr ? "inset -2px 0 0 var(--tool-err)" : "none",
+          numFg: isErr ? "var(--tool-err)" : cur ? "var(--tool-text)" : "var(--tool-muted)" };
+      }),
+      rows: tree ? this.buildRows(dm, root, this.curOpen(), pick, lineOf) : [],
+      sendNode: (e) => { e && e.stopPropagation && e.stopPropagation(); this.setState({ demo: 4, open: this.curOpen(), pick: pick }); },
+      sent: !!dm.sent,
+      sentLabel: path + " " + (pick || ""),
+      sentTip: pick ? path + " " + lineOf(pick) + " · 原文 " + (lineOf(pick) ? "6 行" : "") : ""
+    };
+  }
+}
+</script>
+</body>
+</html>
