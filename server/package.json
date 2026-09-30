@@ -28,7 +28,8 @@
     "kindtest": "npm run build && node dist/kindtest.js",
     "plugintest": "npm run build && node dist/plugintest.js",
     "packplugin": "npm run build && node dist/packplugin.js",
-    "ziptest": "npm run build && node dist/ziptest.js"
+    "ziptest": "npm run build && node dist/ziptest.js",
+    "jsonpostest": "npm run build && node dist/jsonpostest.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
