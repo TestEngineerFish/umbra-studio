@@ -1999,6 +1999,45 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const page = plug.frameLocator("#page");
                   const btn = page.locator("button.primary");
                   ok(await btn.count() === 1, "**用户的网页真渲染出来了**（三层 iframe 穿到底）", `${await btn.count()} 个按钮`);
+
+                  /* ── 点选描边的视觉约定（设计侧第十二轮给的文字，2026-09-30 接）──
+                     ⚠️ 预览的是**用户自己的网页**：它可能整页深底（一道纯蓝边看不见），
+                     也可能自己就带蓝色边框（分不清哪道是我们画的）。
+                     它定的是「外 1px 白、内 2px 强调色、再往外让开 2px」。 */
+                  await btn.hover(); await pg.waitForTimeout(400);
+                  const deco = await page.locator("body").evaluate(() => {
+                    const ds = [...document.documentElement.children].filter((n) => n.tagName === "DIV" && n.style.position === "fixed");
+                    const bx = ds.find((n) => n.style.boxShadow.includes("0px 0px 0px 2px"));
+                    const tg = ds.find((n) => n.textContent && n.style.background);
+                    return {
+                      shadow: bx ? getComputedStyle(bx).boxShadow : "",
+                      boxTop: bx ? Math.round(parseFloat(bx.style.top)) : null,
+                      tagText: tg ? tg.textContent : "",
+                      tagTop: tg ? Math.round(parseFloat(tg.style.top)) : null,
+                      tagHits: tg ? getComputedStyle(tg).pointerEvents : "",
+                    };
+                  });
+                  const elTop = await btn.evaluate((n) => Math.round(n.getBoundingClientRect().top));
+                  ok(/2px/.test(deco.shadow) && /3px/.test(deco.shadow) && /255, 255, 255/.test(deco.shadow),
+                     "**描边是双层的：内 2px 强调色 + 外 1px 白**（一道纯蓝边在深底页面上看不见）", deco.shadow);
+                  ok(deco.boxTop === elTop - 2,
+                     "**往外让开 2px**（不贴着元素画，元素自己的边框才看得清）", `元素 ${elTop} → 框 ${deco.boxTop}`);
+                  ok(deco.tagText === "<button.primary>",
+                     "**左上角标签写出在选哪个元素**（同时说清「这是工具画的，不是页面自己的」）", deco.tagText);
+                  ok(deco.tagHits === "none",
+                     "标签不接指针（接了就会把自己报成被选中的元素）", deco.tagHits);
+
+                  /* ⚠️ 贴着页面顶部的元素：标签要**翻到框里面**，不能跑出视口 ——
+                     不翻的话页面最上面那一排永远看不到标签，而那多半正是导航栏。 */
+                  const topEl = page.locator("#hero");
+                  if (await topEl.count()) {
+                    await topEl.hover(); await pg.waitForTimeout(400);
+                    const t2 = await page.locator("body").evaluate(() => {
+                      const tg = [...document.documentElement.children].find((n) => n.tagName === "DIV" && n.style.position === "fixed" && n.textContent && n.style.background);
+                      return tg ? Math.round(parseFloat(tg.style.top)) : null;
+                    });
+                    ok(t2 !== null && t2 >= 0, "**贴着顶部的元素，标签翻到框里面**（不跑出视口）", `标签 top ${t2}`);
+                  }
                   /* 点它 —— 桥接脚本该把选中的元素发出来 */
                   await btn.click({ force: true });
                   await pg.waitForTimeout(700);

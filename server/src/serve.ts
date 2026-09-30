@@ -74,9 +74,24 @@ const SHARED_DIR = resolve(TOOL_ROOT, "shared");
  *  而这个视图的用途就是点选。代价是这个预览里链接点不动，
  *  那是**这个模式本来的含义**（要正常浏览就在浏览器里开）。 */
 const PREVIEW_BRIDGE = `<script>(function(){
-  var last=null, box=document.createElement('div');
-  box.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #3a6df0;border-radius:2px;display:none';
+  /* ⚠️ **描边要在任何页面上都认得出来**（设计侧第十二轮给的约定，2026-09-30 接）。
+     原来是一道 \`2px solid #3a6df0\` —— 而这里预览的是**用户自己的网页**：
+     它可能整页深底（蓝边看不见），也可能自己就带蓝色边框（分不清哪道是我们画的）。
+
+     它定的：**外 1px 白、内 2px 强调色、再往外让开 2px。**
+     用两层 box-shadow 做（\`outline\` 只能一层）：框放在元素外扩 2px 的位置，
+     所以元素和蓝边之间留着 2px 间隙；蓝边向外 2px，白边再向外 1px。
+
+     ⚠️ 标签我们**默认就画**，不是「分不开时才加」——
+     它同时解决两件事：「这是工具画的，不是页面自己的」和「现在选的是哪个元素」。
+     后一件一直都在。已在回执里说明理由请它核。 */
+  var last=null, box=document.createElement('div'), tag=document.createElement('div');
+  box.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border-radius:3px;display:none;box-shadow:0 0 0 2px #3a6df0,0 0 0 3px #fff';
+  /* 标签也必须 \`pointer-events:none\` —— 我们靠 \`e.target\` 做命中测试，
+     它一旦能接指针就会把自己报成被选中的元素。 */
+  tag.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;display:none;font:11px/16px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 6px;border-radius:3px;background:#3a6df0;color:#fff;white-space:nowrap;box-shadow:0 0 0 1px #fff';
   document.documentElement.appendChild(box);
+  document.documentElement.appendChild(tag);
   function label(el){
     var t=el.tagName.toLowerCase();
     if(el.id) return '<'+t+'#'+el.id+'>';
@@ -97,13 +112,21 @@ const PREVIEW_BRIDGE = `<script>(function(){
     return out.join(' > ');
   }
   addEventListener('mousemove',function(e){
-    var el=e.target; if(!el||el.nodeType!==1||el===box) return;
+    var el=e.target; if(!el||el.nodeType!==1||el===box||el===tag) return;
     var r=el.getBoundingClientRect();
-    box.style.cssText=box.style.cssText.replace('display:none','display:block');
-    box.style.left=r.left+'px'; box.style.top=r.top+'px'; box.style.width=r.width+'px'; box.style.height=r.height+'px';
+    /* 框向外扩 2px —— 那 2px 就是它要的「往外让开」，让元素自己的边框看得清 */
+    box.style.left=(r.left-2)+'px'; box.style.top=(r.top-2)+'px';
+    box.style.width=(r.width+4)+'px'; box.style.height=(r.height+4)+'px';
     box.style.display='block';
+    /* 标签贴在框的左上角**外侧上方**；顶到视口外就翻到框里面 ——
+       不翻的话页面最上面那一排元素永远看不到标签，而那多半正是导航栏。 */
+    tag.textContent=label(el);
+    var ty=r.top-2-18;
+    tag.style.left=(r.left-2)+'px';
+    tag.style.top=(ty<0?r.top+2:ty)+'px';
+    tag.style.display='block';
   },true);
-  addEventListener('mouseleave',function(){box.style.display='none'},true);
+  addEventListener('mouseleave',function(){box.style.display='none';tag.style.display='none'},true);
   addEventListener('click',function(e){
     var el=e.target; if(!el||el.nodeType!==1) return;
     e.preventDefault(); e.stopPropagation();
