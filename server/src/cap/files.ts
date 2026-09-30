@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { envelope } from "../envelope.js";
-import { countTypes, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { countTypes, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { gitFallbackOf } from "../gitkeep.js";
 import { defineCap } from "./registry.js";
 import { originOf, type CapCtx } from "./types.js";
 
@@ -71,7 +72,16 @@ defineCap({
   summary: "列这个文件存过的快照（版本号、时间、谁改的、备注）。",
   input: { path: z.string() },
   http: { route: "file_versions", method: "GET" },
-  run: async ({ path }, c) => envelope({ path, snapshots: await listSnapshotMeta(p(c), path) }),
+  run: async ({ path }, c) => {
+    const proj = p(c);
+    /* `gitFallback` 一起给：版本历史那一面要在头上说一句「这个文件没有 git 兜底」，
+       而那句话的依据只有后端知道（要问 `git check-ignore`）。 */
+    const [snapshots, gitFallback] = await Promise.all([
+      listSnapshotMeta(proj, path),
+      gitFallbackOf(proj.dir, path),
+    ]);
+    return envelope({ path, snapshots, gitFallback });
+  },
 });
 
 defineCap({
@@ -88,6 +98,32 @@ defineCap({
     const content = await readSnapshotContent(p(c), path, version);
     return envelope({ path, version, content, sha256: sha256(content), bytes: Buffer.byteLength(content, "utf8"),
       lines: content.split("\n").length });
+  },
+});
+
+defineCap({
+  name: "compare_file_versions", title: "两个版本之间增删了几行", scope: "project",
+  summary: [
+    "只回 `+N −M` 两个数，不回 diff 正文。",
+    "`to` 不给就是**和盘上现在那份比** —— 「我在看 s5，它和当前差多少」问的就是这个。",
+    "⚠️ 这和 `list_file_versions` 给的 `delta` **不是一回事**：那个是「每一版和它上一版」，",
+    "这个是「任意两版之间」。**两者不能互相换算** —— 中间各版的 delta 累加会高估",
+    "（一处改了又改回来，累加算两次改动，实际是零）。",
+  ].join("\n"),
+  input: {
+    path: z.string(),
+    from: z.string().describe("起点版本，形如 s3"),
+    to: z.string().optional().describe("终点版本；不给就是盘上现在那份"),
+  },
+  http: { route: "file_compare", method: "GET" },
+  run: async ({ path, from, to }, c) => {
+    const proj = p(c);
+    const a = await readSnapshotContent(proj, path, from);
+    const b = to ? await readSnapshotContent(proj, path, to) : (await readAnyFile(proj, path)).content;
+    if (b === null) {
+      return envelope({ path, from, to: to ?? null, delta: null, note: "盘上那份读不出正文（二进制？），没法按行比" });
+    }
+    return envelope({ path, from, to: to ?? null, delta: lineDelta(a, b) });
   },
 });
 

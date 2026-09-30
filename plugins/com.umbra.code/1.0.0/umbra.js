@@ -94,6 +94,10 @@
   u.setDirty = function (on) { parent.postMessage({ t: "dirty", on: !!on }, "*"); };
   /** 把一段文字带进会话并**直接发给 AI**。⚠️ 多数时候你要的是下面那个 `pick`。 */
   u.ask = function (text) { parent.postMessage({ t: "ask", text: String(text) }, "*"); };
+  /** 请求宿主换一版看（`null` = 回到当前）。M10-2b。
+   *  ⚠️ **Esc 非它不可**：「回到当前」那颗钮在宿主的工具条上，
+   *  而 Esc 多半在这个 iframe 里按，键盘事件不跨 iframe 边界。 */
+  u.viewVersion = function (v) { parent.postMessage({ t: "view-version", version: v == null ? null : String(v) }, "*"); };
   /** 把一段选区**挂成药丸**（不发送），并聚焦输入框 —— 用户自己写问题。
    *  和 `ask` 的区别是那一半的全部：`ask` 是「替我问」，`pick` 是「把这个带上」。
    *  按 ⌘L 的那一刻用户**还没想好要问什么**，替他发出去是越权。 */

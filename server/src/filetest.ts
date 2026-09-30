@@ -305,6 +305,70 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      after.map((m) => `${m.version}:${m.delta === null ? "没算" : JSON.stringify(m.delta)}`).join(" "));
 }
 
+/* ── git 兜底在不在：三态（M10-2b 要在版本历史头上说那句话）──
+   ⚠️ 这一条直接来自用户 2026-09-30 的提问「如果 add 的这个文件是被用户自己 git 忽略的呢」。
+   实测出来的洞是：两道兜底全静默失效而**界面一个字都不说**（§126.1）。
+   所以先让后端能回答这个问题，界面才有话可说。 */
+{
+  const { gitFallbackOf } = await import("./gitkeep.js");
+  const { execFileSync } = await import("node:child_process");
+  const G = join(DIR, "gitfallback");
+  await mkdir(G, { recursive: true });
+  const gx = (args: string[]) => execFileSync("git", args, { cwd: G, encoding: "utf8" }).trim();
+
+  ok("**没有 git 的目录回 `off`**（不是谎称有兜底）", await gitFallbackOf(G, "a.txt") === "off");
+
+  gx(["init"]); gx(["config", "user.email", "t@t"]); gx(["config", "user.name", "t"]);
+  await writeFile(join(G, ".gitignore"), "dist/\n*.log\n", "utf8");
+  await writeFile(join(G, "a.txt"), "x\n", "utf8");
+  await mkdir(join(G, "dist"), { recursive: true });
+  await writeFile(join(G, "dist", "bundle.js"), "y\n", "utf8");
+  await writeFile(join(G, "跑起来.log"), "z\n", "utf8");
+  gx(["add", "-A"]); gx(["commit", "-m", "init", "--no-verify"]);
+
+  ok("普通文件回 `on`", await gitFallbackOf(G, "a.txt") === "on", await gitFallbackOf(G, "a.txt"));
+  /* ⚠️ 这两条是**用户那个问题的正面答案**：代码仓库的 .gitignore 里必然有 dist/ */
+  ok("**`dist/` 下的文件回 `ignored`**（这正是用户问的那种情况）",
+     await gitFallbackOf(G, "dist/bundle.js") === "ignored", await gitFallbackOf(G, "dist/bundle.js"));
+  ok("按后缀忽略的也认得出来（`*.log`）",
+     await gitFallbackOf(G, "跑起来.log") === "ignored", await gitFallbackOf(G, "跑起来.log"));
+  /* 判据自己也要证一次「为什么不能用 status --porcelain」—— 那是这个洞的成因 */
+  ok("**`status --porcelain` 对被忽略的文件什么都不说**（所以不能拿它当判据）",
+     execFileSync("git", ["status", "--porcelain", "--", "dist/bundle.js"], { cwd: G, encoding: "utf8" }).trim() === "");
+
+  /* ── `broken`：有 git 但现在提交不了（2026-09-30 在用户自己的项目上实测抓到）──
+     ⚠️ 这一条不是想出来的场景。他那个仓库 **24 份快照、0 个 git 提交**，
+     根因是一个残留的 `.git/index.lock` —— 有它时 `git add` 一律失败，
+     而 `commitPaths` 的 `catch` 把失败吃掉了，**界面一个字都没说**。
+     而这个函数的第一版**照样回 `on`**：它只看 `.git` 在不在。
+     「有 git 目录」和「兜底真的在」是两件事。 */
+  await writeFile(join(G, ".git", "index.lock"), "", "utf8");
+  ok("**`index.lock` 残留时回 `broken`**（不是谎称有兜底）",
+     await gitFallbackOf(G, "a.txt") === "broken", await gitFallbackOf(G, "a.txt"));
+  /* 而且这时候提交**真的**做不了 —— 证明 `broken` 不是虚报 */
+  {
+    const { commitPaths } = await import("./gitkeep.js");
+    await writeFile(join(G, "a.txt"), "改一下\n", "utf8");
+    ok("锁着的时候提交确实失败（`broken` 不是虚报）", await commitPaths(G, ["a.txt"], "试试") === null);
+  }
+  await rm(join(G, ".git", "index.lock"), { force: true });
+  ok("**锁一拿掉就自动恢复**（不用重启、不用点什么）", await gitFallbackOf(G, "a.txt") === "on");
+
+  /* 正在 merge 也算 broken —— 那时候提交会打乱用户正在整理的历史 */
+  await writeFile(join(G, ".git", "MERGE_HEAD"), "deadbeef\n", "utf8");
+  ok("正在 merge 时也回 `broken`", await gitFallbackOf(G, "a.txt") === "broken", await gitFallbackOf(G, "a.txt"));
+  await rm(join(G, ".git", "MERGE_HEAD"), { force: true });
+}
+
+/* ── 插件调得到 `read_file_version` 吗（白名单是白名单，新加的能力默认进不来）── */
+{
+  const { allowedCapNames } = await import("./plugin/host.js");
+  const names = allowedCapNames();
+  ok("**`read_file_version` 在插件白名单里**（编辑区是插件的，它得自己读那一版）",
+     names.includes("read_file_version"), names.join(" "));
+  ok("白名单没顺手放开写权限的东西", !names.includes("revert_draft") && !names.includes("delete_draft"));
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

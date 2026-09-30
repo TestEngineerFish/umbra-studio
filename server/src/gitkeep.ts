@@ -133,6 +133,50 @@ export async function commitPaths(dir: string, paths: string[], message: string)
   } catch { return null; }
 }
 
+/** 这个文件的 git 兜底到底在不在（M10-2b，设计侧第十三轮要那句话）。
+ *
+ *  三态，因为**后两种对用户的后果一样（没有兜底）而出路不同**：
+ *  - `on`      有 git，这个文件也没被忽略 —— 什么都不用说
+ *  - `ignored` 有 git，但这个文件被 `.gitignore` 忽略了 —— 他可以去改 `.gitignore`
+ *  - `off`     这个目录没在用 git 记版本 —— 他可以 `git init`（正常情况下 `ensureRepo`
+ *              会自动 init，所以这一种少见；`UMBRASTUDIO_NO_GIT=1` 或者没装 git 时会出现）
+ *  - `broken`  有 git，但**现在提交不了**：`index.lock` 残留，或者正在 merge / rebase。
+ *              ⚠️ 这一态是 2026-09-30 在用户自己的项目上实测抓到的，不是想出来的 ——
+ *              他那个仓库 24 份快照、0 个 git 提交，根因就是一个残留的 `index.lock`，
+ *              而**我们从来没说过一个字**。他能做的事很具体（删掉那个锁文件），
+ *              所以这一态值得和 `off` 分开。
+ *
+ *  ⚠️ **快照不受这件事影响**（它在 `.umbrastudio/snapshots/` 里），
+ *  所以界面的口气是「少了一道兜底」而不是报错 —— 这是设计侧定的。
+ *  失效的只是「别人在别的编辑器里改的那一版」这条兜底（§126.1 实测过）。 */
+export type GitFallback = "on" | "ignored" | "off" | "broken";
+
+export async function gitFallbackOf(dir: string, file: string): Promise<GitFallback> {
+  if (OFF) return "off";
+  try {
+    if (!existsSync(join(dir, ".git"))) return "off";
+    /* ⚠️ **「有 .git」不等于「现在真能提交」**（2026-09-30 在用户自己的项目上实测抓到）。
+       他那个项目 `.git/index.lock` 残留着（某次 git 操作被中断留下的），
+       于是每一次 `git add` 都失败 → `commitPaths` 的 `catch` 吃掉 → 返回 null →
+       **24 次落盘、0 个 git 提交，而界面一个字都没说。**
+
+       而这个函数的第一版**照样回 `on`** —— 它只看 `.git` 在不在、文件有没有被忽略。
+       那是在拿一个看起来合理的检查冒充答案：**要回答的是「兜底在不在」，
+       不是「git 目录在不在」。** 所以这里真的去问一句能不能提交。 */
+    if (existsSync(join(dir, ".git", "index.lock"))) return "broken";
+    if (await inMiddleOfSomething(dir)) return "broken";
+    /* `check-ignore` 的退出码就是答案：0 = 被忽略，1 = 没被忽略。
+       ⚠️ 用它而不是 `status --porcelain` —— 后者对被忽略的文件**什么都不输出**，
+       和「干净」长得一模一样，正是 §126.1 那个洞的成因。 */
+    await exec(["check-ignore", "-q", "--", file], dir);
+    return "ignored";
+  } catch (e) {
+    /* 退出码 1 = 没被忽略（正常）；别的退出码 = 仓库有问题，当没有兜底更诚实 */
+    const code = (e as { code?: number }).code;
+    return code === 1 ? "on" : "off";
+  }
+}
+
 /** 落盘之后记一版。消息形状：`写入 <文件> v3 · 一句摘要`。 */
 export function commitAfterWrite(dir: string, file: string, version: string | null, summary?: string | null): Promise<string | null> {
   return serial(dir, async () => {

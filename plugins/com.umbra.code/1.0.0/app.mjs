@@ -66,6 +66,12 @@ function langFor(path, cm) {
 }
 
 let view = null, cm = null, curPath = null;
+/** 现在在看哪一个历史版本（`null` = 看盘上当前那份）。M10-2b。
+ *
+ *  ⚠️ **不是这个插件自己的状态** —— 它由宿主经 `ctx.version` 推进来。
+ *  版本列表那一面归宿主画（词汇小、所有格式共用），
+ *  而「把那一版画出来」归这里，因为只有这里知道代码该长什么样。 */
+let curVersion = null;
 /** 这个页签解锁过没（S18 §一.4）。**只对这一个页签生效** —— 换文件就回到只读。
  *  解锁是「这一次我要改它」，不是「以后都别拦我」。 */
 let unlocked = false;
@@ -77,7 +83,12 @@ let roReason = null;
  *  ⚠️ 这不是「保护」，是**省去一次误会**：这些文件改了也没用（下次生成就覆盖），
  *  而用户要花几秒才意识到这一点。所以只读下**照样能选中、复制、给 AI** ——
  *  只读不等于「这个文件与你无关」。 */
-function readOnlyReason(path, size) {
+function readOnlyReason(path, size, version) {
+  /* ⚠️ **看历史版本时一律只读，而且这一条要排在最前面。**
+     让人改一份历史快照没有任何意义 —— 改了往哪写？写回去就把当前版覆盖了，
+     而他以为自己在改「当前」。这不是保护，是**消除一个不可能有正确结果的操作**。
+     原因写出版号，因为「只读」而不说为什么最容易被当成界面坏了。 */
+  if (version) return `在看 ${version}`;
   const name = (path.split("/").pop() || "").toLowerCase();
   if (/\.lock$/.test(name)) return "锁文件";
   if (/-lock\.(json|yaml|yml)$/.test(name)) return "锁文件";
@@ -102,7 +113,12 @@ function changedLines(before, now) {
 let disk = null;
 let busy = false;
 
-const isDirty = () => !!disk && !!view && view.state.doc.toString() !== disk.content;
+/* ⚠️ **看历史版时永远不脏。** 那时编辑器里的内容确实和盘上不一样，
+   但那不是「我改了没落盘」，而是「我在看以前那一版」——
+   不加这一条的话横条会写「还没落盘 · 13 行 → 9 行」，
+   而**那句话会让人以为自己的改动还在，其实一个字都没改过**。
+   顺带也就不会拦关页签了（那张卡问的是「这些改动不要了吗」，这里没有改动）。 */
+const isDirty = () => !curVersion && !!disk && !!view && view.state.doc.toString() !== disk.content;
 
 /** 横条 + chrome 的读数。**一处算、两处用** —— 分开算迟早对不上。 */
 function paint() {
@@ -130,8 +146,10 @@ function paint() {
          那会永远显示「未改过」，而文件可能改过一百次，我们只是不知道。
          **一个我们答不出来的问题，不该给一个看着像答案的答案**（§一一四 同一条：
          读数该由格式自己定，「多少字」对图片没意义，「改过没」对我们这一层没数据）。 */
-      status: `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}`
-        + (ro ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : ""),
+      status: (curVersion
+        ? `${(view?.state.doc.lines ?? 0)} 行 · 在看 ${curVersion}`
+        : `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}`)
+        + (ro && !curVersion ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : ""),
     },
     (kind, a) => { if (kind === "button" && a === 0) askAboutSelection(); },
   );
@@ -176,7 +194,7 @@ async function save() {
   /* 重读盘上那一版（拿到新 sha 与快照号）。**不能只把 disk.content 改成当前文本** ——
      写入口会做归一化，盘上那一版和我们发过去的未必逐字节相同，
      sha 也只有它能给。猜一个的话下一次落盘就会被 sha 拦住。 */
-  await load(curPath, document.documentElement.dataset.theme, { keepCursor: true });
+  await load(curPath, document.documentElement.dataset.theme, { keepCursor: true, version: curVersion });
 }
 
 async function load(path, theme, opt = {}) {
@@ -189,10 +207,24 @@ async function load(path, theme, opt = {}) {
       return;
     }
   }
+  /* 看当前版走 `read_file`，看历史版走 `read_file_version`。
+     ⚠️ 两条路都要读**当前版**：历史版要和当前比（差异标红），
+     而落盘要用当前版的 sha 做写前校验。所以先读当前，再按需读历史。 */
   const r = await umbra.call("read_file", { path });
   if (!r || !r.ok) {
     fail("读不出这个文件", (r && r.errors && r.errors[0] && r.errors[0].message) || "宿主没给出原因");
     return;
+  }
+  let shown = null;
+  if (opt.version) {
+    const v = await umbra.call("read_file_version", { path, version: opt.version });
+    if (!v || !v.ok) {
+      /* ⚠️ 读不出那一版**不能静默回到当前版** —— 那样用户以为自己在看 s5，
+         其实看的是当前，而两者长得一样。说清楚，并让他回去。 */
+      fail(`读不出 ${opt.version}`, (v && v.errors && v.errors[0] && v.errors[0].message) || "这一版的原文可能已经不在了。按 Esc 回到当前。");
+      return;
+    }
+    shown = v.data?.content ?? "";
   }
   el("err").hidden = true; el("host").hidden = false;
   ensureChangedField(cm);
@@ -202,7 +234,8 @@ async function load(path, theme, opt = {}) {
      —— 字段名去 `server/src/cap/files.ts` 查过，不是猜的（猜错的话 sha 对不上，
      每次落盘都会被写前校验拦住，而错误信息只说「校验不过」，很难想到是字段名）。 */
   disk = { content: r.data?.content ?? "", sha: r.data?.sha256 ?? "", lines: r.data?.lines ?? null, size: r.data?.size ?? 0 };
-  roReason = readOnlyReason(path, disk.size);
+  curVersion = opt.version ?? null;
+  roReason = readOnlyReason(path, disk.size, curVersion);
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 
@@ -253,7 +286,9 @@ async function load(path, theme, opt = {}) {
   if (view) view.destroy();
   view = new cm.EditorView({
     parent: el("host"),
-    state: cm.EditorState.create({ doc: disk.content, extensions: exts }),
+    /* 看历史版时编辑器里放的是**那一版**的原文；`disk.content` 仍然是当前版，
+       留着给「和当前比」和落盘时的写前校验用。 */
+    state: cm.EditorState.create({ doc: shown ?? disk.content, extensions: exts }),
   });
   curPath = path;
   if (keep != null) {
@@ -269,7 +304,7 @@ async function load(path, theme, opt = {}) {
 function doUnlock() {
   unlocked = true;
   el("roHint").hidden = true;
-  void load(curPath, document.documentElement.dataset.theme, { keepCursor: true });
+  void load(curPath, document.documentElement.dataset.theme, { keepCursor: true, version: curVersion });
 }
 el("unlock").addEventListener("click", doUnlock);
 el("unlock2").addEventListener("click", doUnlock);
@@ -314,6 +349,13 @@ window.addEventListener("keydown", (e) => {
    用户点了 `⋯` 看一眼读数再按 ⌘S 就是这种情况，改动看着像被无声丢掉了。
    宿主替我们转发（`Surface.tsx` 的 `onKey`），这里接住。 */
 umbra.onKey((k) => { if (k.key === "s" && (k.meta || k.ctrl)) void save(); });
+/** Esc 回到当前版。**挂在这个 document 上**，因为焦点多半就在编辑器里，
+ *  而键盘事件不跨 iframe —— 宿主那边也挂了一份，两边都要有（§八十一）。
+ *  ⚠️ 只在**真的在看旧版**时才接管 Esc：不加这个判断的话，
+ *  以后谁在编辑器里用 Esc 关个什么东西都会被我们吃掉。 */
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && curVersion) { e.preventDefault(); umbra.viewVersion(null); }
+});
 /* ⌘L：工作台的键，插件有话要说 —— 有选区就带上（`00` §121.3 · S18 §一.3）。
    ⚠️ **没选区时什么都不做，不要 toast**：那一下用户的意图是「聚焦输入框」，
    工作台已经在做了；这时候弹一句「先选中几行」是在怪他没做一件他没打算做的事。 */
@@ -332,7 +374,15 @@ window.addEventListener("keydown", (e) => {
    `.md` 是文档，写到哪存到哪很自然；代码改一半失焦就落盘，
    会把一个语法不完整的中间状态写进快照历史。代码要显式 ⌘S。 */
 
-umbra.onContext((ctx) => { if (ctx.path && ctx.path !== curPath) void load(ctx.path, ctx.theme); });
+umbra.onContext((ctx) => {
+  /* ⚠️ **不能只看 path**。原来这里是 `ctx.path !== curPath`，
+     于是宿主在版本列表里点一行（path 没变、version 变了）**什么都不会发生** ——
+     标准的「点了没反应」。M10-2b 接线时当场撞上。 */
+  const v = ctx.version ?? null;
+  if (ctx.path && (ctx.path !== curPath || v !== curVersion)) {
+    void load(ctx.path, ctx.theme, { version: v });
+  }
+});
 /* 盘上变了就重读 —— 插件自己发现不了（没有文件系统也没有事件流）。
    ⚠️ **有未落盘改动时不覆盖**：那会把用户正在改的东西冲掉。
    横条上提示一句，让他自己决定。 */
@@ -342,5 +392,5 @@ umbra.onChanged((p) => {
     umbra.toast("这个文件在别处被改过", "你这边还有没落盘的改动 —— 落盘会被拒（sha 对不上），先放弃或另存", "warn");
     return;
   }
-  void load(curPath, document.documentElement.dataset.theme, { keepCursor: true });
+  void load(curPath, document.documentElement.dataset.theme, { keepCursor: true, version: curVersion });
 });

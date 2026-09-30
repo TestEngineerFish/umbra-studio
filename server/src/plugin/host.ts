@@ -26,6 +26,12 @@ const ALLOWED: Record<string, { need: "read" | "write" }> = {
   list_files:         { need: "read" },
   read_file:          { need: "read" },
   list_file_versions: { need: "read" },
+  /* 读某一版的原文。权限等级和 `read_file` 一样：它给的是**同一个文件**的旧内容，
+     能读当前版的插件读它没有新增风险。M10-2b 的「点一行 = 看那一版」靠它 ——
+     编辑区是插件的（语法高亮、行号都在它那儿），所以这一件必须让插件调得到。 */
+  read_file_version:  { need: "read" },
+  /* 「和当前差多少」—— 插件要在编辑区把差异行标出来，这一件给它省一趟自己做 diff */
+  compare_file_versions: { need: "read" },
   list_file_refs:     { need: "read" },
   count_file_types:   { need: "read" },
   write_file:         { need: "write" },

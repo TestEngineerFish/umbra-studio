@@ -31,6 +31,14 @@ type FromPlugin =
   | { t: "dirty"; on: boolean }
   /** 把一段文字带进会话（「选中这段给 AI」） */
   | { t: "ask"; text: string }
+  /** 「我要看这个文件的哪一版」/ `null` = 回到当前（M10-2b）。
+   *
+   *  ⚠️ **这条是为 Esc 存在的，而 Esc 非它不可。**
+   *  「回到当前」那颗钮在宿主的工具条上，Esc 却常常在插件里按
+   *  （焦点在编辑器里），而**键盘事件不跨 iframe 边界**（§八十一）。
+   *  只挂宿主一边的话，Esc 就是「时灵时不灵」—— 正是那一节的病。
+   *  这条和 ⌘S 那条**方向相反、性质相同**：那条是宿主转发给插件，这条是插件转发给宿主。 */
+  | { t: "view-version"; version: string | null }
   /** 把一段选区**挂成药丸**（不发送）。和 `ask` 的区别是那一半的全部：
    *  `ask` 是「替我问」，`pick` 是「把这个带上，我自己写问题」。
    *  设计侧第十二轮 §一.3 定的是后者 —— 用户按 ⌘L 时还没想好要问什么。 */
@@ -47,15 +55,20 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
   const [dead, setDead] = useState<string | null>(null);
   /* 最新的上下文放 ref 里：插件 `ready` 的时机不定，到时候要拿当场的值推给它。
      直接闭包捕获的话拿到的是挂载那一刻的旧值。 */
-  const ctxRef = useRef({ path: ctx.path, kind: ctx.kind });
-  ctxRef.current = { path: ctx.path, kind: ctx.kind };
+  const ctxRef = useRef({ path: ctx.path, kind: ctx.kind, version: ctx.viewingVersion });
+  ctxRef.current = { path: ctx.path, kind: ctx.kind, version: ctx.viewingVersion };
   const src = `${ctx.core.url.replace(/\/$/, "")}/__plugin/${pluginId}/${entry}`;
   const key = chromeKey(pluginId, ctx.path);
 
   const push = () => {
     const c = ctxRef.current;
     ref.current?.contentWindow?.postMessage(
-      { t: "ctx", path: c.path, kind: c.kind, theme: document.documentElement.dataset.theme ?? null }, "*");
+      /* `version` = 「现在要看这个文件的哪一版」（M10-2b）。`null` = 看当前那份。
+         ⚠️ **状态在工作台，画面在插件** —— 工作台只说「要看 s5」，
+         怎么把 s5 画出来（读原文、语法高亮、差异标红、强制只读）是插件的事。
+         插件不认这个字段也不会坏：它照旧显示当前那份，只是没有「看旧版」这个能力。 */
+      { t: "ctx", path: c.path, kind: c.kind, version: c.version ?? null,
+        theme: document.documentElement.dataset.theme ?? null }, "*");
   };
 
   useEffect(() => {
@@ -92,8 +105,16 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
       }
       if (m.t === "toast") { toast(m.title, m.body, m.level ?? "ok"); return; }
       /* 未落盘状态归宿主管：关页签要拦、退出要拦，这些都发生在插件的矩形之外 */
-      if (m.t === "dirty") { dirtyStore.set(ctx.path, m.on); return; }
+      if (m.t === "dirty") {
+        dirtyStore.set(ctx.path, m.on);
+        /* 从「脏」变「干净」= 刚落盘（或者放弃了）。版本历史那枚药丸要跟着变 ——
+           不派发的话药丸上还写着旧版号，而**旧版号和「落盘失败」长得一模一样**。
+           放弃改动时也会走到这里，多取一次 `file_versions` 很便宜，不值得为它再加一条消息。 */
+        if (!m.on) window.dispatchEvent(new CustomEvent("ud-file-saved", { detail: ctx.path }));
+        return;
+      }
       if (m.t === "ask") { ctx.ask(m.text); return; }
+      if (m.t === "view-version") { ctx.viewVersion(m.version); return; }
       if (m.t === "pick") {
         /* 空 label = 「只聚焦，别挂药丸」—— 用户按了 ⌘L 但手上没选区，
            那一下的意图是「我要跟 AI 说话」，不该因此弹一句「先选中几行」。 */
@@ -163,8 +184,11 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
     };
   }, [ctx.core, pluginId, key, role]);
 
-  /* 上下文变了就推给插件（当前文件、主题）。**插件不能自己去问** —— 它没有网络 */
-  useEffect(() => { push(); }, [ctx.path, ctx.kind]);
+  /* 上下文变了就推给插件（当前文件、要看哪一版、主题）。**插件不能自己去问** —— 它没有网络。
+     ⚠️ **依赖数组漏一项就是一个「点了没反应」**：`viewingVersion` 漏掉的话，
+     版本列表里点一行、状态变了、而消息压根没发出去。
+     §八十 的 ⌘E「按了没反应」是同一个病（keydown 依赖数组漏项），这是第二次。 */
+  useEffect(() => { push(); }, [ctx.path, ctx.kind, ctx.viewingVersion]);
   /* 文件在盘上变了（AI 改的、别的编辑器改的）要告诉插件重读。
      **插件自己发现不了** —— 它没有文件系统也没有事件流。
      不推的话症状是「AI 改完了，右边还是旧的」（2026-09-24 用户实测过同类）。 */

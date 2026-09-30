@@ -18,6 +18,7 @@ import { BottomBar } from "./BottomBar";
 import { debugBus, wireDebug } from "../ui/debug";
 import { LEAVE, dirtyStore } from "../ui/dirty";
 import { useLeaveGuard } from "./LeaveGuard";
+import { ViewingBar, VersionPill } from "./VersionPill";
 import { FileTree } from "./FileTree";
 /* 详情区怎么画、右边配什么面板、状态行写什么，**全在 kinds 注册表里**。
    这个文件从此不认识任何一种具体格式 —— 加 `.json` 时它一个字都没动（M8-14）。 */
@@ -124,6 +125,15 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   /** 「要丢内容了，先问一句」**一处实现**，关页签 / 切文件 / 回退三种触发共用
    *  （S18 §一.1 数出来的三种，设计侧第十二轮）。 */
   const { askLeave, guardNode } = useLeaveGuard();
+  /** 正在看哪一个历史版本（M10-2b）。`null` = 看当前那份。
+   *
+   *  ⚠️ **状态在工作台，画面在格式模块。** 工作台只知道「要看 s5」，
+   *  把它推给正文那一层；真正把 s5 的原文画出来（语法高亮、行号、差异标红）
+   *  是编辑区的事 —— 第七轮那条判据：变的是这份文件的显示内容，归它。
+   *
+   *  ⚠️ **换文件要清掉**：切走再回来不该还停在某个旧版上，
+   *  而「停在旧版」的样子和「这份文件就是这样」一模一样，不清就是个静默陷阱。 */
+  const [viewing, setViewing] = useState<string | null>(null);
   useEffect(() => {
     const dirty = dirtySnap ? dirtySnap.split("|") : [];
     if (!dirty.length) return;
@@ -275,6 +285,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   const doOpen = (f: string, isDir = false, mode: "preview" | "open" = "preview") => {
     commitTrash();   // 「做下一件事」的第一条：打开别的文件或目录
     setPicked(null);
+    setViewing(null);   // 换文件就回到「看当前」（M10-2b）
     setDirMode(isDir);
     store.select(isDir ? (f || "__root__") : f);
     if (isDir) return;
@@ -350,7 +361,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   const ctx: ViewContext = {
     core, host, project, store,
     path: dirMode ? dirRel : (file ?? ""),
-    kind, narrow: panelDrawer, detail: yieldNow.detail,
+    kind, narrow: panelDrawer, detail: yieldNow.detail, viewingVersion: viewing, viewVersion: setViewing,
     open,
     select: putSelection,
     ask: (text, sels) => { expandChat(); void chat.send(text, sels); },
@@ -552,6 +563,26 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               onReveal={(p) => void host.revealInFinder(`${project.dir}/${p}`).catch((e: Error) => toast("打不开", e.message, "error"))}
               tail={(dirMode || file) ? (
                 <>
+                  {/* ═══ 快照与版本历史（M10-2b，设计侧第十三轮）═══
+                      放在这一组**最左** —— 稿里它紧跟文件名，而我们的文件名在页签上，
+                      所以这里是离它最近的位置。⚠️ 这处映射和稿不是一对一，已告知设计侧。
+
+                      ⚠️ **`.dc.html` 不显示**：它的历史是 `v<N>` 语义快照，
+                      走 S2 的版本弹层和变更面板，和这里的 `s<N>` 是两套（`files.ts` 明说不混）。
+                      对它调 `file_versions` 会回空，药丸只会显示一个「—」。 */}
+                  {!dirMode && file && kind !== "dc" && (
+                    viewing
+                      ? <ViewingBar core={core} path={file} viewing={viewing}
+                          onRevert={() => window.dispatchEvent(new CustomEvent("ud-arm-revert", { detail: { path: file, version: viewing } }))}
+                          onBack={() => setViewing(null)} />
+                      : null
+                  )}
+                  {!dirMode && file && kind !== "dc" && (
+                    <VersionPill core={core} path={file} viewing={viewing}
+                      onView={(v) => setViewing(v)}
+                      onRevertDone={() => { void store.fetchDrafts(); window.dispatchEvent(new CustomEvent("ud-file-saved", { detail: file })); }}
+                      confirmLeave={(pth) => askLeave(pth, LEAVE.revert)} />
+                  )}
                   {/* ═══ Tab 条右端三颗（第九轮 §三）═══ 位置固定，不跟着格式变。
                       ✎ **按下 = 编辑态，抬起 = 预览态** —— 它顺手吃掉了原来「编辑 / 预览」两档，
                       所以看稿时切来切去的那一下并没有多点一次。 */}
