@@ -49,10 +49,58 @@ function serial<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** ⚠️ **仓库自带的配置能让 git 执行任意命令，而 `--no-verify` 管不住它们**
+ *  （issue #40，2026-10-02）。实测确证过的几条：
+ *  - `core.fsmonitor = <命令>` → `git status` / `git add` 时就执行
+ *  - `.git/hooks/post-commit` → `--no-verify` 只跳过 pre-commit 和 commit-msg
+ *  - 同族还有 `core.hooksPath`、`core.pager`
+ *
+ *  **M9-7 之前没有这个面**：那时服务端自动跑的 git 只有 `rev-parse` 和按需的
+ *  `log` / `show`，不走 fsmonitor 也不触发钩子。M9-7 让「打开别人的项目 + 改一下稿」
+ *  变成了「执行那个仓库指定的任意命令」—— 而用户什么都看不到
+ *  （这个模块的错误全部吞掉，钩子的输出也没人读）。
+ *
+ *  设计项目天然会被打包转手（交付、协作、网盘下载），而 git 自己的 `safe.directory`
+ *  只拦「属主不是当前用户」—— 解压出来的目录属主就是当前用户，拦不住。
+ *  VS Code 为同一件事做了「工作区信任」。
+ *
+ *  所以**每一条 git 调用都带这组覆盖**。它和下面那道「是不是我们建的仓库」是
+ *  **两层独立的闸**：我们自己建的仓库也可能被外部改配置。 */
+const HARDEN = [
+  "-c", "core.fsmonitor=false",
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "core.pager=cat",
+  "-c", "core.sshCommand=/usr/bin/false",
+  "-c", "protocol.ext.allow=never",
+];
+
 const exec = (args: string[], cwd: string): Promise<string> =>
   new Promise((res, rej) => {
-    execFile("git", args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (e, out) => (e ? rej(e) : res(out)));
+    /* ⚠️ 继承来的 `GIT_*` 也要清掉 —— `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE`
+       会让我们在**另一个仓库**上操作，而 `cwd` 看起来是对的。
+       `GIT_CONFIG_NOSYSTEM=1` 把 `/etc/gitconfig` 挡在外面。 */
+    const env: Record<string, string | undefined> = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+    for (const k of Object.keys(env)) {
+      if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG|CONFIG_GLOBAL|CONFIG_SYSTEM|EXTERNAL_DIFF|PAGER|SSH_COMMAND|PROXY_COMMAND|ASKPASS|EDITOR|SEQUENCE_EDITOR|ATTR_FILE|CEILING_DIRECTORIES|COMMON_DIR|NAMESPACE|ALLOW_PROTOCOL)$/.test(k)) delete env[k];
+    }
+    execFile("git", [...HARDEN, ...args], { cwd, env, maxBuffer: 16 * 1024 * 1024 }, (e, out) => (e ? rej(e) : res(out)));
   });
+
+/** 这个仓库是不是**我们自己建的**（issue #40 的第二道闸）。
+ *
+ *  判据是 `.git/config` 里一个我们写的标记。**不用「有没有提交历史」之类的启发式** ——
+ *  那种判据会在「用户刚 `git init` 过还没提交」时猜错，而猜错的后果是
+ *  在别人的仓库上自动跑 git。
+ *
+ *  ⚠️ **默认不碰别人的仓库，但留一个显式打开的开关**（`umbrastudio.managed=true`）——
+ *  M9-7 补的那个盲区（别的编辑器改的那一版）对自己项目仍然有价值，
+ *  不该因为这条安全问题整个消失。用户可以在他信任的仓库里手动打开：
+ *      git config umbrastudio.managed true
+ *  这和 VS Code 的「工作区信任」是同一个形状：**默认不信，信了就记下来。** */
+async function isOurs(dir: string): Promise<boolean> {
+  try { return (await exec(["config", "--get", "umbrastudio.managed"], dir)).trim() === "true"; }
+  catch { return false; }   // 没有这个键时 git 返回码非 0
+}
 
 /** 这个目录能不能用 git 记版本。`false` = 没装 git，或者 init 失败。 */
 export async function ensureRepo(dir: string): Promise<boolean> {
@@ -60,6 +108,9 @@ export async function ensureRepo(dir: string): Promise<boolean> {
   try {
     if (existsSync(join(dir, ".git"))) return true;
     await exec(["init"], dir);
+    /* 打上「这是我们建的」标记 —— 下面所有自动提交都查它（issue #40）。
+       ⚠️ 要在 `git init` **之后**、第一次提交**之前**写，否则第一次提交那一下还没有标记。 */
+    await exec(["config", "umbrastudio.managed", "true"], dir);
     /* 新建的仓库配一份默认 `.gitignore` —— 不配的话第一次提交会把
        `.umbrastudio/`（快照、缓存、会话、ai_config）全都提进去，
        其中 `ai_config.json` 里有 key。**这一条是安全问题，不是整洁问题。** */
@@ -123,6 +174,11 @@ export async function isDirty(dir: string, file?: string): Promise<boolean> {
 export async function commitPaths(dir: string, paths: string[], message: string): Promise<string | null> {
   if (OFF || !paths.length) return null;
   try {
+    /* ⚠️ **不是我们建的仓库就什么都不做**（issue #40）。
+       在别人给的项目里自动跑 `git add` / `git commit` 等于让那个仓库的配置
+       在我们的进程里执行任意命令。想要这份兜底的话，在那个仓库里
+       `git config umbrastudio.managed true` 显式打开。 */
+    if (!(await isOurs(dir))) return null;
     if (await inMiddleOfSomething(dir)) return null;
     /* `--` 之后才是路径 —— 不加的话 `-` 开头或与分支同名的文件会被当成 ref */
     await exec(["add", "--", ...paths], dir);

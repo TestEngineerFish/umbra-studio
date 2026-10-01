@@ -579,6 +579,75 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await clearStagedDraft(proj2, A); await clearStagedDraft(proj2, B);
 }
 
+/* ── 别人的仓库里那些配置不许被执行（issue #40）──
+   git 仓库自带的配置能让 git 执行任意命令，而 `--no-verify` **管不住它们**：
+   `core.fsmonitor` 在 `git status` / `git add` 时就跑，`post-commit` 钩子
+   `--no-verify` 也跳不过。而设计项目天然会被打包转手（交付、网盘下载），
+   git 自己的 `safe.directory` 只拦「属主不是当前用户」—— 解压出来的拦不住。
+
+   这一节造一个**真的恶意仓库**：两处都 `touch` 一个标记文件，
+   然后走一次真实落盘，断言**两个标记都不存在**。 */
+{
+  const { execFile } = await import("node:child_process");
+  const run = (args: string[], cwd: string) => new Promise<void>((res) => execFile("git", args, { cwd }, () => res()));
+  const EVIL = join(DIR, "evil");
+  await mkdir(EVIL, { recursive: true });
+  await writeFile(join(EVIL, "project.json"), JSON.stringify({ name: "evil", title: "恶意仓库" }), "utf8");
+  await writeFile(join(EVIL, "稿子.md"), "第一版\n", "utf8");
+  await run(["init"], EVIL);
+  /* 两处埋雷。`touch` 的目标放在 EVIL 外面（DIR 下），免得被 .gitignore 影响判断 */
+  const mark1 = join(DIR, "PWNED_status"), mark2 = join(DIR, "PWNED_postcommit");
+  await run(["config", "core.fsmonitor", `touch ${mark1}; false`], EVIL);
+  await mkdir(join(EVIL, ".git", "hooks"), { recursive: true });
+  await writeFile(join(EVIL, ".git", "hooks", "post-commit"), `#!/bin/sh\ntouch ${mark2}\n`, { mode: 0o755 });
+  /* ⚠️ 先确认这个仓库**真的会中招** —— 不然下面那条判据可能只是因为「雷没埋成」而绿。
+     这是「量到零的两种可能」：世界是零，还是仪器是零。 */
+  await run(["status", "--porcelain"], EVIL);
+  const fuseWorks = existsSync(mark1);
+  ok("**夹具自己先中招**（证明雷埋成了 —— 不然下面那条绿了也说明不了什么）",
+     fuseWorks, fuseWorks ? "core.fsmonitor 被执行了" : "雷没埋成，下面那条不算数");
+  await rm(mark1, { force: true });
+
+  const evilProj = await buildProject(EVIL);
+  const e1 = await readAnyFile(evilProj, "稿子.md");
+  await writeAnyFile(evilProj, "稿子.md", "第二版\n", { expectSha256: e1.sha256 });
+  /* 落盘后的 git 提交是异步的（不让用户等 git），给它一点时间 */
+  await new Promise((r) => setTimeout(r, 1200));
+  ok("**落盘一次，`core.fsmonitor` 没被执行**（它在 `git status` / `git add` 时就会跑）",
+     !existsSync(mark1), existsSync(mark1) ? "✗ PWNED_status 出现了" : "没出现");
+  ok("**`post-commit` 钩子也没被执行**（`--no-verify` 跳不过它）",
+     !existsSync(mark2), existsSync(mark2) ? "✗ PWNED_postcommit 出现了" : "没出现");
+  /* 盘上那份该照常落盘 —— 安全那道闸**不该把功能也挡掉** */
+  const e2 = await readAnyFile(evilProj, "稿子.md");
+  ok("而文件照常落盘了（这道闸只拦 git，不拦写入口）", (e2.content ?? "").includes("第二版"), (e2.content ?? "").trim());
+
+  /* 我们自己建的仓库照旧自动记 —— 否则这道闸等于把 M9-7 整个关掉了 */
+  const { commitPaths, ensureRepo } = await import("./gitkeep.js");
+  const MINE = join(DIR, "mine");
+  await mkdir(MINE, { recursive: true });
+  await writeFile(join(MINE, "a.md"), "x\n", "utf8");
+  const made = await ensureRepo(MINE);
+  const sha = made ? await commitPaths(MINE, ["a.md"], "记版本：测试") : null;
+  ok("**我们自己 `git init` 的仓库照旧自动记**（这道闸不是把 M9-7 关掉）",
+     !made || !!sha, made ? (sha ? `提交了 ${sha}` : "✗ 没提交") : "（没装 git，跳过）");
+  /* ⚠️ **数那个仓库的提交数，别看 `commitPaths` 的返回值。**
+     （2026-10-02 反向验证抓到的假绿）
+     第一版写的是 `commitPaths(EVIL, …) === null` —— 而撤掉这道闸之后，
+     上面那次 `writeAnyFile` 内部的两次自动提交（落盘前的外部改动 + 落盘后）
+     **已经把改动提交掉了**，于是我手工再调一次就是 "nothing to commit"，
+     `commitPaths` 照样返回 `null`，**判据照样绿**。
+     它测到的是「没东西可提交」，不是「闸拦住了」。
+
+     要钉的后果是「**别人的仓库里一个提交都不该多出来**」——
+     那就直接数提交数。 */
+  const countCommits = (cwd: string) => new Promise<number>((res) => {
+    execFile("git", ["rev-list", "--count", "HEAD"], { cwd }, (e, out) => res(e ? 0 : Number(String(out).trim()) || 0));
+  });
+  const evilCommits = await countCommits(EVIL);
+  ok("**别人的仓库里一个提交都没多出来**（没有 `umbrastudio.managed` 标记就什么都不做）",
+     evilCommits === 0, `${evilCommits} 个提交`);
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

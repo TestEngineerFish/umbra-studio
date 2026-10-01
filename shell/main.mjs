@@ -148,6 +148,44 @@ async function createMainWindow() {
   /* 地址里**不带 token** —— 壳靠 preload 的 `sendSync("host:boot")` 拿（issue #39）。
      带在地址里的话它会进历史记录、也会被 `webContents.getURL()` 之类读到。 */
   await mainWin.loadURL(hub.url + "__app/home");
+  /* ⚠️ **有未落盘时关窗 / ⌘Q / 重新加载都要问一句**（issue #44，2026-10-02）。
+     前端在有 dirty 时对 `beforeunload` 调 `preventDefault()` ——
+     **浏览器**会弹自带的「离开此网站？」，而 **Electron 不弹**：
+     它直接取消关窗，界面上**什么都不显示**，除非主进程听这个事件。
+
+     2026-10-02 用最小 Electron 实验做了对照（不经 Playwright ——
+     Playwright 会自动 dismiss 对话框，**它会改变被观测的行为**）：
+
+     | 听不听 | close() 之后 |
+     | --- | --- |
+     | 不听（改之前） | 窗口数 1 → 1，**关不掉，界面上什么都没显示** |
+     | 听（现在） | 事件触发 → 放行 → 关掉 |
+
+     用户只会觉得「程序关不掉了」，而他唯一的出路是强制退出 ——
+     **强制退出恰好会丢掉那些改动，也就是这道闸本来要防的那件事。**
+
+     ⚠️ 为什么用系统对话框而不是我们自己那张确认卡（`LeaveGuard`）：
+     `will-prevent-unload` 是**同步**事件，等不了异步的前端应答。
+     而关窗这件事发生在页面之外，前端根本画不到那里。
+     文案和 `LeaveGuard` 对齐（「回去接着改」），**按钮顺序和它一致**。
+
+     ⚠️ `preventDefault()` 的语义是**反直觉的**：它表示「忽略 beforeunload」
+     = **放行关闭**。写反了就是「选了离开反而关不掉」。 */
+  mainWin.webContents.on("will-prevent-unload", (e) => {
+    const choice = dialog.showMessageBoxSync(mainWin, {
+      type: "warning",
+      buttons: ["回去接着改", "不要了，离开"],
+      defaultId: 0, cancelId: 0,
+      message: "有文件还没落盘",
+      detail: "离开以后这些改动不会留。",
+    });
+    if (choice === 1) { e.preventDefault(); return; }   // 放行（见上面那条⚠️）
+    /* ⚠️ 留下来的话要把 `before-quit` 写的 `cleanExit: true` **撤回**。
+       ⌘Q 时 `before-quit` 先跑、已经写了 true，而退出被这里取消了 ——
+       程序还在跑而 session 说「上次是正常退出的」。
+       之后真被强杀，下次启动看到 true，**那条「上次没正常退出」的提示就不出了**。 */
+    writeSession({ cleanExit: false, at: new Date().toISOString() });
+  });
   mainWin.on("closed", () => { mainWin = null; });
 }
 

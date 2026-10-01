@@ -68,6 +68,72 @@ console.log("workbench:", await win.evaluate(() => document.querySelector("heade
   });
   console.log("token usable:", works === 200 ? "✓ 真调一次能力回 200" : `✗ ${works}`);
 }
+
+/* ⚠️ **有未落盘时关窗要有人问一句**（issue #44，2026-10-02）。
+   前端在有 dirty 时取消 `beforeunload`，而 **Electron 不弹浏览器那种确认** ——
+   没人听 `will-prevent-unload` 的话窗口**静默关不掉、界面上什么都不显示**，
+   用户只能强制退出，而强制退出恰好丢掉那些改动。
+
+   判据分两层，**缺哪一层都会留下假绿**：
+   ① 主进程**真的挂了** `will-prevent-unload` 监听（结构）——
+      这一条便宜，而且它是「会不会静默卡住」的唯一前提。
+   ② 装一个会取消的 `beforeunload`，`close()` 之后**窗口真的还在**（行为）——
+      光有监听不够：监听里要是无条件 `preventDefault()`，就变成「永远放行」，
+      那等于没有这道闸。所以要验**默认那一支拦住了**。
+   `showMessageBoxSync` 是模态的，自动化里会把测试挂住 —— 所以**只把「人点按钮」
+   那一步换成桩**（在主进程里临时替换 `dialog.showMessageBoxSync`），
+   真实的那一段逻辑照样走到。
+   ⚠️ 只验「拦住」那一半：验「放行」要真关窗口，后面还有「强杀 → 重开」要用它。
+   放行那一半用最小 Electron 实验单独验过（`doc/00` §一三四）。 */
+{
+  const listeners = await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.isVisible());
+    return w ? w.webContents.listenerCount("will-prevent-unload") : -1;
+  });
+  console.log("will-prevent-unload:", listeners > 0 ? `✓ 挂了 ${listeners} 个监听` : "✗ 没人听 —— 有未落盘时关窗会静默卡住");
+
+  /* ⚠️ **先挂一个空的 dialog 监听器。**（2026-10-02 实测）
+     Playwright 默认**自动 dismiss 所有 dialog**，而 Electron 下 beforeunload
+     那个 dialog 事件一开就没了 → 它去 handle 时报
+     `Protocol error (Page.handleJavaScriptDialog): No dialog is showing`，
+     **而那是个 unhandledRejection，直接把 shelltest 带走**。
+     挂了监听器它就不再自动处理。
+
+     这件事本身也是教训：**仪器会改变被观测的行为** ——
+     正因为这个，`will-prevent-unload` 的「放行」那一半没放在这里测，
+     而是用一个不经 Playwright 的最小 Electron 实验单独验的。 */
+  win.on("dialog", () => { /* 故意什么都不做 —— 只为阻止 Playwright 自动处理 */ });
+  /* 装一个会取消的 beforeunload（和前端有 dirty 时做的事一样） */
+  await win.evaluate(() => { window.addEventListener("beforeunload", (e) => { e.preventDefault(); e.returnValue = ""; }); });
+  const r2 = await app.evaluate(async ({ BrowserWindow, dialog }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.isVisible());
+    const real = dialog.showMessageBoxSync;
+    let asked = null;
+    dialog.showMessageBoxSync = (_win, opts) => { asked = opts; return 0; };   // 0 = 回去接着改
+    try {
+      const before = BrowserWindow.getAllWindows().length;
+      w.close();
+      await new Promise((res) => setTimeout(res, 1200));
+      return { before, after: BrowserWindow.getAllWindows().length, asked };
+    } finally { dialog.showMessageBoxSync = real; }
+  });
+  /* ⚠️ **「窗口还在」不能单独报。**（2026-10-02 反向验证抓到的假绿）
+     第一版把它拆成两条「拦住了」和「问了吗」，而「拦住了」在 **bug 版本下照样绿** ——
+     因为那条 bug 的症状**正是「窗口关不掉」**：
+
+     | 窗口还在，因为 | 对不对 |
+     | --- | --- |
+     | 我们问了，用户选「回去接着改」 | ✅ |
+     | 没人问，Electron 静默取消 | ❌ 正是那条 bug |
+
+     **修好的状态和坏掉的状态在这一个维度上完全相同**，
+     所以「窗口还在」单独为真**毫无信息量**。两件必须合成一条：
+     「问了一句，**而且**留住了窗口」。 */
+  const asked44 = !!r2.asked, kept44 = r2.after === r2.before;
+  console.log(`close with dirty: ${asked44 && kept44 ? "✓ 问了一句，而且留住了窗口" : asked44 ? "✗ 问了但没留住 —— 改动会丢" : "✗ 没问（静默卡住）—— 「窗口还在」这时候不算好事"}`
+    + ` | 窗口 ${r2.before} → ${r2.after}`
+    + ` | ${asked44 ? `问的是「${r2.asked.message}」按钮 ${JSON.stringify(r2.asked.buttons)}` : "一句话都没说"}`);
+}
 // 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
 /* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
    原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——
