@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProject } from "./project.js";
 import { listVersions, snapDir } from "./history.js";
+import { readdir } from "node:fs/promises";
 import {
   countTypes, lineDelta, listFiles, listSnapshotMeta, listSnapshots, moveFile,
   readAnyFile, readSnapshotContent, referencesOf, revertFile, trashFile, writeAnyFile,
@@ -320,9 +321,22 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      **判据要拼实现的路径时，必须调实现那个函数。** */
   await rm(join(snapDir(proj, F), "s2.src.gz"), { force: true });
   const after = await listSnapshotMeta(proj, F);
+  /* ⚠️ 2026-10-02 这条判据的**期望变了**（issue #48）：delta 现在写快照时就算好存进
+     `s<N>.json`，所以**原文丢了 delta 还在** —— 那是改进，不是回归。
+     原来写的是 `after[1]?.delta === null`（原文丢了 → 读的时候算不出来 → null），
+     现在 s2 照样有数。
+
+     但这条判据**钉的不变量没变**：一个坏数据不该毁掉整个列表（§九十二）。
+     所以判据改成直接问那一条 —— 列表还是 5 条、每一条都在。
+     ⚠️ 另外加一条：**那一版的原文确实取不回来了**，
+     否则「列表完整」可能只是因为我删的文件根本没被用到。 */
+  let lostThrew = false;
+  try { await readSnapshotContent(proj, F, "s2"); } catch { lostThrew = true; }
   ok("**一版的原文丢了，别的版照样列出来**（不是整个列表变空）",
-     after.length === 5 && after[1]?.delta === null && after[2]?.delta !== undefined,
+     after.length === 5 && after.every((m) => !!m.version),
      after.map((m) => `${m.version}:${m.delta === null ? "没算" : JSON.stringify(m.delta)}`).join(" "));
+  ok("**而那一版的原文确实取不回来了**（否则上一条「列表完整」可能只是因为我删的东西没被用到）",
+     lostThrew, lostThrew ? "读 s2 抛了 E_SNAPSHOT_MISSING" : "✗ 居然还读得到");
 }
 
 /* ── git 兜底在不在：三态（M10-2b 要在版本历史头上说那句话）──
@@ -646,6 +660,73 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   const evilCommits = await countCommits(EVIL);
   ok("**别人的仓库里一个提交都没多出来**（没有 `umbrastudio.managed` 标记就什么都不做）",
      evilCommits === 0, `${evilCommits} 个提交`);
+}
+
+/* ── 版本越多不该越卡（issue #48）──
+   原来每次 `list_file_versions` 都把这个文件的**全部**快照逐个解压 + 跑 LCS。
+   实测（3000 行、61 版）：**10473 / 10660 / 10198 ms**（三次一样 = 完全没缓存），
+   而同一份不要 delta 只要 **13 ms**。那 10 秒跑在服务主线程上，
+   同一个进程还在接 MCP / WS / 别的 HTTP —— **整个工作台不响应**。
+   用户每打开一个文件、每按一次 ⌘S 都付一次，200 版就是 ~35 秒。
+
+   ⚠️ 这一节**不比绝对毫秒数**（机器快慢差几倍，CI 上更不稳），
+   比的是**和「不要 delta」那条基线的倍数** —— 那条基线就是「只读 json」的成本。
+   原来的实现是 800 倍，现在该是个位数。 */
+{
+  const PERF = join(DIR, "perf");
+  await mkdir(PERF, { recursive: true });
+  await writeFile(join(PERF, "project.json"), JSON.stringify({ name: "perf", title: "性能" }), "utf8");
+  const body = (n: number) => [`// ${n}`, ...Array.from({ length: 400 }, (_, i) => `const v${i} = ${(i + n) % 13};`)].join("\n");
+  await writeFile(join(PERF, "big.ts"), body(0), "utf8");
+  const pf = await buildProject(PERF);
+  for (let i = 1; i <= 30; i++) {
+    const c = await readAnyFile(pf, "big.ts");
+    await writeAnyFile(pf, "big.ts", body(i), { expectSha256: c.sha256 });
+  }
+  /* ⚠️ **这一条要在任何 `listSnapshotMeta` 之前，直接读盘上的 json。**
+     （2026-10-02 反向验证抓到的假绿）
+     原来写的是「`listSnapshotMeta` 回来的每一版都有 delta」——
+     而撤掉「写时算一次」之后，**补算路径会把它补上**，于是判据照样绿。
+     它分不清「写快照时算的」和「列版本时补算的」。
+     要问的是**盘上那份 json 里有没有**，那才是「写的时候算过」的唯一证据。 */
+  const pfDir = snapDir(pf, "big.ts");
+  let onDiskHasDelta = 0, onDiskTotal = 0;
+  for (const f of await readdir(pfDir)) {
+    if (!/^s\d+\.json$/.test(f)) continue;
+    onDiskTotal++;
+    const j = JSON.parse(await readFile(join(pfDir, f), "utf8")) as Record<string, unknown>;
+    if ("delta" in j) onDiskHasDelta++;
+  }
+  ok("**delta 在写快照时就写进 json 了**（读盘上那份确认 —— 不是列版本时补算的）",
+     onDiskTotal === 31 && onDiskHasDelta === 31, `${onDiskHasDelta}/${onDiskTotal} 份 json 里有 delta`);
+
+  const t1 = Date.now(); const metas = await listSnapshotMeta(pf, "big.ts"); const withDelta = Date.now() - t1;
+  const t2 = Date.now(); await listSnapshotMeta(pf, "big.ts", false); const noDelta = Date.now() - t2;
+  ok("每一版都给出了 delta（没有 `undefined` 漏出去）",
+     metas.length === 31 && metas.every((m) => m.delta !== undefined),
+     `${metas.length} 版 · 没有 delta 的 ${metas.filter((m) => m.delta === undefined).length} 版`);
+  /* 基线可能是 0ms，所以给它一个下限再算倍数 */
+  const ratio = withDelta / Math.max(1, noDelta);
+  ok("**要 delta 和不要 delta 的耗时在同一个量级**（原来是 800 倍：10473ms vs 13ms）",
+     ratio < 8, `${withDelta}ms vs ${noDelta}ms = ${ratio.toFixed(1)} 倍`);
+
+  /* 旧快照（issue #48 之前写下的，json 里没有 delta 字段）的补算路径：
+     **限量 + 回写 + 下一次接着补**，每一次都有界。 */
+  const d = snapDir(pf, "big.ts");
+  for (const f of await readdir(d)) {
+    if (!/^s\d+\.json$/.test(f)) continue;
+    const j = JSON.parse(await readFile(join(d, f), "utf8")) as Record<string, unknown>;
+    delete j.delta;
+    await writeFile(join(d, f), JSON.stringify(j, null, 1), "utf8");
+  }
+  const r1 = await listSnapshotMeta(pf, "big.ts");
+  const got1 = r1.filter((m) => m.delta && typeof m.delta === "object").length;
+  ok("**旧快照一次只补算有限几版**（不加上限就又回到 10 秒那条路）",
+     got1 > 0 && got1 <= 21, `第一次补了 ${got1} 版，其余给「没算」`);
+  const r2 = await listSnapshotMeta(pf, "big.ts");
+  const got2 = r2.filter((m) => m.delta && typeof m.delta === "object").length;
+  ok("**而且算完回写了**（下一次接着补，不是每次重算同样的几版）",
+     got2 > got1, `第一次 ${got1} 版 → 第二次 ${got2} 版`);
 }
 
 await rm(DIR, { recursive: true, force: true });

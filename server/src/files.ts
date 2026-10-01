@@ -17,7 +17,10 @@ import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzipSync, gunzip as gunzipCb } from "node:zlib";
+import { promisify } from "node:util";
+/** 异步解压（issue #48）—— 同步版会把整个服务进程停住 */
+const gunzip = promisify(gunzipCb);
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
@@ -300,7 +303,17 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
 export interface FileSnapshotMeta {
   version: string; src: string; at: string; bytes: number; note?: string;
   /** 和**上一版**比，增了几行 / 删了几行。第一版没有上一版，所以是「全新增」。
-   *  `null` = 没算（文件太大，见 `lineDelta`）。
+   *
+   *  三态，**而且三态都有用**（issue #48）：
+   *  | 值 | 意思 | 谁会看到 |
+   *  | --- | --- | --- |
+   *  | `{plus,minus}` | 算好了 | 正常情况（**写快照时就算了**，不是读的时候算） |
+   *  | `null` | **算过了但给不出数** —— 文件超过 `DELTA_MAX_LINES`、原文丢了、或者这次补算超了上限 | 界面显示「没算」 |
+   *  | `undefined` | **还没算过** —— issue #48 之前写下的旧快照 | `listSnapshotMeta` 会限量补算并回写 |
+   *
+   *  ⚠️ `null` 和 `undefined` 不能混：混了的话「算不出来的那一版」会被
+   *  每次调用都重算一遍，而它每次都算不出来 —— 这正是 #48 那条慢的一半。
+   *
    *  ⚠️ **后端算，不让界面算**（设计侧第十三轮问过这一条）：
    *  快照全在我们手里，算一次就够；界面现算的话，5 个版本要拉 6 份原文下来。 */
   delta?: { plus: number; minus: number } | null;
@@ -354,17 +367,56 @@ export async function listSnapshotMeta(p: Project, rel: string, withDelta = true
     try { out.push(JSON.parse(await readFile(join(dir, `${v}.json`), "utf8")) as FileSnapshotMeta); } catch { /* 坏了就跳过 */ }
   }
   if (!withDelta) return out;
-  /* 每一版和它的**上一版**比。原文都在手边（`s<N>.src.gz`），解压一趟就够。
-     ⚠️ 一版读不出来不能毁掉整个列表（§九十二 那条「一个坏数据毁掉整个列表」）——
-     读不出来就这一行没有 delta，别的照给。 */
+
+  /* ⚠️ **delta 在写快照时就算好存进 `s<N>.json` 了**（issue #48，2026-10-02）。
+     原来每次调用都把这个文件的**全部**快照逐个解压、再对相邻两版各跑一次 LCS。
+     实测（3000 行的文件、61 版）：
+     | 这一趟 | 耗时 |
+     | --- | --- |
+     | `list_file_versions` 第 1 / 2 / 3 次 | 10473 / 10660 / 10198 ms（**完全没缓存**） |
+     | 同一份，不要 delta | **13 ms** |
+     而它跑在服务进程主线程上 —— 同一个进程还在接 MCP、WS 和别的 HTTP 请求，
+     **那 10 秒整个工作台不响应**。用户每打开一个文件、每按一次 ⌘S 都付一次，
+     200 版就是 ~35 秒。随使用时长单调变差，而开发时的测试项目快照少，**撞不上**。
+
+     快照一旦写下就不变，所以这个值**完全可缓存**。现在只有旧快照
+     （json 里没有 `delta` 字段）才现算，算完**回写**，下次就不用再算。 */
+  const need = out.filter((m) => m.delta === undefined);
+  if (!need.length) return out;
+
+  /* ⚠️ 补算要有**总量上限**：一个存了几百版的旧文件第一次打开时，
+     不加上限就又回到 10 秒那条路上了。超出的给 `null`（「没算」），
+     下一次调用会接着补 —— 几次之后就全齐了。
+     `null` 和 `undefined` 的区别是**有意的**：`undefined` = 还没算过（下次补），
+     `null` = 算过了但算不出来（上限之外 / 原文丢了），界面显示「没算」。 */
+  const BACKFILL_MAX = 20;
+  let budget = BACKFILL_MAX;
   let prevSrc: string | null = null;
+  let prevVer: string | null = null;
+  const dirty: FileSnapshotMeta[] = [];
   for (const m of out) {
+    if (m.delta !== undefined) { prevSrc = null; prevVer = m.version; continue; }
+    if (budget <= 0) { m.delta = null; continue; }
+    budget--;
+    /* ⚠️ 一版读不出来不能毁掉整个列表（§九十二 那条「一个坏数据毁掉整个列表」）——
+       读不出来就这一行没有 delta，别的照给。 */
     let cur: string | null = null;
     try { cur = await readSnapshotContent(p, rel, m.version); } catch { cur = null; }
+    if (prevSrc === null && prevVer !== null) {
+      try { prevSrc = await readSnapshotContent(p, rel, prevVer); } catch { prevSrc = null; }
+    }
     m.delta = cur === null ? null : prevSrc === null
       ? { plus: cur.split("\n").length, minus: 0 }   // 第一版：全是新增
       : lineDelta(prevSrc, cur);
+    dirty.push(m);
     prevSrc = cur ?? prevSrc;
+    prevVer = m.version;
+  }
+  /* 把补算的结果写回去。**写失败不影响这次的返回值** ——
+     盘只读、权限不够都不该让版本列表打不开。 */
+  for (const m of dirty) {
+    try { await writeFile(join(dir, `${m.version}.json`), JSON.stringify(m, null, 1)); }
+    catch { /* 回写只是省下次的力气，不是正确性的一部分 */ }
   }
   return out;
 }
@@ -375,7 +427,20 @@ async function saveSnapshot(p: Project, rel: string, buf: Buffer, src: string, n
   const have = await listSnapshots(p, rel);
   const n = have.length ? Number(have[have.length - 1]!.slice(1)) + 1 : 1;
   const version = `s${n}`;
-  const meta: FileSnapshotMeta = { version, src, at: new Date().toISOString(), bytes: buf.length, ...(note ? { note } : {}) };
+  /* ⚠️ **delta 在这里算一次，不留给读的时候算**（issue #48）。
+     这一刻我们手上已经有新内容（`src` 的原文就是 `buf`），上一版只要解压一次 ——
+     和「每次列版本就把全部快照重算一遍」比，这是 O(1) 对 O(版本数)。
+     算不出来（第一版 / 上一版原文丢了）就记 `null`（「没算」），
+     **不留 `undefined`** —— 那会让读的时候以为「还没算过」又去补算一遍。 */
+  let delta: { plus: number; minus: number } | null = null;
+  const prevVer = have.length ? have[have.length - 1]! : null;
+  const curText = buf.toString("utf8");
+  if (prevVer === null) delta = { plus: curText.split("\n").length, minus: 0 };
+  else {
+    try { delta = lineDelta(await readSnapshotContent(p, rel, prevVer), curText); }
+    catch { delta = null; }
+  }
+  const meta: FileSnapshotMeta = { version, src, at: new Date().toISOString(), bytes: buf.length, delta, ...(note ? { note } : {}) };
   await writeFile(join(dir, `${version}.json`), JSON.stringify(meta, null, 1));
   await writeFile(join(dir, `${version}.src.gz`), gzipSync(buf));
   return version;
@@ -390,7 +455,10 @@ export async function readSnapshotContent(p: Project, rel: string, version: stri
       `没有 ${version} 的快照`,
       { fix: have.length ? `现有：${have.join(" / ")}` : "这个文件还没有经 write_file 落过盘" }));
   }
-  return gunzipSync(await readFile(f)).toString("utf8");
+  /* ⚠️ **异步解压**（issue #48）：`gunzipSync` 在主线程上解一个几百 KB 的 gz
+     会把整个服务停住，而这个进程同时在接 MCP、WS 和别的 HTTP 请求。
+     异步版把活交给 zlib 的线程池。 */
+  return (await gunzip(await readFile(f))).toString("utf8");
 }
 
 /** 回到某一版：把那一版的原文当新内容写一遍（历史不删，回退本身也留一版）。 */
