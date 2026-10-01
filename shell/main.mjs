@@ -86,6 +86,15 @@ async function pickDirectory(opts = {}) {
 }
 
 function wireIpc() {
+  /* ⚠️ **只回给主窗口的主 frame**（issue #39）。
+     `sendSync` 是同步 IPC，任何能拿到 `ipcRenderer` 的地方都能发 ——
+     而插件跑在 iframe 里（`nodeIntegrationInSubFrames` 默认 false，子 frame 没有
+     preload，所以今天拿不到 `ipcRenderer`）。这一道闸是**按不变量写的，不是按
+     今天的配置写的**：哪天子 frame 有了 preload，这里不用跟着改。 */
+  ipcMain.on("host:boot", (e) => {
+    const okSender = !!mainWin && e.sender === mainWin.webContents && e.senderFrame === e.sender.mainFrame;
+    e.returnValue = okSender ? bootData() : null;
+  });
   ipcMain.handle("host:pickDirectory", (_e, opts) => pickDirectory(opts));
   ipcMain.handle("host:revealInFinder", (_e, p) => { shell.showItemInFolder(p); });
   ipcMain.handle("host:openExternal", (_e, url) => shell.openExternal(String(url)));
@@ -115,19 +124,28 @@ async function createMainWindow() {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#13151a" : "#f6f7f9",
     webPreferences: {
       preload: join(HERE, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: false,
-      /* ⚠️ **令牌经 preload 进去，不经 HTTP**（`11` Q42 的 (a)，用户 2026-09-28 定）。
-         `/__app/` 以前不要任何凭据就把真令牌写进返回的 HTML，于是本机任何能发
-         HTTP 请求的进程扫到端口就能拿走它（issue #30，实测确证）。
-         桌面版走这条：boot 作为启动参数交给 preload，**令牌从不出现在任何响应里**。
-         `additionalArguments` 的值会出现在渲染进程的 `process.argv` 里 ——
-         那是**这个窗口自己的进程**，不是全局可见的东西。 */
-      additionalArguments: [`--ud-boot=${Buffer.from(JSON.stringify(bootData()), "utf8").toString("base64")}`],
+      /* ⚠️ **令牌经 preload 的 IPC 进去，不经 HTTP、也不经命令行**
+         （`11` Q42 的 (a)；issue #30 定方向、issue #39 修掉第一版的新口子）。
+
+         第一版用的是 `additionalArguments: ["--ud-boot=<base64>"]`，
+         而那段注释写着「那是这个窗口自己的进程，不是全局可见的东西」——
+         **这个前提是错的**。`additionalArguments` 的定义就是「appended to
+         `process.argv` in the renderer process」，而渲染进程是 Chromium 起的
+         **独立 OS 进程**，附加参数就是它的命令行开关；macOS 上进程命令行
+         对本机任何进程公开可读。
+
+         2026-10-02 在跑着的桌面版上实测确证：
+         `ps -axww -o args=` 一行就拿到完整 boot JSON（含 32 位 token）——
+         **比 issue #30 还隐蔽：不用扫端口、不发任何 HTTP 请求。**
+
+         所以改成 preload 在顶层 `sendSync` 问一次（见 `preload.cjs`）：
+         令牌只在两个进程之间走一次 IPC，**不落在 argv、也不落在任何响应里**。 */
     },
   });
   mainWin.once("ready-to-show", () => mainWin.show());
   mainWin.webContents.on("did-finish-load", () => { while (pending.length) mainWin.webContents.send("host:event", pending.shift()); void buildMenu(); });
   mainWin.webContents.setWindowOpenHandler(({ url }) => { void shell.openExternal(url); return { action: "deny" }; });
-  /* 地址里**不带 token** —— 壳靠 preload 拿（上面 `additionalArguments`）。
+  /* 地址里**不带 token** —— 壳靠 preload 的 `sendSync("host:boot")` 拿（issue #39）。
      带在地址里的话它会进历史记录、也会被 `webContents.getURL()` 之类读到。 */
   await mainWin.loadURL(hub.url + "__app/home");
   mainWin.on("closed", () => { mainWin = null; });

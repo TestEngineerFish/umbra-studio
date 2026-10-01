@@ -23,6 +23,51 @@ await app.evaluate(({ BrowserWindow }, dir) => { const w = BrowserWindow.getAllW
    `role="treeitem"` 是形制变了也还在的东西，和 uitest 用的是同一条。 */
 await win.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').length > 0 && !/核心断开/.test(document.body.innerText), null, { timeout: 20000 }); await win.waitForTimeout(1500);
 console.log("workbench:", await win.evaluate(() => document.querySelector("header")?.innerText.replace(/\s+/g, " ")));
+
+/* ⚠️ **令牌不许出现在任何进程的命令行里**（issue #39，2026-10-02）。
+   第一版走 `additionalArguments`，而那会把 boot（含 token）写进**渲染进程的
+   命令行** —— 渲染进程是独立的 OS 进程，命令行在 macOS 上对本机任何进程公开可读。
+   实测过：`ps -axww -o args=` 一行就拿到完整 JSON，比 issue #30 还隐蔽
+   （不用扫端口、不发任何 HTTP 请求）。
+
+   判据**比对真令牌的值**而不是找 `--ud-boot=` 这个串 ——
+   找串的话换个参数名判据就瞎了，而要守的不变量是「这个值不在 argv 里」。
+
+   ⚠️ **但只搜明文是一条假判据。**（2026-10-02 反向验证时自己抓到的）
+   第一版写的是 `o.includes(tok)` —— 而命令行里放的是 **base64 编码的 boot JSON**，
+   明文令牌压根不在里面。把 `additionalArguments` 加回去跑，判据**照样绿**。
+   「argv 里没有这个字符串」和「argv 里没有这个秘密」是两件事。
+
+   所以改成：明文搜一遍，再把 argv 里每一个够长的 base64 串**解开**看里面有没有 ——
+   不变量是「boot 数据不出现在 argv 里」，**不管它怎么编码**。
+   只打印「含 / 不含」和命中的形式，不打印值本身。
+   反向验证：把 `additionalArguments` 临时加回 `main.mjs`，这一条应报红。 */
+{
+  const tok = await win.evaluate(() => window.__UD_APP?.token ?? null);
+  const argvHas = await new Promise((res) => {
+    const p = spawn("sh", ["-c", "ps -axww -o args="]); let o = "";
+    p.stdout.on("data", (d) => o += d);
+    p.on("close", () => {
+      if (!tok) return res(null);
+      if (o.includes(tok)) return res("明文");
+      for (const m of o.match(/[A-Za-z0-9+/]{40,}={0,2}/g) ?? []) {
+        try { if (Buffer.from(m, "base64").toString("utf8").includes(tok)) return res("base64"); }
+        catch { /* 不是合法 base64 就跳过 */ }
+      }
+      res(false);
+    });
+  });
+  console.log(`token in argv: ${argvHas === null ? "✗ 拿不到令牌，这一条没验到" : argvHas ? `✗ 含（${argvHas}）！本机任何进程 ps 一行就能读到` : "✓ 不含（明文与 base64 都搜过）"}`
+    + ` | 前端拿到令牌了吗: ${tok ? `✓ 长度 ${tok.length}` : "✗ 没拿到"}`);
+  /* 「不在 argv 里」单独成立没有意义 —— 把令牌整个去掉它也成立。
+     所以**两件一起报**：既不在命令行里，又确实能用。 */
+  const works = await win.evaluate(async () => {
+    const a = window.__UD_APP; if (!a) return "没有 boot";
+    const r = await fetch(`${a.url.replace(/\/$/, "")}/__ud/recent_projects`, { headers: { "x-ud-token": a.token } });
+    return r.status;
+  });
+  console.log("token usable:", works === 200 ? "✓ 真调一次能力回 200" : `✗ ${works}`);
+}
 // 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
 /* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
    原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——

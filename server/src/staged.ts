@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lineDelta, listSnapshots, normalizeRel, readAnyFile, sha256 } from "./files.js";
+import { pathKey } from "./history.js";
 import type { Project } from "./project.js";
 
 /** 草稿暂存（M10-2c，设计侧第十三轮定形制）。
@@ -40,9 +41,17 @@ export interface StagedDraft {
   baseVersion: string | null;
 }
 
-/** 暂存文件的落点。路径编码沿用 `snapDir` 那一套（`/` → `__`），
- *  两处不一致的话同一个文件在两个目录里会长出两个名字。 */
+/** 暂存文件的落点。**和快照共用 `pathKey`** —— 它是「相对路径 → 状态目录名」
+ *  的唯一一处定义（issue #47）。
+ *  原来这里自己写了一份 `/` → `__`，而那个编码不可逆：
+ *  `docs/x.md` 和 `docs__x.md` 落到同一个文件，于是两份文件的草稿互相覆盖。
+ *  **两处各写一份，就是那条 bug 的来源。** */
 function stagedPath(p: Project, rel: string): string {
+  return join(p.dir, ".umbrastudio", "staged", `${pathKey(rel)}.json`);
+}
+
+/** 旧编码下的落点。**只用来读** —— 升级之后还能找回以前存的草稿。 */
+function legacyStagedPath(p: Project, rel: string): string {
   return join(p.dir, ".umbrastudio", "staged", `${rel.replace(/[\\/]/g, "__")}.json`);
 }
 
@@ -93,7 +102,9 @@ export async function stageDraft(p: Project, relRaw: string, content: string): P
 /** 有没有草稿、它还能不能直接恢复。 */
 export async function getStagedDraft(p: Project, relRaw: string): Promise<StagedInfo> {
   const rel = normalizeRel(p, relRaw);
-  const f = stagedPath(p, rel);
+  /* 新名字没有而旧名字有时读旧的（迁移期兼容，只读不写） */
+  let f = stagedPath(p, rel);
+  if (!existsSync(f) && existsSync(legacyStagedPath(p, rel))) f = legacyStagedPath(p, rel);
   if (!existsSync(f)) return { path: rel, has: false };
   let d: StagedDraft;
   try { d = JSON.parse(await readFile(f, "utf8")) as StagedDraft; }
@@ -102,6 +113,14 @@ export async function getStagedDraft(p: Project, relRaw: string): Promise<Staged
        留着的话每次打开都弹一条恢复不了的提示，而用户没有任何办法让它消失。 */
     await rm(f, { force: true });
     return { path: rel, has: false, note: "有一份草稿但读不出来，已清掉" };
+  }
+  /* ⚠️ **核对草稿里记的路径**（issue #47 的第 3 步）。
+     不管编码怎么改，这一道都该在 —— 它是**和编码无关的那一层保险**：
+     撞号时这里会把「另一个文件的草稿」挡掉，而不是让界面说
+     「有一份没落盘的草稿」然后把别的文件内容覆盖进来。
+     旧编码存的草稿走到这里也会被挡（它记的 `path` 是另一份），这是对的。 */
+  if (d.path && d.path !== rel) {
+    return { path: rel, has: false, note: `这里有一份草稿但它记的是 ${d.path}，不是这个文件 —— 没拿给你（旧版本的路径编码会撞号，issue #47）` };
   }
   const cur = await readAnyFile(p, rel).catch(() => null);
   const onDisk = cur?.content ?? null;
@@ -122,9 +141,12 @@ export async function getStagedDraft(p: Project, relRaw: string): Promise<Staged
 /** 丢掉草稿。已经没有也算成功 —— 调用方不该为「本来就没有」写一条分支。 */
 export async function clearStagedDraft(p: Project, relRaw: string): Promise<{ path: string; cleared: boolean }> {
   const rel = normalizeRel(p, relRaw);
-  const f = stagedPath(p, rel);
-  const had = existsSync(f);
+  /* **两个名字都清** —— 只清新的话，旧编码存的那一份会一直被 `getStagedDraft`
+     读到（然后被上面那道核对挡掉），用户点「丢掉」之后它还在盘上。 */
+  const f = stagedPath(p, rel), old = legacyStagedPath(p, rel);
+  const had = existsSync(f) || existsSync(old);
   await rm(f, { force: true });
+  if (old !== f) await rm(old, { force: true });
   return { path: rel, cleared: had };
 }
 

@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProject } from "./project.js";
-import { listVersions } from "./history.js";
+import { listVersions, snapDir } from "./history.js";
 import {
   countTypes, lineDelta, listFiles, listSnapshotMeta, listSnapshots, moveFile,
   readAnyFile, readSnapshotContent, referencesOf, revertFile, trashFile, writeAnyFile,
@@ -312,7 +312,13 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**超过上限回 `null`（明说没算），不是硬算到卡死**", lineDelta(huge, huge + "\ny") === null);
 
   /* 5. 一版坏掉不许毁掉整个列表（§九十二 那条） */
-  await rm(join(DIR, ".umbrastudio", "snapshots", F, "s2.src.gz"), { force: true });
+  /* ⚠️ 路径**用 `snapDir()` 算，别自己拼**（2026-10-02 实测栽过）。
+     原来这里写的是 `join(DIR, ".umbrastudio", "snapshots", F, …)` ——
+     判据绕过被测代码自己复刻了一遍目录名规则，于是 issue #47 改了编码之后
+     `rm` 删的是一个**不存在的路径**（`rm` 带 `force` 不报错），
+     s2 还在，判据红在「列表没变空」上 —— 而它测的根本不是那件事。
+     **判据要拼实现的路径时，必须调实现那个函数。** */
+  await rm(join(snapDir(proj, F), "s2.src.gz"), { force: true });
   const after = await listSnapshotMeta(proj, F);
   ok("**一版的原文丢了，别的版照样列出来**（不是整个列表变空）",
      after.length === 5 && after[1]?.delta === null && after[2]?.delta !== undefined,
@@ -495,6 +501,82 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**草稿暂存三件也在白名单里**（插件自己存不了，只能调宿主）",
      names.includes("stage_draft") && names.includes("get_staged_draft") && names.includes("clear_staged_draft"),
      names.filter((n) => /staged|stage_/.test(n)).join(" "));
+}
+
+/* ── 路径编码撞号（issue #47）──
+   `docs/x.md` 和 `docs__x.md` 在旧编码（`/` → `__`）下落到**同一个**状态目录。
+   这一节钉的是三件各自独立的后果，**少钉哪一件，那一件就会回来**：
+   ① 版本历史不混 ② 草稿不串 ③ 回退拿到的是自己的内容。 */
+{
+  const { stageDraft, getStagedDraft, clearStagedDraft } = await import("./staged.js");
+  const { pathKey } = await import("./history.js");
+  await mkdir(join(DIR, "docs"), { recursive: true });
+  const A = "docs/x.md", B = "docs__x.md";
+  await writeFile(join(DIR, A), "我是 A 的第一版\n", "utf8");
+  await writeFile(join(DIR, B), "我是 B 的第一版\n", "utf8");
+  const proj2 = await buildProject(DIR);
+
+  ok("**两个撞号的路径算出来的目录名不一样**（旧编码下它们完全相同）",
+     pathKey(A) !== pathKey(B), `${pathKey(A)} vs ${pathKey(B)}`);
+
+  /* 各写两次 —— 各自该只看到自己的版本 */
+  const a1 = await readAnyFile(proj2, A), b1 = await readAnyFile(proj2, B);
+  await writeAnyFile(proj2, A, "我是 A 的第二版\n", { expectSha256: a1.sha256 });
+  await writeAnyFile(proj2, B, "我是 B 的第二版\n", { expectSha256: b1.sha256 });
+  const a2 = await readAnyFile(proj2, A), b2 = await readAnyFile(proj2, B);
+  await writeAnyFile(proj2, A, "我是 A 的第三版\n", { expectSha256: a2.sha256 });
+  await writeAnyFile(proj2, B, "我是 B 的第三版\n", { expectSha256: b2.sha256 });
+  /* ⚠️ 用 `listSnapshots`（源码快照）不是 `listVersions`（语义快照）——
+     后者读 `${version}.json`，那是 `.dc.html` 那条路。第一版用错了，
+     读回空数组而目录里明明有三个，**症状是「没有 undefined 的快照」**。 */
+  const va = await listSnapshots(proj2, A), vb = await listSnapshots(proj2, B);
+
+  /* ⚠️ **不许只看版本数。**（2026-10-02 反向验证抓到的假通过）
+     第一版写的是 `va.length === vb.length && va.length >= 2` ——
+     而混在一起时两边读的是**同一个目录**，长度当然相等、也当然 ≥2，
+     于是判据在 `A s1..s8 · B s1..s8` 这种明显混了的读数下**照样绿**。
+     我在上一版的注释里**写过这句警告**（「版本数相等也可能是两边都看到一半」），
+     却把判据写成了只数数。
+
+     钉性质的写法：**把每一版的原文都取出来，每一份都必须是自己的。**
+     混在一起时必然有对方的内容出现在列表里 —— 这是数数测不到的。 */
+  const allOf = async (rel: string) => {
+    const out: string[] = [];
+    for (const v of await listSnapshots(proj2, rel)) out.push(await readSnapshotContent(proj2, rel, v));
+    return out;
+  };
+  const aSnaps = await allOf(A), bSnaps = await allOf(B);
+  ok("**A 的每一版原文都是 A 的**（旧编码下 B 的版本会混进这个列表）",
+     aSnaps.length >= 2 && aSnaps.every((c) => c.includes("我是 A 的")),
+     `${aSnaps.length} 版 · 混进来的：${aSnaps.filter((c) => !c.includes("我是 A 的")).map((c) => c.trim().slice(0, 12)).join(",") || "无"}`);
+  ok("**B 的每一版原文都是 B 的**（两边都要验 —— 只验一边的话先写的那个恰好会通过）",
+     bSnaps.length >= 2 && bSnaps.every((c) => c.includes("我是 B 的")),
+     `${bSnaps.length} 版 · 混进来的：${bSnaps.filter((c) => !c.includes("我是 B 的")).map((c) => c.trim().slice(0, 12)).join(",") || "无"}`);
+  ok("**两份文件的版本数各自独立**（混在一起时两边会读到同一个目录、数字一模一样）",
+     va.length === 3 && vb.length === 3, `A ${va.join("/")} · B ${vb.join("/")}`);
+
+  /* 草稿：A 存一份，B 不该看见 */
+  await stageDraft(proj2, A, "A 的草稿，没落盘\n");
+  const bDraft = await getStagedDraft(proj2, B);
+  ok("**A 的草稿不会被当成 B 的**（旧编码下 B 会读到它，点「用草稿覆盖」就把 A 的内容写进 B）",
+     !bDraft.has, bDraft.has ? `拿到了：${(bDraft.content ?? "").slice(0, 16)}` : "没拿到");
+  await stageDraft(proj2, B, "B 的草稿，没落盘\n");
+  const aDraft = await getStagedDraft(proj2, A);
+  ok("**B 存了之后 A 的草稿还在**（旧编码下后存的会把前一份冲掉 —— 刷新就找不回来）",
+     aDraft.has && (aDraft.content ?? "").includes("A 的草稿"), (aDraft.content ?? "").trim().slice(0, 16));
+  await clearStagedDraft(proj2, A); await clearStagedDraft(proj2, B);
+
+  /* ⚠️ 和编码无关的那一层保险：草稿里记的 `path` 和问的不是一个，就不给。
+     手工把 A 的草稿文件搬到 B 的名字下，模拟旧数据撞号。 */
+  await stageDraft(proj2, A, "A 的草稿第二次\n");
+  const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
+  const aFile = join(DIR, ".umbrastudio", "staged", `${pathKey(A)}.json`);
+  const bFile = join(DIR, ".umbrastudio", "staged", `${pathKey(B)}.json`);
+  await wf(bFile, await rf(aFile, "utf8"), "utf8");
+  const spoofed = await getStagedDraft(proj2, B);
+  ok("**草稿里记的路径和问的不一样就不给**（这一道和编码无关，是最后一层）",
+     !spoofed.has && /不是这个文件/.test(spoofed.note ?? ""), spoofed.note ?? "（没说话）");
+  await clearStagedDraft(proj2, A); await clearStagedDraft(proj2, B);
 }
 
 await rm(DIR, { recursive: true, force: true });

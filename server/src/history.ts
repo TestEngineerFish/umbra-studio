@@ -4,6 +4,7 @@
  * 取版本时用（07 §七）。实现侧永远不碰 git —— 它读 CHANGELOG-设计侧.md。
  */
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -65,8 +66,52 @@ export function humanTime(iso: string, now: Date = new Date()): string {
   return `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm}`;
 }
 
+/** 一个相对路径 → 一个**唯一且可读**的状态目录名（issue #47，2026-10-02）。
+ *
+ *  ### 原来错在哪
+ *  原来是 `rel.replace(/[\\/]/g, "__")`，而 **`/` → `__` 不可逆**：
+ *  `docs/x.md` 和 `docs__x.md` 编成**同一个名字**。同一个项目里同时有这两份文件时：
+ *  - 草稿互相覆盖（后改的那份把前一份的草稿冲掉，刷新就找不回来 ——
+ *    而「刷新不丢」正是 M10-2c 存在的理由）
+ *  - 打开 B 时读到 A 的草稿，点「用草稿覆盖」会把**另一个文件的内容**写进 B
+ *  - 两份文件的 `s<N>` 在同一个目录里连号 → 版本列表混在一起、
+ *    「和最近一版一样就不存」比的是另一个文件、回退可能拿到另一个文件的内容
+ *
+ *  `staged.ts` 的注释里**写明了这个不可逆**，但只在 `listStagedDrafts` 里绕开了 ——
+ *  **知道根因而只补了一处**，存 / 取 / 清三条路和快照目录都没管。
+ *
+ *  ### 为什么是「可读前缀 + 哈希」而不是纯哈希或可逆转义
+ *  | 方案 | 问题 |
+ *  | --- | --- |
+ *  | 可逆转义（`_`→`_u`、`/`→`_s`） | 双射，撞号解决了，但**更长** —— 而编码后是**一个**文件名，路径深一点就撞 APFS/NTFS 的 255 字节上限（中文每字 3 字节，约 80 字就到） |
+ *  | 纯 `sha256(rel)` | 唯一且定长，但 `.umbrastudio/snapshots/` 变成一堆哈希，**用户和我们都看不出哪个是哪个** |
+ *  | **basename + 短哈希** | 唯一（哈希来自完整路径）· 可读（看得出是哪个文件）· 定长上限 54 字节 |
+ *
+ *  ⚠️ **只有这一个函数能把路径变成目录名** —— `stagedPath` 也用它。
+ *  两处各写一份就是这条 bug 的来源。
+ */
+export function pathKey(relPath: string): string {
+  /* 基名截到 40 字节（按**字节**截，不按字符 —— 文件名上限是字节数），
+     非法字符一律换 `_`。哈希取完整相对路径，所以截断不会造成撞号。 */
+  const base = relPath.split(/[\\/]/).pop() || "file";
+  const safe = base.replace(/[^\p{L}\p{N}._-]/gu, "_");
+  const buf = Buffer.from(safe, "utf8");
+  const head = buf.length <= 40 ? safe : buf.subarray(0, 40).toString("utf8").replace(/\uFFFD+$/, "");
+  return `${head}__${createHash("sha256").update(relPath).digest("hex").slice(0, 12)}`;
+}
+
+/** 旧编码（`/` → `__`）。**只用来读** —— 迁移期找得到以前的快照。 */
+const legacyKey = (relPath: string): string => relPath.replace(/[\\/]/g, "__");
+
 export function snapDir(p: Project, relPath: string): string {
-  return join(p.dir, ".umbrastudio", "snapshots", relPath.replace(/[\\/]/g, "__"));
+  const root = join(p.dir, ".umbrastudio", "snapshots");
+  const now = join(root, pathKey(relPath));
+  /* ⚠️ **新名字没有而旧名字有时，用旧的**（只读兼容，不改名）。
+     不这么做的话升级之后用户的版本历史**整段消失** —— 而他可能正靠它回退。
+     不自动 rename：旧名字可能本来就对应两份文件（这正是这条 bug），
+     搬错比看不到更糟。新的落盘一律写新名字，所以旧目录会自然停止增长。 */
+  if (!existsSync(now) && existsSync(join(root, legacyKey(relPath)))) return join(root, legacyKey(relPath));
+  return now;
 }
 
 /** 这份稿有哪些快照版本，升序 */

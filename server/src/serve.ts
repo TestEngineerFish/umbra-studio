@@ -6,7 +6,7 @@
  * 服务活在 MCP server 进程里，跨工具调用保持运行 —— 起一次，浏览器里一直能开。
  */
 import { createReadStream, existsSync, statSync, readFileSync, watch, type FSWatcher } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { extname, normalize, resolve, relative, sep } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -207,6 +207,38 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
       });
       return;
     }
+    /* ⚠️ **静态这一支整体兜一层**（issue #43 的第二半，2026-10-02）。
+       `/__ud/*` 那一支本来就有 `.catch`，而静态这一支是**同步**的 ——
+       里面任何一行同步抛出，就直接冒到 `createServer` 的回调外面，
+       而全仓没有 `uncaughtException` 处理（`grep` 零命中，已确证）→ 进程退出。
+       纯 Node 跑的时候 MCP 和 HTTP 一起断；壳里核心是 import 进主进程的，
+       抛出来会弹「A JavaScript error occurred in the main process」。
+
+       **这一层不是为了掩盖 bug，是为了让一条路由的 bug 只毁掉那一个请求。**
+       以后再加路由时，哪一条同步抛了都不会带走整个进程。 */
+    try { routeStatic(req, reply, dir, api, allowOrigin); }
+    catch (e) {
+      /* 响应头已经发出去就只能断掉 —— 再写会抛第二次（`ERR_HTTP_HEADERS_SENT`） */
+      if (!reply.headersSent) reply.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      reply.end(`这个请求出错了：${e instanceof Error ? e.message : String(e)}`);
+    }
+    return;
+  });
+}
+
+/** 静态那几条路由的分发（`/__app/` `/__plugin/` `/__shared/` `/__preview/` 与稿件本体）。
+ *  **从 `createServer` 的回调里抽出来，只为了能整体兜一层 try/catch**（issue #43）。
+ *  ⚠️ 名字别和上面那个 `serveStatic` 混 —— 那个是「把**一个**文件发出去」，
+ *  这个是「决定这条 URL 归谁」。两件事，一个撞名会让下一个人以为是同一层。 */
+function routeStatic(
+  req: IncomingMessage,
+  reply: ServerResponse,
+  dir: string | null,
+  api: () => ApiCtx | null,
+  /* CORS 的那个头在外面算（要看 `req.headers.origin`），这里只用 —— 传进来而不是重算：
+     两处各算一份的话，哪天放宽/收紧了只会改到一处（`captest` 测的「散不散」就是这件事）。 */
+  allowOrigin: string | null | undefined,
+): void {
     let raw: string;
     try { raw = decodeURIComponent((req.url ?? "/").split("?")[0] as string); }
     catch { raw = "/"; }
@@ -301,7 +333,20 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
     if (raw.startsWith("/__preview/")) {
       const c = api();
       if (!c?.project) { reply.writeHead(404); reply.end("预览只在项目里可用"); return; }
-      const rel = decodeURIComponent(raw.slice("/__preview/".length));
+      /* ⚠️ **不要再解一次码**（issue #43，2026-10-02 修）。
+         `raw` 在上面已经 `decodeURIComponent` 过了 —— 这里再解一次有两种后果：
+         ① 文件名里有 `%` 而后面不跟两位十六进制（`100%.html`、`折扣50%.html`）：
+            插件发 `100%25.html` → 第一次解成 `100%.html` → **第二次抛 `URIError`**，
+            而它是在 `createServer` 回调里**同步抛**的 → **整个服务进程被带走**
+            （实测：第二个请求就退出，退出码 1，后面的请求根本没机会跑）。
+         ② 文件名里有 `%xx` 字面量（`a%20b.html`）：第二次解成 `a b.html`，
+            打开的是**另一份文件**或 404。
+         插件那边只编码一次（按段 `encodeURIComponent`），`/__plugin/` 和
+         `/__shared/` 两条路由也都是直接用 `raw` 的 —— **这一条当初是多写的**。
+         ⚠️ 这条路由**不要令牌**，解码又发生在「文件存不存在」之前 ——
+         所以不需要真有这样的文件：任何能往 `127.0.0.1:<端口>` 发请求的东西
+         （用户在浏览器里打开的任意网页，一个 `<img src>` 就够）都能触发。 */
+      const rel = raw.slice("/__preview/".length);
       if (!/\.html?$/i.test(rel)) { reply.writeHead(415); reply.end("这条路由只渲染 .html"); return; }
       let abs: string;
       try { abs = resolveInside(c.project.dir, rel); }
@@ -393,7 +438,6 @@ function makeServer(dir: string | null, onHit: () => void, api: () => ApiCtx | n
     }
     reply.writeHead(200, head);
     createReadStream(abs).pipe(reply);
-  });
 }
 
 /** abs → 相对项目根、用 / 分隔 —— isToolPage 认的是这种形状 */

@@ -125,5 +125,50 @@ console.log("\n③ 预览路由的三道闸（M10-3）");
   }
 }
 
+/* ── 预览路由的文件名里带 `%`（issue #43）──
+   这一节钉的不是「404 对不对」，是**服务还活着**。
+   原来的 bug：路径被解码两次，而第二次没有 try —— 文件名里有 `%` 而后面
+   不跟两位十六进制时抛 `URIError`，它在 `createServer` 回调里**同步抛**，
+   全仓没有 `uncaughtException` 处理 → **整个进程退出**。
+   最小复现实测过：第二个请求就退出（退出码 1），第三个请求根本没机会跑。
+
+   ⚠️ 这条路由**不要令牌**，解码又发生在「文件存不存在」之前 ——
+   所以任何能往 `127.0.0.1:<端口>` 发请求的东西（用户浏览器里打开的任意网页，
+   一个 `<img src>` 就够）都能触发。端口随机，但可以扫。 */
+console.log("\n④ 预览路由的文件名里带 %（issue #43）");
+{
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  /* 夹具用 `fs` 直写 —— 写入口只收规范化的路径，造不出这种名字。
+     和 GBK 那份夹具同理：**它是仪器不是产品行为**。收尾用 `fs` 删干净。 */
+  const PCT = "百分之%20测试.html";
+  const pctAbs = join(p.dir, PCT);
+  writeFileSync(pctAbs, "<!doctype html><title>pct</title><p>我是带 % 的那一份</p>");
+  const raw = (path: string) => fetch(`${s.url}__preview/${path}`);
+  try {
+    /* ① 明确的恶意形状：`%` 后面不跟两位十六进制。该回 404，**不该没有响应** */
+    let st = -1, dead = false;
+    try { st = (await raw("100%25.html")).status; } catch { dead = true; }
+    ok(!dead && st === 404, "**`%` 后面不跟十六进制时回 404，不是没有响应**", dead ? "连接断了" : `${st}`);
+
+    /* ② ⚠️ **这一条才是重点：服务还活着。**
+       上一条就算回了 404，也可能是「抛出去之后 Node 恰好先写完了头」——
+       真正要问的是**下一个请求还能不能到**。bug 版本里第三个请求根本跑不到。 */
+    let alive = false;
+    try { alive = (await fetch(u("files") + "&dir=")).ok; } catch { /* 死了 */ }
+    ok(alive, "**打完那一下服务还活着**（原来的 bug 会把整个进程带走，MCP 和 HTTP 一起断）");
+
+    /* ③ 文件名里真有 `%xx` 字面量：按插件的编码方式请求，该拿到**这一份**。
+       解码两次的话它会被解成 `百分之 测试.html`（空格），于是 404 或打开另一份。 */
+    const r3 = await raw(encodeURIComponent(PCT));
+    const body3 = r3.ok ? await r3.text() : "";
+    ok(r3.status === 200 && body3.includes("我是带 % 的那一份"),
+       "**`%xx` 字面量的文件名能打开，而且打开的是它自己**（解两次会解成空格、开到别的文件）",
+       `${r3.status}`);
+  } finally {
+    rmSync(pctAbs, { force: true });
+  }
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
