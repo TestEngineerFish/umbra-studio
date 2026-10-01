@@ -24,7 +24,7 @@
   <sc-if value="{{ showDemoBar }}" hint-placeholder-val="{{ true }}">
   <div style="flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; background: var(--tool-panel-2); border-bottom: 1px solid var(--tool-border);">
     <span style="font-size: 11px; color: var(--tool-muted); flex: none;">演示态</span>
-    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="7">
+    <sc-for list="{{ demoStates }}" as="st" hint-placeholder-count="8">
       <button type="button" onClick="{{ st.pick }}" title="{{ st.name }}" aria-pressed="{{ st.active }}" style="display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 9px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid; cursor: pointer; font-size: 11px; white-space: nowrap; background: {{ st.bg }}; border-color: {{ st.bd }}; color: {{ st.fg }};" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
         <span style="font-family: var(--tool-mono); opacity: 0.6;">{{ st.n }}</span>
         <span style="font-weight: {{ st.fw }};">{{ st.short }}</span>
@@ -47,10 +47,13 @@
       </span>
 
       <sc-if value="{{ readOnly }}" hint-placeholder-val="{{ false }}">
-        <span title="编码没确定之前只读：按错的编码落盘会把原文写坏" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border); background: var(--tool-panel-2); color: var(--tool-text-2); font-size: 11px; white-space: nowrap;">
+        <span title="{{ roTip }}" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border); background: var(--tool-panel-2); color: var(--tool-text-2); font-size: 11px; white-space: nowrap;">
           <dc-import name="IconGlyph" d="M4.5 7.2h7v5.6h-7zM6 7.2V5.4a2 2 0 014 0v1.8" size="12" hint-size="12px,12px"></dc-import>
-          只读 · 编码没确定
+          {{ roLabel }}
         </span>
+        <sc-if value="{{ canUnlock }}" hint-placeholder-val="{{ false }}">
+          <button type="button" onClick="{{ unlock }}" title="解锁之后照常编辑；落盘时整份文件存成 UTF-8" style="height: 22px; padding: 0 8px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border-strong); background: var(--tool-panel); color: var(--tool-text); font-size: 11px; white-space: nowrap; cursor: pointer;" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">解锁编辑</button>
+        </sc-if>
       </sc-if>
 
       <!-- 按钮组警示态 · warn 档：有坏行，表照样打开 -->
@@ -58,13 +61,6 @@
         <button type="button" onClick="{{ toggleFilter }}" aria-pressed="{{ filtered }}" title="点一下只看这几行，再点一下回到全部" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-warn-border); background: {{ badBg }}; color: var(--tool-warn); font-size: 11px; white-space: nowrap; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
           <span style="width: 6px; height: 6px; border-radius: 999px; background: var(--tool-warn);"></span>
           {{ badLabel }}
-        </button>
-      </sc-if>
-
-      <sc-if value="{{ encBad }}" hint-placeholder-val="{{ false }}">
-        <button type="button" onClick="{{ reread }}" title="只换读法，不改盘上的文件" style="display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 7px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-warn-border); background: var(--tool-warn-soft); color: var(--tool-warn); font-size: 11px; white-space: nowrap; cursor: pointer;" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
-          <span style="width: 6px; height: 6px; border-radius: 999px; background: var(--tool-warn);"></span>
-          不像 UTF-8 · 按 GBK 重读
         </button>
       </sc-if>
 
@@ -76,6 +72,19 @@
       </div>
       <span style="flex: none; font-family: var(--tool-mono); font-size: 11px; color: var(--tool-muted); white-space: nowrap;">{{ lang }}</span>
     </div>
+
+    <!-- 编码横条：正文顶上齐边。态 7 摆证据 + 候选；态 8 说现在按什么读、给回头的路 -->
+    <sc-if value="{{ encBar }}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="flex: none; min-height: 32px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 4px 12px 4px 16px; background: {{ encBarBg }}; border-bottom: 1px solid {{ encBarBd }}; font-size: 12px; color: var(--tool-text);">
+        <span style="flex: none; width: 6px; height: 6px; border-radius: 999px; background: {{ encDot }};"></span>
+        <span style="flex: 1 1 280px; min-width: 0; text-wrap: pretty;">{{ encMsg }}</span>
+        <div style="flex: none; display: flex; gap: 6px;">
+          <sc-for list="{{ encActions }}" as="a" hint-placeholder-count="2">
+            <button type="button" onClick="{{ a.pick }}" title="{{ a.tip }}" style="height: 22px; padding: 0 9px; border-radius: var(--tool-radius-sm); border: 1px solid var(--tool-border-strong); background: var(--tool-panel); color: var(--tool-text); font-size: 11px; white-space: nowrap; cursor: pointer;" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">{{ a.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+    </sc-if>
 
     <div style="flex: 1 1 0; min-height: 0; overflow: auto; background: var(--tool-panel);">
 
@@ -189,7 +198,8 @@ const DEMOS = [
   { n: 4, short: "已带进", name: "已带进会话", note: "药丸写 csv · 文件 · L8–10。带进去的总是「表头 + 这几行原文」，不然 AI 不知道每列是什么", view: "table", sel: { k: "rows", a: 8, b: 10 }, sent: true },
   { n: 5, short: "有坏行", name: "有坏行", note: "一行坏不影响整张表：坏行照样画，行号边一道 warn 竖线，行尾一句原因。工具条出按钮组警示态（warn 档）", view: "table", bad: true },
   { n: 6, short: "只看坏行", name: "只看坏行", note: "点「3 行有问题」只留坏行，再点回到全部。行号不重排，改的时候对得上源码", view: "table", bad: true, filter: true },
-  { n: 7, short: "编码不对", name: "编码不对", note: "不像 UTF-8：给一颗「按 GBK 重读」，只换读法不改文件。编码没确定之前只读——按错的编码落盘会把原文写坏", view: "table", enc: true }
+  { n: 7, short: "编码不对", name: "编码不对", note: "按 UTF-8 解出乱码：正文顶上一条齐边横条，摆证据和两种候选。只换读法不改文件；编码没确定之前只读", view: "table", enc: true },
+  { n: 8, short: "已换读法", name: "已换读法", note: "换了读法提示条也不能消失：说现在按什么读，给另一种候选和回到 UTF-8 的路。读对了也只读：落盘只写 UTF-8，锁上写明这个后果", view: "table", enc: true, reread: "GBK" }
 ];
 
 const parse = (line) => {
@@ -218,8 +228,8 @@ const lexCsv = (line) => {
 };
 
 class Component extends DCLogic {
-  state = { demo: 1, sel: undefined, filter: undefined, reread: false };
-  go(n) { this.setState({ demo: n, sel: undefined, filter: undefined, reread: false }); }
+  state = { demo: 1, sel: undefined, filter: undefined, encAs: undefined, unlocked: false };
+  go(n) { this.setState({ demo: n, sel: undefined, filter: undefined, encAs: undefined, unlocked: false }); }
 
   renderVals() {
     const s = this.state;
@@ -230,15 +240,20 @@ class Component extends DCLogic {
     const W = head.length;
     const sel = s.sel !== undefined ? s.sel : dm.sel || null;
     const filter = s.filter !== undefined ? s.filter : !!dm.filter;
-    const enc = !!dm.enc && !s.reread;
+    const encAs = !dm.enc ? null : s.encAs !== undefined ? s.encAs : dm.reread || null;
+    const enc = !!dm.enc && !encAs;
+    const mojAll = MOJI([HEAD].concat(body).join("\n"));
+    const mojN = (mojAll.match(/\uFFFD/g) || []).length;
+    const mojPct = (mojN / mojAll.length * 100).toFixed(1);
+    const reEnc = (e) => this.setState({ encAs: e, unlocked: false });
     const path = dm.enc ? "export/订单-导出.csv" : "data/orders.csv";
 
     const parsed = body.map((line, i) => {
       const p = parse(line), n = i + 2;
       let issue = null;
-      if (p.unclosed) issue = "引号没闭上 · 按行尾截断了；严格读的话 L" + (n + 1) + "–" + (body.length + 1) + " 都会并进这一格";
-      else if (p.cells.length < W) issue = p.cells.length + " 列，表头是 " + W + " 列 · 少了 " + head.slice(p.cells.length).join("、");
-      else if (p.cells.length > W) issue = p.cells.length + " 列，表头是 " + W + " 列 · 多了 " + (p.cells.length - W) + " 列";
+      if (p.unclosed) issue = "这一行的引号没有收尾 —— 后面的内容都被算进了这一格";
+      else if (p.cells.length < W) issue = "比表头少 " + (W - p.cells.length) + " 列（表头 " + W + " 列，这一行 " + p.cells.length + " 列）";
+      else if (p.cells.length > W) issue = "比表头多 " + (p.cells.length - W) + " 列（表头 " + W + " 列，这一行 " + p.cells.length + " 列）";
       return { n: n, p: p, issue: issue, line: line };
     });
     const badRows = parsed.filter((r) => r.issue);
@@ -300,7 +315,7 @@ class Component extends DCLogic {
     return {
       theme: this.props.theme === "dark" ? "dark" : null,
       showDemoBar: true,
-      demoNote: s.reread ? "按 GBK 重读了：只换了读法，盘上的文件没动。以后落盘也按 GBK 写回" : dm.note,
+      demoNote: dm.enc && encAs && !dm.reread ? DEMOS[7].note : dm.note,
       demoStates: DEMOS.map((m) => {
         const on = m.n === s.demo;
         return { n: m.n, name: m.name, short: m.short, active: on, fw: on ? "600" : "400",
@@ -308,11 +323,23 @@ class Component extends DCLogic {
           fg: on ? "var(--tool-on-accent)" : "var(--tool-text-2)", pick: () => this.go(m.n) };
       }),
       path: path,
-      lang: "CSV · " + (dm.enc && s.reread ? "GBK" : "UTF-8") + " · 逗号",
+      lang: "CSV · " + (encAs || "UTF-8") + " · 逗号",
       snapVersion: "s3", snapCount: "3",
-      readOnly: enc,
-      encBad: enc,
-      reread: () => this.setState({ reread: true }),
+      readOnly: enc || (!!encAs && !s.unlocked),
+      roLabel: enc ? "只读 · 编码没确定" : "只读 · 落盘会从 " + encAs + " 转成 UTF-8",
+      roTip: enc ? "编码没确定之前只读：按错的编码落盘会把原文写坏" : "落盘只写 UTF-8：改一个字，整份文件的编码就变了，别的按 " + encAs + " 读它的程序会看到乱码",
+      canUnlock: !!encAs && !s.unlocked,
+      unlock: () => this.setState({ unlocked: true }),
+      encBar: !!dm.enc,
+      encBarBg: enc ? "var(--tool-warn-soft)" : "var(--tool-panel-2)",
+      encBarBd: enc ? "var(--tool-warn-border)" : "var(--tool-border)",
+      encDot: enc ? "var(--tool-warn)" : "var(--tool-muted)",
+      encMsg: enc ? "按 UTF-8 解出 " + mojN + " 个乱码字符（占 " + mojPct + "%）—— 多半不是 UTF-8" : "正在按 " + encAs + " 读 · 盘上那份一个字节都没动",
+      encActions: (enc ? ["GBK", "GB18030"] : [encAs === "GBK" ? "GB18030" : "GBK", "UTF-8"]).map((e) => ({
+        label: e === "UTF-8" ? "回到 UTF-8" : "按 " + e + " 重读",
+        tip: e === "UTF-8" ? "回到默认读法" : "只换读法，不改盘上的文件",
+        pick: () => reEnc(e === "UTF-8" ? null : e)
+      })),
       hasBad: badRows.length > 0,
       filtered: filter,
       badLabel: filter ? "只看有问题的 " + badRows.length + " 行 · 回到全部" : badRows.length + " 行有问题",

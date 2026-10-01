@@ -1051,11 +1051,19 @@ console.log("\n预览切换的过场（M8-34）");
         const prev = b?.querySelector('iframe[data-pool="prev"]');
         window.__fadeHist.push({ fading: b?.getAttribute("data-fading") ?? null, cur: cur ? getComputedStyle(cur).opacity : null, prev: prev ? getComputedStyle(prev).opacity : null });
       };
-      new MutationObserver(sample).observe(document.body, { attributes: true, subtree: true, attributeFilter: ["data-fading"] });
+      /* ⚠️ **也要听 `childList`。**（2026-10-01 加）
+         `attributeFilter` 只报告「属性变了」，而**新插入节点的初始属性不算变化** ——
+         canvas 若是新建的而不是复用的，它带着 `data-fading="1"` 出生，
+         observer 一声不响。加上 `childList` 就能在它插进来的那一刻采一次。 */
+      new MutationObserver(sample).observe(document.body,
+        { attributes: true, childList: true, subtree: true, attributeFilter: ["data-fading"] });
       /* ⚠️ **属性变化采不到渐变**：opacity 从 1 到 0 是一条 CSS 过渡，
          中间没有任何属性变。所以再加一条轮询，专门采那一半。
-         两个采样器写进同一个 `__fadeHist`，判据一起看。 */
-      window.__fadeTimer = setInterval(sample, 40);
+         两个采样器写进同一个 `__fadeHist`，判据一起看。
+         ⚠️ 间隔 **16ms（约一帧）而不是 40ms**：2026-10-01 实测有一轮
+         `fading=1` 的窗口短于 40ms，轮询整个跳过去了，于是下面两条判据
+         **静默少跑**（读数从 349 变 348 而一条红都没有）。 */
+      window.__fadeTimer = setInterval(sample, 16);
     });
     /* ⚠️ **判据自己把池挤空，别指望「最后一份多半不在池里」**（2026-09-29 修）。
        原来挑第 4 份并注释「最后一个最稳」—— 而池里有什么，取决于**这一节之前
@@ -1080,9 +1088,22 @@ console.log("\n预览切换的过场（M8-34）");
     const faded = hist.some((h) => h.prev != null && Number(h.prev) > 0.02 && Number(h.prev) < 0.98);
     ok(!!during || faded, "切稿时真的走了过场（属性或 prev 的淡出，两者认其一）",
        `采到 ${hist.length} 次${during ? " · 有 fading=1" : ""}${faded ? " · prev 在渐变" : ""}`);
+    /* ⚠️ **采不到那一帧也要说话，不能静默跳过。**（2026-10-01 实测抓到）
+       原来这里是裸的 `if (during) { …两条… }` —— 采样没撞上 `fading=1` 的那一轮，
+       两条判据**凭空消失**，而读数只是从 349 变成 348、**一条红都没有**。
+       「判据没跑」和「判据通过」在读数上长得一模一样，
+       而总数是人工记在 `doc/00` 里的，没人会去核。
+
+       所以：采不到就报红，并说清**红在仪器不在产品** ——
+       一条时有时无的判据等于没有判据，报红才会逼着把它做稳。 */
     if (during) {
       ok(during.prev === "1", "**过场中上一份完整可见**（不淡出 —— 淡出就会透出画布底色，那才是「闪」）", `prev=${during.prev}`);
       ok(during.cur === "0", "新的在它下面加载、先透明（等待和展示是重叠的）", `cur=${during.cur}`);
+    } else {
+      const why = `这一轮没采到 \`fading=1\` 那一帧（采了 ${hist.length} 次）—— 过场窗口比采样间隔还短。`
+        + "**红在仪器不在产品**：上一条已经证明过场真的走了（prev 在渐变）";
+      ok(false, "**过场中上一份完整可见** —— 没采到，这一条这一轮没验", why);
+      ok(false, "新的在它下面加载、先透明 —— 没采到，这一条这一轮没验", why);
     }
     /* 切回上一份该是瞬时的：iframe 留在池里
        ⚠️ 这里有一条实测过的坑 —— 缓存命中的 iframe **不会再发 load**，
@@ -1978,13 +1999,46 @@ console.log("\n插件 UI 的边界（M11-4）");
                   return out;
                 };
 
+                /** 横条**算出来的**底色 / 边色 / 点色（S20 的 `encBarBg` / `encBarBd` / `encDot`）。
+                 *  ⚠️ **不验 `style` 里写了什么** —— 2026-10-01 实测抓到：
+                 *  插件在不透明源的 iframe 里**拿不到宿主的 `--tool-*` 变量**，
+                 *  `var(--tool-warn-soft)` 落空之后 CSS 静默跳过那一条声明 ——
+                 *  **既不是警示色，也不报错，就是没有底色**。
+                 *  而 `el.style.background` 读回来的仍然是那句 `var(...)`，**判据会照样绿**。 */
+                const encLook = async () => await gf.locator("#encbar").evaluate((n) => {
+                  const cs = getComputedStyle(n);
+                  const d = n.querySelector(".encdot");
+                  return {
+                    bg: cs.backgroundColor, bd: cs.borderBottomColor, fg: cs.color,
+                    dot: d ? getComputedStyle(d).backgroundColor : "(没有那颗点)",
+                    dotW: d ? getComputedStyle(d).width : "0px",
+                  };
+                }).catch(() => null);
+                const transparent = (c) => !c || c === "rgba(0, 0, 0, 0)" || c === "transparent";
+
+                const look7 = await encLook();
+                ok(look7 && !transparent(look7.bg),
+                   "**态 7 横条真有 warn 底**（算出来的颜色，不是 `style` 里那句 `var(...)`）",
+                   look7 ? look7.bg : "读不到横条");
+                /* ⚠️ **边色不能只验「不透明」。**（2026-10-01 反向验证时自己抓到的假通过）
+                   `border-color` 落空会回退成 `currentColor` —— 也就是文字色，
+                   **不透明，于是「有边色」这条照样通过**，而画面上那是一道深色描边不是 warn 边。
+                   「边色不透明」这句话还可能因为「它落空了」而成立 ——
+                   所以判据改成「**和文字色不一样**」，那才是落空与没落空的分界。 */
+                ok(look7 && look7.bd !== look7.fg,
+                   "**而且边色不是落空回退的 `currentColor`**（落空的话它就等于文字色）",
+                   look7 ? `边 ${look7.bd} · 文字 ${look7.fg}` : "—");
+                ok(look7 && look7.dotW === "6px" && !transparent(look7.dot),
+                   "**那颗 6px 的点在**（档位靠它 —— 暗底下 warn-soft 和 panel-2 差得很小）",
+                   look7 ? `${look7.dotW} · ${look7.dot}` : "—");
+
                 const bar0 = await encbar();
                 ok(/不是 UTF-8/.test(bar0) && /\d+ 个乱码字符/.test(bar0),
                    "**认出来并摆出证据**（说出几个乱码字符、占多少，不是一句「编码有问题」）", bar0.slice(0, 60));
                 ok(/按 GBK 重读/.test(bar0), "给出出路（列的是实测支持的编码，不是一个下拉框）");
 
                 const ro0 = await roNow();
-                ok(/编码还没确定/.test(ro0),
+                ok(/编码没确定/.test(ro0),
                    "**第一次打开就只读，而且说得出为什么**（钉 2026-09-30 那条顺序 bug：只读判定要排在编码嗅探之后）", ro0 || "（没只读）");
 
                 ok((await head3()).some((t) => /\uFFFD/.test(t)), "重读前表头是乱码", JSON.stringify(await head3()));
@@ -2002,10 +2056,24 @@ console.log("\n插件 UI 的边界（M11-4）");
                    也没有回到 UTF-8 的出路，只能以为自己没点成。 */
                 ok(/正在按 GBK 读/.test(bar1), "**重读之后提示条留着并说出现在按什么读**", bar1.slice(0, 50));
                 ok(/回到 UTF-8/.test(bar1), "而且留着回头的路");
+                /* 设计侧第十四轮补的那一半：**读对之后横条从 warn 降成中性**。
+                   ⚠️ 判据是「**和态 7 不一样**」而不是比死值 —— 比死值的话换一次主题就红，
+                   而要钉的性质是「两档看得出区别」。 */
+                const look8 = await encLook();
+                ok(look8 && look7 && look8.bg !== look7.bg && look8.dot !== look7.dot && look8.bd !== look7.bd,
+                   "**读对之后横条降成中性**（它的原话：告诉用户读对了，但横条不消失）——"
+                   + "一直留着 warn 底的话，读对了看起来还像出错",
+                   look8 ? `态7 底 ${look7.bg}/边 ${look7.bd}/点 ${look7.dot} → 态8 底 ${look8.bg}/边 ${look8.bd}/点 ${look8.dot}` : "—");
+                ok(look8 && !transparent(look8.bg),
+                   "而且中性档也有底色（不是「变回透明」= 横条看着像消失了一半）", look8 ? look8.bg : "—");
+                ok(!/按 GBK 重读/.test(bar1),
+                   "**态 8 不再列当前这一种**（那颗点了什么都不会变）—— 稿里 `encActions` 给的是「另一种 + 回到 UTF-8」", bar1.slice(0, 60));
 
                 const ro1 = await roNow();
-                ok(/落盘会存成 UTF-8/.test(ro1),
-                   "**读对了也还是只读，原因换成后果**（我们的落盘只写 UTF-8 —— 改一个字整份 GBK 被静默转码）", ro1 || "（不只读了）");
+                ok(/落盘会从 GBK 转成 UTF-8/.test(ro1),
+                   "**读对了也还是只读，原因换成后果**（措辞照设计侧第十四轮收的那一句）", ro1 || "（不只读了）");
+                ok(/落盘只写 UTF-8/.test(await gf.locator("#roLabel").getAttribute("title") ?? ""),
+                   "**悬停说完整后果**（标签一行放不下，稿里专门给了 `roTip`）", await gf.locator("#roLabel").getAttribute("title"));
 
                 ok(Buffer.compare(readFileSync(`${dir}/${G}`), bytes) === 0,
                    "**盘上那份一个字节都没动**（换读法不是改文件）");

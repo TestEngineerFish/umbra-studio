@@ -168,23 +168,29 @@ let curVersion = null;
 let unlocked = false;
 /** 只读的原因（`null` = 可改）。标签和那句「没改：…」共用一份，免得两处写得不一样。 */
 let roReason = null;
+/** 只读那枚标签的悬停说明（稿里的 `roTip`）—— 标签一行放不下后果，后果在这里 */
+let roTip = "";
 
 /** 该不该只读。**按文件名和大小，不问内容**（S18 §一.4 给的名单）。
  *
  *  ⚠️ 这不是「保护」，是**省去一次误会**：这些文件改了也没用（下次生成就覆盖），
  *  而用户要花几秒才意识到这一点。所以只读下**照样能选中、复制、给 AI** ——
  *  只读不等于「这个文件与你无关」。 */
+/** 回 `null`（可改）或 `{ why, tip }`。
+ *  ⚠️ **`tip` 不是可选的装饰。** 标签只有一行、放不下后果，而设计侧第十四轮
+ *  专门给了 `roTip`：「悬停能看到完整后果」。两样在**同一个 return 里算**——
+ *  分两个函数算的话，改了措辞只改一半，标签和悬停会互相矛盾。 */
 function readOnlyReason(path, size, version, previewingDraft, encUnsure, readAs) {
   /* ⚠️ **看草稿差异时也一律只读**，理由和看历史版一样：
      编辑区里放的不是「当前这份文件」，让人改它得不出正确结果 ——
      改完算谁的？存回哪？按 ⌘S 会把草稿当成新内容盖掉盘上那份，
      而他以为自己在改的是「当前」。 */
-  if (previewingDraft) return "在看草稿";
+  if (previewingDraft) return { why: "在看草稿", tip: "编辑区里放的是草稿，不是盘上那份 —— 改它存回哪都说不清" };
   /* ⚠️ **编码没确定之前只读**（S20 演示态 7）。
      理由是它自己写的：「按错的编码落盘会把原文写坏」——
      我们读进来的是按 UTF-8 解过的文本，里面已经有替换字符了，
      照这个落盘等于把用户的原文**永久改成一串问号**。 */
-  if (encUnsure) return "编码还没确定";
+  if (encUnsure) return { why: "编码没确定", tip: "编码没确定之前只读：按错的编码落盘会把原文写坏" };
   /* ⚠️ **按别的编码读对了，也还是只读。**（2026-09-30 想清楚的一条）
      重读成功之后 `encUnsure` 就不成立了，照上面那条会自动放开编辑 ——
      **而我们的落盘只会写 UTF-8**。那意味着用户改一个字，
@@ -192,18 +198,19 @@ function readOnlyReason(path, size, version, previewingDraft, encUnsure, readAs)
      而别的按 GBK 读它的程序从此看到乱码。
      这不是「保护」，是**把一个后果说出来**：原因里写明会变成 UTF-8，
      真想这么做的人点「解锁编辑」——那时候他是知情的。 */
-  if (readAs) return `按 ${String(readAs).toUpperCase()} 读的 · 落盘会存成 UTF-8`;
+  if (readAs) return { why: `落盘会从 ${String(readAs).toUpperCase()} 转成 UTF-8`,
+    tip: `落盘只写 UTF-8：改一个字，整份文件的编码就变了，别的按 ${String(readAs).toUpperCase()} 读它的程序会看到乱码` };
   /* ⚠️ **看历史版本时一律只读，而且这一条要排在最前面。**
      让人改一份历史快照没有任何意义 —— 改了往哪写？写回去就把当前版覆盖了，
      而他以为自己在改「当前」。这不是保护，是**消除一个不可能有正确结果的操作**。
      原因写出版号，因为「只读」而不说为什么最容易被当成界面坏了。 */
-  if (version) return `在看 ${version}`;
+  if (version) return { why: `在看 ${version}`, tip: `这是 ${version} 的原文。改它没有意义 —— 存回去就把当前版覆盖了` };
   const name = (path.split("/").pop() || "").toLowerCase();
-  if (/\.lock$/.test(name)) return "锁文件";
-  if (/-lock\.(json|yaml|yml)$/.test(name)) return "锁文件";
-  if (/\.min\.[a-z0-9]+$/.test(name)) return "压缩产物";
-  if (/(^|\/)dist\//.test(path.toLowerCase())) return "构建产物";
-  if (size > 1024 * 1024) return "超过 1 MB";
+  if (/\.lock$/.test(name)) return { why: "锁文件", tip: "锁文件由包管理器生成，手改会和它下一次写入打架" };
+  if (/-lock\.(json|yaml|yml)$/.test(name)) return { why: "锁文件", tip: "锁文件由包管理器生成，手改会和它下一次写入打架" };
+  if (/\.min\.[a-z0-9]+$/.test(name)) return { why: "压缩产物", tip: "这是编译出来的，改它下一次构建就没了 —— 要改去改源文件" };
+  if (/(^|\/)dist\//.test(path.toLowerCase())) return { why: "构建产物", tip: "`dist/` 里的东西由构建生成，改它下一次构建就没了" };
+  if (size > 1024 * 1024) return { why: "超过 1 MB", tip: `这份 ${Math.round(size / 1024)} KB，编辑器撑不住 —— 只给看` };
   return null;
 }
 
@@ -244,33 +251,56 @@ function renderTable() {
   host.textContent = "";
   if (!cparsed) return;
 
-  /* 编码这一条：没确定时给「按 X 重读」；**重读成功之后也要留着**。
-     ⚠️ 不留的话用户点完按钮那条说明连同「正在按 GBK 读」一起消失 ——
-     **他会以为自己什么都没干成**，而实际上刚刚成功了。
-     留着还有第二个用处：它是唯一能告诉他「现在是按什么读的」的地方。 */
-  if (creadAs || (cenc && !cenc.confident)) {
+  /* 编码这一条有**两档**（设计侧第十四轮 S20，形制真值取自稿里的 `encBar*`）：
+     - 态 7「编码不对」：warn 底 + warn 边 + warn 点，摆证据 + 给两种候选
+     - 态 8「已换读法」：**中性底 + 中性边 + 灰点**，说现在按什么读 + 给回头的路
+
+     ⚠️ 横条**读对之后不消失，只降档**。两件事各靠一半：
+     「不消失」解决的是「用户点完按钮画面上什么都不剩，以为自己没点成」；
+     「降档」是设计侧补的那一半 —— 它的原话是「告诉用户读对了，但横条不消失」。
+     一直留着 warn 底的话，**读对了看起来还像出错**。 */
+  const encUnsure = !!(cenc && !cenc.confident);
+  if (creadAs || encUnsure) {
     const bar = document.createElement("div");
     bar.className = "encbar";
     bar.id = "encbar";
+    bar.setAttribute("role", "status");
+    /* 形制一律去稿里查，不按印象写（§八十二 的教训）。
+       三个值在 `encBarBg` / `encBarBd` / `encDot` 里，一一对应。 */
+    /* ⚠️ 用的是**插件自己**的变量名（`theme.css` 里定义过），不是宿主的 `--tool-*` ——
+       插件在不透明源的 iframe 里拿不到宿主的变量表，`var(--tool-warn-soft)`
+       落空之后**既不是警示色也不报错，就是没有底色**（2026-10-01 实测）。
+       对应关系：warn-soft ↔ `encBarBg` · warn-line ↔ `encBarBd` · warn ↔ `encDot`。 */
+    bar.style.background = encUnsure ? "var(--warn-soft)" : "var(--panel-2)";
+    bar.style.borderBottomColor = encUnsure ? "var(--warn-line)" : "var(--line)";
+    /* 那颗 6px 的点 —— 和按钮组警示档同一个零件：**档位靠它，不靠底色深浅**
+       （暗底下 warn-soft 和 panel-2 差得很小）。 */
+    const dot = document.createElement("span");
+    dot.className = "encdot";
+    dot.style.background = encUnsure ? "var(--warn)" : "var(--muted)";
+    bar.appendChild(dot);
     const t = document.createElement("span");
-    t.textContent = creadAs
-      ? `正在按 ${creadAs.toUpperCase()} 读 · 盘上那份一个字节都没动`
-      : cenc.why;
+    t.className = "encmsg";
+    t.textContent = encUnsure
+      ? cenc.why
+      : `正在按 ${creadAs.toUpperCase()} 读 · 盘上那份一个字节都没动`;
     bar.appendChild(t);
-    const sp = document.createElement("span"); sp.style.flex = "1"; bar.appendChild(sp);
-    for (const alt of ((cenc && cenc.alternatives) ?? ["gbk", "gb18030"]).slice(0, 2)) {
-      if (alt === creadAs) continue;
+    const acts = document.createElement("div");
+    acts.className = "encacts";
+    /* 两颗钮按稿里的 `encActions` 算：
+       - 态 7：两种候选（GBK / GB18030）
+       - 态 8：**另一种** + 回到 UTF-8（不重复列当前这一种 —— 那颗点了什么都不会变） */
+    const picks = encUnsure
+      ? ((cenc.alternatives ?? ["gbk", "gb18030"]).slice(0, 2).map((e) => [e, `按 ${e.toUpperCase()} 重读`]))
+      : [[creadAs === "gbk" ? "gb18030" : "gbk", `按 ${creadAs === "gbk" ? "GB18030" : "GBK"} 重读`], [null, "回到 UTF-8"]];
+    for (const [enc, label] of picks) {
       const b = document.createElement("button");
-      b.type = "button"; b.className = "btn sm"; b.textContent = `按 ${alt.toUpperCase()} 重读`;
-      b.addEventListener("click", () => { creadAs = alt; void load(curPath, document.documentElement.dataset.theme, { keepDraft: true }); });
-      bar.appendChild(b);
+      b.type = "button"; b.className = "btn sm"; b.textContent = label;
+      b.title = enc ? "只换读法，不改盘上的文件" : "回到默认读法";
+      b.addEventListener("click", () => { creadAs = enc; void load(curPath, document.documentElement.dataset.theme, { keepDraft: true }); });
+      acts.appendChild(b);
     }
-    if (creadAs) {
-      const b = document.createElement("button");
-      b.type = "button"; b.className = "btn sm ghost"; b.textContent = "回到 UTF-8";
-      b.addEventListener("click", () => { creadAs = null; void load(curPath, document.documentElement.dataset.theme, { keepDraft: true }); });
-      bar.appendChild(b);
-    }
+    bar.appendChild(acts);
     host.appendChild(bar);
   }
 
@@ -753,7 +783,10 @@ function paint() {
   document.body.classList.toggle("ro", ro);
   el("dirty").hidden = !dirty;
   el("ro").hidden = !ro;
-  if (ro) el("roText").textContent = `只读 · ${roReason}`;
+  if (ro) {
+    el("roText").textContent = `只读 · ${roReason}`;
+    el("roLabel").title = roTip;
+  }
   if (dirty) {
     const a = (disk.content.match(/\n/g) ?? []).length + 1;
     const b = (view.state.doc.toString().match(/\n/g) ?? []).length + 1;
@@ -981,7 +1014,9 @@ async function load(path, theme, opt = {}) {
      症状是「第一次打开一份乱码 CSV 不给只读，切一次文件再回来才给」。
      这一类顺序错在开发时几乎撞不上（手上通常已经开过别的文件），
      而它把一道**保护**变成了时序赌博。 */
-  roReason = readOnlyReason(path, disk.size, curVersion, draftPreview, !!(cenc && !cenc.confident), creadAs);
+  const ro0 = readOnlyReason(path, disk.size, curVersion, draftPreview, !!(cenc && !cenc.confident), creadAs);
+  roReason = ro0 ? ro0.why : null;
+  roTip = ro0 ? ro0.tip : "";
   roHinted = false; el("roHint").hidden = true;
   const keep = opt.keepCursor && view ? view.state.selection.main.head : null;
 

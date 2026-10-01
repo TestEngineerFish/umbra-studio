@@ -4,10 +4,17 @@
 :root {
   --bg: #ffffff; --fg: #1c1f26; --muted: #7b8194; --line: #e3e6ec;
   --gutter-bg: #fafbfc; --sel: #cfe3ff; --active: #f5f8ff;
+  /* ⚠️ **警示这四档要自己定义一份。**（2026-10-01 实测抓到）
+     宿主的 `--tool-warn` 那一套在 `app/src/tokens.css` 的 `:root` 上，
+     而插件在**不透明源的 iframe 里** —— 它拿不到宿主的 CSS 变量，
+     `var(--tool-warn-soft)` 落空之后既不是警示色也不报错，**就是没有底色**。
+     取值对齐 `app/src/tokens.css`，改宿主那边时这里要跟。 */
+  --warn: #8c5a00; --warn-soft: #fcf1da; --warn-line: #e6cd9a; --panel-2: #f4f5f8;
 }
 :root[data-theme="dark"] {
   --bg: #16181d; --fg: #dfe3ea; --muted: #8b91a1; --line: #2a2e37;
   --gutter-bg: #1a1d23; --sel: #2d4a6b; --active: #1e232b;
+  --warn: #e6b555; --warn-soft: #332714; --warn-line: #5a451d; --panel-2: #1c1f26;
 }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -142,6 +149,16 @@ body.hasdraft.dirty #table, body.ro.dirty #table { top: 66px; }
 .cwhy { grid-column: 1 / -1; padding: 0 10px 0 56px; color: #c8821e;
   font: 11px system-ui, sans-serif; background: rgba(210,140,40,.07); }
 /* 编码没确定时那一条 */
-.encbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-  border-bottom: 1px solid #c8821e; background: rgba(210,140,40,.10);
-  font: 12px system-ui, sans-serif; color: #c8821e; }
+/* 编码横条（S20 态 7 / 态 8，形制真值取自稿）。
+   ⚠️ **底色 / 边色 / 点色不写在这里** —— 它们按档位走，由 JS 逐条 set
+   （`encBarBg` / `encBarBd` / `encDot` 三个键）。写死在 CSS 里的话
+   两档就只能靠加 class，而真值是稿里那三个表达式，抄过来一次比维护两份对。
+   文字色一律 `--tool-text`：**警示靠那颗点，不靠把整行字染成橙色** ——
+   染字会让「现在按 GBK 读」这句中性的话看起来也像出错。 */
+.encbar { flex: none; min-height: 32px; display: flex; align-items: center;
+  flex-wrap: wrap; gap: 6px 12px; padding: 4px 12px 4px 16px;
+  border-bottom: 1px solid var(--line);
+  font: 12px system-ui, sans-serif; color: var(--fg); }
+.encbar .encdot { flex: none; width: 6px; height: 6px; border-radius: 999px; }
+.encbar .encmsg { flex: 1 1 280px; min-width: 0; text-wrap: pretty; }
+.encbar .encacts { flex: none; display: flex; gap: 6px; }
