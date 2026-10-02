@@ -6,8 +6,40 @@ const require = createRequire(import.meta.url);
 const bin = require("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/shell/node_modules/electron");
 const S = process.env.S; const SHELL = "/Users/sam/Documents/SourceTree/Geek/UmbraStudio/shell";
 const env = { ...process.env, UMBRASTUDIO_AUTOTEST_LOG: S + "/shell-autotest.log" };
+/* ⚠️ **先看有没有旧实例还活着**（issue #10，2026-10-02 自己又撞到一次）。
+   壳是 single-instance 的：第二个进程把参数发给第一个然后自己退出。
+   于是 `_electron.launch` 起的那个进程**立刻就没了**，Playwright 等窗口等到超时，
+   报的是 `kill EPERM` / 「主窗口没出来」——
+   **症状伪装成「产品打不开」**，而真正的原因是上一轮没关干净。
+   今天为这件事排查了两轮（和当年那次一样）。
+
+   ⚠️ **不自动 `pkill`** —— issue 里原来写的修法是「步骤前加一行 pkill」，
+   而那会**杀掉用户手上正开着的 Umbra Studio**（他可能有未落盘的改动）。
+   这个脚本是开发侧工具，但它跑在用户自己的机器上。
+   所以：**说清楚是什么、怎么办，然后退出，让人决定。** */
+{
+  const running = await new Promise((res) => {
+    const p = spawn("sh", ["-c", "ps -axww -o pid=,args= | grep -F 'UmbraStudio/shell' | grep -v grep"]);
+    let o = ""; p.stdout.on("data", (d) => o += d);
+    p.on("close", () => res(o.trim().split("\n").filter(Boolean)));
+  });
+  if (running.length) {
+    console.error("\n✗ 已经有壳在跑，shelltest 起不来（single-instance 会把新进程立刻挤掉）。");
+    console.error(`  在跑的进程 ${running.length} 个，主进程 pid：${running.map((l) => l.trim().split(/\s+/)[0]).slice(0, 3).join(" ")}`);
+    console.error("  **先把它关掉再跑** —— 这里不替你 pkill，因为那可能是你自己开着的 Umbra Studio，里面也许有没落盘的改动。");
+    console.error("  确认没在用的话：ps -axww -o pid=,args= | grep -F 'UmbraStudio/shell' | grep -v grep | awk '{print $1}' | xargs kill\n");
+    process.exit(2);
+  }
+}
+
 const t0 = Date.now();
-const mainWindow = async (app) => { for (let i = 0; i < 100; i++) { const w = app.windows().find(w => w.url().includes("__app")); if (w) return w; await new Promise(r => setTimeout(r, 200)); } throw new Error("主窗口没出来"); };
+const mainWindow = async (app) => {
+  for (let i = 0; i < 100; i++) { const w = app.windows().find(w => w.url().includes("__app")); if (w) return w; await new Promise(r => setTimeout(r, 200)); }
+  /* ⚠️ 超时的话**把「可能是什么」一起说出来** —— 原来只说「主窗口没出来」，
+     而那句话指向产品，真正的原因往往在别处（旧实例、前端没 build、令牌拿不到）。 */
+  throw new Error("主窗口没出来（20 秒）。可能的原因：① 还有旧实例活着（上面那道自检应该拦住了，除非它是刚起的）"
+    + " ② `app/dist` 没 build（`npm --prefix app run build`） ③ 核心起不来 —— 看上面 electron 的 stderr");
+};
 let app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL });
 let win = await mainWindow(app);
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 30000 });

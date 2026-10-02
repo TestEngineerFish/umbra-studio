@@ -16,6 +16,25 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, p
   let rows = (projects ?? []).filter((p) => !q || `${p.name} ${p.title} ${p.dir}`.toLowerCase().includes(q.toLowerCase()));
   if (starOnly) rows = rows.filter((p) => stars.includes(p.dir));
   rows = rows.slice().sort((a, b) => (b.lastOpened ?? "").localeCompare(a.lastOpened ?? "") || a.name.localeCompare(b.name));
+  /* ⚠️ **同名项目要能分清**（issue #12）。`project.json` 的 `name` 不唯一 ——
+     拷一份项目做实验就重名，而那是常见做法。
+     列表视图第二行本来就是完整路径，分得清；**网格卡第二行是
+     「有 title 就显示 title」**，而拷出来的副本 title 也一样 → 两张卡一模一样。
+
+     ⚠️ **只在真重名时才把路径顶上来**，不是一律显示路径 ——
+     不重名时 title 比路径有用（它是人给项目起的名字），
+     而「为了防一种少见情况，把常见情况也变差」是不划算的。 */
+  const nameCount = new Map<string, number>();
+  for (const p of projects ?? []) nameCount.set(p.name, (nameCount.get(p.name) ?? 0) + 1);
+  const isDup = (p: ProjectRow) => (nameCount.get(p.name) ?? 0) > 1;
+  /* 重名时显示**能区分它们的那一段** —— 父目录加自己，前面用 … 省掉。
+     完整路径太长，在一张窄卡片里会被 truncate 成一样的开头（`/Users/sam/Doc…`），
+     **那等于没显示**。 */
+  const shortDir = (dir: string) => {
+    const parts = dir.replace(/\/+$/, "").split("/").filter(Boolean);
+    return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : `/${parts.join("/")}`;
+  };
+
   const reveal = (p: ProjectRow) => void host.revealInFinder(p.dir).catch((e: Error) => toast("打开目录失败", e.message, "error"));
   const Star = ({ p }: { p: ProjectRow }) => <button className={`ib ${stars.includes(p.dir) ? "text-warn" : ""}`} onClick={(e) => { e.stopPropagation(); toggleStar(p.dir); }} title={stars.includes(p.dir) ? "取消星标" : "星标"}>{stars.includes(p.dir) ? "★" : "☆"}</button>;
   const Thumb = ({ p }: { p: ProjectRow }) => <div className="bg-canvas text-muted text-[11px] grid place-items-center overflow-hidden h-full w-full">{p.thumb ? <img src={p.thumb} alt="" className="h-full w-full object-cover object-top" /> : p.missing ? "目录不在" : p.drafts ? `${p.drafts} 份稿` : "空项目"}</div>;
@@ -39,7 +58,12 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, p
         {projects === null ? <div className="text-muted text-xs py-10 text-center">正在读项目列表…</div>
           : rows.length === 0 ? <div className="text-muted text-xs py-10 text-center leading-relaxed">{projects.length ? "没有匹配的项目" : <>还没有项目<br />「新建项目」从一个目录起步，或「导入目录」接管已有的稿件目录</>}</div>
           : view === "grid" ? (
-            <ul className="grid grid-cols-2 lg:grid-cols-3 gap-3">{rows.map((p) => <li key={p.dir} className={`group rounded-lg border bg-panel cursor-pointer overflow-hidden hover:border-borderStrong ${p.current ? "border-accent" : "border-border"}`} onClick={() => onOpen(p.dir)}><div className="h-28"><Thumb p={p} /></div><div className="px-3 py-2 flex items-start gap-2"><div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate" title={p.dir}>{p.name}</div><div className="text-[11px] text-muted truncate font-mono">{p.title && p.title !== p.name ? p.title : p.dir}</div></div><Star p={p} /></div></li>)}</ul>
+            <ul className="grid grid-cols-2 lg:grid-cols-3 gap-3">{rows.map((p) => <li key={p.dir} className={`group rounded-lg border bg-panel cursor-pointer overflow-hidden hover:border-borderStrong ${p.current ? "border-accent" : "border-border"}`} onClick={() => onOpen(p.dir)}><div className="h-28"><Thumb p={p} /></div><div className="px-3 py-2 flex items-start gap-2"><div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate flex items-center gap-1" title={p.dir}>
+                    <span className="truncate">{p.name}</span>
+                    {/* ⚠️ 光把路径顶上来还不够 —— 要让人知道**为什么**这张卡显示的是路径。
+                        不说的话他只会觉得「这张卡格式怎么和别的不一样」。 */}
+                    {isDup(p) && <span className="shrink-0 text-[10px] font-normal text-warn border border-warnBorder rounded px-1" title={`有 ${nameCount.get(p.name)} 个项目叫「${p.name}」，这一行显示的是目录`}>同名</span>}
+                  </div><div className="text-[11px] text-muted truncate font-mono" data-ud="grid-sub">{isDup(p) ? shortDir(p.dir) : p.title && p.title !== p.name ? p.title : shortDir(p.dir)}</div></div><Star p={p} /></div></li>)}</ul>
           ) : (
             <div className="rounded-lg border border-border bg-panel overflow-hidden">
               <div className="grid grid-cols-[56px_minmax(0,1fr)_110px_72px_72px] items-center px-3 h-8 text-[11px] text-muted border-b border-border"><span /><span>名称</span><span>最近打开</span><span>稿件</span><span /></div>

@@ -256,7 +256,13 @@ const SAMPLE_PATS = [
   /* ⚠️ 下面这几个是**补登记的**：2026-09-30 在用户项目里翻出 24 个残留快照目录，
      其中四个的名字压根不在这张清单里 —— 文件被清掉了（那部分是对的），
      快照目录留了好几轮。**清单漏一个名字，收尾就静默漏一个样本。** */
-  /^代码插件样本/, /^插件chrome样本/, /^✎回归样本/, /^差异标红验/, /^git真验/, /^版本历史手验/, /^诊断\.ts/,
+  /* ⚠️ `/^✎回归样本/` 改成 `/^.回归样本/`：issue #47 之后状态目录名是
+     `pathKey()` 算的（基名 + 哈希），而 `pathKey` 把 `✎` 这种非字母数字换成 `_` ——
+     **目录名不再等于文件名**。`.` 一个字符同时盖住 `✎回归样本`（项目根下的文件名）
+     和 `_回归样本`（状态目录名）两种形态。
+     ⚠️ 真正兜住这一类的是上面那条「和开跑前比一个目录都没多」——
+     **这张清单只是顺手清，不该再被当成唯一的闸**。 */
+  /^代码插件样本/, /^插件chrome样本/, /^.回归样本/, /^差异标红验/, /^git真验/, /^版本历史手验/, /^诊断\.ts/,
 ];
 
 /** 扫掉回归留下的样本（项目根 + 回收站），返回清掉了什么。
@@ -328,10 +334,36 @@ const sweepSnapshots = async (dir) => {
   return gone;
 };
 
+/** 开跑前 `.umbrastudio/` 下那些目录里本来有什么。
+ *
+ *  ⚠️ **这是收尾的真正依据，`SAMPLE_PATS` 只是「顺手清掉认得的」。**
+ *  （2026-10-02 抓到）收尾原来只问「匹配 `SAMPLE_PATS` 的还剩没有」，
+ *  而那句话**只说明「我认得的那些清掉了」，不说明目录干净了** ——
+ *  盘上躺着一个 `_回归样本.mp4__…`，而收尾照样报「再扫一次剩 0 份」。
+ *
+ *  名字清单**永远会漏**，而且已经漏过两次（2026-09-30 在用户项目里翻出 24 个、
+ *  今天又一个）。对比前后不依赖任何名字：**多出来的就是这一轮留的。** */
+const snapBaseline = async (dir) => {
+  if (!dir) return new Map();
+  const { readdirSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const out = new Map();
+  for (const sub of ["snapshots", "staged"]) {
+    const root = join(dir, ".umbrastudio", sub);
+    if (!existsSync(root)) continue;
+    out.set(sub, new Set(readdirSync(root)));
+  }
+  return out;
+};
+let BASELINE = new Map();
+
 /* 开跑前先清 —— 上一轮可能抛在半路留下了东西 */
 {
   const pre = await sweepSamples();
   const snaps = await sweepSnapshots(pre.dir);
+  /* ⚠️ 基线在**清完之后**取 —— 清掉的那些不该算进「跑之前就有的」，
+     否则这一轮又留下同名的东西就看不出来了。 */
+  BASELINE = await snapBaseline(pre.dir);
   if (pre.files.length || pre.trash.length || snaps.length) {
     console.log(`  · 开跑前扫掉了上一轮的残留：项目根 ${pre.files.length} 份 · 回收站 ${pre.trash.length} 条 · 快照 ${snaps.length} 份`);
   }
@@ -683,12 +715,35 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
   const row = pg.locator('[role="treeitem"]').first();
   await row.click({ button: "right" }); await pg.waitForTimeout(400);
   ok(await pg.locator('[data-ud="ctxmenu"]').count() === 1, "右键起得出菜单");
-  await pg.keyboard.press("Escape"); await pg.waitForTimeout(30);
-  /* 刚按下 Esc 的那一瞬间它该**还在**、且已经不接指针了 —— 这就是 80ms 淡出 */
-  const fading = await pg.locator('[data-ud="ctxmenu"][data-exiting]').count();
-  ok(fading === 1, "Esc 关：先淡出 80ms（这一帧还在 DOM 里，标着 data-exiting）");
-  const noHit = await pg.locator('[data-ud="ctxmenu"]').evaluate((e) => getComputedStyle(e).pointerEvents).catch(() => "?");
-  ok(noHit === "none", "淡出期间不接指针（正在消失的菜单项不该还能点到）", noHit);
+  /* ⚠️ **不要「按完 Esc 等 30ms 再去数」。**（2026-10-02 实测它偶发报红）
+     淡出只有 80ms，而判据要在这 80ms 里恰好去看一眼 —— 机器忙一点就错过，
+     于是它**时好时坏**。和过场那条判据是同一个病：**赌一个短命状态的时机**。
+
+     改成：**按 Esc 之前就把观察者挂好**，事后问它「见过没」。
+     观察者不会错过 —— 它是被 DOM 变化推着跑的，不依赖我们在那一瞬间在看。
+     顺手把那一刻的 `pointerEvents` 也一起记下来（同一个时机，两件事）。 */
+  await pg.evaluate(() => {
+    window.__exitSeen = null;
+    const look = () => {
+      const m = document.querySelector('[data-ud="ctxmenu"]');
+      if (!m || !m.hasAttribute("data-exiting") || window.__exitSeen) return;
+      window.__exitSeen = { inDom: true, pointerEvents: getComputedStyle(m).pointerEvents };
+    };
+    window.__exitObs = new MutationObserver(look);
+    window.__exitObs.observe(document.body, { attributes: true, childList: true, subtree: true });
+    /* 再加一条高频轮询兜底 —— 两条路任一抓到就够 */
+    window.__exitTimer = setInterval(look, 8);
+  });
+  await pg.keyboard.press("Escape");
+  await pg.waitForTimeout(260);
+  const exitSeen = await pg.evaluate(() => {
+    clearInterval(window.__exitTimer); window.__exitObs?.disconnect();
+    return window.__exitSeen;
+  });
+  ok(!!exitSeen, "Esc 关：先淡出 80ms（那一帧还在 DOM 里，标着 `data-exiting`）",
+     exitSeen ? "观察者抓到了" : "整个 80ms 窗口里一次都没见到 data-exiting");
+  ok(exitSeen?.pointerEvents === "none",
+     "淡出期间不接指针（正在消失的菜单项不该还能点到）", exitSeen?.pointerEvents ?? "（没抓到那一帧）");
   await pg.waitForTimeout(300);
   ok(await pg.locator('[data-ud="ctxmenu"]').count() === 0, "淡完就没了");
 
@@ -1045,7 +1100,7 @@ console.log("\n预览切换的过场（M8-34）");
     await dc.nth(0).click(); await pg.waitForTimeout(3200);
     await pg.evaluate(() => {
       window.__fadeHist = [];
-      const sample = () => {
+      let sample = () => {
         const b = document.querySelector('[data-ud="canvas"]');
         const cur = b?.querySelector('iframe[data-pool="cur"]');
         const prev = b?.querySelector('iframe[data-pool="prev"]');
@@ -1055,8 +1110,41 @@ console.log("\n预览切换的过场（M8-34）");
          `attributeFilter` 只报告「属性变了」，而**新插入节点的初始属性不算变化** ——
          canvas 若是新建的而不是复用的，它带着 `data-fading="1"` 出生，
          observer 一声不响。加上 `childList` 就能在它插进来的那一刻采一次。 */
-      new MutationObserver(sample).observe(document.body,
-        { attributes: true, childList: true, subtree: true, attributeFilter: ["data-fading"] });
+      /* ⚠️ **不能靠「采样撞上那一帧」。**（2026-10-02 实测：16ms 采样、采了 373 次，
+         照样没撞上 —— 过场窗口比一帧还短。）
+         真正可靠的是 `attributeOldValue`：**属性从 "1" 变成别的**那一刻，
+         observer 会把旧值交给我们 —— 那就证明「它曾经是 1」，
+         而且**不依赖我们在那一瞬间恰好在看**。
+         记进 `__sawFading`，判据改问它。 */
+      window.__sawFading = null;
+      /* ⚠️ **只在「进入」那一刻记，不是「离开」。**（2026-10-02 第一版写错了）
+         第一版写的是 `now === "1" || m.oldValue === "1"` —— 两头都记。
+         而「离开过场」那一刻 prev **已经淡出了**，于是记到 `prev=0`，
+         判据红在「上一份完整可见」上 —— **而产品是对的**。
+         要问的是「过场**开始**时 prev 还是满的吗」，那只有进入那一刻算。 */
+      const snapEnter = () => {
+        if (window.__sawFading) return;                 // 只记第一次进入
+        const b = document.querySelector('[data-ud="canvas"]');
+        if (b?.getAttribute("data-fading") !== "1") return;
+        const cur = b.querySelector('iframe[data-pool="cur"]');
+        const prev = b.querySelector('iframe[data-pool="prev"]');
+        window.__sawFading = { enteredWith: { cur: cur ? getComputedStyle(cur).opacity : null, prev: prev ? getComputedStyle(prev).opacity : null } };
+      };
+      new MutationObserver((muts) => {
+        for (const m of muts) {
+          /* 属性变成 "1" —— 复用 canvas 时走这一支 */
+          if (m.type === "attributes" && m.attributeName === "data-fading") snapEnter();
+          /* ⚠️ **新插入的节点带着 `fading="1"` 出生时属性不算变化**，
+             所以 childList 这一支也要看一眼 —— canvas 新建而不是复用时走这里。 */
+          if (m.type === "childList" && m.addedNodes.length) snapEnter();
+        }
+        sample();
+      }).observe(document.body,
+        { attributes: true, attributeOldValue: true, childList: true, subtree: true, attributeFilter: ["data-fading"] });
+      /* 轮询也顺手试一次 —— 三条路（属性变化 / 新节点 / 轮询）任一抓到就够。
+         ⚠️ 轮询单独靠不住（实测 16ms、373 次都没撞上），但它是**免费的第三条路**。 */
+      const origSample = sample;
+      sample = () => { origSample(); snapEnter(); };
       /* ⚠️ **属性变化采不到渐变**：opacity 从 1 到 0 是一条 CSS 过渡，
          中间没有任何属性变。所以再加一条轮询，专门采那一半。
          两个采样器写进同一个 `__fadeHist`，判据一起看。
@@ -1076,10 +1164,61 @@ console.log("\n预览切换的过场（M8-34）");
     const n = await dc.count();
     await dc.nth(1).click(); await pg.waitForTimeout(1600);
     await dc.nth(2).click(); await pg.waitForTimeout(1600);
-    await dc.nth(Math.min(3, n - 1)).click();
-    await pg.waitForTimeout(2600);
-    const hist = await pg.evaluate(() => { clearInterval(window.__fadeTimer); return window.__fadeHist ?? []; });
-    const during = hist.find((h) => h.fading === "1");
+    /* ⚠️ **还要把「加载慢到看得见」这个前提也建立起来。**（2026-10-02 查实际数据才明白）
+       前面四轮我一直在改采样频率和抓法，而实测把采到的序列打出来之后真相是：
+       `fading` **始终是 null**、`cur` **始终是 1** —— 过场**压根没发生**。
+       稿是本地文件，加载快到 `readyState === "complete"` 在第一个 effect 里就成立，
+       于是 `setReady(false)` 和 `setReady(true)` 落在**同一批 React 更新**里，
+       DOM 上从没出现过「新的透明、旧的留着」那一刻。
+       （采到的 `prev: 1 → 0.69 → 0.34 → 0` 是**上一份的退场动画**，不是过场。）
+
+       这一节的注释里早就写着「**判据依赖的前提，判据自己要建立**」——
+       它建立了「目标不在池里」，却漏了「加载足够慢」。
+       用 `route` 给**画布 iframe 那个请求**加 500ms 延迟，**制造**那个条件，而不是等运气。
+
+       ⚠️ **glob 要容得下查询串。**（2026-10-02 实测：第一版那个 glob 按扩展名结尾写，
+       一次都没匹配上 —— 画布 iframe 的 src 实际是
+       `…/S2-单稿预览壳.dc.html?file=…&embed=1`，`.dc.html` **后面还有东西**。
+       那一轮「抓到了」纯属时序凑巧，连跑两轮第二轮就红。）
+       改成按 `embed=1` 认 —— 那是「这是画布里那个 iframe」的标志，
+       比按扩展名认准：扩展名会被查询串挡住，而这个标志是产品自己加的。
+       ⚠️ 用完必须 `unroute`，否则后面每一节都慢 500ms。 */
+    const slow = async (route) => { await new Promise((r) => setTimeout(r, 500)); await route.continue(); };
+    await pg.route((u) => /\.dc\.html\?/.test(u.href) && u.searchParams.get("embed") === "1", slow);
+    try {
+      await dc.nth(Math.min(3, n - 1)).click();
+      await pg.waitForTimeout(3200);
+    } finally { await pg.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {}); }
+    const probe = await pg.evaluate(() => { clearInterval(window.__fadeTimer); return { hist: window.__fadeHist ?? [], saw: window.__sawFading ?? null }; });
+    const hist = probe.hist;
+    /* ⚠️ **不要等 `data-fading="1"` —— 它可能压根没提交到 DOM。**
+       （2026-10-02 查产品代码才明白，前面三轮都在改「怎么采得更快」，方向全错）
+
+       `app/src/kinds/dc/View.tsx:108` 写的是
+       `data-fading={!ready ? "1" : undefined}`，而第 89 行是
+       `if (fr?.contentDocument?.readyState === "complete") setReady(true)` ——
+       **缓存命中时立刻就 complete**，于是 `setReady(false)` 和 `setReady(true)`
+       可能落在同一批 React 更新里，**那个属性从没出现在 DOM 上**。
+       我在等一个可能不存在的东西，所以采 373 次也采不到。
+
+       它要钉的性质其实在 opacity 里（同一个文件第 124 行）：
+       | iframe | 过场中 | 过场后 |
+       | --- | --- | --- |
+       | `cur`（新的） | `ready ? 1 : 0` → **0** | 1 |
+       | `prev`（旧的） | `ready \|\| blank ? 0 : 1` → **1** | 0 |
+
+       所以「过场中」= **存在某一帧 `prev=1` 且 `cur=0`**。
+       这个组合在整个过场期间都成立（opacity 有 CSS 过渡，退场是渐变的），
+       比一个瞬时属性可靠得多 —— **判据要量产品真正表达那个状态的东西。** */
+    /* ⚠️ **opacity 是连续量，别拿字符串比 `"1"`。**（2026-10-02 实测偶发报红）
+       它有 CSS 过渡 —— 上一次退场的动画没走完时 prev 可能是 `"0.97"`，
+       于是 `=== "1"` 不成立，判据**时好时坏**。
+       要钉的性质是「上一份**几乎完全**可见、新的**几乎完全**透明」，那是阈值不是等号。 */
+    const near1 = (v) => v != null && Number(v) > 0.9;
+    const near0 = (v) => v != null && Number(v) < 0.1;
+    const during = hist.find((h) => near1(h.prev) && near0(h.cur))
+      ?? (probe.saw && near1(probe.saw.enteredWith.prev) ? probe.saw.enteredWith : null)
+      ?? hist.find((h) => h.fading === "1");
     /* ⚠️ 判据认**两样中的任意一样**，因为过场的实质有两个可观察面：
        `data-fading="1"`（工作台知道自己在过场）或 **`prev` 的 opacity 真的在渐变**
        （那是用户看得见的那一半）。
@@ -1097,10 +1236,10 @@ console.log("\n预览切换的过场（M8-34）");
        所以：采不到就报红，并说清**红在仪器不在产品** ——
        一条时有时无的判据等于没有判据，报红才会逼着把它做稳。 */
     if (during) {
-      ok(during.prev === "1", "**过场中上一份完整可见**（不淡出 —— 淡出就会透出画布底色，那才是「闪」）", `prev=${during.prev}`);
-      ok(during.cur === "0", "新的在它下面加载、先透明（等待和展示是重叠的）", `cur=${during.cur}`);
+      ok(near1(during.prev), "**过场中上一份完整可见**（不淡出 —— 淡出就会透出画布底色，那才是「闪」）", `prev=${during.prev}`);
+      ok(near0(during.cur), "新的在它下面加载、先透明（等待和展示是重叠的）", `cur=${during.cur}`);
     } else {
-      const why = `这一轮没采到 \`fading=1\` 那一帧（采了 ${hist.length} 次）—— 过场窗口比采样间隔还短。`
+      const why = `这一轮没采到「prev≈1 且 cur≈0」那一帧（采了 ${hist.length} 次）。`
         + "**红在仪器不在产品**：上一条已经证明过场真的走了（prev 在渐变）";
       ok(false, "**过场中上一份完整可见** —— 没采到，这一条这一轮没验", why);
       ok(false, "新的在它下面加载、先透明 —— 没采到，这一条这一轮没验", why);
@@ -2651,6 +2790,65 @@ console.log("\n令牌不写进页面（Q42 / issue #30）");
 
    所以这里兜一道：扫一遍、清干净、**并且把残留报出来** ——
    有残留本身就是信息（说明中间抛过），不该被静默清掉。 */
+/* ═══ 首页：同名项目要分得清（issue #12）═══
+   `project.json` 的 `name` 不唯一 —— 拷一份项目做实验就重名，而那是常见做法。
+   列表视图第二行本来就是完整路径，分得清；**网格卡第二行是「有 title 就显示 title」**，
+   而拷出来的副本 title 也一样 → 两张卡**一模一样**。
+
+   ⚠️ 这一节放在收尾之前、而且**造一个真的同名项目**（不是复刻一遍判断逻辑）——
+   复刻逻辑的判据测的是复制品，产品改了它不会红。
+   收尾要把它从「最近打开」里也去掉，否则下次用户打开首页会看到我们留的项目。 */
+console.log("\n首页：同名项目要分得清（issue #12）");
+{
+  const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const boot = await pg.evaluate(() => ({ url: window.__UD_APP.url, token: window.__UD_APP.token, dir: window.__UD_APP.dir }));
+  const DUPNAME = boot.dir.split("/").filter(Boolean).pop();          // 和当前项目同名
+  const twin = join(tmpdir(), `us-dup-${Date.now()}`);
+  mkdirSync(twin, { recursive: true });
+  /* name 故意和当前项目一样、title 也一样 —— 这正是「拷一份」之后的样子 */
+  writeFileSync(join(twin, "project.json"), JSON.stringify({ name: DUPNAME, title: DUPNAME }), "utf8");
+  const u2 = (r) => `${boot.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(boot.token)}`;
+  const post = (r, body) => pg.evaluate(async ({ url, body }) =>
+    (await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).status,
+    { url: u2(r), body });
+  try {
+    await post("open_project", { dir: twin });                         // 进「最近打开」
+    await pg.goto(`${boot.url.replace(/\/$/, "")}/__app/home?token=${encodeURIComponent(boot.token)}`, { waitUntil: "domcontentloaded" });
+    await pg.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 20000 });
+    await pg.locator('button:has-text("网格")').first().click();
+    await pg.waitForTimeout(600);
+    const subs = await pg.locator('[data-ud="grid-sub"]').allInnerTexts();
+    const dupSubs = await pg.evaluate((nm) => [...document.querySelectorAll("li")]
+      .filter((li) => (li.querySelector(".font-semibold")?.textContent ?? "").includes(nm))
+      .map((li) => (li.querySelector('[data-ud="grid-sub"]')?.textContent ?? "").trim()), DUPNAME);
+    ok(dupSubs.length >= 2, "**首页网格里真有两张同名卡**（夹具自己先成立）", `${dupSubs.length} 张 · ${DUPNAME}`);
+    ok(dupSubs.length >= 2 && new Set(dupSubs).size === dupSubs.length,
+       "**两张同名卡的第二行不一样**（原来都显示 title，而副本 title 也一样 → 两张卡一模一样）",
+       JSON.stringify(dupSubs));
+    ok(dupSubs.every((t) => t.includes("/")),
+       "**同名时第二行是目录**（不是 title）", JSON.stringify(dupSubs));
+    /* ⚠️ 光把路径顶上来还不够 —— 要让人知道**为什么**这张卡显示的是路径 */
+    const badges = await pg.evaluate((nm) => [...document.querySelectorAll("li")]
+      .filter((li) => (li.querySelector(".font-semibold")?.textContent ?? "").includes(nm))
+      .filter((li) => (li.textContent ?? "").includes("同名")).length, DUPNAME);
+    ok(badges >= 2, "**而且卡上说了「同名」**（不说的话用户只觉得「这张卡格式怎么不一样」）", `${badges} 张带标记`);
+    /* 反面：**不重名的项目不该被改成显示路径** —— 不然这条改动把常见情况也变差了 */
+    const others = await pg.evaluate((nm) => [...document.querySelectorAll("li")]
+      .filter((li) => !(li.querySelector(".font-semibold")?.textContent ?? "").includes(nm))
+      .filter((li) => (li.textContent ?? "").includes("同名")).length, DUPNAME);
+    ok(others === 0, "**不重名的项目没有被加上「同名」标记**（只在真重名时才变）", `${others} 张误标`);
+  } finally {
+    await post("recent_remove", { dir: twin }).catch(() => {});
+    rmSync(twin, { recursive: true, force: true });
+    /* 回工作台 —— 后面的收尾判据要用 __UD_APP 和项目服务 */
+    await pg.goto(URL_, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await pg.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').length > 0, null, { timeout: 30000 }).catch(() => {});
+    await pg.waitForTimeout(1200);
+  }
+}
+
 console.log("\n收尾：没给用户留东西（纪律⑥）");
 {
   const left = await sweepSamples();
@@ -2666,7 +2864,31 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
      留着的真代价是下一轮读数会错（「写三次就是三版」量到 5 版），所以清干净就够。 */
   const swept = await sweepSnapshots(left.dir);
   const stillThere = await sweepSnapshots(left.dir);
-  ok(stillThere.length === 0, "**快照目录清干净了**（留着会让下一轮读数变错，不只是脏）",
+  /* ⚠️ **真正的判据：和开跑前比，多出来的就是这一轮留的。**
+     上面那条 `stillThere` 只能说明「`SAMPLE_PATS` 认得的那些清掉了」。 */
+  const nowSnap = await snapBaseline(left.dir);
+  const leaked = [];
+  for (const [sub, names] of nowSnap) {
+    const was = BASELINE.get(sub) ?? new Set();
+    for (const n of names) if (!was.has(n)) leaked.push(`${sub}/${n}`);
+  }
+  /* ⚠️ **清理也不认名字** —— 多出来的一律删掉。
+     （2026-10-02：这条判据第一次跑就抓到 `snapshots/_回归样本.mp4__93878b82992f`，
+     而它来自 `✎回归样本.mp4` —— issue #47 把状态目录名从「文件名」改成
+     「`pathKey()` = 基名 + 哈希」，而 `pathKey` 把 `✎` 这种非字母数字换成 `_`。
+     于是 `SAMPLE_PATS` 里那条 `/^✎回归样本/` **整体失效** ——
+     **目录名从此不再等于文件名，按文件名匹配的清单全都靠不住了。**）
+
+     不清的话下一轮的基线就含着它，这条判据从此永远绿 —— 污染会累积。 */
+  if (leaked.length) {
+    const { rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    for (const rel of leaked) rmSync(join(left.dir, ".umbrastudio", rel), { recursive: true, force: true });
+  }
+  ok(leaked.length === 0,
+     "**和开跑前比，`.umbrastudio/` 下一个目录都没多**（不靠认名字 —— 名字清单已经漏过两次）",
+     leaked.length ? "这一轮留下了（已清）：" + leaked.join("、") : `干净（跑前 ${[...BASELINE.values()].reduce((a, b) => a + b.size, 0)} 个，现在一样）`);
+  ok(stillThere.length === 0, "**`SAMPLE_PATS` 认得的那些也清干净了**（留着会让下一轮读数变错，不只是脏）",
      `这一轮清掉 ${swept.length} 份 · 再扫一次剩 ${stillThere.length} 份`);
 
   /* ⚠️ **数一次 git 提交。** 2026-09-30 实测：用户项目从 0 提交变成 101 个，
