@@ -98,11 +98,56 @@ console.log("\n② 绕过写入口改稿要说出来（issue #29）");
   ok(bypassedDrafts(before, new Map(before)).length === 0, "什么都没变时一条都不报（误报会让人忽略这条提示）");
 }
 
+/* ── 谁会进 after 快照（issue #41）──
+   ⚠️ 上一节测的是 `bypassedDrafts` 的**判定**，而那条漏法在**收集**那一步：
+   after 戳原来第一行是 `if (!vs.length) continue`，于是
+   **跑之前从没走过写入口的稿**（0 个版本）永远进不了 after 快照，
+   `bypassedDrafts` 看到 after 里没有它就当「跑完被删了」，一句话都不说。
+   而那恰恰是最常见的一类稿（导入的、在别的编辑器里写的）。
+
+   **判定对了而收集漏了，整条兜底照样不生效** —— 所以这一步要单独钉。 */
+console.log("\n③ 没有版本的稿也要进 after 快照（issue #41）");
+{
+  const { stampInto, bypassedDrafts } = await import("./chat_run.js");
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const N = "从没走过写入口.dc.html";
+  const abs = join(p.dir, N);
+  writeFileSync(abs, "<!doctype html><title>a</title>", "utf8");
+  try {
+    const before = new Map<string, { ver: string; sha: string }>();
+    await stampInto(before, N, abs, []);          // 0 个版本
+    ok(before.has(N) && before.get(N)!.ver === "",
+       "**没有版本的稿也记戳**（`ver: \"\"`，不是跳过）—— 原来这一行是 `if (!vs.length) continue`",
+       JSON.stringify(before.get(N) ?? null).slice(0, 60));
+
+    /* 模拟「被 codex 直接改了」：内容变、版本号还是没有 */
+    writeFileSync(abs, "<!doctype html><title>b</title><p>被直接改了</p>", "utf8");
+    const after = new Map<string, { ver: string; sha: string }>();
+    await stampInto(after, N, abs, []);
+    /* ⚠️ **后面几条不许因为上一条红了就抛。**（2026-10-02 反向验证时撞到）
+       原来写的是 `before.get(N)!.sha` —— 上一条红的时候这里是 `undefined`，
+       `.sha` 直接抛 TypeError，**整个 apitest 当场结束**，后面三条一条都没跑。
+       判据崩掉就不是判据了：它该报红，不该把别的判据一起带走。 */
+    ok(!!before.get(N) && !!after.get(N) && before.get(N)!.sha !== after.get(N)!.sha,
+       "改了之后 sha 真的变了（夹具自己先成立）",
+       before.get(N) && after.get(N) ? "两个戳都在且 sha 不同" : "✗ 有一边没记上戳");
+    ok(bypassedDrafts(before, after).includes(N),
+       "**端到端：0 版 → 0 版而内容变了，必须报出来**（它连一版快照都没有，比有版本的更退不回去）",
+       bypassedDrafts(before, after).join(", ") || "（空 —— 没报）");
+
+    /* 反面：内容没变就一条都不报（误报会让用户开始忽略这条提示） */
+    const same = new Map<string, { ver: string; sha: string }>();
+    await stampInto(same, N, abs, []);
+    ok(bypassedDrafts(after, same).length === 0, "内容没变时一条都不报");
+  } finally { rmSync(abs, { force: true }); }
+}
+
 /* ── 预览路由的三道闸（M10-3）──
    这条路由存在的唯一理由是「让插件能嵌用户项目里的一个网页」。
    **它一旦松一点，就等于给插件开了一条读项目内容的新路** ——
    而读文件本来有 `read_file`（带权限声明），这条不该重复那件事。 */
-console.log("\n③ 预览路由的三道闸（M10-3）");
+console.log("\n④ 预览路由的三道闸（M10-3）");
 {
   const u2 = (route: string) => `${s.url}${route}?token=${encodeURIComponent(s.token)}`;
   const code = async (r: string) => (await fetch(u2(r))).status;
@@ -135,7 +180,7 @@ console.log("\n③ 预览路由的三道闸（M10-3）");
    ⚠️ 这条路由**不要令牌**，解码又发生在「文件存不存在」之前 ——
    所以任何能往 `127.0.0.1:<端口>` 发请求的东西（用户浏览器里打开的任意网页，
    一个 `<img src>` 就够）都能触发。端口随机，但可以扫。 */
-console.log("\n④ 预览路由的文件名里带 %（issue #43）");
+console.log("\n⑤ 预览路由的文件名里带 %（issue #43）");
 {
   const { writeFileSync, rmSync } = await import("node:fs");
   const { join } = await import("node:path");

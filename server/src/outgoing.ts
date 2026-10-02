@@ -23,7 +23,6 @@ import { existsSync } from "node:fs";
 import { copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
 import { TOOL_ROOT } from "./project.js";
 import { BASELINE_RE, shaOf } from "./baseline.js";
 import { readdirSync, readFileSync } from "node:fs";

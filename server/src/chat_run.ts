@@ -329,6 +329,34 @@ function stripImages(history: Array<{ content: unknown }>): void {
 /** 一份稿的「跑之前长什么样」：最新版本号 + 内容哈希。 */
 export interface DraftStamp { ver: string; sha: string }
 
+/** 给一份稿记一次戳。**前后两次用同一个函数**（issue #41，2026-10-02）。
+ *
+ *  ⚠️ 原来前后各写一份几乎一样的代码，而**它们不对称**：
+ *  before 对所有稿都记（没版本记 `ver: ""`），after 那边第一行是
+ *  `if (!vs.length) continue` —— 于是「从没走过写入口的稿」只进 before 不进 after，
+ *  `bypassedDrafts` 看到 after 里没有它就当「跑完被删了」，一句话都不说。
+ *
+ *  **两份几乎一样的代码，差别就藏在那一行里。** 收成一处之后这种不对称
+ *  在结构上就不可能再出现 —— 这比加一条判据更根本（判据只能发现它，
+ *  一处定义是让它发生不了）。
+ *
+ *  `ver` 用 `""` 表示「还没有任何版本」：它和 `bypassedDrafts` 的判定配套 ——
+ *  `"" → ""` 而 sha 变了 = 被绕过改了；`"" → "v1"` = 走了写入口（版本号变了）。
+ */
+export async function stampInto(
+  into: Map<string, DraftStamp>,
+  rel: string,
+  abs: string,
+  versions: string[],
+): Promise<void> {
+  try {
+    into.set(rel, {
+      ver: versions.length ? (versions[versions.length - 1] as string) : "",
+      sha: createHash("sha256").update(await readFile(abs)).digest("hex"),
+    });
+  } catch { /* 读不到就算了 —— 少一份戳只是少报一条，不该让整轮会话失败 */ }
+}
+
 /** 哪些稿是**绕过写入口**被直接改掉的（issue #29）。
  *
  *  判据只有一句：**内容变了，而版本号没变**。
@@ -634,10 +662,7 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
       const rel = abs.slice(p.dir.length + 1).split("\\").join("/");
       const vs = await listVersions(p, rel);
       if (vs.length > 0) draftVersionsBeforeB.set(rel, vs[vs.length - 1] as string);
-      try {
-        const v = vs.length ? (vs[vs.length - 1] as string) : "";
-        stampBeforeB.set(rel, { ver: v, sha: createHash("sha256").update(await readFile(abs)).digest("hex") });
-      } catch { /* 读不到就算了 */ }
+      await stampInto(stampBeforeB, rel, abs, vs);
     }
   } catch { /* 忽略 */ }
 
@@ -728,17 +753,29 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
     for (const abs of allDrafts) {
       const rel = abs.slice(p.dir.length + 1).split("\\").join("/");
       const vs = await listVersions(p, rel);
+      /* ⚠️ **after 戳要对每一份稿都记，不管它有没有版本**（issue #41，2026-10-02）。
+         原来这里第一行是 `if (!vs.length) continue;` —— 于是**跑之前从没走过写入口的稿**
+         （快照目录里 0 个版本）永远进不了 `stampAfterB`，
+         而 `bypassedDrafts` 看到 after 里没有它就按「跑完被删了」处理、不报。
+
+         结果是：codex / cursor-agent 用自带工具直接改这种稿时，
+         变更卡为空，**那条「这一轮有 N 份稿是被直接改的」也不出现** ——
+         正是 issue #29 要消掉的「界面说这一轮什么都没改」。
+
+         而「从没走过写入口」恰恰是**最常见的一类**：用户导入的、在别的编辑器里写的
+         （#31 里他项目 29 份稿全是这一类）。对它们这道兜底完全不生效，
+         而且它们被直接改之后**连一版快照都没有**，比有版本的稿更退不回去。
+
+         `stampBeforeB` 本来就是对所有稿都记的（没版本记 `ver: ""`）——
+         **两边不对称才是这条 bug**。 */
+      await stampInto(stampAfterB, rel, abs, vs);
       if (!vs.length) continue;
       const before = draftVersionsBeforeB.get(rel);
       if (!before) continue;
       const after = vs[vs.length - 1];
-      /* 版本号没变的先收进 after 快照，跑完交给 `bypassedDrafts` 一处判断 ——
-         **判定逻辑只有一份**，判据测的就是它（见那个函数的注释）。 */
-      if (after === before) {
-        try { stampAfterB.set(rel, { ver: after as string, sha: createHash("sha256").update(await readFile(abs)).digest("hex") }); }
-        catch { /* 读不到就算了 */ }
-        continue;
-      }
+      /* 版本号没变的交给 `bypassedDrafts` 一处判断 —— **判定逻辑只有一份**，
+         判据测的就是它（见那个函数的注释）。戳上面已经记了。 */
+      if (after === before) continue;
 
       const d = await diffDrafts(p, rel, { from: before, to: after });
       if (d.changes.length > 0) {
