@@ -215,5 +215,153 @@ console.log("\n⑤ 预览路由的文件名里带 %（issue #43）");
   }
 }
 
+/* ── 会话 ID 不许带路径（issue #57，p0）──
+   `sessionFile` 原来是 `join(chatsDir(dir), id + ".json")`，而 **`join` 折叠 `..`**：
+   `"../../../../.umbrastudio/ai_config"` 精确落到 `STATE_ROOT/.umbrastudio/ai_config.json`，
+   而**三条通道的 apiKey 都在那里**。五个调用方全中：
+   `get_chat` 把整份 JSON 原样回出去（掩码被整个绕过）· `delete_chat` 直接 `unlink`
+   （没有回收站没有快照）· `rename_chat` / `set_chat_channel` 读任意 `.json` 再整份写回
+   （绕过唯一写入口）。而这几件**在 MCP 面上** —— 和 #23 同一族：**参数也是攻击面**。
+
+   ⚠️ 这一节的第一条是**夹具自己先成立**：先确认一个**正常的** ID 走得通，
+   否则「全都被拒」也可能是因为这条路整个坏了，而不是闸在起作用。 */
+console.log("\n⑥ 会话 ID 不许带路径（issue #57，p0）");
+{
+  const { createChat, loadChat, deleteChat } = await import("./chat.js");
+  /* ⚠️ **第一条是「夹具自己先成立」** —— 先确认正常 ID 走得通。
+     否则「全都被拒」也可能是因为这条路整个坏了，而不是闸在起作用。 */
+  const sess = await createChat(p.dir, { projectId: p.name, channel: "a", model: "判据用" });
+  ok(/^chat-\d+-[a-z0-9]+$/.test(sess.id), "**夹具自己先成立：正常的会话 ID 建得出来**", sess.id);
+  const back = await loadChat(p.dir, sess.id);
+  ok(!!back && back.id === sess.id, "而且用它读得回来（证明这条路是通的，下面的「被拒」才有意义）");
+
+  /* ⚠️ 逐个形状都要试 —— 只试一种的话，闸可能只堵住了那一种 */
+  const EVIL: Array<[string, string]> = [
+    ["读 ai_config（apiKey 在里面）", "../../../../.umbrastudio/ai_config"],
+    ["读项目里的 package.json", "../../package"],
+    ["绝对路径", "/etc/hosts"],
+    ["windows 分隔符", "..\\..\\package"],
+    ["只有点", ".."],
+    ["合法前缀 + 逃逸", "chat-1-ab/../../../../.umbrastudio/ai_config"],
+    ["空", ""],
+  ];
+  for (const [what, id] of EVIL) {
+    let gave: unknown = "（抛了）";
+    try { gave = await loadChat(p.dir, id); } catch { gave = "（抛了）"; }
+    /* ⚠️ 判据是「**没把东西给出来**」，不是「报了错」——
+       报错而把内容一起带出来，等于没拦住。 */
+    const leaked = gave !== "（抛了）" && gave !== null && gave !== undefined;
+    /* ⚠️ **漏了的时候不许把内容打出来。**（2026-10-05 反向验证时自己撞到）
+       第一版写的是 `JSON.stringify(gave).slice(0, 70)` —— 撤掉闸跑一次，
+       **真的 apiKey 就打进了终端输出**（`sk-f2a9c57…`）。
+       判据的职责是说「漏了」，不是把漏出来的东西再广播一遍 ——
+       而这类输出会进 CI 日志、进我贴给用户的读数。
+       只说**形状**：有多少个键、里面有没有 `apiKey` 这个键名。 */
+    const shape = leaked && gave && typeof gave === "object"
+      ? `✗ 回了数据：${Object.keys(gave as object).length} 个键${JSON.stringify(gave).includes('"apiKey"') ? "，含 apiKey（值不打印）" : ""}`
+      : leaked ? "✗ 回了数据" : "被拒";
+    ok(!leaked, `**拒绝：${what}**`, shape);
+  }
+
+  /* ⚠️ **删除那一条单独验「盘上那份还在」** —— 「报了错」和「没删」是两件事。 */
+  {
+    const { existsSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const victim = join(p.dir, "_apitest-受害者.json");
+    writeFileSync(victim, '{"我":"不该被删"}', "utf8");
+    try { await deleteChat(p.dir, "../../_apitest-受害者"); } catch { /* 该抛 */ }
+    ok(existsSync(victim), "**`delete_chat` 带 `..` 时盘上那份文件还在**（报错不等于没删）",
+       existsSync(victim) ? "还在" : "✗ 被删了 —— 而它没有回收站也没有快照");
+    rmSync(victim, { force: true });
+  }
+
+  /* ⚠️ 还要验 **HTTP 面**也拦住 —— 上面测的是模块，而攻击面在路由和 MCP 上。 */
+  {
+    const r = await fetch(`${u("chat_get")}&session=${encodeURIComponent("../../../../.umbrastudio/ai_config")}`);
+    const body = await r.json() as { ok?: boolean; data?: unknown };
+    const gotData = body?.data !== null && body?.data !== undefined;
+    /* ⚠️ 同上：只说形状，不打印内容 */
+    ok(body?.ok !== true && !gotData,
+       "**HTTP 面也拦住**（`/__ud/chat_get` 这条路由）",
+       `${r.status} · ${gotData ? `✗ 带回了 ${Object.keys(body!.data as object).length} 个键的数据（内容不打印）` : "data 为空"}`);
+  }
+
+  await deleteChat(p.dir, sess.id).catch(() => {});
+}
+
+/* ── 模板名不许带路径（issue #63，p1）──
+   两个函数对同一个名字的处理**不对称**：存的时候 `a/b` → `a_b.dc.html`，
+   删的时候 `a/b` → 子目录 `a/b.dc.html` —— **删不到自己存的那份**。
+   而那只是不对称的代价，它掩护了更严重的一半：`deleteTemplate` 连分隔符都不管，
+   `join` 又折叠 `..` → `delete_template({name:"../../index"})`
+   **永久删掉项目根的 `index.dc.html`**（不经写入口、没快照、没回收站）。
+   `saveAsTemplate` 那边则能把**项目外任意可读文件**拷进模板目录。
+
+   ⚠️ **调用方是 AI** —— 模型把名字拼错一次、或被稿里的文字诱导一次就够了。 */
+console.log("\n⑦ 模板名不许带路径（issue #63，p1）");
+{
+  const { saveAsTemplate, deleteTemplate, listTemplates } = await import("./templates.js");
+  const { existsSync, writeFileSync, rmSync, mkdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  /* ⚠️ **先造一个「受害者」并确认它真在** —— 不然「它还在」可能只是因为它本来就不存在。
+     这是「夹具自己先成立」那一条（§140 的 #40 判据同款）。 */
+  const victim = join(p.dir, "_apitest-模板受害者.dc.html");
+  writeFileSync(victim, "<!doctype html><title>别删我</title>", "utf8");
+  ok(existsSync(victim), "**夹具自己先成立：受害文件真的在**（不然「它还在」说明不了什么）");
+
+  /* 删除侧：带 `..` 必须被拒，而且**盘上那份要还在** */
+  /* ⚠️ **层数要够。**（2026-10-05 反向验证时自己撞到）
+     第一版写的是 `"../_apitest-模板受害者"` —— 而模板目录是
+     `.umbrastudio/templates`（**两层深**），上升一层只到 `.umbrastudio/`，
+     **根本没打到项目根**。于是撤掉闸之后「盘上那份还在」照样绿。
+     **反向验证没报红时，先问「我的攻击样本真的打到了吗」。** */
+  let threw = false;
+  try { await deleteTemplate(p, "../../_apitest-模板受害者"); } catch { threw = true; }
+  ok(threw, "`delete_template` 带 `..` 被拒（`../../` —— 模板目录两层深，一层打不到项目根）");
+  ok(existsSync(victim), "**而且盘上那份还在**（报错不等于没删 —— 这两件要分开验）",
+     existsSync(victim) ? "还在" : "✗ 被删了，而它没有快照也没有回收站");
+
+  /* 保存侧：源稿路径带 `..` 必须被拒，而且**不许在模板目录里留下东西** */
+  mkdirSync(join(p.dir, ".umbrastudio", "templates"), { recursive: true });
+  const before = (await listTemplates(p)).length;
+  /* ⚠️ **源稿样本要指向一个确定存在的项目外文件**，而且是 `.dc.html`
+     —— 否则「被拒」有三种可能都分不清：闸拦了 / 文件不存在 / 后缀不对。
+     第一版用 `"../../../../etc/hosts"`，从项目目录上升四层落到
+     `SourceTree/etc/hosts`（**不存在**），`readFile` 抛错，
+     判据把「没这个文件」当成了「闸拦住了」。
+     自己造一份：放在项目的**父目录**里，不依赖机器上有什么。 */
+  const outsider = join(p.dir, "..", "_apitest-项目外的稿.dc.html");
+  writeFileSync(outsider, "<!doctype html><title>我在项目外</title>", "utf8");
+  ok(existsSync(outsider), "**夹具自己先成立：项目外那份稿真的在**（不然「被拒」说明不了什么）");
+  let threw2 = false;
+  try { await saveAsTemplate(p, "../_apitest-项目外的稿.dc.html", "偷来的"); } catch { threw2 = true; }
+  ok(threw2, "`save_as_template` 的源稿路径带 `..` 被拒（指向一份**真实存在**的项目外稿）");
+  const after = (await listTemplates(p)).length;
+  ok(after === before, "**而且模板目录里没多出东西**", `${before} → ${after}`);
+  /* 非 .dc.html 也该拒 —— 模板就是稿，不是任意文件 */
+  let threw3 = false;
+  try { await saveAsTemplate(p, "project.json", "不是稿"); } catch { threw3 = true; }
+  ok(threw3, "源稿不是 `.dc.html` 也被拒（模板就是稿，不是任意文件）");
+
+  /* ⚠️ **正面那一条不能少**：闸不该把功能也挡掉。
+     而且要验「存了能删掉」—— 那正是原来**不对称**导致做不到的事。 */
+  const saved = await saveAsTemplate(p, "_apitest-模板受害者.dc.html", "判据模板").catch(() => null);
+  ok(!!saved?.saved, "**正常的模板存得进去**（闸不该把功能也挡掉）", saved?.path?.split("/").pop() ?? "没存上");
+  const del = await deleteTemplate(p, "判据模板").catch(() => null);
+  ok(del?.deleted === true, "**而且删得掉自己存的那份**（原来 `a/b` 存成 `a_b` 却去删 `a/b`，删不到）");
+
+  /* ⚠️ **收尾要清掉「闸没拦住时会留下的那几份」**（2026-10-05）。
+     反向验证撤掉闸跑了两轮，`偷来的.dc.html` 和 `不是稿.dc.html`
+     **真的存进了用户项目的模板目录** —— 判据自己造的垃圾，判据自己清。
+     ⚠️ 正常情况下这两份压根不会出现，所以这几行是**为反向验证准备的** ——
+     而反向验证是纪律④ 要求的例行动作，不是意外。 */
+  for (const n of ["偷来的", "不是稿", "判据模板"]) {
+    rmSync(join(p.dir, ".umbrastudio", "templates", `${n}.dc.html`), { force: true });
+  }
+  rmSync(victim, { force: true });
+  rmSync(outsider, { force: true });
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

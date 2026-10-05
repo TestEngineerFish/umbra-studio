@@ -9,6 +9,9 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { writeAtomic } from "./normalize.js";
+import { isInside } from "./pathguard.js";
+import { X } from "./codes.js";
+import { err, ToolError } from "./envelope.js";
 import type { ToolCall } from "./provider.js";
 
 export interface ChatEntry {
@@ -76,8 +79,57 @@ function chatsDir(projectDir: string): string {
   return join(projectDir, CHATS_DIR);
 }
 
+/** 会话 ID 的合法形状 —— 和 `createChat` 生成的那一行对齐
+ *  （`"chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8)`）。
+ *  ⚠️ 尾段放宽到 1–12 位以容下历史数据和将来换生成方式，
+ *  但**不含 `.` 和分隔符** —— 那才是这条闸的要点。 */
+const CHAT_ID_RE = /^chat-\d{1,20}-[a-z0-9]{1,12}$/;
+
+/** 会话文件的落点。**两道闸，而且是两种不同的判法**（issue #57，p0，2026-10-05）。
+ *
+ *  ### 原来的样子
+ *  `join(chatsDir(projectDir), id + ".json")` —— `id` 原样拼进路径，
+ *  而 **`join` 会折叠 `..`**。实测（缺省布局：项目在 `STATE_ROOT/projects/<名>`）：
+ *
+ *  | 传进来的 `session` | 真正落到 |
+ *  | --- | --- |
+ *  | `chat-1759-abc12` | `…/projects/demo/.umbrastudio/chats/chat-1759-abc12.json` |
+ *  | `../../../../.umbrastudio/ai_config` | **`STATE_ROOT/.umbrastudio/ai_config.json`** |
+ *  | `../../package` | `…/projects/demo/package.json` |
+ *  | `../../../../../../etc/hosts` | `/etc/hosts.json` |
+ *
+ *  后果（五个调用方全中）：
+ *  - `get_chat` 把整份 JSON 原样 `envelope` 回出去 → **三条通道的 apiKey 明文进回包**，
+ *    而 `get_ai_config` 苦心做的掩码被整个绕过；
+ *  - `delete_chat` → `unlink` 任意 `.json`，**没有回收站、没有快照**；
+ *  - `rename_chat` / `set_chat_channel` → 读任意 `.json`、塞几个字段再整份写回，
+ *    **绕过唯一写入口**（纪律①）。
+ *
+ *  ⚠️ 而这几件在 **MCP 面上** —— 外部 AI 客户端和通道 B 起的 CLI 子进程都调得到，
+ *  它们读到的稿件内容里若有注入文字就能让模型调这几条。
+ *  和 #23（插件 id 带 `..` 递归删目录）是同一族：**参数也是攻击面**。
+ *
+ *  ### 为什么设两道
+ *  正则管**形状**（一眼能看懂、报错说得清），`isInside` 管**结果**
+ *  （不依赖我对形状想得全不全）。#23 那次的做法也是「一处定义两道闸」。
+ *  哪天 ID 生成方式变了，第一道会被放宽，而第二道不动 —— **闸不能只有一层**。
+ */
 function sessionFile(projectDir: string, id: string): string {
-  return join(chatsDir(projectDir), id + ".json");
+  if (!CHAT_ID_RE.test(id)) {
+    throw new ToolError(err(X.BAD_INPUT, "(chat)", { kind: "key", name: "session" },
+      `会话 ID 不合法：${JSON.stringify(id.slice(0, 60))}`,
+      { fix: "会话 ID 由系统生成，形如 chat-1759000000000-ab12cd。不要手写，也不要带路径。" }));
+  }
+  const dir = chatsDir(projectDir);
+  const f = join(dir, id + ".json");
+  /* 第二道：算出来的路径必须还在会话目录里面。
+     ⚠️ 用 `isInside` 而不是 `startsWith` —— 后者不带分隔符时
+     同前缀的兄弟目录能穿进去（issue #19 栽过）。 */
+  if (!isInside(dir, f)) {
+    throw new ToolError(err(X.BAD_INPUT, "(chat)", { kind: "key", name: "session" },
+      "会话 ID 指到了会话目录外面", { fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue。" }));
+  }
+  return f;
 }
 
 // ── CRUD ──

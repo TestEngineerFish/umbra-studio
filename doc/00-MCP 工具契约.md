@@ -9571,3 +9571,98 @@ CODE_EXT 共 37 种 · langFor 认 16 种
 `filetest` / `lifecycletest` 全通 · `captest` 259/259 · `plugintest` 76/76 ·
 `kindtest` 51/51 · `apitest` 23/23 · `ziptest` 14/14 · `csvpostest` 34/34 ·
 `agenttest` 13/13。
+
+---
+
+## 一四〇、又一批 issue（#52–#65）里的 p0 / p1：会话 ID 与模板名的路径逃逸（2026-10-05）
+
+处理上一批 idea 时发现**又积了一批新 issue（#52–#65）**，里面有 p0。
+这和 §9.1.5 那条「`type:bug` 清零是某一天的结论，不是持续属性」是同一件事 ——
+**而这次只隔了三天**。
+
+### 140.1 #57（p0）会话 ID 带 `../` → apiKey 明文外泄 + 任意 `.json` 被删
+
+`sessionFile` 原来是 `join(chatsDir(projectDir), id + ".json")`，
+`id` 原样拼进路径，而 **`join` 会折叠 `..`**。实测：
+
+| 传进来的 `session` | 真正落到 |
+| --- | --- |
+| `chat-1759-abc12` | `…/projects/demo/.umbrastudio/chats/chat-1759-abc12.json` |
+| `../../../../.umbrastudio/ai_config` | **`STATE_ROOT/.umbrastudio/ai_config.json`** |
+| `../../package` | `…/projects/demo/package.json` |
+| `../../../../../../etc/hosts` | `/etc/hosts.json` |
+
+五个调用方全中：
+- `get_chat` 把整份 JSON **原样 `envelope` 回出去** → 三条通道的 apiKey 明文进回包，
+  而 `get_ai_config` 苦心做的掩码被整个绕过；
+- `delete_chat` → `unlink` 任意 `.json`，**没有回收站、没有快照**；
+- `rename_chat` / `set_chat_channel` → 读任意 `.json`、塞几个字段再整份写回，
+  **绕过唯一写入口**（纪律①）。
+
+⚠️ 而这几件**在 MCP 面上** —— 外部 AI 客户端和通道 B 起的 CLI 子进程都调得到，
+它们读到的稿件内容里若有注入文字就能让模型调这几条。
+和 #23（插件 id 带 `..` 递归删目录）、#19（项目根 `startsWith`）同一族：
+**参数也是攻击面。**
+
+修法两道闸、一处定义：正则管**形状**（一眼看得懂、报错说得清），
+`isInside` 管**结果**（不依赖我对形状想得全不全）。
+哪天 ID 生成方式变了，第一道会被放宽，而第二道不动 —— **闸不能只有一层**。
+
+### 140.2 #63（p1）模板名带 `../` → 永久删掉项目外任意 `.dc.html`
+
+issue 指出一个我不会想到的细节：**存和删对同一个名字的处理不对称**。
+
+| | 做了什么 | `a/b` 落到 |
+| --- | --- | --- |
+| `saveAsTemplate` | `name.replace(/[\/\\]/g, "_")` | `templates/a_b.dc.html` |
+| `deleteTemplate` | **什么都不做** | `templates/a/b.dc.html` |
+
+所以 `a/b` 存进去之后**删不掉自己存的那份**。而那只是不对称的代价，
+它掩护了更严重的一半：`deleteTemplate` 连分隔符都不管 →
+`delete_template({name:"../../index"})` **永久删掉项目根的 `index.dc.html`**。
+`saveAsTemplate` 那边则能把**项目外任意可读文件**拷进模板目录
+（之后从模板建稿，内容就进了 AI 上下文）。
+
+修法同上：一处 `templateFile()` 两道闸，存和删都走它 ——
+**不对称本身就是 bug 的温床**。源稿路径换成现成的 `draftPath()` 守卫
+（自带 `isInside` + 存在性检查），并要求 `.dc.html`（模板就是稿，不是任意文件）。
+
+### 140.3 ⚠️ 三条关于判据自己的，这一批最值得记
+
+**① 判据把真 apiKey 打进了终端输出。**
+反向验证撤掉闸跑一次，读数里出现了 `sk-f2a9c57…`。
+第一版写的是 `JSON.stringify(gave).slice(0, 70)`。
+
+> **判据的职责是说「漏了」，不是把漏出来的东西再广播一遍。**
+> 而这类读数会进 CI 日志、进我贴给用户的报告 ——
+> **一条用来验证密钥不泄露的判据，自己把密钥泄露了。**
+
+改成只说形状：`4 个键，含 apiKey（值不打印）`。
+
+**② 攻击样本不够狠，于是反向验证「没报红」。** 两条都栽在这上面：
+
+| 判据原来写的 | 实际落到 | 为什么没打中 |
+| --- | --- | --- |
+| `../_apitest-受害者` | `.umbrastudio/_apitest-…` | 模板目录是 `.umbrastudio/templates`，**两层深**，上升一层没出 `.umbrastudio/` |
+| `../../../../etc/hosts` | `SourceTree/etc/hosts` | 那个路径**不存在**，`readFile` 抛错，判据把「没这个文件」当成了「闸拦住了」 |
+
+> **反向验证没报红时，先问「我的攻击样本真的打到了吗」** ——
+> 而不是以为闸还在起作用。这是「量到零的两种可能」的第三种变体：
+> **看起来被拦住了，其实根本没打中。**
+
+改狠之后读数变成真实后果：
+撤删除侧 → `✗ 被删了，而它没有快照也没有回收站`；
+撤保存侧 → `✗ 模板目录里多出东西 1 → 2`（项目外的文件真被拷进来了）。
+
+**③ 反向验证自己会留垃圾。** 撤闸那两轮把 `偷来的.dc.html`
+和 `不是稿.dc.html` **真的存进了用户项目的模板目录**。
+收尾里加了清理 —— ⚠️ 正常情况下那两份压根不会出现，
+所以那几行是**专为反向验证准备的**，而反向验证是纪律④ 要求的例行动作，不是意外。
+
+### 140.4 读数
+
+`apitest` **43/43**（+20：#57 十一条 · #63 九条）· `selftest` 零 error ·
+`filetest` / `lifecycletest` 全通 · `captest` 259/259 · `plugintest` 76/76 ·
+`kindtest` 51/51 · `ziptest` 14/14 · `jsonpostest` 49/49 · `csvpostest` 34/34 ·
+`agenttest` 13/13。
+两条各自双向验证：撤闸精确报出真实后果，正常态 43/43 全绿。
