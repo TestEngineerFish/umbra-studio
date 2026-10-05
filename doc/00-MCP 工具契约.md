@@ -10016,3 +10016,86 @@ Pages/登录页.dc.html  <dc-import name="主按钮">  → Pages/主按钮.dc.ht
 而「移动一份已经坏了的稿」是个合理操作，不该被堵；② 写入口会重新归一化，
 把用户稿改出一个大 diff。**这是一个设计选择，不是一个顺手修的 bug**，
 登记成 `doc/11` Q46 等拍板。（#71 把**建稿**接上了写入口，那一条没有这两个顾虑。）
+
+## 一四四、第四批：一个畸形地址带走整个进程 · 版本号当成 git 选项 · #74 修法的后续（#85 / #86 / #87，2026-10-06）
+
+### 144.1 #85（p1）`render_check` 自己那台静态服务会被一个畸形地址带走
+
+```ts
+const server = createServer((req, reply) => {
+  const raw = decodeURIComponent((req.url ?? "/").split("?")[0] as string);   // ← 没有 try
+```
+
+`decodeURIComponent` 遇到不成对的 `%`（`/a%zz.png`）抛 `URIError`，
+同步冒出 `createServer` 的回调 → **uncaughtException → 整个进程退出**（全仓没有兜底处理）。
+而稿里出现 `<img src="a%zz.png">` 太容易了（手误 / 从别处粘的 URL / 被提示注入的 AI 写进去），
+浏览器对不成对的 `%` **原样发出**。纯 Node 跑的话 MCP 与 HTTP 一起断、AI 会话中途失联；
+壳里是「A JavaScript error occurred in the main process」。
+
+和 **#43 同一族** —— #43 修的是 `serve.ts` 那一支（给静态路由整体包了一层 try/catch，
+注释里还写着「全仓没有 `uncaughtException` 处理」），**而 render.ts 自己那台没跟着修**。
+> **「同一件事两套实现」这一批第五次**（§一四三 四条 + 这一条）。
+> 上一次的修法注释写得越清楚，越容易让人以为「这件事已经解决了」。
+
+修法：回调整体包一层 + `decodeURIComponent` 单独 `try` 回 400 + `startsWith` 换 `isInside`。
+
+⚠️ **判据要验到「进程还活着」**：只验「回了 400」的话，一个在别处崩掉的实现也可能先把 400 写出去。
+所以后面再打一条正常请求（200）、一条找不到（404 —— 兜底不该把 404 也变成 400）。
+**反向验证的读数是整个测试进程被 `URIError` 带走，连 `✗` 都打不出来** —— 比「某条判据红了」更直观。
+
+### 144.2 #86（p1）版本号写成 `--output=…` → 磁盘任意位置建文件 + 执行仓库指定的命令
+
+```ts
+function git(p, args) { execFile("git", ["-C", p.dir, ...args], …) }   // 无 HARDEN、无 env 清理、无 GIT_DIR
+src = await git(p, ["show", `${ref}:${relPath}`]);                      // ref 原样拼进第一个参数
+```
+
+`ref` 是 `z.string()` 从 `snapshot_draft` / `diff_drafts` / `list_changes` 原样进来的
+（MCP、HTTP、**以及通道 A 的 AI 工具**）。以 `-` 开头时 git 把它当**选项**，而 `git show` 吃 diff 选项：
+
+| 输入 | 后果 |
+| --- | --- |
+| `version = "--output=<任意目录>/O"` | 在那儿建 / 截断一个 `O:<稿路径>` 文件（**本轮在自己的回归里复现了**） |
+| 同一条命令 | 因为没给对象而去展示 HEAD 的 diff，**diff 默认启用 textconv** → 仓库 `.git/config` 里的 `diff.x.textconv` **真的被执行**（标记文件出现） |
+
+第二条就是 #40 / #74 那一族（「打开别人给的项目 = 执行它指定的命令」），
+而**这条路从来不在 gitkeep 的加固范围里** —— #74 把兜底搬到 `STATE_ROOT` 之后，
+它成了**唯一还在用户仓库上跑 git 的入口**。
+
+修法：`gitkeep.ts` 开一个 `gitShow(dir, ref, relPath)` ——
+① `refProblem()` 形状闸（不许以 `-` 开头）② `rev-parse --verify --end-of-options <ref>^{commit}` 先解成 sha
+（**不是拼字符串给 `show`，而是先把它变成一个对象名**）③ `show --no-textconv --no-ext-diff`。
+`history.ts` 里那个本地 `git()` 删掉。
+
+### 144.3 #87（p1）#74 把仓库搬走了，而读的地方没跟着搬
+
+这一条是**我自己上一批修法的后续**。#74 把兜底提交搬到 `STATE_ROOT/.umbrastudio/git/<名>__<哈希>`，
+而三处读 git 的地方还指着**项目目录里的 `.git`**：
+
+| 位置 | 读的 | 后果 |
+| --- | --- | --- |
+| `history.ts` `resolveSnapshot` | `git -C p.dir` | 落盘 steps 里报的 `先记下了别处改的内容（git abc123）` 是**兜底仓库**的 sha，拿它去 `snapshot_draft` 永远取不到 |
+| `project.ts` `p.gitEnabled` | `existsSync(dir/.git)` | 项目里有 `.git` 时说「能取」而实际取不到；没有时说「没有 git」而兜底明明在记 |
+| `write.ts` `gitHead()` | 项目 `.git` 的 HEAD | 快照里的 `gitCommit` 和 steps 里的 sha **来自两个不同的仓库** |
+| `project.ts` 新建项目 `git init` | 在项目里建 `.git` | #74 之后它**一次提交也收不到** —— 每个新项目都带一个 0 提交的空仓库，而 `created` 里还列着 `.git/` |
+
+> **M9-7 要补的那个盲区（别的编辑器改的那一版）现在能记下来，但取不回来** ——
+> 工具告诉用户「你在别处改的那一版没丢」，却没有任何入口能拿到它。
+> **一个只写不读的兜底，和没有兜底的区别只在于占不占磁盘。**
+
+修法：`gitkeep.ts` 导出 `hasRepo` / `gitHeadOf` / `gitShow`（内部复用同一个 `exec`：同一个 GIT_DIR、同一套加固），
+三处调用方全改过去；`createProject` 的 `git init` 换成 `ensureRepo(dir)`；
+`GIT_DISABLED` 的文案从「这个项目没有 git」改成「这份稿还没有被兜底记过」。
+
+顺带改了两处**说谎的注释**（#87 第 4 点指出）：`commitPaths` 头注还写着「不带 `--author`、不改 user.name/email
+—— 用哪个身份提交是用户仓库的事」，而函数体现在传 `-c user.name=Umbra Studio`；`OFF` 的注释还写着
+「这件事会往用户的仓库里写东西」。
+⚠️ `gitkeep.ts` 第 33 行自己记着「**注释也会变成说谎的状态列**」—— 同一个文件、同一天，又犯了一次。
+
+### 144.4 这一批关于判据的两条
+
+| 症状 | 真相 |
+| --- | --- |
+| #86 第一版反向验证：四个攻击样本全红 | **一个都没打中。** 夹具那个 `.git` 只写了一份 `config`，不是真仓库，于是 `git -C <项目> show --output=…` 报的是「不是一个 git 仓库」—— 判据红是因为**错误文案变了**。换成真仓库（`git init` + 一次提交 + `git config diff.x.textconv`）之后：两个样本报「**没拒**」、`磁盘上没出现那个文件` 列出了真被建出来的两个文件、`textconv 没被执行` 变红。**攻击样本太弱和闸没修好，反向验证的长相一模一样。** |
+| #86 第二版里仍有一个样本没打中 | `--output=<不存在的目录>/O` —— **git 不替你建中间目录**。目标目录先 `mkdir` 出来才落地。 |
+| #74 那一节里「能从 git 里原样取回」一直是绿的 | 它用的是**判据自己的** git（`git(["show", …])` 带 `--git-dir`）。它证明「仓库里有」，**不证明「用户或 AI 能拿到」** —— #87 就藏在这条缝里。新判据走产品自己的 `resolveSnapshot`。**「东西在」和「取得到」是两件事。** |

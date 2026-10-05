@@ -488,5 +488,38 @@ console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
   }
 }
 
+/* ──────────── ⑪ 体检用的静态服务不能被一个畸形地址带走（issue #85） ────────────
+   和 #43 同一族：#43 修的是 `serve.ts` 那一支，**render.ts 自己那台没跟着修**。
+   `decodeURIComponent("/a%zz.png")` 抛 `URIError`，同步冒出 `createServer` 回调
+   → uncaughtException → **整个进程退出**（MCP 和 HTTP 一起断）。
+
+   ⚠️ 判据必须验到**「进程还活着」** —— 只验「回了 400」的话，
+   一个在别处崩掉的实现也可能先把 400 写出去。所以后面再打一条正常请求。 */
+{
+  const { startStatic } = await import("./render.js");
+  const { mkdtemp, writeFile: wf, rm } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const root = await mkdtemp(join(tmpdir(), "umbrastudio-static-"));
+  await wf(join(root, "ok.txt"), "活着", "utf8");
+  const { server, port } = await startStatic(root);
+  const hit = async (path: string) => {
+    try { const r = await fetch(`http://127.0.0.1:${port}${path}`); return { code: r.status, body: await r.text() }; }
+    catch (e) { return { code: 0, body: String((e as Error)?.message ?? e) }; }
+  };
+  const bad = await hit("/a%zz.png");
+  ok(bad.code === 400, "**不成对的 `%` 回 400**（原来：URIError 冒出回调 → 进程退出）", String(bad.code));
+  const bad2 = await hit("/%E0%A4%A");
+  ok(bad2.code === 400, "截断的多字节 `%` 编码也是 400", String(bad2.code));
+  const alive = await hit("/ok.txt");
+  ok(alive.code === 200 && alive.body === "活着",
+     "**而服务还活着**（下一条正常请求照样 200 —— 只验「回了 400」测不出进程已经没了）",
+     `${alive.code} · ${alive.body}`);
+  const gone = await hit("/没有这个.png");
+  ok(gone.code === 404, "正常的找不到还是 404（兜底不该把 404 也变成 400）", String(gone.code));
+  await new Promise<void>((r) => server.close(() => r()));
+  await rm(root, { recursive: true, force: true });
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

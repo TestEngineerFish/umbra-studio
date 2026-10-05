@@ -3,7 +3,6 @@
  * 主路径是 .umbrastudio/snapshots/ 的快照序列；git 是兜底，只在要按任意 ref
  * 取版本时用（07 §七）。实现侧永远不碰 git —— 它读 CHANGELOG-设计侧.md。
  */
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
@@ -137,12 +136,11 @@ export async function readSnapshot(p: Project, relPath: string, version: string)
   return JSON.parse(await readFile(f, "utf8")) as Snapshot;
 }
 
-function git(p: Project, args: string[]): Promise<string> {
-  return new Promise((res, rej) => {
-    execFile("git", ["-C", p.dir, ...args], { maxBuffer: 32 * 1024 * 1024 }, (e, out) =>
-      e ? rej(e) : res(out));
-  });
-}
+/* ⚠️ **本地那个 `git()` 删了**（issue #86 + #87，2026-10-06）。
+   它是 `execFile("git", ["-C", p.dir, ...args])` —— 没有 HARDEN、没清 `GIT_*`、
+   读的就是项目里那份**对方可控的** `.git/config`，而 `ref` 原样拼进第一个参数。
+   现在走 `gitkeep.gitShow()`：同一个 GIT_DIR、同一套加固、ref 先解成 sha。
+   **「同一件事两套实现」是这一批五条缺陷里四条的共同形状**（§一四三）。 */
 
 /** 把一个"版本说明"解析成快照。支持 v<N>、git ref、以及 "工作区"（当前盘上的内容）。 */
 export async function resolveSnapshot(p: Project, relPath: string, ref: string): Promise<Snapshot> {
@@ -153,18 +151,27 @@ export async function resolveSnapshot(p: Project, relPath: string, ref: string):
     return buildSnapshot(p, relPath, src, { version: "工作区" });
   }
 
-  if (!p.gitEnabled) {
+  /* ⚠️ 形状先判（issue #86）—— 在起进程**之前**，而且回的是 `BAD_INPUT` 不是
+     「取不到」：`--output=…` 这种输入的问题不是「那一版不存在」。 */
+  const { refProblem, gitShow, hasRepo } = await import("./gitkeep.js");
+  const bad = refProblem(ref);
+  if (bad) {
+    throw new ToolError(err(X.BAD_INPUT, relPath, { kind: "key", name: ref },
+      `版本号不合法：${bad}`,
+      { fix: "版本号要么是 v<N>、要么是「工作区」、要么是一个 git ref（提交 sha / 分支名）。" }));
+  }
+  if (!hasRepo(p.dir)) {
     throw new ToolError(err(X.GIT_DISABLED, relPath, { kind: "key", name: ref },
-      `这个项目没有 git，取不了 "${ref}"`,
-      { fix: "只支持 v<N> 与「工作区」。要按 git ref 取版本，先在项目目录 git init（doc/07 §七）" }));
+      `这份稿还没有被兜底记过，取不了 "${ref}"`,
+      { fix: "只支持 v<N> 与「工作区」。兜底记录是在「别的编辑器改过这份稿」时自动产生的（doc/00 §一一一）" }));
   }
   let src: string;
   try {
-    src = await git(p, ["show", `${ref}:${relPath}`]);
+    src = await gitShow(p.dir, ref, relPath);
   } catch (e) {
     throw new ToolError(err(X.SNAPSHOT_MISSING, relPath, { kind: "key", name: ref },
-      `git 里取不到 ${ref}:${relPath}`,
-      { fix: `确认这个 ref 存在，且那一版里有这份稿。git 的话：${(e as Error).message.split("\n")[0]}` }));
+      `兜底记录里取不到 ${ref}:${relPath}`,
+      { fix: `确认这个版本存在，且那一版里有这份稿。git 的话：${(e as Error).message.split("\n")[0]}` }));
   }
   return buildSnapshot(p, relPath, src, { version: ref });
 }

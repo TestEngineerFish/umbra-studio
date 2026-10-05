@@ -34,8 +34,10 @@ import { STATE_ROOT } from "./project.js";
  *    （见 `commitPaths` 的注释），而这行纪律忘了跟着改。**注释也会变成说谎的状态列。**
  */
 
-/** 关掉自动提交的逃生门。**留一个**：这件事会往用户的仓库里写东西，
- *  出了任何意料之外的情况要能一秒关掉，而不是等我们改代码发版。 */
+/** 关掉自动提交的逃生门。**留一个**：这件事会起 git 子进程、往 `STATE_ROOT`
+ *  里写一份历史（#74 之前是往**用户的仓库**里写，这句注释也是那时候的），
+ *  出了任何意料之外的情况要能一秒关掉，而不是等我们改代码发版。
+ *  ⚠️ 跑 `uitest` 一律 `UMBRASTUDIO_NO_GIT=1`（CLAUDE.md §7 那张表）。 */
 const OFF = process.env.UMBRASTUDIO_NO_GIT === "1";
 
 /** ⚠️ **按目录串行**。落盘后的提交是异步的（不该让用户等 git），
@@ -168,6 +170,70 @@ const exec = (args: string[], cwd: string): Promise<string> =>
    他有没有 `.git/`、在不在 rebase 中、有没有 hook，都和我们无关。
    （`umbrastudio.managed` 那个开关也随之作废，不用再让用户手动打开。） */
 
+/** 这个目录的兜底仓库在不在（#87：`p.gitEnabled` 原来看的是**项目里**那个 `.git`，
+ *  而 #74 之后我们提交到的是 `STATE_ROOT`，两个是不同的东西）。
+ *  ⚠️ **不起进程、不写盘** —— 它在 `loadProject` 这种热路径上。 */
+export function hasRepo(dir: string): boolean {
+  return existsSync(join(gitDirOf(dir), "HEAD"));
+}
+
+/** 兜底仓库当前的 HEAD（短 sha）。没有仓库或还没有提交就回 `null`。 */
+export async function gitHeadOf(dir: string): Promise<string | null> {
+  if (OFF || !hasRepo(dir)) return null;
+  try { return (await exec(["rev-parse", "--short", "HEAD"], dir)).trim() || null; }
+  catch { return null; }
+}
+
+/* ── 按 git ref 取一份稿的原文（issue #86 + #87，2026-10-06）──
+
+   ⚠️ **两条缺陷在同一行代码上**，而它们是相反的方向：
+
+   #86（**ref 当成选项**）：`history.ts` 原来是
+     `execFile("git", ["-C", p.dir, "show", `${ref}:${relPath}`])`，
+   `ref` 是 `z.string()` 从 MCP / HTTP / AI 工具原样进来的。
+   以 `-` 开头时 git 把它当**选项**，而 `git show` 吃 diff 选项：
+     version = "--output=/任意目录/O"
+       → 真的在那儿建了一个 `/任意目录/O:<稿路径>` 文件（实测 rc=0）
+   更重的是这条命令因为没给对象而去展示 HEAD 的 diff，**diff 默认启用 textconv** ——
+   仓库 `.git/config` 里的 `diff.x.textconv` 于是**真的被执行**（实测标记文件出现）。
+   那正是 #40 / #74 那一族（「打开别人给的项目 = 执行它指定的命令」），
+   而**这条路从来不在 gitkeep 的加固范围里** ——
+   #74 把兜底搬走之后，它成了唯一还在用户仓库上跑 git 的入口。
+
+   #87（**读错了仓库**）：#74 把提交搬到 `STATE_ROOT` 之后，
+   `write.ts` 的 steps 里报的 `先记下了别处改的内容（git abc123）` 是**兜底仓库**的 sha，
+   而 `resolveSnapshot` 去**项目里的 `.git`** 找它 —— 永远取不到。
+   **工具告诉用户「你在别处改的那一版没丢」，却没有任何入口能拿到它。**
+
+   修法：ref 先过形状闸、再 `rev-parse --verify --end-of-options` 解成 40 位 sha
+   （**不是拼字符串给 show，而是先把它变成一个对象名**），
+   然后在**兜底仓库**上 `show`，并显式 `--no-textconv --no-ext-diff`。 */
+
+/** ref 的形状：git 自己允许的字符集，且**不许以 `-` 开头**（那就是选项了）。 */
+const REF_SHAPE = /^[A-Za-z0-9._/~^@{}-]{1,200}$/;
+
+export function refProblem(ref: string): string | null {
+  if (!ref) return "空的";
+  if (ref.startsWith("-")) return "不能以 `-` 开头（那会被 git 当成选项）";
+  if (!REF_SHAPE.test(ref)) return "只能用字母、数字和 `._/~^@{}-`";
+  return null;
+}
+
+/** 在兜底仓库里按 ref 取一份文件的原文。ref 不合法或取不到都抛。 */
+export async function gitShow(dir: string, ref: string, relPath: string): Promise<string> {
+  const bad = refProblem(ref);
+  if (bad) throw new Error(`版本号不合法：${bad}`);
+  if (!hasRepo(dir)) throw new Error("这个目录还没有兜底仓库");
+  /* `--end-of-options` 之后 git 不再把参数当选项 —— **两道闸**：
+     形状那道按我想到的写，这道不依赖我想得全不全。 */
+  const sha = (await exec(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], dir)).trim();
+  if (!/^[0-9a-f]{7,64}$/.test(sha)) throw new Error(`解不出这个版本：${ref}`);
+  /* ⚠️ `--no-textconv` / `--no-ext-diff` 显式写上 —— 现在 config 读的是我们自己那份
+     （所以本来就没有 textconv 可读），但**这一行是防呆**：
+     万一哪天 `GIT_DIR` 被改回项目里，少了它就又能执行对方指定的命令。 */
+  return await exec(["show", "--no-textconv", "--no-ext-diff", `${sha}:${relPath}`], dir);
+}
+
 /** 这个目录能不能用 git 记版本。`false` = 没装 git，或者 init 失败。 */
 export async function ensureRepo(dir: string): Promise<boolean> {
   if (OFF) return false;
@@ -232,7 +298,12 @@ export async function isDirty(dir: string, file?: string): Promise<boolean> {
  *  只提交我们自己碰的那一个文件，上面那些情况**一次全消掉**：
  *  已有历史、有 remote、工作区脏着、有 pre-commit hook，都不再是问题。
  *
- *  ⚠️ **不带 `--author`、不改 user.name/email** —— 用哪个身份提交是用户仓库的事。
+ *  ⚠️ 身份是**我们自己的**（`-c user.name=Umbra Studio`）—— 这句话原来写的是
+ *  「不带 `--author`、不改 user.name/email，用哪个身份提交是用户仓库的事」，
+ *  那是 #74 **之前**的做法（当时提交进的是用户的仓库）。#74 把仓库搬到
+ *  `STATE_ROOT` 之后身份就该是我们的，而**注释没跟着改**。
+ *  （上面第 33 行那条教训「注释也会变成说谎的状态列」—— 同一天又犯了一次，
+ *  这一次是由 issue #87 的审查指出来的。）
  *  `--no-verify` 是有意的：我们提交的是单个文件的机械改动，不该被他的 lint hook 拦下来
  *  （拦下来的后果是「工具落盘成功但版本没记上」，而用户什么都看不到）。 */
 export async function commitPaths(dir: string, paths: string[], message: string): Promise<string | null> {

@@ -7,6 +7,7 @@
  *  - git 自动探测租户目录下有没有 .git，不手填。
  */
 import { readdir, readFile, stat, rename, cp } from "node:fs/promises";
+import { hasRepo } from "./gitkeep.js";
 import { isInside, resolveInside, plainNameProblem } from "./pathguard.js";
 import { existsSync, cpSync } from "node:fs";
 import { join, resolve, relative, dirname, basename, sep, isAbsolute } from "node:path";
@@ -165,7 +166,12 @@ export async function buildProject(dir: string): Promise<Project> {
     tokensPath: config.tokens ? join(dir, config.tokens) : null,
     iconsPath: config.icons ? join(dir, config.icons) : null,
     limits: { ...DEFAULT_LIMITS, ...(config.limits ?? {}) },
-    gitEnabled: existsSync(join(dir, ".git")),
+    /* ⚠️ 「这个项目能不能按 git ref 取版本」= **兜底仓库**在不在
+       （issue #87）—— 原来看的是项目里那个 `.git`，而我们从 #74 起
+       根本不往那里提交。看错了仓库的后果是**两边都不对**：
+       项目里有 `.git` 时说「能取」而实际取不到；没有时说「没有 git」
+       而兜底明明在记。 */
+    gitEnabled: hasRepo(dir),
   };
 }
 
@@ -394,19 +400,20 @@ export async function createProject(
   await newDraftToDisk(freshProj, firstDraftName, blankDraft(projTitle));
   created.push(firstDraftName);
 
-  // 4. 可选：初始化 git
+  /* 4. 版本兜底。
+     ⚠️ **不再往项目目录里 `git init`**（issue #87，2026-10-06）。
+     #74 之后我们提交到的是 `STATE_ROOT/.umbrastudio/git/<名>__<哈希>`，
+     于是项目里那个 `.git` 从此**一次提交也不会收到** ——
+     每个新项目都带一个 0 提交的空仓库，而 `created` 里还列着 `.git/`，
+     让人以为「这个项目在用 git 记版本」。
+     （`gitkeep.ts` 头注里说的「实测两个项目都 git init 过但 0 个提交」
+     就是这个状态，而那时候它还是个症状；#74 之后它变成了**必然**。）
+
+     ⚠️ 用户自己 `git init` 当然照旧 —— 我们不碰他的仓库，也不替他建。 */
   let gitEnabled = false;
   if (opts.initGit !== false) {
-    try {
-      const { execFile } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const exec = promisify(execFile);
-      await exec("git", ["init"], { cwd: dir });
-      gitEnabled = true;
-      created.push(".git/");
-    } catch {
-      // 没装 git 就跳过，不影响项目使用
-    }
+    const { ensureRepo } = await import("./gitkeep.js");
+    gitEnabled = await ensureRepo(dir);
   }
 
   return {

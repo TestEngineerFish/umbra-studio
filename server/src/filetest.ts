@@ -274,6 +274,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
 {
   const { execFileSync } = await import("node:child_process");
   const { createHash } = await import("node:crypto");
+  const { execFileSync: xs } = await import("node:child_process");
   const { commitExternalChanges, isDirty } = await import("./gitkeep.js");
   const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
   /* ⚠️ `-c core.quotepath=false`：不加的话 git 会把非 ASCII 路径转义成
@@ -846,6 +847,108 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
 
   const e2 = await readAnyFile(evilProj, "稿子.md");
   ok("而文件照常落盘了（这道闸只拦 git，不拦写入口）", (e2.content ?? "").includes("第二版"));
+}
+
+/* ═════════ 救回来的那一版，产品自己取得回来吗（issue #87）+ 版本号当选项（issue #86） ═════════
+   ⚠️ **放在最后**，因为这一节会在项目里造一个 `.git` 和一份恶意 config
+   （2026-10-05 栽过：往 filetest 中间插一节，`replace(…, 1)` 撞上了开头那个
+   `rm(DIR)`，整件事从头被清掉）。 */
+{
+  const { mkdtemp, writeFile: wf, mkdir: md } = await import("node:fs/promises");
+  const { createHash } = await import("node:crypto");
+  const { tmpdir: td } = await import("node:os");
+  const { resolveSnapshot } = await import("./history.js");
+  const { execFileSync: xs } = await import("node:child_process");
+  const { commitExternalChanges: cec } = await import("./gitkeep.js");
+  const { writeDraft: wd } = await import("./write.js");
+  const D = await mkdtemp(join(td(), "umbrastudio-ft87-"));
+  await wf(join(D, "project.json"), JSON.stringify({ name: "ft87", title: "ft87" }), "utf8");
+  const proj87 = await buildProject(D);
+  const MIN = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<script src=\"./support.js\"></script>\n</head>\n<body>\n<x-dc>\n<div>{{ t }}</div>\n</x-dc>\n<script type=\"text/x-dc\" data-dc-script data-props=\"{}\">\nclass Component extends DCLogic {\n  renderVals() { return { t: \"hi\" }; }\n}\n</script>\n</body>\n</html>\n";
+  await wd(proj87, "一稿.dc.html", MIN, "page");
+  /* ⚠️ **等那次提交落地** —— 落盘后的提交是异步的（不该让用户等 git）。
+     不等的话下面 `commitExternalChanges` 看到的「脏」是我们自己刚写的那一版，
+     它会拒绝（没有「别处改的」可救），而症状是 `commit: null`，
+     看起来**像产品缺陷**（2026-10-06 实测就这么红了一次）。
+     #74 那一节里也是这么等的。 */
+  {
+    const { isDirty: dirty } = await import("./gitkeep.js");
+    for (let i = 0; i < 40 && await dirty(D); i++) await new Promise((r) => setTimeout(r, 100));
+  }
+
+  /* ① 别的编辑器改一次 → 兜底记一版 → **走产品自己的路**把它取回来。
+     ⚠️ #74 那一节里已有一条「能从 git 里原样取回」，但它用的是**判据自己的** git
+     （`git(["show", …])` 带着 `--git-dir`）—— 它证明「仓库里有」，
+     **不证明「用户或 AI 能拿到」**。issue #87 就藏在这条缝里：
+     steps 里报的 sha 是兜底仓库的，而 `resolveSnapshot` 去项目里的 `.git` 找它。
+     **「东西在」和「取得到」是两件事，而判据原来只验了前一件。** */
+  const 别处 = MIN.replace("hi", "别的编辑器改的");
+  await wf(join(D, "一稿.dc.html"), 别处, "utf8");
+  const resc = await cec(D, "一稿.dc.html");
+  ok("（前提）别处改过 → 兜底记了一版", !!resc, { commit: resc });
+  let got = "", why87 = "";
+  if (resc) {
+    try { got = (await resolveSnapshot(proj87, "一稿.dc.html", resc)).sourceSha256 ?? ""; }
+    catch (e) { why87 = msgOf(e); }
+  }
+  const want = createHash("sha256").update(别处, "utf8").digest("hex");
+  ok("**救回来的那一版，`snapshot_draft` 真能取到**（issue #87：原来去项目里的 .git 找兜底仓库的 sha）",
+     got === want, why87 || `${got.slice(0, 12)} vs ${want.slice(0, 12)}`);
+
+  /* ② 版本号写成 `--output=…`（issue #86）：git show 吃 diff 选项，
+     原来能在磁盘任意位置建文件，还会执行仓库 config 里的 textconv。 */
+  const out86 = join(D, "..", `umbra86-${Date.now()}`);
+  const marker = join(D, "..", `TC_RAN-${Date.now()}`);
+  /* 在项目里放一个**真仓库** + 恶意 config/attributes（对方可控的那两份）。
+     ⚠️ **必须是真仓库**（2026-10-06 实测）：第一版只写了一份 `.git/config`，
+     于是撤掉形状闸之后 `git -C <项目> show --output=…` 报的是
+     「不是一个 git 仓库」—— 四个样本**一个都没打中**，
+     而判据照样红了（因为错误文案变了）。
+     **反向验证红了不等于样本打中了** —— §101.8 那条「去掉 `--trust` 那轮
+     它压根没跑」同一族，这次是我自己的攻击样本太弱。 */
+  const g = (args: string[], cwd = D) => xs("git", args, { cwd }).toString();
+  g(["init", "-q"]);
+  g(["config", "user.name", "t"]); g(["config", "user.email", "t@t"]);
+  g(["config", "diff.x.textconv", `touch ${marker}`]);
+  await wf(join(D, ".gitattributes"), "*.dc.html diff=x\n", "utf8");
+  g(["add", "一稿.dc.html", ".gitattributes"]);
+  g(["commit", "-q", "-m", "恶意仓库的第一版", "--no-verify"]);
+  await wf(join(D, "一稿.dc.html"), MIN.replace("hi", "工作区又改了"), "utf8");  // 让 show 有 diff 可出
+  /* ⚠️ **目标目录先建出来** —— git 不会替你建中间目录，不建的话
+     `--output=<不存在的目录>/O` 会以「打不开」失败，于是**样本没打中**
+     而判据照样红（2026-10-06 实测：四个样本里只有路径存在的那一个真落了地）。 */
+  await md(out86, { recursive: true });
+  const evilRefs = [`--output=${join(out86, "O")}`, `--output=${join(out86, "直接")}`, "-x", "--ext-diff"];
+  let allRefused = true, firstWhy = "";
+  for (const r of evilRefs) {
+    let w = "";
+    try { await resolveSnapshot(proj87, "一稿.dc.html", r); } catch (e) { w = msgOf(e); }
+    if (!/版本号不合法/.test(w)) { allRefused = false; console.log(`    ✗ ${r} → ${w || "没拒"}`); }
+    firstWhy ||= w;
+  }
+  ok("**版本号以 `-` 开头一律拒**（issue #86：`--output=…` 原来在磁盘任意位置建文件）",
+     allRefused, firstWhy.slice(0, 40));
+  ok("而磁盘上没出现那个文件",
+     !existsSync(join(out86, "O:一稿.dc.html")) && !existsSync(join(out86, "直接:一稿.dc.html")),
+     (await readdir(out86).catch(() => [])).join(" / ") || "(空)");
+  ok("**仓库 config 里的 textconv 没被执行**（#40 / #74 同一族 —— 这条路原来不在加固范围里）",
+     !existsSync(marker));
+
+  /* ③ 新建项目不再往项目里 `git init`（issue #87 第 3 点） */
+  const { createProject: cp } = await import("./project.js");
+  const PR = await mkdtemp(join(td(), "umbrastudio-ft87b-"));
+  const made = await cp("新项目", { dir: join(PR, "新项目") });
+  ok("**新建项目不在项目目录里建 `.git`**（#74 之后它永远收不到提交，只会误导人）",
+     !existsSync(join(made.dir, ".git")) && !made.created.includes(".git/"),
+     made.created.join(" / "));
+  const { gitDirForTest: gdf } = await import("./gitkeep.js");
+  ok("而兜底仓库建起来了（`gitEnabled` 说的是这一个）",
+     made.gitEnabled === existsSync(join(gdf(made.dir), "HEAD")), String(made.gitEnabled));
+
+  await rm(D, { recursive: true, force: true });
+  await rm(PR, { recursive: true, force: true });
+  await rm(out86, { recursive: true, force: true });
+  await rm(marker, { force: true });
 }
 
 await rm(DIR, { recursive: true, force: true });

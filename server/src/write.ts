@@ -63,12 +63,14 @@ async function nextVersion(p: Project, relPath: string): Promise<string> {
   return `v${Number(last.slice(1)) + 1}`;
 }
 
+/** 快照里记的 `gitCommit`。
+ *  ⚠️ 记的是**兜底仓库**的 HEAD（issue #87）—— 原来读的是项目里那个 `.git`，
+ *  而 #74 之后我们提交到的是 `STATE_ROOT`。两边对不上的后果是：
+ *  steps 里报的 sha 和快照里记的 sha 来自**两个不同的仓库**，
+ *  而拿哪一个去 `snapshot_draft` 都取不到。 */
 async function gitHead(p: Project): Promise<string | null> {
-  if (!p.gitEnabled) return null;
-  return await new Promise((res) => {
-    execFile("git", ["-C", p.dir, "rev-parse", "--short", "HEAD"], (e, out) =>
-      res(e ? null : out.trim() || null));
-  });
+  const { gitHeadOf } = await import("./gitkeep.js");
+  return await gitHeadOf(p.dir);
 }
 
 /** 写一份稿。内容相同则不落盘也不新增快照（避免版本号空转）。 */

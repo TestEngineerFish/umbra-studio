@@ -9,6 +9,7 @@
  * 判活只认 1+1：截图会骗人，一张不对的截图和一个坏掉的页面在屏上长得一样（doc/04 §2.1）。
  */
 import { createServer, type Server } from "node:http";
+import { isInside } from "./pathguard.js";
 import { accessSync, constants, createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { saveCheck, sha256, type CheckRecord } from "./check.js";
@@ -68,21 +69,45 @@ function race<T>(pr: Promise<T>, ms: number, onTimeout: T): Promise<T> {
   ]).finally(() => clearTimeout(timer!));
 }
 
-function startStatic(rootDir: string): Promise<{ server: Server; port: number }> {
+/** 体检用的静态服务。**导出只为给回归用**（issue #85 要能起一台来打畸形请求）。 */
+export function startStatic(rootDir: string): Promise<{ server: Server; port: number }> {
   return new Promise((res, rej) => {
     const server = createServer((req, reply) => {
-      const raw = decodeURIComponent((req.url ?? "/").split("?")[0] as string);
-      const abs = resolve(rootDir, "." + normalize(raw));
-      if (!abs.startsWith(rootDir) || !existsSync(abs) || statSync(abs).isDirectory()) {
-        reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        reply.end("404");
-        return;
+      /* ⚠️ **整个回调包一层**（issue #85，2026-10-06）。和 #43 **同一族** ——
+         #43 修的是 `serve.ts` 那一支（`routeStatic` 整体包了 try/catch，
+         注释里写着「全仓没有 `uncaughtException` 处理」），
+         **而 render.ts 自己这台静态服务没跟着修**。
+
+         `decodeURIComponent` 遇到不成对的 `%`（`/a%zz.png`）抛 `URIError`，
+         同步冒出 `createServer` 的回调 → uncaughtException → **整个进程退出**。
+         而稿里出现 `<img src="a%zz.png">` 太容易了（手误 / 从别处粘的 URL /
+         被提示注入的 AI 写进去），浏览器对不成对的 `%` **原样发出**。
+         `render_check` 是每批收尾都要调的（纪律⑤），于是「体检一次，服务没了」。
+
+         ⚠️ **一个专门用来检测崩溃的工具，自己会被一个畸形地址带走** ——
+         和这个函数上面那段注释说的是同一件事（它自己会在卡死面前死锁）。 */
+      try {
+        let raw: string;
+        try { raw = decodeURIComponent((req.url ?? "/").split("?")[0] as string); }
+        catch { reply.writeHead(400, { "content-type": "text/plain; charset=utf-8" }); reply.end("400 地址里的 % 编码不合法"); return; }
+        const abs = resolve(rootDir, "." + normalize(raw));
+        /* `isInside` 而不是 `startsWith`（#19 那一族）—— 这里因为前面
+           `normalize("/..")` 会钳到根，目前逃不出去，但**判定写法要统一**，
+           免得下一个人把它当样板抄走。 */
+        if (!isInside(rootDir, abs) || !existsSync(abs) || statSync(abs).isDirectory()) {
+          reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+          reply.end("404");
+          return;
+        }
+        reply.writeHead(200, {
+          "content-type": MIME[extname(abs).toLowerCase()] ?? "application/octet-stream",
+          "cache-control": "no-store",
+        });
+        createReadStream(abs).pipe(reply);
+      } catch {
+        if (!reply.headersSent) reply.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+        reply.end("400");
       }
-      reply.writeHead(200, {
-        "content-type": MIME[extname(abs).toLowerCase()] ?? "application/octet-stream",
-        "cache-control": "no-store",
-      });
-      createReadStream(abs).pipe(reply);
     });
     server.on("error", rej);
     server.listen(0, "127.0.0.1", () => {
