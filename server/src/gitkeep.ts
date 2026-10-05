@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { TOOL_ROOT } from "./project.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
+import { STATE_ROOT } from "./project.js";
 
 /** 项目目录的 git 版本记录（M9-7，用户 2026-09-28 提）。
  *
@@ -66,6 +67,56 @@ function serial<T>(dir: string, fn: () => Promise<T>): Promise<T> {
  *
  *  所以**每一条 git 调用都带这组覆盖**。它和下面那道「是不是我们建的仓库」是
  *  **两层独立的闸**：我们自己建的仓库也可能被外部改配置。 */
+/** 这个项目的 git 仓库放在**我们自己的状态目录**里（issue #74，2026-10-05）。
+ *
+ *  ### 为什么要搬出去 —— 前一版那两道闸实测都能绕过
+ *  #40 的修法是「HARDEN 黑名单 + `umbrastudio.managed` 标记」，而两道都不成立：
+ *
+ *  | 闸 | 怎么绕过 | 实测读数 |
+ *  | --- | --- | --- |
+ *  | `umbrastudio.managed` 标记 | 它读的是**仓库自己的 `.git/config`** —— 而那是**攻击者可控的文件** | `isOurs` 读到 `true` |
+ *  | HARDEN 五项黑名单 | 漏了 `filter.<任意名>.clean`（`git add` 必跑）和 `commit.gpgSign` + `gpg.program`（`git commit` 必跑） | `PWNED_FILTER` 真的出现了 |
+ *
+ *  ⚠️ **黑名单在这里原理上不可能完备**：`filter.<名字>.clean` 的名字由对方取，
+ *  而 `-c` 只能覆盖**已知**名字。我实测过所有环境开关
+ *  （`GIT_CONFIG_NOSYSTEM` / `GIT_CONFIG_GLOBAL` / `core.attributesFile`）——
+ *  **没有任何一个能屏蔽仓库自己的 `.git/config`**。
+ *
+ *  ⚠️ 而「把信任标记存在被信任方可以改的地方，等于没有标记」。
+ *
+ *  ### 换的这条路
+ *  `GIT_DIR` 指到 `STATE_ROOT/.umbrastudio/git/<项目目录的哈希>`，
+ *  `GIT_WORK_TREE` 指到项目 —— 于是 git 读的 config 是**我们自己那份**，
+ *  对方的 `.git/config` 根本不在链路上。实测：
+ *  filter 没跑 · gpg 没跑 · 提交成功（在我们的 GIT_DIR 里）·
+ *  **对方仓库 0 个提交（一点没动）**。
+ *
+ *  三个顺带的好处：
+ *  - 用户自己的 git 历史**我们再也碰不到**（#40 担心的「卷入他的改动」彻底消失）；
+ *  - 他有没有 `.git/`、在不在 rebase 中、有没有 hook，都和我们无关了；
+ *  - `umbrastudio.managed` 这道闸可以去掉 —— **不需要信任判断了**，
+ *    因为我们不再在他的仓库上操作。
+ *
+ *  ⚠️ 代价要说清：这份历史**在 `STATE_ROOT` 里，不在项目目录里** ——
+ *  项目拷到别的机器不会带着它。而 M9-7 要的是「补快照看不见的盲区」，
+ *  那是**本机**的事，所以这个代价是可接受的；换来的是「打开别人的项目是安全的」。
+ */
+function gitDirOf(dir: string): string {
+  const key = createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 16);
+  const base = (resolve(dir).split(sep).pop() || "proj").replace(/[^\p{L}\p{N}._-]/gu, "_").slice(0, 40);
+  return join(STATE_ROOT, ".umbrastudio", "git", `${base}__${key}`);
+}
+
+/** 只给判据用：算出某个项目对应的 GIT_DIR。
+ *  ⚠️ 判据**必须调这个函数**，不能自己复刻那段哈希 ——
+ *  复刻的话算法一改判据就指到一个不存在的目录，而 `rm -rf` 不存在的路径不报错
+ *  （§134.6 那条「判据要拼实现的路径，必须调实现那个函数」）。 */
+export const gitDirForTest = (dir: string): string => gitDirOf(dir);
+
+/** ⚠️ **HARDEN 留着，但它不再是主闸。**
+ *  主闸是「不读对方的 config」（见 `gitDirOf`）。这几项现在的作用是
+ *  **万一哪天有人把 `GIT_DIR` 改回项目里**，还有一层兜着 ——
+ *  和 #24 那个网络封堵桩同样的定位：**防呆不是边界**。 */
 const HARDEN = [
   "-c", "core.fsmonitor=false",
   "-c", "core.hooksPath=/dev/null",
@@ -74,57 +125,70 @@ const HARDEN = [
   "-c", "protocol.ext.allow=never",
 ];
 
+/** 不带 `GIT_DIR` / `GIT_WORK_TREE` 的那一种 —— 只给 `init --bare <目标>` 用。
+ *  ⚠️ `init` 的目标是参数给的，这时候再设 `GIT_DIR` 会让它去初始化**那一个**，
+ *  而我们要初始化的恰好就是它 —— 冲突。 */
+const execRaw = (args: string[]): Promise<string> =>
+  new Promise((res, rej) => {
+    const env: Record<string, string | undefined> = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+    for (const k of Object.keys(env)) {
+      if (/^GIT_(DIR|WORK_TREE|INDEX_FILE)$/.test(k)) delete env[k];
+    }
+    execFile("git", [...HARDEN, ...args], { env, maxBuffer: 4 * 1024 * 1024 }, (e, out) => (e ? rej(e) : res(out)));
+  });
+
 const exec = (args: string[], cwd: string): Promise<string> =>
   new Promise((res, rej) => {
     /* ⚠️ 继承来的 `GIT_*` 也要清掉 —— `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE`
        会让我们在**另一个仓库**上操作，而 `cwd` 看起来是对的。
        `GIT_CONFIG_NOSYSTEM=1` 把 `/etc/gitconfig` 挡在外面。 */
     const env: Record<string, string | undefined> = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+    /* 先把继承来的 `GIT_*` 全清掉 —— 它们会让我们在**另一个仓库**上操作，
+       而 `cwd` 看起来是对的。 */
     for (const k of Object.keys(env)) {
       if (/^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|CONFIG|CONFIG_GLOBAL|CONFIG_SYSTEM|EXTERNAL_DIFF|PAGER|SSH_COMMAND|PROXY_COMMAND|ASKPASS|EDITOR|SEQUENCE_EDITOR|ATTR_FILE|CEILING_DIRECTORIES|COMMON_DIR|NAMESPACE|ALLOW_PROTOCOL)$/.test(k)) delete env[k];
     }
+    /* ⚠️ **然后指到我们自己那一份**（issue #74）——
+       这是真正的那道闸：git 读的 config 是我们的，对方的 `.git/config`
+       根本不在链路上。`GIT_CONFIG_GLOBAL=/dev/null` 顺带把用户的
+       `~/.gitconfig` 也挡掉（他的 `filter` / `gpg` 配置不该影响我们的兜底提交）。 */
+    env.GIT_DIR = gitDirOf(cwd);
+    env.GIT_WORK_TREE = resolve(cwd);
+    env.GIT_CONFIG_GLOBAL = "/dev/null";
     execFile("git", [...HARDEN, ...args], { cwd, env, maxBuffer: 16 * 1024 * 1024 }, (e, out) => (e ? rej(e) : res(out)));
   });
 
-/** 这个仓库是不是**我们自己建的**（issue #40 的第二道闸）。
- *
- *  判据是 `.git/config` 里一个我们写的标记。**不用「有没有提交历史」之类的启发式** ——
- *  那种判据会在「用户刚 `git init` 过还没提交」时猜错，而猜错的后果是
- *  在别人的仓库上自动跑 git。
- *
- *  ⚠️ **默认不碰别人的仓库，但留一个显式打开的开关**（`umbrastudio.managed=true`）——
- *  M9-7 补的那个盲区（别的编辑器改的那一版）对自己项目仍然有价值，
- *  不该因为这条安全问题整个消失。用户可以在他信任的仓库里手动打开：
- *      git config umbrastudio.managed true
- *  这和 VS Code 的「工作区信任」是同一个形状：**默认不信，信了就记下来。** */
-async function isOurs(dir: string): Promise<boolean> {
-  try { return (await exec(["config", "--get", "umbrastudio.managed"], dir)).trim() === "true"; }
-  catch { return false; }   // 没有这个键时 git 返回码非 0
-}
+/* ⚠️ **`isOurs` 删掉了**（issue #74，2026-10-05）。
+   它读的是**仓库自己的 `.git/config`** —— 而那是攻击者可控的文件，
+   实测对方自写一行 `[umbrastudio] managed = true` 就让它放行了。
+   **把信任标记存在被信任方可以改的地方，等于没有标记。**
+
+   而现在不需要这个判断了：`GIT_DIR` 指到我们自己的状态目录，
+   我们**根本不在他的仓库上操作** —— 没有「信不信这个仓库」这回事。
+   他有没有 `.git/`、在不在 rebase 中、有没有 hook，都和我们无关。
+   （`umbrastudio.managed` 那个开关也随之作废，不用再让用户手动打开。） */
 
 /** 这个目录能不能用 git 记版本。`false` = 没装 git，或者 init 失败。 */
 export async function ensureRepo(dir: string): Promise<boolean> {
   if (OFF) return false;
   try {
-    if (existsSync(join(dir, ".git"))) return true;
-    await exec(["init"], dir);
-    /* 打上「这是我们建的」标记 —— 下面所有自动提交都查它（issue #40）。
-       ⚠️ 要在 `git init` **之后**、第一次提交**之前**写，否则第一次提交那一下还没有标记。 */
-    await exec(["config", "umbrastudio.managed", "true"], dir);
-    /* 新建的仓库配一份默认 `.gitignore` —— 不配的话第一次提交会把
-       `.umbrastudio/`（快照、缓存、会话、ai_config）全都提进去，
-       其中 `ai_config.json` 里有 key。**这一条是安全问题，不是整洁问题。** */
-    const gi = join(dir, ".gitignore");
-    if (!existsSync(gi)) {
-      const tpl = join(TOOL_ROOT, "doc", "_模板-租户 .gitignore");
-      if (existsSync(tpl)) await copyFile(tpl, gi);
-      else await writeFile(gi, ".umbrastudio/\n", "utf8");
-      /* 顺手把它提交掉。`.gitignore` 不提交也生效，但**不提交就会永远挂在
-         用户的 `git status` 里**，看着像我们留下的垃圾。
-         只在**我们刚建的**仓库里做这一下 —— 上面 `existsSync(.git)` 已经把
-         「用户已有的仓库」挡在外面了，不会去碰他的工作区。 */
-      await commitPaths(dir, [".gitignore"], "记版本：忽略工具自己的产物（.umbrastudio/）");
-    }
+    const gd = gitDirOf(dir);
+    if (existsSync(join(gd, "HEAD"))) return true;        // 已经建过
+    await mkdir(gd, { recursive: true });
+    /* ⚠️ **`init --bare` 建在我们自己的目录里，不碰项目里的 `.git`**（issue #74）。
+       `--bare` 是因为工作区由 `GIT_WORK_TREE` 指定 —— 这个 GIT_DIR 自己不需要工作区。
+       ⚠️ 用户项目里有没有 `.git/` 我们不再关心，也不再往里写任何东西。 */
+    await execRaw(["init", "-q", "--bare", gd]);
+    /* 排除我们自己的状态目录 —— 不排的话第一次提交会把 `.umbrastudio/` 整个提进去，
+       里面有快照、会话、以及 **`ai_config.json`（含明文 key）**。
+       **这一条是安全问题，不是整洁问题。**
+       ⚠️ 写在 `<GIT_DIR>/info/exclude` 而不是项目里的 `.gitignore` ——
+       **不往用户的项目里塞文件**（原来那份 `.gitignore` 是我们建的，现在不需要了）。 */
+    await mkdir(join(gd, "info"), { recursive: true });
+    await writeFile(join(gd, "info", "exclude"), [
+      "# Umbra Studio 的版本兜底：这几样不记",
+      ".umbrastudio/", ".umbradesign/", "node_modules/", ".DS_Store", "",
+    ].join("\n"), "utf8");
     return true;
   } catch { return false; }
 }
@@ -174,17 +238,22 @@ export async function isDirty(dir: string, file?: string): Promise<boolean> {
 export async function commitPaths(dir: string, paths: string[], message: string): Promise<string | null> {
   if (OFF || !paths.length) return null;
   try {
-    /* ⚠️ **不是我们建的仓库就什么都不做**（issue #40）。
-       在别人给的项目里自动跑 `git add` / `git commit` 等于让那个仓库的配置
-       在我们的进程里执行任意命令。想要这份兜底的话，在那个仓库里
-       `git config umbrastudio.managed true` 显式打开。 */
-    if (!(await isOurs(dir))) return null;
+    /* ⚠️ 原来这里有一道 `isOurs(dir)` —— 已删（issue #74）：
+       它读对方可控的 `.git/config`，等于没有。现在 `GIT_DIR` 是我们自己的，
+       **不存在「这是谁的仓库」这个问题**。
+       ⚠️ 顺带：`inMiddleOfSomething` 现在查的也是**我们自己**那个 GIT_DIR ——
+       用户在他的仓库里 rebase 不再影响我们（原来那是个真实的顾虑）。 */
+    if (!(await ensureRepo(dir))) return null;
     if (await inMiddleOfSomething(dir)) return null;
+    /* 身份：我们自己提交，用一个明确的作者名 —— `GIT_CONFIG_GLOBAL=/dev/null`
+       之后 git 不认识任何 user.name，不给就会报 "Author identity unknown"。
+       ⚠️ 不用用户的身份 —— 这不是他写的提交，是工具的兜底记录。 */
+    const ident = ["-c", "user.name=Umbra Studio", "-c", "user.email=umbra@localhost"];
     /* `--` 之后才是路径 —— 不加的话 `-` 开头或与分支同名的文件会被当成 ref */
     await exec(["add", "--", ...paths], dir);
-    /* ⚠️ `git commit -- <paths>` 只提交这几个路径，**忽略其它已暂存的东西** ——
-       用户自己 `git add` 过的别的文件因此不会被我们带进这个提交。 */
-    await exec(["commit", "-m", message, "--no-verify", "--", ...paths], dir);
+    /* ⚠️ `git commit -- <paths>` 只提交这几个路径，**忽略其它已暂存的东西**。
+       （在我们自己的 GIT_DIR 里，索引也是我们自己的，所以这一条现在更像是保险。） */
+    await exec([...ident, "commit", "-m", message, "--no-verify", "--", ...paths], dir);
     return (await exec(["rev-parse", "--short", "HEAD"], dir)).trim();
   } catch { return null; }
 }
@@ -210,7 +279,11 @@ export type GitFallback = "on" | "ignored" | "off" | "broken";
 export async function gitFallbackOf(dir: string, file: string): Promise<GitFallback> {
   if (OFF) return "off";
   try {
-    if (!existsSync(join(dir, ".git"))) return "off";
+    /* ⚠️ **查我们自己那个 GIT_DIR，不是项目里的 `.git`**（issue #74，2026-10-05）。
+       仓库搬到状态目录之后，「项目里有没有 `.git`」和「兜底在不在」**彻底无关了** ——
+       用户有他自己的 git（我们不碰），我们有我们的。 */
+    const gd = gitDirOf(dir);
+    if (!existsSync(join(gd, "HEAD"))) return "off";
     /* ⚠️ **「有 .git」不等于「现在真能提交」**（2026-09-30 在用户自己的项目上实测抓到）。
        他那个项目 `.git/index.lock` 残留着（某次 git 操作被中断留下的），
        于是每一次 `git add` 都失败 → `commitPaths` 的 `catch` 吃掉 → 返回 null →
@@ -219,7 +292,7 @@ export async function gitFallbackOf(dir: string, file: string): Promise<GitFallb
        而这个函数的第一版**照样回 `on`** —— 它只看 `.git` 在不在、文件有没有被忽略。
        那是在拿一个看起来合理的检查冒充答案：**要回答的是「兜底在不在」，
        不是「git 目录在不在」。** 所以这里真的去问一句能不能提交。 */
-    if (existsSync(join(dir, ".git", "index.lock"))) return "broken";
+    if (existsSync(join(gd, "index.lock"))) return "broken";
     if (await inMiddleOfSomething(dir)) return "broken";
     /* `check-ignore` 的退出码就是答案：0 = 被忽略，1 = 没被忽略。
        ⚠️ 用它而不是 `status --porcelain` —— 后者对被忽略的文件**什么都不输出**，

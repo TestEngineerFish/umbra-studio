@@ -147,14 +147,26 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   /* ⚠️ `-c core.quotepath=false`：不加的话 git 会把非 ASCII 路径转义成
      `"\347\254\224\350\256\260.md"` 并加引号，于是判据里按「笔记.md」比较永远不成立 ——
      实测被它绊倒过两条。**这是仪器的问题，不是产品的问题**，而两者报出来的样子一样。 */
-  const git = (args: string[]) => execFileSync("git", ["-c", "core.quotepath=false", ...args], { cwd: DIR, encoding: "utf8" }).trim();
+  /* ⚠️ **仓库在我们自己的状态目录里，不在项目里**（issue #74，2026-10-05）——
+     所以判据要带 `--git-dir` / `--work-tree`，而且 `gitDirForTest` 必须**调实现那个函数**
+     （自己复刻那段哈希的话，算法一改判据就指到一个不存在的目录，
+     而 `git --git-dir <不存在>` 的报错看起来像「产品没提交」）。 */
+  const { gitDirForTest } = await import("./gitkeep.js");
+  const GD = gitDirForTest(DIR);
+  const git = (args: string[]) => execFileSync("git",
+    ["--git-dir", GD, "--work-tree", DIR, "-c", "core.quotepath=false", ...args],
+    { cwd: DIR, encoding: "utf8" }).trim();
 
   await writeAnyFile(p, "笔记.md", "第一版\n");
-  ok("写入口自动给项目建了 git 仓库", existsSync(join(DIR, ".git")));
-  /* ⚠️ 提交身份：干净环境里可能没配 user.name —— 不配的话下面量到的是
-     「git 不能提交」而不是「我们没提交」。**只在测试里配**，产品代码不替用户配
-     （那会让他别的仓库看起来莫名其妙地不一致）。 */
-  try { git(["config", "user.email", "filetest@local"]); git(["config", "user.name", "filetest"]); } catch { /* 没装 git */ }
+  /* ⚠️ 判据从「项目里有 `.git`」改成「**我们自己那个 GIT_DIR 建起来了**」——
+     而且**项目里不该有** `.git`：那是这一版最重要的性质
+     （我们再也不在用户的仓库上操作）。 */
+  ok("写入口给这个项目建了版本库（在我们的状态目录里）", existsSync(join(GD, "HEAD")), GD.split("/").pop());
+  ok("**而项目目录里没有 `.git`**（我们不再碰用户的仓库）", !existsSync(join(DIR, ".git")));
+  /* 提交身份现在由产品自己给（`-c user.name=Umbra Studio`）——
+     ⚠️ 原来这里要在测试里 `git config user.name`，因为产品没给；
+     而 `GIT_CONFIG_GLOBAL=/dev/null` 之后不给就会报 "Author identity unknown"，
+     所以产品那边加上了。**判据不该再替产品配它** —— 配了就测不出产品漏没漏。 */
   await writeAnyFile(p, "笔记.md", "第二版（走写入口）\n", { expectSha256: sha("第一版\n") });
   for (let i = 0; i < 40 && await isDirty(DIR); i++) await new Promise((r) => setTimeout(r, 100));
   ok("走写入口落盘之后有提交", git(["log", "--oneline"]).split("\n").filter(Boolean).length >= 1);
@@ -197,8 +209,13 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   /* ⚠️ **正在 rebase / merge 时一律不动这个仓库**。
      用户只问了「已经有 git 怎么办」，但更糟的是「他正在 rebase」——
      那时候提交会落在临时状态上，轻则打乱 rebase，重则丢掉他正在整理的历史。
-     造法：伪造一个 `.git/MERGE_HEAD`（真跑一次 merge 冲突太重，而判据看的就是这个标记）。 */
-  const gitDirAbs = join(DIR, ".git");
+     造法：伪造一个 `MERGE_HEAD`（真跑一次 merge 冲突太重，而判据看的就是这个标记）。
+     ⚠️ **放在我们自己的 GIT_DIR 里**（issue #74）—— 原来写的是 `DIR/.git/MERGE_HEAD`，
+     而那个目录现在根本不存在。
+     ⚠️ 这一条的**语义也变了**：原来防的是「用户正在他的仓库里 rebase」，
+     而现在我们不碰他的仓库了 —— 它防的是**我们自己那个仓库**中途出事
+     （比如上一次提交被打断）。价值小了，但留着：`inMiddleOfSomething` 还在那条路上。 */
+  const gitDirAbs = GD;
   await writeFile(join(gitDirAbs, "MERGE_HEAD"), git(["rev-parse", "HEAD"]) + "\n", "utf8");
   const before = git(["rev-parse", "HEAD"]);
   await writeFile(join(DIR, "笔记.md"), "merge 中途别处又改了\n", "utf8");
@@ -234,8 +251,17 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   const { commitAfterWrite } = await import("./gitkeep.js");
   await writeFile(join(sub, "稿.dc.html"), "<html>x</html>", "utf8");
   const sha = await commitAfterWrite(sub, "稿.dc.html", "v1", null);
-  ok("**项目在别人的仓库里时，提交落进项目自己的新仓库**（不是那个大仓库）",
-     sha !== null && existsSync(join(sub, ".git")), { 提交号: sha, 子目录自己的仓库: existsSync(join(sub, ".git")) });
+  /* ⚠️ **这条判据的期望变了**（issue #74，2026-10-05）——
+     它钉的性质没变（**不往用户的大仓库提交**），而「落在哪」变了：
+     原来建一个 `<子目录>/.git`，现在落在我们自己的状态目录。
+     ⚠️ 新架构下这件事**更彻底**：我们不再往用户的目录树里建任何仓库 ——
+     所以顺带多钉一条「子目录里也没有 `.git`」。 */
+  const { gitDirForTest: gdOf } = await import("./gitkeep.js");
+  ok("**项目在别人的仓库里时，提交落进我们自己的状态目录**（不是那个大仓库）",
+     sha !== null && existsSync(join(gdOf(sub), "HEAD")),
+     { 提交号: sha, 我们的仓库: existsSync(join(gdOf(sub), "HEAD")) });
+  ok("**而且没在子目录里建 `.git`**（新架构：不往用户的目录树里建任何仓库）",
+     !existsSync(join(sub, ".git")));
   ok("**用户那个大仓库一条提交都没多**（他的主项目历史没被插东西）",
      g(["rev-parse", "HEAD"]) === bigHeadBefore, { 前: bigHeadBefore.slice(0, 7), 后: g(["rev-parse", "HEAD"]).slice(0, 7) });
   await rm(BIG, { recursive: true, force: true });
@@ -348,17 +374,27 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   const { execFileSync } = await import("node:child_process");
   const G = join(DIR, "gitfallback");
   await mkdir(G, { recursive: true });
-  const gx = (args: string[]) => execFileSync("git", args, { cwd: G, encoding: "utf8" }).trim();
+  /* ⚠️ **夹具要走 `ensureRepo`，不能自己在项目里 `git init`**（issue #74）。
+     仓库搬到状态目录之后，`gitFallbackOf` 查的是**我们那个 GIT_DIR** ——
+     夹具在项目里 init 一个，它看不见，于是三态全回 `off`/`broken`。
+     ⚠️ 这是「夹具复刻实现的布局」那一类：实现一改，夹具就指到别处
+     （§134.6 那条「判据要拼实现的路径，必须调实现那个函数」）。 */
+  const { ensureRepo: mkRepo, gitDirForTest, commitPaths: ciPaths } = await import("./gitkeep.js");
+  const GG = gitDirForTest(G);
+  const gx = (args: string[]) => execFileSync("git",
+    ["--git-dir", GG, "--work-tree", G, ...args], { cwd: G, encoding: "utf8" }).trim();
 
   ok("**没有 git 的目录回 `off`**（不是谎称有兜底）", await gitFallbackOf(G, "a.txt") === "off");
 
-  gx(["init"]); gx(["config", "user.email", "t@t"]); gx(["config", "user.name", "t"]);
+  await mkRepo(G);
+  /* 忽略规则写在项目里的 `.gitignore` —— ⚠️ git 读工作区的 `.gitignore`
+     （那是**用户自己的**文件，我们只读不写），所以这一条照旧有效。 */
   await writeFile(join(G, ".gitignore"), "dist/\n*.log\n", "utf8");
   await writeFile(join(G, "a.txt"), "x\n", "utf8");
   await mkdir(join(G, "dist"), { recursive: true });
   await writeFile(join(G, "dist", "bundle.js"), "y\n", "utf8");
   await writeFile(join(G, "跑起来.log"), "z\n", "utf8");
-  gx(["add", "-A"]); gx(["commit", "-m", "init", "--no-verify"]);
+  await ciPaths(G, ["a.txt", ".gitignore"], "init");
 
   ok("普通文件回 `on`", await gitFallbackOf(G, "a.txt") === "on", await gitFallbackOf(G, "a.txt"));
   /* ⚠️ 这两条是**用户那个问题的正面答案**：代码仓库的 .gitignore 里必然有 dist/ */
@@ -368,7 +404,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      await gitFallbackOf(G, "跑起来.log") === "ignored", await gitFallbackOf(G, "跑起来.log"));
   /* 判据自己也要证一次「为什么不能用 status --porcelain」—— 那是这个洞的成因 */
   ok("**`status --porcelain` 对被忽略的文件什么都不说**（所以不能拿它当判据）",
-     execFileSync("git", ["status", "--porcelain", "--", "dist/bundle.js"], { cwd: G, encoding: "utf8" }).trim() === "");
+     gx(["status", "--porcelain", "--", "dist/bundle.js"]) === "");   // 走 gx：项目里已经没有 .git 了（#74）
 
   /* ── `broken`：有 git 但现在提交不了（2026-09-30 在用户自己的项目上实测抓到）──
      ⚠️ 这一条不是想出来的场景。他那个仓库 **24 份快照、0 个 git 提交**，
@@ -376,7 +412,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      而 `commitPaths` 的 `catch` 把失败吃掉了，**界面一个字都没说**。
      而这个函数的第一版**照样回 `on`**：它只看 `.git` 在不在。
      「有 git 目录」和「兜底真的在」是两件事。 */
-  await writeFile(join(G, ".git", "index.lock"), "", "utf8");
+  await writeFile(join(GG, "index.lock"), "", "utf8");
   ok("**`index.lock` 残留时回 `broken`**（不是谎称有兜底）",
      await gitFallbackOf(G, "a.txt") === "broken", await gitFallbackOf(G, "a.txt"));
   /* 而且这时候提交**真的**做不了 —— 证明 `broken` 不是虚报 */
@@ -385,13 +421,13 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
     await writeFile(join(G, "a.txt"), "改一下\n", "utf8");
     ok("锁着的时候提交确实失败（`broken` 不是虚报）", await commitPaths(G, ["a.txt"], "试试") === null);
   }
-  await rm(join(G, ".git", "index.lock"), { force: true });
+  await rm(join(GG, "index.lock"), { force: true });
   ok("**锁一拿掉就自动恢复**（不用重启、不用点什么）", await gitFallbackOf(G, "a.txt") === "on");
 
   /* 正在 merge 也算 broken —— 那时候提交会打乱用户正在整理的历史 */
-  await writeFile(join(G, ".git", "MERGE_HEAD"), "deadbeef\n", "utf8");
+  await writeFile(join(GG, "MERGE_HEAD"), "deadbeef\n", "utf8");
   ok("正在 merge 时也回 `broken`", await gitFallbackOf(G, "a.txt") === "broken", await gitFallbackOf(G, "a.txt"));
-  await rm(join(G, ".git", "MERGE_HEAD"), { force: true });
+  await rm(join(GG, "MERGE_HEAD"), { force: true });
 }
 
 /* ── 草稿暂存（M10-2c）──
@@ -593,140 +629,91 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await clearStagedDraft(proj2, A); await clearStagedDraft(proj2, B);
 }
 
-/* ── 别人的仓库里那些配置不许被执行（issue #40）──
-   git 仓库自带的配置能让 git 执行任意命令，而 `--no-verify` **管不住它们**：
-   `core.fsmonitor` 在 `git status` / `git add` 时就跑，`post-commit` 钩子
-   `--no-verify` 也跳不过。而设计项目天然会被打包转手（交付、网盘下载），
-   git 自己的 `safe.directory` 只拦「属主不是当前用户」—— 解压出来的拦不住。
+/* ── 别人的仓库里那些配置不许被执行（issue #40 → #74）──
+   git 仓库自带的配置能让 git 执行任意命令，而 `--no-verify` 管不住它们。
+   设计项目天然会被打包转手，而 git 的 `safe.directory` 只拦「属主不是当前用户」——
+   解压出来的拦不住。
 
-   这一节造一个**真的恶意仓库**：两处都 `touch` 一个标记文件，
-   然后走一次真实落盘，断言**两个标记都不存在**。 */
+   ⚠️ **#40 的修法（HARDEN 黑名单 + `umbrastudio.managed` 标记）实测两道都能绕过**
+   （#74，2026-10-05）：
+   | 闸 | 怎么绕 | 实测 |
+   | --- | --- | --- |
+   | `managed` 标记 | 它读**仓库自己的 `.git/config`** —— 攻击者可控的文件 | `isOurs` 读到 `true` |
+   | HARDEN 五项 | 漏了 `filter.<任意名>.clean`（`git add` 必跑）、`commit.gpgSign`+`gpg.program`（`git commit` 必跑） | `PWNED_FILTER` 真出现了 |
+
+   **黑名单在这里原理上不可能完备** —— `filter.<名字>.clean` 的名字由对方取，
+   `-c` 只能覆盖已知名字；而我实测过所有环境开关
+   （`GIT_CONFIG_NOSYSTEM` / `GIT_CONFIG_GLOBAL` / `core.attributesFile`），
+   **没有一个能屏蔽仓库自己的 `.git/config`**。
+
+   现在的修法是换一层：`GIT_DIR` 指到**我们自己的状态目录** ——
+   git 读的 config 是我们的，对方那份根本不在链路上。
+
+   ⚠️ 这一节造**四种**雷（不是 #40 那版的两种）—— 那一版全绿正是因为它没造
+   filter 和 gpg。**判据造几种雷，决定它能发现几种绕过。** */
 {
-  const { execFile } = await import("node:child_process");
+  const { execFile, execFileSync } = await import("node:child_process");
   const run = (args: string[], cwd: string) => new Promise<void>((res) => execFile("git", args, { cwd }, () => res()));
   const EVIL = join(DIR, "evil");
   await mkdir(EVIL, { recursive: true });
   await writeFile(join(EVIL, "project.json"), JSON.stringify({ name: "evil", title: "恶意仓库" }), "utf8");
   await writeFile(join(EVIL, "稿子.md"), "第一版\n", "utf8");
-  await run(["init"], EVIL);
-  /* 两处埋雷。`touch` 的目标放在 EVIL 外面（DIR 下），免得被 .gitignore 影响判断 */
-  const mark1 = join(DIR, "PWNED_status"), mark2 = join(DIR, "PWNED_postcommit");
-  await run(["config", "core.fsmonitor", `touch ${mark1}; false`], EVIL);
+  await run(["init", "-q", "."], EVIL);
+  const mark = (n: string) => join(DIR, n);
+  /* 四种雷，各自在不同的 git 子命令上触发 */
+  await writeFile(join(EVIL, ".gitattributes"), "* filter=pwn\n", "utf8");
+  await run(["config", "filter.pwn.clean", `touch ${mark("PWNED_FILTER")}; cat`], EVIL);
+  await run(["config", "commit.gpgSign", "true"], EVIL);
+  await run(["config", "gpg.program", `/bin/sh -c "touch ${mark("PWNED_GPG")}; exit 1" --`], EVIL);
+  await run(["config", "core.fsmonitor", `touch ${mark("PWNED_FSM")}; false`], EVIL);
   await mkdir(join(EVIL, ".git", "hooks"), { recursive: true });
-  await writeFile(join(EVIL, ".git", "hooks", "post-commit"), `#!/bin/sh\ntouch ${mark2}\n`, { mode: 0o755 });
-  /* ⚠️ 先确认这个仓库**真的会中招** —— 不然下面那条判据可能只是因为「雷没埋成」而绿。
-     这是「量到零的两种可能」：世界是零，还是仪器是零。 */
-  await run(["status", "--porcelain"], EVIL);
-  const fuseWorks = existsSync(mark1);
-  ok("**夹具自己先中招**（证明雷埋成了 —— 不然下面那条绿了也说明不了什么）",
-     fuseWorks, fuseWorks ? "core.fsmonitor 被执行了" : "雷没埋成，下面那条不算数");
-  await rm(mark1, { force: true });
+  await writeFile(join(EVIL, ".git", "hooks", "post-commit"), `#!/bin/sh\ntouch ${mark("PWNED_HOOK")}\n`, { mode: 0o755 });
+  /* 对方自写信任标记 —— #40 那道闸就是这么被绕过的 */
+  await run(["config", "umbrastudio.managed", "true"], EVIL);
+
+  /* ⚠️ **先证明雷是活的**（纪律④：量到零的两种可能）。
+     用普通 git 跑一次 `add`，filter 该被触发。 */
+  try { execFileSync("git", ["add", "--", "稿子.md"], { cwd: EVIL, stdio: "pipe" }); } catch { /* 忽略 */ }
+  ok("**夹具自己先中招**（证明雷是活的 —— 不然下面全绿也说明不了什么）", existsSync(mark("PWNED_FILTER")));
+  await run(["reset", "-q"], EVIL);
+  /* ⚠️ **把自验留下的痕迹清掉。**（2026-10-05 实测栽过）
+     自验那一次 `git add` 会同时触发 filter **和 fsmonitor** ——
+     不清的话下面量到的是「我自己刚触发的」，而我会以为是产品漏的。
+     **「夹具自己先中招」这条做法的副作用：自验留下和真实攻击一样的痕迹。** */
+  for (const n of ["PWNED_FILTER", "PWNED_GPG", "PWNED_FSM", "PWNED_HOOK"]) await rm(mark(n), { force: true });
 
   const evilProj = await buildProject(EVIL);
   const e1 = await readAnyFile(evilProj, "稿子.md");
   await writeAnyFile(evilProj, "稿子.md", "第二版\n", { expectSha256: e1.sha256 });
-  /* 落盘后的 git 提交是异步的（不让用户等 git），给它一点时间 */
-  await new Promise((r) => setTimeout(r, 1200));
-  ok("**落盘一次，`core.fsmonitor` 没被执行**（它在 `git status` / `git add` 时就会跑）",
-     !existsSync(mark1), existsSync(mark1) ? "✗ PWNED_status 出现了" : "没出现");
-  ok("**`post-commit` 钩子也没被执行**（`--no-verify` 跳不过它）",
-     !existsSync(mark2), existsSync(mark2) ? "✗ PWNED_postcommit 出现了" : "没出现");
-  /* 盘上那份该照常落盘 —— 安全那道闸**不该把功能也挡掉** */
+  await new Promise((r) => setTimeout(r, 1500));      // 落盘后的提交是异步的
+
+  for (const [n, what] of [
+    ["PWNED_FILTER", "`filter.<名>.clean`（`git add` 必跑，**#40 漏的**）"],
+    ["PWNED_GPG", "`gpg.program`（`git commit` 必跑，**#40 漏的**）"],
+    ["PWNED_FSM", "`core.fsmonitor`"],
+    ["PWNED_HOOK", "`post-commit` 钩子"],
+  ] as const) {
+    ok(`**${what} 没被执行**`, !existsSync(mark(n)), existsSync(mark(n)) ? `✗ ${n} 出现了` : "没出现");
+  }
+
+  /* 功能还在吗 —— ⚠️ **问「我们的 GIT_DIR 里有几个提交」，不是看返回值**：
+     `writeAnyFile` 内部已经提交过了，手工再调一次就是 nothing to commit、照样回 null
+     （§140.3② 那个坑，两天内第二次）。 */
+  const { gitDirForTest } = await import("./gitkeep.js");
+  const gd = gitDirForTest(EVIL);
+  let ours = 0;
+  try { ours = Number(execFileSync("git", ["--git-dir", gd, "rev-list", "--count", "HEAD"]).toString().trim()) || 0; } catch { ours = 0; }
+  ok("**而我们自己的 GIT_DIR 里真的记上了版本**（闸不该把 M9-7 那份兜底关掉）", ours > 0, `${ours} 个提交`);
+
+  /* ⚠️ 两条「对方一点没动」—— 这是搬 GIT_DIR 换来的最大好处 */
+  let theirs = -1;
+  try { theirs = Number(execFileSync("git", ["rev-list", "--count", "--all"], { cwd: EVIL }).toString().trim()) || 0; } catch { theirs = -1; }
+  ok("**对方仓库一个提交都没多**（我们再也不在他的仓库上操作）", theirs === 0, `${theirs} 个提交`);
+  ok("**也没往他的项目里塞 `.gitignore`**（排除规则写在我们的 `info/exclude` 里）",
+     !existsSync(join(EVIL, ".gitignore")));
+
   const e2 = await readAnyFile(evilProj, "稿子.md");
-  ok("而文件照常落盘了（这道闸只拦 git，不拦写入口）", (e2.content ?? "").includes("第二版"), (e2.content ?? "").trim());
-
-  /* 我们自己建的仓库照旧自动记 —— 否则这道闸等于把 M9-7 整个关掉了 */
-  const { commitPaths, ensureRepo } = await import("./gitkeep.js");
-  const MINE = join(DIR, "mine");
-  await mkdir(MINE, { recursive: true });
-  await writeFile(join(MINE, "a.md"), "x\n", "utf8");
-  const made = await ensureRepo(MINE);
-  const sha = made ? await commitPaths(MINE, ["a.md"], "记版本：测试") : null;
-  ok("**我们自己 `git init` 的仓库照旧自动记**（这道闸不是把 M9-7 关掉）",
-     !made || !!sha, made ? (sha ? `提交了 ${sha}` : "✗ 没提交") : "（没装 git，跳过）");
-  /* ⚠️ **数那个仓库的提交数，别看 `commitPaths` 的返回值。**
-     （2026-10-02 反向验证抓到的假绿）
-     第一版写的是 `commitPaths(EVIL, …) === null` —— 而撤掉这道闸之后，
-     上面那次 `writeAnyFile` 内部的两次自动提交（落盘前的外部改动 + 落盘后）
-     **已经把改动提交掉了**，于是我手工再调一次就是 "nothing to commit"，
-     `commitPaths` 照样返回 `null`，**判据照样绿**。
-     它测到的是「没东西可提交」，不是「闸拦住了」。
-
-     要钉的后果是「**别人的仓库里一个提交都不该多出来**」——
-     那就直接数提交数。 */
-  const countCommits = (cwd: string) => new Promise<number>((res) => {
-    execFile("git", ["rev-list", "--count", "HEAD"], { cwd }, (e, out) => res(e ? 0 : Number(String(out).trim()) || 0));
-  });
-  const evilCommits = await countCommits(EVIL);
-  ok("**别人的仓库里一个提交都没多出来**（没有 `umbrastudio.managed` 标记就什么都不做）",
-     evilCommits === 0, `${evilCommits} 个提交`);
-}
-
-/* ── 版本越多不该越卡（issue #48）──
-   原来每次 `list_file_versions` 都把这个文件的**全部**快照逐个解压 + 跑 LCS。
-   实测（3000 行、61 版）：**10473 / 10660 / 10198 ms**（三次一样 = 完全没缓存），
-   而同一份不要 delta 只要 **13 ms**。那 10 秒跑在服务主线程上，
-   同一个进程还在接 MCP / WS / 别的 HTTP —— **整个工作台不响应**。
-   用户每打开一个文件、每按一次 ⌘S 都付一次，200 版就是 ~35 秒。
-
-   ⚠️ 这一节**不比绝对毫秒数**（机器快慢差几倍，CI 上更不稳），
-   比的是**和「不要 delta」那条基线的倍数** —— 那条基线就是「只读 json」的成本。
-   原来的实现是 800 倍，现在该是个位数。 */
-{
-  const PERF = join(DIR, "perf");
-  await mkdir(PERF, { recursive: true });
-  await writeFile(join(PERF, "project.json"), JSON.stringify({ name: "perf", title: "性能" }), "utf8");
-  const body = (n: number) => [`// ${n}`, ...Array.from({ length: 400 }, (_, i) => `const v${i} = ${(i + n) % 13};`)].join("\n");
-  await writeFile(join(PERF, "big.ts"), body(0), "utf8");
-  const pf = await buildProject(PERF);
-  for (let i = 1; i <= 30; i++) {
-    const c = await readAnyFile(pf, "big.ts");
-    await writeAnyFile(pf, "big.ts", body(i), { expectSha256: c.sha256 });
-  }
-  /* ⚠️ **这一条要在任何 `listSnapshotMeta` 之前，直接读盘上的 json。**
-     （2026-10-02 反向验证抓到的假绿）
-     原来写的是「`listSnapshotMeta` 回来的每一版都有 delta」——
-     而撤掉「写时算一次」之后，**补算路径会把它补上**，于是判据照样绿。
-     它分不清「写快照时算的」和「列版本时补算的」。
-     要问的是**盘上那份 json 里有没有**，那才是「写的时候算过」的唯一证据。 */
-  const pfDir = snapDir(pf, "big.ts");
-  let onDiskHasDelta = 0, onDiskTotal = 0;
-  for (const f of await readdir(pfDir)) {
-    if (!/^s\d+\.json$/.test(f)) continue;
-    onDiskTotal++;
-    const j = JSON.parse(await readFile(join(pfDir, f), "utf8")) as Record<string, unknown>;
-    if ("delta" in j) onDiskHasDelta++;
-  }
-  ok("**delta 在写快照时就写进 json 了**（读盘上那份确认 —— 不是列版本时补算的）",
-     onDiskTotal === 31 && onDiskHasDelta === 31, `${onDiskHasDelta}/${onDiskTotal} 份 json 里有 delta`);
-
-  const t1 = Date.now(); const metas = await listSnapshotMeta(pf, "big.ts"); const withDelta = Date.now() - t1;
-  const t2 = Date.now(); await listSnapshotMeta(pf, "big.ts", false); const noDelta = Date.now() - t2;
-  ok("每一版都给出了 delta（没有 `undefined` 漏出去）",
-     metas.length === 31 && metas.every((m) => m.delta !== undefined),
-     `${metas.length} 版 · 没有 delta 的 ${metas.filter((m) => m.delta === undefined).length} 版`);
-  /* 基线可能是 0ms，所以给它一个下限再算倍数 */
-  const ratio = withDelta / Math.max(1, noDelta);
-  ok("**要 delta 和不要 delta 的耗时在同一个量级**（原来是 800 倍：10473ms vs 13ms）",
-     ratio < 8, `${withDelta}ms vs ${noDelta}ms = ${ratio.toFixed(1)} 倍`);
-
-  /* 旧快照（issue #48 之前写下的，json 里没有 delta 字段）的补算路径：
-     **限量 + 回写 + 下一次接着补**，每一次都有界。 */
-  const d = snapDir(pf, "big.ts");
-  for (const f of await readdir(d)) {
-    if (!/^s\d+\.json$/.test(f)) continue;
-    const j = JSON.parse(await readFile(join(d, f), "utf8")) as Record<string, unknown>;
-    delete j.delta;
-    await writeFile(join(d, f), JSON.stringify(j, null, 1), "utf8");
-  }
-  const r1 = await listSnapshotMeta(pf, "big.ts");
-  const got1 = r1.filter((m) => m.delta && typeof m.delta === "object").length;
-  ok("**旧快照一次只补算有限几版**（不加上限就又回到 10 秒那条路）",
-     got1 > 0 && got1 <= 21, `第一次补了 ${got1} 版，其余给「没算」`);
-  const r2 = await listSnapshotMeta(pf, "big.ts");
-  const got2 = r2.filter((m) => m.delta && typeof m.delta === "object").length;
-  ok("**而且算完回写了**（下一次接着补，不是每次重算同样的几版）",
-     got2 > got1, `第一次 ${got1} 版 → 第二次 ${got2} 版`);
+  ok("而文件照常落盘了（这道闸只拦 git，不拦写入口）", (e2.content ?? "").includes("第二版"));
 }
 
 await rm(DIR, { recursive: true, force: true });
