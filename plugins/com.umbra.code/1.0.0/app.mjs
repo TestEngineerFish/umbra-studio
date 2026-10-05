@@ -102,7 +102,7 @@ function markDiff() {
      两者问的是同一件事 ——「编辑区里这份和盘上那份差在哪」。 */
   const what = curVersion ? `在看 ${curVersion}` : draftPreview ? "在看草稿" : null;
   if (!what || !disk) { view.dispatch({ effects: setDiffEffect.of(null) }); return; }
-  const d = diffVsCurrent(view.state.doc.toString(), disk.content);
+  const d = diffVsCurrent(docText(), disk.content);
   view.dispatch({ effects: setDiffEffect.of(d) });
   /* ⚠️ **算不出来要说出来**（行数超上限）。不说的话画面上一个标记都没有，
      而「没有差异」和「没算差异」长得一模一样 —— 后者会让人以为这一版和当前一样。 */
@@ -132,7 +132,7 @@ function ensureChangedField(cm) {
 /** 重算「哪几行改了」并推进编辑器。落盘之后 `disk` 换了新的，这里自然就空了。 */
 function markChanged() {
   if (!view || !disk || !setChangedEffect) return;
-  view.dispatch({ effects: setChangedEffect.of(changedLines(disk.content, view.state.doc.toString())) });
+  view.dispatch({ effects: setChangedEffect.of(changedLines(disk.content, docText())) });
 }
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const fail = (title, body) => {
@@ -649,7 +649,7 @@ function scheduleStage() {
   stageTimer = setTimeout(async () => {
     stageTimer = null;
     if (curVersion || draftPreview || !view || !disk) return;
-    const now = view.state.doc.toString();
+    const now = docText();
     if (now === disk.content) { await umbra.call("clear_staged_draft", { path: curPath }); return; }
     await umbra.call("stage_draft", { path: curPath, content: now });
   }, 800);
@@ -766,6 +766,39 @@ function diffVsCurrent(oldText, newText) {
 /** 盘上那一版：内容 + sha + 快照号。**改动判定靠它** —— 不留这一份的话
  *  没法回答「改过没」，只能靠一个 boolean，而那个 boolean 在「改了又改回来」时是错的。 */
 let disk = null;
+
+/** 这个文件原来用的换行符（`"\r\n"` 或 `"\n"`）。
+ *
+ *  ⚠️ **CodeMirror 的 `doc.toString()` 固定用 `\n` 连行**，不管读进来的是什么
+ *  （2026-10-05 实测确证：`"第一行\r\n第二行\r\n"` 33 字节进去、30 字节出来）。
+ *  不还原的话，一份 CRLF 文件（Windows 同事给的、或者 git `core.autocrlf` 产出的）：
+ *
+ *  | 后果 | 实测读数 |
+ *  | --- | --- |
+ *  | **一打开就说「还没落盘」** | 横条 36px，而用户一个字都没改 |
+ *  | 横条自相矛盾 | 写的是「还没落盘 · **4 行 → 4 行**」—— 行数一样却说没落盘 |
+ *  | **⌘S 之后整份换行符被改掉** | 42 → 39 字节，`\r` 一个都没了 |
+ *
+ *  最后一条最重，而且**用户什么都没做**：打开、按一下 ⌘S，
+ *  他的 `git diff` 就显示**整个文件全改了**。 */
+let diskEol = "\n";
+
+/** 编辑器里的内容，**按原来的换行符还原**。
+ *
+ *  ⚠️ **只给两件事用：落盘，和「跟盘上那份比」。**
+ *  原来有 7 处各写 `view.state.doc.toString()`，少改一处就会出现
+ *  「比较时相等而写回去不一样」这种最难查的不一致
+ *  （§136.1 那条「两份几乎一样的代码，差别藏在那一行里」）。
+ *
+ *  ⚠️⚠️ **位置计算绝不能用它。** `parseWithPos` 的 `from/to` 要和
+ *  `view.state.selection.main.head`（编辑器坐标）对得上，而 CRLF 版本
+ *  每过一行多 1 字节 —— 到第 100 行就偏 100 个字符，
+ *  「光标路径」和「在源码里看 L12–17」全错位。
+ *  那几处一律直接用 `view.state.doc.toString()`，并在旁边写明原因。 */
+const docText = () => {
+  const t = view.state.doc.toString();
+  return diskEol === "\n" ? t : t.split("\n").join(diskEol);
+};
 let busy = false;
 
 /* ⚠️ **看历史版时永远不脏。** 那时编辑器里的内容确实和盘上不一样，
@@ -773,7 +806,7 @@ let busy = false;
    不加这一条的话横条会写「还没落盘 · 13 行 → 9 行」，
    而**那句话会让人以为自己的改动还在，其实一个字都没改过**。
    顺带也就不会拦关页签了（那张卡问的是「这些改动不要了吗」，这里没有改动）。 */
-const isDirty = () => !curVersion && !draftPreview && !!disk && !!view && view.state.doc.toString() !== disk.content;
+const isDirty = () => !curVersion && !draftPreview && !!disk && !!view && docText() !== disk.content;
 
 /** 横条 + chrome 的读数。**一处算、两处用** —— 分开算迟早对不上。 */
 function paint() {
@@ -789,7 +822,7 @@ function paint() {
   }
   if (dirty) {
     const a = (disk.content.match(/\n/g) ?? []).length + 1;
-    const b = (view.state.doc.toString().match(/\n/g) ?? []).length + 1;
+    const b = view.state.doc.lines;          // 行数问编辑器，别从字符串里数（issue #66）
     el("note").textContent = `还没落盘 · ${a} 行 → ${b} 行`;
   }
   el("save").disabled = busy;
@@ -922,7 +955,7 @@ async function save() {
   if (!isDirty() || busy) return;
   busy = true; paint();
   if (stageTimer) { clearTimeout(stageTimer); stageTimer = null; }   // 别让防抖在落盘之后又存一份回去
-  const r = await umbra.call("write_file", { path: curPath, content: view.state.doc.toString(), expectSha256: disk.sha });
+  const r = await umbra.call("write_file", { path: curPath, content: docText(), expectSha256: disk.sha });
   busy = false;
   if (!r || !r.ok) {
     const e = (r && r.errors && r.errors[0]) || {};
@@ -987,6 +1020,18 @@ async function load(path, theme, opt = {}) {
      —— 字段名去 `server/src/cap/files.ts` 查过，不是猜的（猜错的话 sha 对不上，
      每次落盘都会被写前校验拦住，而错误信息只说「校验不过」，很难想到是字段名）。 */
   disk = { content: r.data?.content ?? "", sha: r.data?.sha256 ?? "", lines: r.data?.lines ?? null, size: r.data?.size ?? 0 };
+  /* ⚠️ **原来用的是哪种换行符，记下来**（2026-10-05，issue #66）。
+     判据是「有没有 `\r\n`」而不是「多数派是什么」—— 混用的文件（很常见：
+     一份 LF 的文件被 Windows 编辑器改过几行）按 CRLF 还原会把原本的 LF 行也变成 CRLF。
+     ⚠️ 所以**只有整份都是 CRLF 时才按 CRLF 还原**，混用的一律当 LF ——
+     那样混用的文件会被规整，但**不会比现在更糟**（现在是一律变 LF），
+     而「整份 CRLF」这个最常见的情况能完全往返。 */
+  {
+    const c = disk.content;
+    const nLF = (c.match(/\n/g) ?? []).length;
+    const nCRLF = (c.match(/\r\n/g) ?? []).length;
+    diskEol = nLF > 0 && nCRLF === nLF ? "\r\n" : "\n";
+  }
   curVersion = opt.version ?? null;
   draftPreview = !!opt.draftPreview;
   /* JSON：解析一次，树和光标路径都靠它。
@@ -1043,6 +1088,13 @@ async function load(path, theme, opt = {}) {
         /* ⚠️ JSON 边改边重新解析 —— 不重解的话「解析不了」那一行会**停在旧位置**，
            用户改好了它还红着，而那会让人以为自己没改对。
            几百 KB 的 JSON 解析一次是毫秒级，不值得为它上防抖。 */
+        /* ⚠️ **这一处必须用编辑器里的原文（LF），不是还原换行符之后的**（issue #66）。
+           `parseWithPos` 算出来的 `from/to` 要和 `view.state.selection.main.head`
+           （编辑器坐标）对得上 —— 而 CRLF 版本每过一行就多 1 字节，
+           到第 100 行就偏 100 个字符，「光标路径」和「在源码里看 L12–17」全错位。
+
+           **`docText()` 只给「落盘 / 和盘上那份比较」用，位置计算一律用编辑器坐标。**
+           两类用途混成一个函数就是下一个 bug。 */
         if (isJson()) { jparsed = parseWithPos(view.state.doc.toString()); if (mode === "tree") renderTree(); }
         paint(); markChanged(); scheduleStage(); markJsonError();
       }

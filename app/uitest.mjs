@@ -2790,6 +2790,71 @@ console.log("\n令牌不写进页面（Q42 / issue #30）");
 
    所以这里兜一道：扫一遍、清干净、**并且把残留报出来** ——
    有残留本身就是信息（说明中间抛过），不该被静默清掉。 */
+/* ═══ CRLF 文件原样往返（issue #66）═══
+   ⚠️ **CodeMirror 的 `doc.toString()` 固定用 `\n` 连行**，不管读进来的是什么
+   （实测：`"第一行\r\n第二行\r\n"` 33 字节进去、30 字节出来）。
+   不还原的话一份 CRLF 文件：**一打开就说「还没落盘」**（而用户一个字都没改，
+   横条还自相矛盾地写着「4 行 → 4 行」）· **⌘S 之后整份换行符被改掉**
+   （实测 42 → 39 字节，`\r` 一个都没了）。
+
+   最后一条最重：用户打开一个 Windows 同事的文件、什么都没做、按一下 ⌘S，
+   他的 `git diff` 就显示**整个文件全改了**。
+
+   这一节钉三件：① 打开不脏 ② 改了会脏 ③ 落盘后换行符没变。
+   ⚠️ 还要钉**反面**：LF 文件不该被变成 CRLF —— 一个只会「往一个方向改」的
+   修法，和原来的 bug 是同一种错。 */
+console.log("\n CRLF / LF 原样往返（issue #66）");
+{
+  const { writeFileSync, readFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const boot = await pg.evaluate(() => ({ url: window.__UD_APP.url, token: window.__UD_APP.token, dir: window.__UD_APP.dir }));
+  const cases = [
+    { name: "_uitest-crlf.ts", eol: "\r\n", label: "CRLF" },
+    { name: "_uitest-lf.ts", eol: "\n", label: "LF" },
+  ];
+  for (const c of cases) {
+    const body = ["const a = 1;", "const b = 2;", "const c = 3;", ""].join(c.eol);
+    const abs = join(boot.dir, c.name);
+    writeFileSync(abs, body, "utf8");
+    await pg.waitForTimeout(1500);
+    const row = pg.locator('[role="treeitem"]').filter({ hasText: c.name }).first();
+    if (!await row.count()) { ok(false, `${c.label}：样本在树里刷出来`); rmSync(abs, { force: true }); continue; }
+    await clearGuard();
+    await row.click(); await pg.waitForTimeout(2600);
+    await clearGuard();
+    const fr = pg.frameLocator('iframe[data-role="body"]');
+    /* ① 打开就不该脏 —— 用真实高度量，不看 `hidden` 属性（§七十二 那条） */
+    const h = await barH(fr, "dirty");
+    ok(h === 0, `**${c.label}：一打开不说「还没落盘」**（用户一个字都没改）`,
+       h === 0 ? "横条 0px" : `✗ 横条 ${h}px，写的是「${(await fr.locator("#note").innerText().catch(() => "")).trim()}」`);
+
+    /* ② 改一个字该脏 —— 否则「不脏」可能是因为我把它改成了永远不脏 */
+    await fr.locator(".cm-content").click();
+    await pg.keyboard.press("Meta+ArrowDown"); await pg.keyboard.press("End");
+    await pg.keyboard.type(" // x");
+    await pg.waitForTimeout(700);
+    ok(await barH(fr, "dirty") > 0, `${c.label}：改一个字之后说未落盘（不是永远不脏）`);
+
+    /* ③ 落盘后换行符一个都没变 */
+    await pg.keyboard.press("Meta+s"); await pg.waitForTimeout(2400);
+    const txt = readFileSync(abs, "utf8");
+    const nCRLF = (txt.match(/\r\n/g) ?? []).length;
+    const nBareLF = (txt.match(/[^\r]\n/g) ?? []).length;
+    ok(txt.includes("// x"), `${c.label}：改动真的落盘了`);
+    ok(c.eol === "\r\n" ? (nCRLF > 0 && nBareLF === 0) : (nCRLF === 0 && nBareLF > 0),
+       `**${c.label}：落盘后换行符还是 ${c.label}**（原来一律被改成 LF；只往一个方向改和原 bug 同错）`,
+       `CRLF ${nCRLF} 处 · 裸 LF ${nBareLF} 处`);
+
+    /* 收尾：这一份是 fs 写的，走写入口落过盘，所以草稿/快照都要清 */
+    await pg.evaluate(async ({ name, url, token }) => {
+      const u = (x) => `${url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+      await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) }).catch(() => {});
+    }, { name: c.name, url: boot.url, token: boot.token });
+    rmSync(abs, { force: true });
+    await pg.waitForTimeout(600);
+  }
+}
+
 /* ═══ 首页：同名项目要分得清（issue #12）═══
    `project.json` 的 `name` 不唯一 —— 拷一份项目做实验就重名，而那是常见做法。
    列表视图第二行本来就是完整路径，分得清；**网格卡第二行是「有 title 就显示 title」**，
