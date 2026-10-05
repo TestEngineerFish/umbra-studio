@@ -25,7 +25,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { E, X } from "./codes.js";
 import { err, ToolError, type Diagnostic } from "./envelope.js";
-import { parseDraft } from "./draft.js";
+import { parseDraft, draftKindOf } from "./draft.js";
 import { listNodes } from "./nodeid.js";
 import { draftPath, type Project } from "./project.js";
 import { locateNode, resolveDraft } from "./locate.js";
@@ -165,8 +165,7 @@ export async function setProp(
   }
 
   // ── 要求 3：走同一条落盘路 ──
-  const kindOf = Object.keys(d.props ?? {}).some((k) => !k.startsWith("$")) ? "component" : "page";
-  const { outcome } = await writeDraft(p, rel, next, kindOf as "page" | "component", undefined, origin ? { origin } : undefined);
+  const { outcome } = await writeDraft(p, rel, next, draftKindOf(d), undefined, origin ? { origin } : undefined);
 
   // 改过的节点地址会变 —— 回报新地址，界面才能接着调
   let newNode: string | null = null;
@@ -205,10 +204,8 @@ export async function revertTo(
       "源码副本是从这一版功能上线之后才开始存的（doc/00 §18.2）。老版本只能靠 git 兜底：diff_drafts 按 git ref 取");
   }
   const restored = gunzipSync(await readFile(gz)).toString("utf8");
-  const kindOf = Object.keys(parseDraft(restored, rel).props ?? {}).some((k) => !k.startsWith("$"))
-    ? "component" : "page";
   const latest = vs[vs.length - 1] as string;
-  const { outcome } = await writeDraft(p, rel, restored, kindOf as "page" | "component",
+  const { outcome } = await writeDraft(p, rel, restored, draftKindOf(parseDraft(restored, rel)),
     `这一版是**回退**：把 ${version} 的内容原样落成新的一版（从 ${latest} 退回）。下面列的是相对 ${latest} 的差异。`,
     origin ? { origin } : undefined);
   return { file: rel, from: latest, restored: version, write: outcome };

@@ -5,7 +5,7 @@
  * 所以生命周期操作必须先能回答「谁引用了我」。
  */
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { isInside } from "./pathguard.js";
+import { isInside, plainNameProblem } from "./pathguard.js";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseDraft } from "./draft.js";
@@ -174,10 +174,21 @@ export async function renameDraft(
   // 验证源文件存在
   const oldAbs = draftPath(p, oldPath);
 
+  /* ⚠️ **新基名是一个名字，不是一段路径**（issue #80，2026-10-05）。
+     原来 `newBaseName` 原样进 `resolve` —— `rename_draft({ newName: "../../x" })`
+     把稿 `rename` 到**项目外**，而引用方的 `dc-import name` 已经先被改写成 `../../x`。
+     同文件的 `moveDraft` 走了 `isInside`（#19 那一轮），**这里没跟上**。
+     「改名不跨目录」本来就是这个函数自己的契约，所以形状那一道也该在。
+     判定走 `plainNameProblem()` —— 和 #23 / #57 / #63 / #70 同一份。 */
+  const nameBad = plainNameProblem(newBaseName.replace(/\.dc\.html$/i, ""));
+  if (nameBad) throw new Error(`新名字不合法：${nameBad}`);
+
   // 计算新路径（同一目录，只改基名）
   const oldDir = dirname(oldAbs);
   const newFileName = newBaseName.endsWith(".dc.html") ? newBaseName : newBaseName + ".dc.html";
   const newAbs = resolve(oldDir, newFileName);
+  /* 第二道：算出来的路径还得在项目里 —— 不依赖我对形状想得全不全。 */
+  if (!isInside(p.dir, newAbs)) throw new Error("改名后的路径跨出了项目目录");
 
   if (newAbs === oldAbs) {
     throw new Error("新旧文件名相同");
@@ -204,6 +215,16 @@ export async function renameDraft(
   // 因为改名不改路径，只改基名，所以 name 的目录部分不变，只改基名
   const updatedFiles: Array<{ rel: string; oldName: string; newName: string }> = [];
 
+  /* ⚠️ **先动文件、再改引用**（issue #80 第 3 点，2026-10-05）。
+     原来顺序是反的：先把所有引用方落盘改好，最后才 `rename`。
+     `newName` 指向一个不存在的子目录时 `rename` 抛 ENOENT ——
+     **引用方已经改完了，文件没改名，所有引用当场断掉，而且没有回滚。**
+     现在：改名成功才动引用；改引用中途炸了，把改过的稿和文件名一起退回去。
+     （形状那道闸已经让 ENOENT 这一种不可能发生了，但**闸是按我想到的情况写的，
+     回滚是按"我没想到"写的** —— 两个都要。） */
+  await rename(oldAbs, newAbs);
+  const touched: Array<{ abs: string; before: string }> = [];
+  try {
   for (const ref of importedBy) {
     // ref.rel 是引用方的相对路径
     // ref.name 是引用方中使用的 name（可能是基名或带路径的）
@@ -242,13 +263,16 @@ export async function renameDraft(
     const newSrc = refSrc.replace(nameRe, `$1${newName}$2`);
 
     if (newSrc !== refSrc) {
+      touched.push({ abs: refAbs, before: refSrc });
       await writeAtomic(refAbs, newSrc);
       updatedFiles.push({ rel: ref.rel, oldName: ref.name, newName });
     }
   }
-
-  // 最后重命名文件
-  await rename(oldAbs, newAbs);
+  } catch (e) {
+    for (const t of touched.reverse()) await writeAtomic(t.abs, t.before).catch(() => { /* 尽力 */ });
+    await rename(newAbs, oldAbs).catch(() => { /* 尽力 */ });
+    throw e;
+  }
 
   const newRel = newAbs.slice(p.dir.length + 1).split(sep).join("/");
   return {
@@ -267,6 +291,8 @@ export interface MoveDraftResult {
   /** 更新了多少个引用方的 dc-import name（路径变了要重新算） */
   referencesUpdated: number;
   updatedFiles: Array<{ rel: string; oldName: string; newName: string }>;
+  /** 这份稿**自己**的 dc-import 改了哪几条（issue #82 —— 原来一条都没改） */
+  ownImportsUpdated: Array<{ oldName: string; newName: string }>;
 }
 
 /**
@@ -325,6 +351,49 @@ export async function moveDraft(
   const importedBy = oldEntry.importedBy;
   const updatedFiles: Array<{ rel: string; oldName: string; newName: string }> = [];
 
+  /* ⚠️ 和 `renameDraft` 同一个顺序（issue #80 第 3 点）：先动文件、后改引用。 */
+  await rename(oldAbs, newAbs);
+  const touched: Array<{ abs: string; before: string }> = [];
+  const ownUpdated: Array<{ oldName: string; newName: string }> = [];
+  try {
+  /* ── 这份稿**自己**引用的组件也得跟着改（issue #82，2026-10-05）──
+     `dc-import name` 是相对**引用方所在目录**解析的（`doc/01` H4）。
+     稿换了目录，它自己的相对基准就变了：
+
+       登录页.dc.html        <dc-import name="主按钮">  → 主按钮.dc.html        ✓
+       move_draft(…, "Pages")
+       Pages/登录页.dc.html  <dc-import name="主按钮">  → Pages/主按钮.dc.html  ✗
+
+     而原来这个函数只遍历 `importedBy`（谁引用了我），`imports`（我引用了谁）
+     **一行都没动** —— 函数头注释自己写着「跨目录移动时引用路径要跟着修
+     （相对路径基准变了）」，工具说明写「移动并把引用它的稿一起改写」。
+     **两句话都对，而实现只做了一半** —— 页面稿几乎都引用组件，
+     所以「把页面挪进 Pages/」这个最常见的整理动作，挪完那页的组件全缺失。
+
+     ⚠️ 回归盲区在这里：`lifecycletest` 步骤 5 移动的是**组件**稿（它自己没有
+     任何 `dc-import`），所以 `checkNoMissingImports` 一直全绿。
+     **从没移动过一份「自己有引用」的页面稿。**
+
+     `oldEntry.imports` 只装**解析得到的**引用（`buildRefGraph` 第二步的
+     `im.relTarget && files.has(...)`）—— 移动前就断掉的那几条不在里面，
+     所以「不瞎改」是数据结构自带的。 */
+  {
+    const own = await readFile(newAbs, "utf8");
+    let next = own;
+    for (const im of oldEntry.imports) {
+      const targetAbs = resolve(p.dir, im.rel);
+      const newName = relative(dirname(newAbs), targetAbs).replace(/\.dc\.html$/, "").split(sep).join("/");
+      if (newName === im.name) continue;
+      const re = new RegExp(`(<dc-import\\b[^>]*name\\s*=\\s*["'])${escapeRegex(im.name)}(["'])`, "gi");
+      const after = next.replace(re, `$1${newName}$2`);
+      if (after !== next) { next = after; ownUpdated.push({ oldName: im.name, newName }); }
+    }
+    if (next !== own) {
+      touched.push({ abs: newAbs, before: own });
+      await writeAtomic(newAbs, next);
+    }
+  }
+
   for (const ref of importedBy) {
     const refAbs = resolve(p.dir, ref.rel);
     const refDir = dirname(refAbs);
@@ -354,13 +423,16 @@ export async function moveDraft(
     const newSrc = refSrc.replace(nameRe, `$1${newName}$2`);
 
     if (newSrc !== refSrc) {
+      touched.push({ abs: refAbs, before: refSrc });
       await writeAtomic(refAbs, newSrc);
       updatedFiles.push({ rel: ref.rel, oldName: ref.name, newName });
     }
   }
-
-  // 移动文件
-  await rename(oldAbs, newAbs);
+  } catch (e) {
+    for (const t of touched.reverse()) await writeAtomic(t.abs, t.before).catch(() => { /* 尽力 */ });
+    await rename(newAbs, oldAbs).catch(() => { /* 尽力 */ });
+    throw e;
+  }
 
   const newRel = newAbs.slice(p.dir.length + 1).split(sep).join("/");
   return {
@@ -368,6 +440,7 @@ export async function moveDraft(
     newPath: newRel,
     referencesUpdated: updatedFiles.length,
     updatedFiles,
+    ownImportsUpdated: ownUpdated,
   };
 }
 
@@ -434,7 +507,14 @@ export async function deleteDraft(
   const trashDir = join(p.dir, ".umbrastudio", "trash", timestamp);
   await mkdir(trashDir, { recursive: true });
 
-  const trashPath = join(trashDir, basename(path));
+  /* ⚠️ **回收站里留的是原相对路径，不是基名**（issue #81，2026-10-05）。
+     原来 `join(trashDir, basename(path))` —— 原目录丢了，也没有 meta 记下来，
+     于是 `restoreDraft` 只能「恢复到项目根」，而 `list_trash` / `restore_trashed`
+     的说明都在承诺「原路径」「原位置」。**契约承诺了一件实现做不到的事。**
+     同一个项目里 `files.ts` 的 `trashFile` 用的是 `<stamp>/<原相对路径>` ——
+     **两条删除路径的回收站布局原来不一样**，而 `listTrash` 只按其中一种读。 */
+  const trashPath = join(trashDir, ...path.split("/"));
+  await mkdir(dirname(trashPath), { recursive: true });
   await rename(abs, trashPath);
 
   const trashRel = trashPath.slice(p.dir.length + 1).split(sep).join("/");
@@ -445,29 +525,38 @@ export async function deleteDraft(
   };
 }
 
-/** 列出回收站中的稿件 */
+/** 列出回收站中的稿件。
+ *  ⚠️ **递归**（issue #81）：回收站布局是 `<stamp>/<原相对路径>`，
+ *  原来只往下读一层、把那一层的每一项都当成一份稿 ——
+ *  于是 `trash_file("assets/img/a.png")` 在列表里显示成一个**目录** `assets`，
+ *  对它「恢复」会把整个 `assets` 目录 `rename` 到项目根，
+ *  项目根已有 `assets` 时目标变成 `assets 2.dc.html`（一个目录）。 */
 export async function listTrash(
   p: Project,
-): Promise<Array<{ trashPath: string; originalName: string; deletedAt: string }>> {
-  const { readdir, stat } = await import("node:fs/promises");
+): Promise<Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }>> {
+  const { readdir } = await import("node:fs/promises");
   const trashRoot = join(p.dir, ".umbrastudio", "trash");
   if (!existsSync(trashRoot)) return [];
 
-  const items: Array<{ trashPath: string; originalName: string; deletedAt: string }> = [];
+  const items: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }> = [];
   const timestamps = await readdir(trashRoot, { withFileTypes: true });
   for (const ts of timestamps) {
     if (!ts.isDirectory()) continue;
     const tsDir = join(trashRoot, ts.name);
-    const files = await readdir(tsDir);
-    for (const f of files) {
-      const abs = join(tsDir, f);
-      const s = await stat(abs);
-      items.push({
-        trashPath: abs.slice(p.dir.length + 1).split(sep).join("/"),
-        originalName: f,
-        deletedAt: ts.name,
-      });
-    }
+    const walk = async (dir: string): Promise<void> => {
+      for (const ent of await readdir(dir, { withFileTypes: true })) {
+        const abs = join(dir, ent.name);
+        if (ent.isDirectory()) { await walk(abs); continue; }
+        const originalPath = relative(tsDir, abs).split(sep).join("/");
+        items.push({
+          trashPath: abs.slice(p.dir.length + 1).split(sep).join("/"),
+          originalPath,
+          originalName: basename(originalPath),
+          deletedAt: ts.name,
+        });
+      }
+    };
+    await walk(tsDir);
   }
   return items.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
 }
@@ -485,22 +574,48 @@ export async function restoreDraft(
   const { existsSync } = await import("node:fs");
   const { mkdir } = await import("node:fs/promises");
 
-  const trashAbs = resolve(p.dir, trashPath);
+  /* ⚠️ **只能恢复回收站里的条目**（issue #80，p1，2026-10-05）。
+     原来只检查 `existsSync`，然后 `rename(trashAbs, <项目根>/<basename>)` ——
+     `trashPath` 是 `z.string()` 原样透传的，于是：
+       restore_trashed({ trashPath: "../别的项目" })
+         → `rename` 把**整个兄弟项目目录**搬进当前项目（`rename` 对目录同样生效）
+       restore_trashed({ trashPath: "../../../../Users/<用户>/.ssh/id_rsa" })
+         → 用户文件被挪走，原位置消失
+       restore_trashed({ trashPath: "Pages/任务.dc.html" })（项目内正常的稿）
+         → 被静默挪到项目根，而返回值还说「恢复了」
+     同文件的 `purgeTrash` 有这道判定，**这里漏了**。
+     和 #57 / #63 / #69 / #70 / #23 同一族：外部给的路径段没过
+     「必须在某棵子树里」就进了 `resolve` + 写操作。 */
+  const trashRoot = join(p.dir, ".umbrastudio", "trash");
+  const trashRel = trashPath.split("\\").join("/");
+  const trashAbs = resolve(p.dir, trashRel);
+  if (!isInside(trashRoot, trashAbs) || trashAbs === trashRoot) {
+    throw new Error(`只能恢复回收站里的条目：${trashRel}`);
+  }
   if (!existsSync(trashAbs)) {
     throw new Error(`回收站文件 "${trashPath}" 不存在`);
   }
 
-  // 从路径中推断原始位置：.umbrastudio/trash/<时间戳>/<文件名>
-  const fileName = basename(trashPath);
-  // 默认恢复到项目根
-  let restoreAbs = resolve(p.dir, fileName);
+  /* ── 恢复到**原位置**（issue #81）──
+     回收站路径是 `.umbrastudio/trash/<stamp>/<原相对路径>`，
+     去掉 `<stamp>/` 就是原相对路径。旧布局的条目（只有基名）这一步算出来
+     也就是基名 —— **和原来的「回项目根」兜底自然一致**，不用分支。 */
+  const underTrash = relative(trashRoot, trashAbs).split(sep).join("/");
+  const originalRel = underTrash.split("/").slice(1).join("/");
+  if (!originalRel) throw new Error(`回收站路径里没有原文件：${trashRel}`);
+  let restoreAbs = resolve(p.dir, originalRel);
+  if (!isInside(p.dir, restoreAbs)) throw new Error("恢复目标跨出了项目目录");
 
-  // 如果已有同名文件，加序号
+  /* 如果已有同名文件，**在同目录**加序号。
+     ⚠️ 后缀按真实的来 —— 原来一律补 `.dc.html`，于是从文件面删的
+     `a.png` 会被恢复成 `a 2.dc.html`。 */
   if (existsSync(restoreAbs)) {
-    const baseWithoutExt = fileName.replace(/\.dc\.html$/, "");
+    const name = basename(originalRel);
+    const ext = name.endsWith(".dc.html") ? ".dc.html" : (name.match(/\.[^.]*$/)?.[0] ?? "");
+    const stem = ext ? name.slice(0, -ext.length) : name;
     let i = 2;
     do {
-      restoreAbs = resolve(p.dir, `${baseWithoutExt} ${i}.dc.html`);
+      restoreAbs = resolve(dirname(resolve(p.dir, originalRel)), `${stem} ${i}${ext}`);
       i++;
     } while (existsSync(restoreAbs) && i < 100);
   }
@@ -510,12 +625,17 @@ export async function restoreDraft(
 
   await rename(trashAbs, restoreAbs);
 
-  // 清理空回收站目录
-  const trashDir = dirname(trashAbs);
+  /* 清理空回收站目录 —— **一层层往上收**（issue #81：现在条目可能嵌在
+     `<stamp>/sub/深/a.png` 里，只收它的直接父目录会留下一串空壳）。
+     收到 `trashRoot` 就停。 */
   try {
     const { readdir, rmdir } = await import("node:fs/promises");
-    const remaining = await readdir(trashDir);
-    if (remaining.length === 0) await rmdir(trashDir);
+    let dir = dirname(trashAbs);
+    while (isInside(trashRoot, dir) && dir !== trashRoot) {
+      if ((await readdir(dir)).length > 0) break;
+      await rmdir(dir);
+      dir = dirname(dir);
+    }
   } catch { /* 清理失败不影响恢复 */ }
 
   const originalPath = restoreAbs.slice(p.dir.length + 1).split(sep).join("/");
@@ -554,11 +674,15 @@ export async function restoreDraft(
 /** 彻底删除回收站里的一项（S8 回收站的「彻底删除」）。trashPath 必须在 .umbrastudio/trash/ 下 —— 别的路径一律拒绝。 */
 export async function purgeTrash(p: Project, trashPath: string): Promise<{ removed: string }> {
   const { rm } = await import("node:fs/promises");
+  /* ⚠️ 判定换成 `isInside(trashRoot, …)`（issue #80）—— 和 `restoreDraft` 同一份。
+     原来是 `startsWith + includes("..")`：形状上够用，但**和隔壁那个函数
+     不是同一份判定**，于是「哪个函数守了、哪个没守」要逐个去看。 */
   const rel = trashPath.split("\\").join("/");
-  if (!rel.startsWith(".umbrastudio/trash/") || rel.includes("..")) {
+  const trashRoot = join(p.dir, ".umbrastudio", "trash");
+  const abs = resolve(p.dir, rel);
+  if (!isInside(trashRoot, abs) || abs === trashRoot) {
     throw new Error(`只能彻底删除回收站里的条目：${rel}`);
   }
-  const abs = join(p.dir, rel);
   if (!existsSync(abs)) throw new Error(`回收站里没有 ${rel}`);
   await rm(abs, { recursive: true, force: true });
   // 时间戳目录空了就一起收掉

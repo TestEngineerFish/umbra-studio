@@ -8,7 +8,7 @@
  */
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createProject, createDraft, loadProject, listDrafts, buildProject, updateProject, archiveProject } from "./project.js";
 import { buildRefGraph, renameDraft, moveDraft, deleteDraft, restoreDraft, listTrash, deleteDraftImpact } from "./refs.js";
@@ -284,29 +284,51 @@ async function step5_moveDraft() {
 
   // 验证引用完整性
   await checkNoMissingImports("移动后");
+
+  /* ── 移动一份**自己有引用**的页面稿（issue #82，2026-10-05）──
+     ⚠️ **这里原来是回归盲区**：上面移动的是**组件**稿，它自己没有任何
+     `dc-import`，所以 `checkNoMissingImports` 一直全绿。
+     而 `dc-import name` 是相对引用方所在目录解析的 —— 页面稿换了目录，
+     它自己那些引用的基准就变了，而 `moveDraft` 原来只改「引用它的稿」。
+     **页面稿几乎都引用组件，所以这是最常见的整理动作里最容易中的一刀。** */
+  {
+    const mv = await moveDraft(p, "登录页.dc.html", "Pages");
+    const movedSrc = await readFile(join(p.dir, "Pages", "登录页.dc.html"), "utf8");
+    expect(/name="\.\.\/Components\/主按钮"/.test(movedSrc),
+      `**移动后它自己的 dc-import 也改了**：${movedSrc.match(/<dc-import[^>]*name="([^"]*)"/)?.[1] ?? "(没有)"}`);
+    expect(mv.ownImportsUpdated.length === 1,
+      `回执里说清改了自己几条引用：${mv.ownImportsUpdated.length}`);
+    const vm = validateDraft(p, "Pages/登录页.dc.html", movedSrc, "Pages/登录页.dc.html");
+    const miss = vm.diags.filter((d) => d.code === "E_IMPORT_MISSING");
+    expect(miss.length === 0, `**移动后它引用的组件没缺**：E_IMPORT_MISSING = ${miss.length}`);
+    // 搬回来，后面几步照旧；搬回来也得是对的（相当于反向走一次）
+    await moveDraft(p, "Pages/登录页.dc.html", ".");
+    const backSrc = await readFile(join(p.dir, "登录页.dc.html"), "utf8");
+    expect(/name="Components\/主按钮"/.test(backSrc),
+      `搬回项目根时引用也跟着回来：${backSrc.match(/<dc-import[^>]*name="([^"]*)"/)?.[1] ?? "(没有)"}`);
+  }
 }
 
 async function step6_deleteAndImpact() {
   bar("步骤 6：删除前影响分析 + 删除");
 
-  // 先把稿移回顶层（restore_draft 恢复后放在基名位置，不在子目录）。
-  // 这样删除/恢复都在顶层，name 是基名，恢复后引用路径不变。
-  await moveDraft(p, "Components/主按钮.dc.html", ".");
-  ok("组件移回顶层（准备删除/恢复测试）");
-  await checkNoMissingImports("移回顶层后");
-
+  /* ⚠️ 这里原来写着「**先把稿移回顶层**（restore_draft 恢复后放在基名位置，
+     不在子目录）」—— 测试**绕开了**那个限制，于是 issue #81 一直测不出来：
+     子目录里的稿删了再恢复，回到的是项目根，引用照样断。
+     **一句「为了让测试能跑，先把环境改成它要的样子」的注释，
+     往往正是一条缺陷的藏身处。** 现在直接删子目录里的那一份。 */
   // 6a. 影响分析
-  const impact = await deleteDraftImpact(p, "主按钮.dc.html");
+  const impact = await deleteDraftImpact(p, "Components/主按钮.dc.html");
   if (impact.affectedCount !== 1) { fail(`影响分析应该显示 1 个引用方，实际 ${impact.affectedCount}`); return; }
   if (!impact.importedBy.some((r) => r.rel === "登录页.dc.html")) { fail("影响分析没列出 登录页.dc.html"); return; }
   ok(`影响分析正确：1 个引用方（${impact.importedBy[0]?.rel ?? "(none)"}）`);
 
   // 6b. 执行删除
-  const delR = await deleteDraft(p, "主按钮.dc.html");
+  const delR = await deleteDraft(p, "Components/主按钮.dc.html");
   ok(`组件已删除，移入回收站：${delR.trashPath}`);
 
   // 验证原文件不在了
-  const compAbs = join(p.dir, "主按钮.dc.html");
+  const compAbs = join(p.dir, "Components", "主按钮.dc.html");
   if (existsSync(compAbs)) { fail("组件文件还在（没被移进回收站）"); return; }
   ok("组件文件已移走");
 
@@ -338,7 +360,14 @@ async function step7_restoreFromTrash() {
   // 验证文件回来了
   const restoredAbs = join(p.dir, restoreR.originalPath);
   if (!existsSync(restoredAbs)) { fail("恢复后的文件不在"); return; }
-  ok("文件已恢复到原位置");
+  /* ⚠️ **「回来了」和「回到原位置」是两件事**（issue #81）——
+     原来恢复一律落在项目根，而引用方写的是 `Components/主按钮`，
+     于是文件在、引用断，`restore_draft` 的回执还说「恢复成功」。 */
+  expect(restoreR.originalPath === "Components/主按钮.dc.html",
+    `**恢复到的是原位置而不是项目根**：${restoreR.originalPath}`);
+  expect(existsSync(join(p.dir, "Components", "主按钮.dc.html")), "文件真在 Components/ 下");
+  expect(trashItem.originalPath === "Components/主按钮.dc.html",
+    `list_trash 说得出原路径（说明里承诺过）：${trashItem.originalPath}`);
 
   // 验证引用完整性（恢复后应该不再报 E_IMPORT_MISSING）
   await checkNoMissingImports("恢复后");
@@ -347,6 +376,86 @@ async function step7_restoreFromTrash() {
   const trashAfter = await listTrash(p);
   if (trashAfter.length !== 0) { fail(`恢复后回收站应该为空，实际 ${trashAfter.length} 项`); return; }
   ok("回收站已空");
+
+  /* ── 恢复 / 改名只能在项目里动（issue #80，p1，2026-10-05）──
+     `trashPath` 和 `newName` 都是 `z.string()` 原样透传的。 */
+  {
+    // 项目外造一个「兄弟项目」，看它会不会被搬进来
+    const sibling = join(p.dir, "..", `_lct-兄弟项目-${Date.now()}`);
+    await mkdir(sibling, { recursive: true });
+    await writeFile(join(sibling, "标记.txt"), "我在项目外", "utf8");
+    const draftsBefore = (await listDrafts(p)).length;
+    const evil: Array<[string, () => Promise<unknown>]> = [
+      ["restore 项目外的目录（rename 对目录同样生效）", () => restoreDraft(p, `../${basename(sibling)}`)],
+      ["restore 项目外的绝对路径", () => restoreDraft(p, sibling)],
+      ["restore 项目内一份正常的稿（会被静默挪到项目根）", () => restoreDraft(p, "登录页.dc.html")],
+      ["restore 回收站根自己", () => restoreDraft(p, ".umbrastudio/trash")],
+    ];
+    for (const [what, run] of evil) {
+      let why = "";
+      try { await run(); } catch (e) { why = String((e as Error)?.message ?? e); }
+      expect(/只能恢复回收站里的条目|回收站路径里没有原文件/.test(why), `**拒绝 ${what}**：${why || "✗ 没拒"}`);
+    }
+    expect(existsSync(join(sibling, "标记.txt")), "**兄弟项目还在原地**（被拒 ≠ 没留下东西，分开验）");
+    expect((await listDrafts(p)).length === draftsBefore, `项目里也没多出稿（${draftsBefore} 份没变）`);
+    await rm(sibling, { recursive: true, force: true });
+
+    // 改名：名字不是路径，而且改坏之前**不许先把引用方改了**
+    const pageBefore = await readFile(join(p.dir, "登录页.dc.html"), "utf8");
+    for (const nm of ["../逃出去", "a/b", ".."]) {
+      /* ⚠️ **先看夹具还在不在**（2026-10-05 反向验证实测）：闸破了的时候
+         第一条真把稿改名走了，后两条报的是「找不到稿」——
+         于是它们在**破了的实现下也算「被拒」**。
+         **判据说不出「我根本没跑」的时候，它的绿和红都不可信。** */
+      const had = existsSync(join(p.dir, "Components", "主按钮.dc.html"));
+      let why = "";
+      try { await renameDraft(p, "Components/主按钮.dc.html", nm); } catch (e) { why = String((e as Error)?.message ?? e); }
+      expect(had && /新名字不合法/.test(why),
+        `**拒绝改名成 ${JSON.stringify(nm)}**：${had ? (why || "✗ 没拒") : "✗ 夹具已被前一条毁掉，这一条压根没跑"}`);
+    }
+    expect(await readFile(join(p.dir, "登录页.dc.html"), "utf8") === pageBefore,
+      "改名被形状闸拒掉时引用方没动");
+    /* ⚠️ 这一条测的是**顺序 + 回滚**（issue #80 第 3 点）：原来是先改完所有
+       引用方、最后才 `rename`，改名失败时引用方已经落盘改坏且没有回滚。
+
+       **样本必须是「过了闸之后才失败」的那一种** —— 上面那三个被形状闸
+       当场拒掉，`rename` 压根没跑，所以顺序对不对它们都绿（§142.4 同一个坑，
+       我差点第二次踩）。这里用一个 **300 字符的名字**：形状合法，
+       而文件系统报 `ENAMETOOLONG`，于是失败点正好落在 `rename` 上。 */
+    {
+      let why = "";
+      try { await renameDraft(p, "Components/主按钮.dc.html", "长".repeat(300)); }
+      catch (e) { why = String((e as Error)?.message ?? e); }
+      expect(/ENAMETOOLONG|too long/i.test(why), `（样本有效性）300 字的名字确实栽在 rename 上：${why.slice(0, 60) || "✗ 没抛"}`);
+      expect(await readFile(join(p.dir, "登录页.dc.html"), "utf8") === pageBefore,
+        "**改名在 rename 这一步失败时，已改的引用方被退回去了**（原来：引用改坏、文件没改名、没有回滚）");
+      expect(existsSync(join(p.dir, "Components", "主按钮.dc.html")), "而稿还在原来的名字上");
+    }
+    // 正面：正常改名还得能用
+    const rn = await renameDraft(p, "Components/主按钮.dc.html", "主按钮改名").catch(() => null);
+    expect(rn?.newPath === "Components/主按钮改名.dc.html", `**正常改名照常能用**：${rn?.newPath ?? "✗ 失败"}`);
+    await checkNoMissingImports("正常改名后");
+    await renameDraft(p, "Components/主按钮改名.dc.html", "主按钮");
+  }
+
+  /* ── 从文件面删的东西在回收站里是一份**文件**，不是一个目录（issue #81 第 3 点）──
+     `trashFile` 用的布局是 `<stamp>/<原相对路径>`，而 `listTrash` 原来只读一层，
+     于是 `assets/img/a.png` 在列表里显示成目录名 `assets`，
+     对它「恢复」会把整个 `assets` 目录搬到项目根，撞名时还变成 `assets 2.dc.html`。 */
+  {
+    const { trashFile } = await import("./files.js");
+    await mkdir(join(p.dir, "assets", "img"), { recursive: true });
+    await writeFile(join(p.dir, "assets", "img", "a.png"), "png", "utf8");
+    await trashFile(p, "assets/img/a.png");
+    const items = await listTrash(p);
+    const hit = items.find((it) => it.originalName === "a.png");
+    expect(!!hit, `**回收站里是那份文件本身**（不是目录名 assets）：${items.map((i) => i.originalName).join(" / ") || "(空)"}`);
+    expect(hit?.originalPath === "assets/img/a.png", `原路径完整：${hit?.originalPath}`);
+    const back = await restoreDraft(p, hit!.trashPath);
+    expect(back.originalPath === "assets/img/a.png", `**恢复回原来那层目录**：${back.originalPath}`);
+    expect(existsSync(join(p.dir, "assets", "img", "a.png")), "文件真回到 assets/img/ 下");
+    expect((await listTrash(p)).length === 0, "回收站又空了（空目录一层层收掉）");
+  }
 }
 
 async function step8_workspaceTracking() {

@@ -9885,3 +9885,134 @@ return rel === "" || (!rel.startsWith("..") && !p.isAbsolute(rel));
 这条纪律的真内容不是「别写 `.`」，是：**`git checkout` 的参数是「要丢弃什么」，不是「要清理什么」。**
 清插桩应该从备份拷回来（`cp $SP/xxx.orig`），那才是「只撤我刚加的那几行」。
 （这次是从会话记录的 `bashEditDiff` 里原样捞回来的 —— 下次未必有。）
+
+## 一四三、第三批（下）：改名 / 移动 / 回收站这条路上的五个洞（#75 / #76 / #80 / #81 / #82，2026-10-06）
+
+和 §一四二 是同一批 issue 的下半。上半是「建一份新稿」，这半是**「这份稿换个名字 / 换个地方 / 删了再回来」**。
+五条里有四条的共同点是：**同一件事有两条实现，而它们对不上**。
+
+### 143.1 #75（p1）`move_file` 把 `write_file` 那道闸整个绕过去
+
+`writeAnyFile` 对 `isToolArtifact(rel)` 拒写 —— 它把**任何以 `.` 开头的路径段**都算进去
+（`.git/`、`.umbrastudio/`、`.gitattributes`…），外加 `index-data.js` / `support.js` / 壳页面。
+而 `moveFile` **两头都不查**，`trashFile` 也不查。于是：
+
+```
+write_file("tmp.txt", "<任意文本>")      # 普通路径，放行
+move_file("tmp.txt", ".gitattributes")   # 没有守卫，放行
+```
+
+叠加 #74 那一族（仓库配置里的 filter / textconv 会在落盘时被执行），这条链能走到本机任意命令
+—— 那条链没实测，标【判断】。**不依赖它、单独就成立的后果**已经够重：
+`move_file(".git/HEAD", "x")` 直接把用户仓库弄坏（`.git` 里的文件不进回收站、不留快照）；
+挪走 `comments.json` 或快照目录，界面上表现为「评论和版本历史全没了」。
+
+修法就是把那道判定接上这两条路。**一道闸只守住一条路，等于没守。**
+
+### 143.2 #76（p1）改写引用是整篇子串替换 —— 两个方向都错
+
+```ts
+const oldHref = relFromDraft(draftRel, from), newHref = relFromDraft(draftRel, to);
+const next = src.split(oldHref).join(newHref);       // 整篇稿做子串替换
+```
+
+| 稿里写着 | 操作 | 结果 |
+| --- | --- | --- |
+| `src="data.png"` + `src="a.png"` | `move_file("a.png","b/a.png")` | `data.png` → **`datb/a.png`**（`"data.png".split("a.png")` = `["dat",""]`） |
+| `src="logo.png"` + `src="icons/logo.png"` | `move_file("logo.png","old/logo.png")` | `icons/logo.png` → **`icons/old/logo.png`**，指向不存在的文件 |
+| 正文里「见 logo.png」 | 同上 | **正文文字也被改了** |
+
+反方向：子目录的稿 `pages/a.dc.html` 按自然写法写 `src="img.png"`，
+`move_file("pages/img.png","assets/img.png")` 算出的 `oldHref` 是 `../pages/img.png` ——
+稿里没这个串，`continue`，回执里**一个字都不提**。而 `referencesOf` 按 basename **算到了**这份稿：
+**找到了却没改，是最差的组合**（用户以为改了）。
+
+修法不是补判断，是**把「引用」当成有结构的东西**：
+`REF_VALUE_RE` 取出 `href`/`src`/`url()` 的**值** → `resolveRefTarget()` 解成根相对路径 →
+**等于 `from` 才换** → `refValueFor()` 用 `posix.relative` 重算（保住原来有没有 `./`、带不带 `?v=2`）。
+`referencesOf` 换用**同一个** `resolveRefTarget` —— 原来它比 basename，
+于是「找到的」和「改的」用的是两套判定。解不出来的写法（外链 / 根相对）进 `unresolved`，**不静默**。
+
+顺带删掉 `kindOf(draftRel) === "dc" && /<x-dc/.test(src) ? "page" : "page"` 这个**两个分支都一样的死三元**，
+并把「这份稿算 page 还是 component」收进 `draft.ts` 的 `draftKindOf()`（`edit.ts` 两处也改用它）。
+
+### 143.3 #80（p1）`restore_trashed` / `rename_draft` 的路径没守
+
+- `restoreDraft` 只检查 `existsSync`，然后 `rename(trashAbs, <项目根>/<basename>)`。
+  `trashPath` 是 `z.string()` 原样透传 → `restore_trashed({ trashPath: "../别的项目" })`
+  把**整个兄弟项目目录**搬进当前项目（`rename` 对目录同样生效）；
+  `"../../../../Users/<用户>/.ssh/id_rsa"` 同理；
+  传一份**项目内正常的稿**会把它静默挪到项目根，而返回值还说「恢复了」。
+  同文件的 `purgeTrash` 有这道判定，**这里漏了**。
+- `renameDraft` 的 `newBaseName` 原样进 `resolve`，**没走 `isInside`** ——
+  同文件的 `moveDraft` 走了（#19 那一轮），这里没跟上。
+
+修法：`restoreDraft` 要求 `isInside(trashRoot, …)`；`renameDraft` 走 `plainNameProblem` + `isInside`；
+`purgeTrash` 的 `startsWith + includes("..")` 换成同一个 `isInside`。
+
+**第三点是顺序**：两个函数原来都是**先改写所有引用方、最后才 `rename`**。
+`rename` 失败时引用方已经落盘改好、文件没改名 —— **所有引用当场断掉且没有回滚**。
+改成先 `rename`、再改引用，中途失败把改过的稿和文件名一起退回去。
+（形状闸已经让 ENOENT 这一种不可能发生了，但**闸是按我想到的情况写的，回滚是按「我没想到」写的** —— 两个都要。）
+
+### 143.4 #81（p1）回收站只留了基名 —— 「原位置」是一句做不到的承诺
+
+`deleteDraft` 存的是 `join(trashDir, basename(path))`：**原目录丢了，也没有 meta 记下来**。
+于是 `restoreDraft` 的注释写「恢复到原始位置」而实现是 `// 默认恢复到项目根`。
+用户删 `Components/主按钮.dc.html` 再点「撤销」→ 文件回到**项目根**，
+引用方写的是 `Components/主按钮` → 仍然 `E_IMPORT_MISSING`，而界面看起来恢复成功了。
+
+更糟的是**两条删除路径的布局不一样**：`files.ts` 的 `trashFile` 用的是 `<stamp>/<原相对路径>`，
+而 `listTrash` 只往下读**一层**、把那一层的每一项都当成一份稿 ——
+`trash_file("assets/img/a.png")` 在列表里显示成一个**目录** `assets`，
+对它「恢复」会把整个 `assets` 目录搬到项目根，撞名时目标变成 **`assets 2.dc.html`（一个目录）**。
+
+修法：两条路统一成 `<stamp>/<原相对路径>` · `listTrash` 递归并给出 `originalPath`（`list_trash` 的说明本来就承诺了）·
+`restoreDraft` 按 `originalPath` 恢复（撞名时**在同目录**加序号，**后缀按真实的来** ——
+原来一律补 `.dc.html`，于是从文件面删的 `a.png` 会被恢复成 `a 2.dc.html`）· 空目录一层层往上收。
+
+⚠️ **回归盲区就写在测试里**：`lifecycletest` 步骤 6 开头原来有一句
+「**先把稿移回顶层**（restore_draft 恢复后放在基名位置，不在子目录）」——
+测试**把环境改成实现要的样子**，于是这条缺陷一直测不出来。
+> **一句「为了让测试能跑，先把环境改成它要的样子」的注释，往往正是一条缺陷的藏身处。**
+
+### 143.5 #82（p1）移动一份稿，它**自己**的引用全断
+
+`dc-import name` 是相对**引用方所在目录**解析的（`doc/01` H4）。而 `moveDraft` 只遍历
+`oldEntry.importedBy`（谁引用了我），`oldEntry.imports`（我引用了谁）**一行都没动**：
+
+```
+登录页.dc.html        <dc-import name="主按钮">  → 主按钮.dc.html        ✓
+move_draft("登录页.dc.html", "Pages")
+Pages/登录页.dc.html  <dc-import name="主按钮">  → Pages/主按钮.dc.html  ✗ E_IMPORT_MISSING
+```
+
+函数头注释自己写着「跨目录移动时引用路径要跟着修（**相对路径基准变了**）」，
+工具说明写「移动并把引用它的稿一起改写」——**两句话都对，而实现只做了一半**。
+页面稿几乎都引用组件，所以「把页面挪进 `Pages/`」这个最常见的整理动作，挪完那页的组件全缺失。
+
+⚠️ 回归盲区同族：`lifecycletest` 步骤 5 移动的是**组件**稿（它自己没有任何 `dc-import`），
+所以 `checkNoMissingImports` 一直全绿 —— **从没移动过一份「自己有引用」的页面稿**。
+`oldEntry.imports` 只装**解析得到的**引用，所以「移动前就断掉的那几条不要瞎改」是数据结构自带的。
+
+### 143.6 这一批关于判据的三条（都是反向验证才看见的）
+
+| 症状 | 真相 |
+| --- | --- |
+| #75 五个样本，撤掉守卫只有**两个**报「居然成了」 | **样本之间互相毁夹具** —— 第一条真把 `tmp75.txt` 挪走了，后面三条报的是「项目里没有这个文件」，于是它们在破了的实现下也算「被拦住」。改成**每条自带夹具**，5/5 全钉住 |
+| #80 「改名被拒时引用方没动」 | 它**没钉住顺序** —— 形状闸先拒了，`rename` 压根没跑，顺序对不对都绿。要测回滚，样本必须是**过了闸之后才失败**的那一种：用一个 300 字的名字（形状合法，`rename` 报 `ENAMETOOLONG`） |
+| #80 三个改名样本，撤掉闸之后后两个报「找不到稿」 | 同第一条。这次不加夹具，改成**让判据说出「我根本没跑」**：`const had = existsSync(…)` 进判据和文案。**判据说不出「我没跑」的时候，它的绿和红都不可信** |
+
+> 三条合起来是 §142.4 那条的续：**判据要钉住它自己声称的那道闸** ——
+> 而钉不住有三种长相：① 撞在别的机制上 ② 闸在样本之前就拦了 ③ 样本被前一条毁了。
+> **全都表现为「反向验证也红了」，所以光看红绿分辨不出来。** 要看红的**理由**。
+
+### 143.7 一处明知而暂不改的：改名 / 移动改写引用走的是 `writeAtomic`，不是写入口
+
+`renameDraft` / `moveDraft` 改写引用方和（#82 之后）改写自己时用的是 `writeAtomic` ——
+**绕过了纪律① 的唯一写入口**，所以这些改动没有快照、没有 changelog，用户退不回来。
+
+这次**没顺手改**，因为改了会带来两个新后果：① 写入口对有 error 级诊断的稿会拒绝落盘 ——
+而「移动一份已经坏了的稿」是个合理操作，不该被堵；② 写入口会重新归一化，
+把用户稿改出一个大 diff。**这是一个设计选择，不是一个顺手修的 bug**，
+登记成 `doc/11` Q46 等拍板。（#71 把**建稿**接上了写入口，那一条没有这两个顾虑。）

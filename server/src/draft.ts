@@ -116,6 +116,15 @@ function region(src: string, openRe: RegExp, closeTag: string): { start: number;
   return end < 0 ? null : { start, end };
 }
 
+/** 这份稿算 page 还是 component。
+ *  规则只有一条（**有非 `$` 开头的 props 就是组件**），而它原来写在 `edit.ts` 里，
+ *  `files.ts` 那边抄成了一个**两个分支都回 `"page"` 的死三元**（issue #76 顺带）。
+ *  ⚠️ 这个值目前只落在 `stats.kind` 上（`write.ts:237`）——
+ *  **「只是个读数」不是「可以随便写」**：读数错了，下一个人按它判断就会错。 */
+export function draftKindOf(d: Draft): "page" | "component" {
+  return Object.keys(d.props ?? {}).some((k) => !k.startsWith("$")) ? "component" : "page";
+}
+
 export function parseDraft(src: string, path: string): Draft {
   const at = lineIndex(src);
 

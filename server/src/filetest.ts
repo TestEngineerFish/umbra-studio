@@ -19,6 +19,7 @@ import {
   readAnyFile, readSnapshotContent, referencesOf, revertFile, trashFile, writeAnyFile,
 } from "./files.js";
 import { ToolError } from "./envelope.js";
+import { writeDraft } from "./write.js";
 
 const DIR = join(tmpdir(), `umbrastudio-filetest-${Date.now()}`);
 let bad = 0;
@@ -83,6 +84,111 @@ ok("move_file 挪文件并改写稿里的引用",
 ok("被改写的稿留下语义快照（走的是 write_draft）", (await listVersions(p, "稿.dc.html")).length >= 1);
 try { await moveFile(p, "稿.dc.html", "x.dc.html"); ok("move_file 必须拒绝 .dc.html", false); }
 catch (e) { ok("move_file 拒绝 .dc.html 并指向 move_draft", /move_draft/.test(fixOf(e))); }
+
+/* ── 改写引用不许改坏别的引用、也不许静默漏改（issue #76，2026-10-05）──
+   原来是对整篇稿做**子串**替换，于是两个方向都错。
+   这一节三个样本就是 issue 里列的三种长相，**每一个都能单独把旧实现照红**。
+
+   ⚠️ 上面那条「move_file 挪文件并改写引用」在旧实现下也是绿的 ——
+   它测的恰好是「根目录的稿 + 根目录的文件 + 名字不是别人的子串」那一种。
+   **判据覆盖的是它当时想到的那一种，不是这件事。** */
+{
+  await mkdir(join(DIR, "pages"), { recursive: true });
+  await mkdir(join(DIR, "icons"), { recursive: true });
+  await writeFile(join(DIR, "data.png"), "d");
+  await writeFile(join(DIR, "a.png"), "a");
+  await writeFile(join(DIR, "icons", "logo.png"), "l");
+  await writeFile(join(DIR, "logo.png"), "L");
+  await writeFile(join(DIR, "pages", "img.png"), "i");
+  /* ⚠️ 夹具必须是**合契约的稿**，否则写入口会拒，而症状长得像产品缺陷
+     （#65 那一轮栽过：判据红在夹具上，我查了半天产品）。 */
+  const draft = (body: string) => `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<script src="./support.js"></script>
+</head>
+<body>
+${body}
+<x-dc>
+<div>{{ t }}</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}">
+class Component extends DCLogic {
+  renderVals() { return { t: "hi" }; }
+}
+</script>
+</body>
+</html>
+`;
+
+  // ① 名字是别人的子串：`"data.png".split("a.png")` = ["dat",""] → 旧实现写出 datb/a.png
+  await writeDraft(p, "子串.dc.html", draft('<img src="data.png"><img src="a.png">'), "page");
+  ok("（夹具）三份稿都写进去了", [["子串.dc.html"]].length === 1 && existsSync(join(DIR, "子串.dc.html")));
+  await moveFile(p, "a.png", "b/a.png");
+  const s1 = await readFile(join(DIR, "子串.dc.html"), "utf8");
+  ok('**名字相近的别的引用原样不动**（data.png 不许变成 datb/a.png）',
+    /src="data\.png"/.test(s1) && /src="b\/a\.png"/.test(s1) && !/datb/.test(s1));
+
+  // ② 同名但在别的目录：icons/logo.png 不该跟着根目录的 logo.png 一起改
+  await writeDraft(p, "同名.dc.html", draft('<img src="logo.png"><img src="icons/logo.png">'), "page");
+  await moveFile(p, "logo.png", "old/logo.png");
+  const s2 = await readFile(join(DIR, "同名.dc.html"), "utf8");
+  ok('**同名但在别的目录的引用不动**（icons/logo.png 不许变成 icons/old/logo.png）',
+    /src="old\/logo\.png"/.test(s2) && /src="icons\/logo\.png"/.test(s2) && !/icons\/old/.test(s2));
+
+  // ③ 子目录的稿按自然写法引用同目录文件 —— 旧实现**静默不改**（最差的组合：找到了却没改）
+  await writeDraft(p, "pages/有图.dc.html",
+    draft('<img src="img.png">').replace('src="./support.js"', 'src="../support.js"'), "page");
+  const mv3 = await moveFile(p, "pages/img.png", "assets/img.png");
+  const s3 = await readFile(join(DIR, "pages", "有图.dc.html"), "utf8");
+  ok('**子目录里的稿该改的引用真改了**（src="img.png" → "../assets/img.png"）',
+    /src="\.\.\/assets\/img\.png"/.test(s3) && mv3.rewrote.some((r) => r.file === "pages/有图.dc.html"));
+
+  // ④ referencesOf 和改写用同一个判定：按解出来的路径比，不按 basename
+  const refs = await referencesOf(p, "icons/logo.png");
+  ok("**referencesOf 按路径比不按 basename**（根目录的 logo.png 不算 icons/logo.png 的引用）",
+    refs.length === 1 && refs[0]!.file === "同名.dc.html");
+
+  // ⑤ 解不出来的写法不静默：外链写法要出现在 unresolved 里
+  await writeDraft(p, "外链.dc.html", draft('<img src="https://cdn.example.com/ext.png">'), "page");
+  await writeFile(join(DIR, "ext.png"), "e");
+  const mv5 = await moveFile(p, "ext.png", "pics/ext.png");
+  ok("**解不出路径的写法列进 unresolved，不静默**",
+    (mv5.unresolved ?? []).some((u) => u.file === "外链.dc.html" && /cdn\.example\.com/.test(u.value)));
+}
+
+/* ── 工具自己的东西不能挪进挪出（issue #75，2026-10-05）──
+   `writeAnyFile` 挡住的位置，`moveFile` / `trashFile` 原来换条路就能到。 */
+{
+  await writeFile(join(DIR, "tmp75.txt"), "x");
+  await mkdir(join(DIR, ".git"), { recursive: true });
+  await writeFile(join(DIR, ".git", "HEAD"), "ref: refs/heads/master\n");
+  const cases: Array<[string, () => Promise<unknown>]> = [
+    ["move_file 往 .git/ 里写", () => moveFile(p, "tmp75.txt", ".git/x")],
+    ["move_file 写 .gitattributes", () => moveFile(p, "tmp75.txt", ".gitattributes")],
+    ["move_file 把 .git/HEAD 挪出来", () => moveFile(p, ".git/HEAD", "x75")],
+    ["move_file 写 index-data.js", () => moveFile(p, "tmp75.txt", "index-data.js")],
+    ["trash_file 删 .git/HEAD", () => trashFile(p, ".git/HEAD")],
+  ];
+  let allBlocked = true;
+  for (const [what, run] of cases) {
+    /* ⚠️ **每条自带夹具** —— 2026-10-05 反向验证实测：不这么做的话第一条
+       真把 `tmp75.txt` 挪走了，后面三条报的是「项目里没有文件 tmp75.txt」，
+       于是它们在**破了的实现下也算「被拦住」**。
+       **样本之间互相毁夹具，比判据写错更难看出来** —— 聚合判据照样红，
+       红的理由却只剩第一条。 */
+    await writeFile(join(DIR, "tmp75.txt"), "x");
+    await mkdir(join(DIR, ".git"), { recursive: true });
+    await writeFile(join(DIR, ".git", "HEAD"), "ref: refs/heads/master\n");
+    let threw = false;
+    try { await run(); } catch { threw = true; }
+    if (!threw) { allBlocked = false; console.log(`    ✗ ${what} 居然成了`); }
+  }
+  ok("**工具自己的文件与隐藏目录挪不动也删不掉**（issue #75：write_file 那道闸换条路就绕过）", allBlocked);
+  ok("而 .git/HEAD 还在原地", existsSync(join(DIR, ".git", "HEAD")));
+  await rm(join(DIR, ".git"), { recursive: true, force: true });
+}
 
 const tr = await trashFile(p, "conf.json");
 ok("删除是进回收站，不是真删", tr.trashPath.includes(".umbrastudio/trash/"));

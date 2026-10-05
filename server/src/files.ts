@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, sep } from "node:path";
+import { basename, dirname, extname, join, posix, relative, sep } from "node:path";
 import { gzipSync, gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
 /** 异步解压（issue #48）—— 同步版会把整个服务进程停住 */
@@ -471,6 +471,12 @@ export async function revertFile(p: Project, rel: string, version: string): Prom
 
 /** 删除（回收站语义，和稿一样）：移进 `.umbrastudio/trash/<时间戳>/`，不是真删 */
 export async function trashFile(p: Project, rel: string): Promise<{ path: string; trashPath: string }> {
+  /* ⚠️ 和 `moveFile` 同一道闸（issue #75）：`trash_file(".git/HEAD")` 原来照做。 */
+  if (isToolArtifact(rel)) {
+    throw new ToolError(err(X.IO, rel, { kind: "file", name: basename(rel) },
+      "这是工具自己的文件或隐藏目录，不能删",
+      { fix: "trash_file 只处理项目里用户自己的文件。" }));
+  }
   const abs = mustFile(p, rel);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const to = join(p.dir, ".umbrastudio", "trash", stamp, clean(rel));
@@ -485,6 +491,8 @@ export interface MoveFileResult {
   /** 一并改写了引用的稿：{ file, count } */
   rewrote: Array<{ file: string; count: number }>;
   steps: string[];
+  /** 名字对得上、但路径解不出来所以没动的写法（外链 / 根相对）。**不静默**（issue #76 第 3 点） */
+  unresolved?: Array<{ file: string; line: number; value: string }>;
 }
 
 /** 改名 / 移动一个普通文件，并把稿里指向它的 href / src / url() 一起改掉。
@@ -495,6 +503,23 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
   if (kindOf(from) === "dc" || kindOf(to) === "dc") {
     throw new ToolError(err(X.IO, from, { kind: "file", name: basename(from) },
       "`.dc.html` 不走这条路", { fix: "稿的改名 / 移动用 rename_draft / move_draft，它们会跟着改 dc-import 的引用。" }));
+  }
+  /* ⚠️ **两头都查「这是工具自己的东西吗」**（issue #75，2026-10-05）。
+     `writeAnyFile` 对 `isToolArtifact` 拒写（`.git/`、`.umbrastudio/`、
+     `index-data.js`、壳页…），而 `moveFile` 原来**一头都不查** ——
+     于是那道闸换条路两步就绕过去：
+       write_file("tmp.txt", …)      → 普通路径，放行
+       move_file("tmp.txt", ".gitattributes")  → 没守卫，放行
+     单独成立的后果也够重：`move_file(".git/HEAD", "x")` 直接把用户仓库弄坏
+     （`.git` 里的文件不进回收站、不留快照），挪走 `comments.json` / 快照目录
+     在界面上表现为「评论和版本历史全没了」。
+     **一道闸只守住一条路，等于没守。** */
+  for (const r of [from, to]) {
+    if (isToolArtifact(r)) {
+      throw new ToolError(err(X.IO, r, { kind: "file", name: basename(r) },
+        "这是工具自己的文件或隐藏目录，不能挪进挪出",
+        { fix: "move_file 只处理项目里用户自己的文件。" }));
+    }
   }
   const absFrom = mustFile(p, from);
   const absTo = join(p.dir, to.split("/").join(sep));
@@ -512,30 +537,117 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
   /* 引用改写：稿里写的是相对它自己的路径，所以按每份稿的位置重算。
      改完经 write_draft 落盘 —— 引用变了也要留快照，和别的改稿一视同仁。 */
   const { writeDraft } = await import("./write.js");
+  const { parseDraft, draftKindOf } = await import("./draft.js");
   const byFile = new Map<string, number>();
   for (const r of refs) byFile.set(r.file, (byFile.get(r.file) ?? 0) + 1);
   const rewrote: Array<{ file: string; count: number }> = [];
+  /** 解不出来的那些（外链 / 根相对 / 指到项目外）—— **不静默**，列出来让人自己看一眼 */
+  const unresolved: Array<{ file: string; line: number; value: string }> = [];
   for (const [draftRel, count] of byFile) {
     const abs = join(p.dir, draftRel.split("/").join(sep));
     let src: string;
     try { src = await readFile(abs, "utf8"); } catch { continue; }
-    const oldHref = relFromDraft(draftRel, from), newHref = relFromDraft(draftRel, to);
-    const next = src.split(oldHref).join(newHref);
-    if (next === src) continue;
-    await writeDraft(p, draftRel, next, kindOf(draftRel) === "dc" && /<x-dc/.test(src) ? "page" : "page", `引用跟着 ${basename(from)} 的移动改了`, { origin: "人手改" });
-    rewrote.push({ file: draftRel, count });
-    steps.push(`改写引用 ${draftRel}（${count} 处）`);
+    const { out: next, changed } = mapDraftRefs(src, (value) =>
+      resolveRefTarget(draftRel, value) === from ? refValueFor(draftRel, to, value) : null);
+    if (changed === 0 || next === src) continue;
+    await writeDraft(p, draftRel, next, draftKindOf(parseDraft(next, draftRel)),
+      `引用跟着 ${basename(from)} 的移动改了`, { origin: "人手改" });
+    rewrote.push({ file: draftRel, count: changed });
+    steps.push(`改写引用 ${draftRel}（${changed} 处）`);
+    if (changed !== count) {
+      steps.push(`⚠️ ${draftRel} 里还有 ${count - changed} 处提到 ${basename(from)} 但解不出路径，没动`);
+    }
   }
-  return { from, to, rewrote, steps };
+  /* 改完再扫一遍：名字对得上、但解不出路径的写法（`https://…/img.png`、`/img.png`），
+     以及**正文里提到文件名**的地方。它们本来就不该被改 —— 但也不该一声不吭。 */
+  for (const abs of await listDrafts(p)) {
+    const draftRel = relative(p.dir, abs).split(sep).join("/");
+    if (isToolArtifact(draftRel)) continue;
+    let src: string;
+    try { src = await readFile(abs, "utf8"); } catch { continue; }
+    if (!src.includes(basename(from))) continue;
+    mapDraftRefs(src, (value, line) => {
+      const t = resolveRefTarget(draftRel, value);
+      if (t === null && value.includes(basename(from))) unresolved.push({ file: draftRel, line, value });
+      return null;
+    });
+  }
+  return { from, to, rewrote, steps, ...(unresolved.length ? { unresolved } : {}) };
 }
 
-/** 稿里该怎么写这个文件的路径：相对稿自己的位置 */
-function relFromDraft(draftRel: string, targetRel: string): string {
-  const up = "../".repeat(draftRel.split("/").length - 1);
-  return up + targetRel;
+/* ── 稿里的「引用」是**有结构的东西**，不是一段文字（issue #76，2026-10-05）──
+   原来改写引用是 `src.split(oldHref).join(newHref)` —— 对整篇稿做**子串**替换。
+   它不知道边界，于是两个方向都错：
+
+   ① **改坏别的引用**：`"data.png".split("a.png")` = `["dat", ""]`，
+      `move_file("a.png","b/a.png")` 把 `src="data.png"` 改成 **`datb/a.png`**；
+      `icons/logo.png` 变成 `icons/old/logo.png`；连正文里「见 logo.png」这句话也改。
+   ② **该改的静默不改**：子目录的稿 `pages/a.dc.html` 按自然写法写 `src="img.png"`，
+      而 `oldHref` 算出来是 `../pages/img.png` —— 稿里没这个串，`continue`，
+      回执里一个字都不提。而 `referencesOf` 按 basename **算到了**这份稿：
+      **找到了却没改，是最差的组合。**
+
+   现在：取出**属性值** → 解成根相对路径 → **等于 from 才换** → 用 `posix.relative` 重算。
+   `referencesOf` 用同一个判定（原来它比 basename，于是「找到的」和「改的」对不上）。 */
+
+/** href / src 的值，或 url(…) 里的值。七个捕获组，顺序别动（下面按下标取）。 */
+const REF_VALUE_RE = /(\b(?:href|src)\s*=\s*)(["'])([^"']*)\2|(\burl\(\s*)(["']?)([^"')]*)\5(\s*\))/gi;
+
+/** 一处引用解成「相对项目根的路径」；解不出来（外链 / 根相对 / 锚点 / 指到项目外）回 null。 */
+function resolveRefTarget(draftRel: string, raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(v) || v.startsWith("//") || v.startsWith("#")) return null;
+  if (v.startsWith("/")) return null;                       // 根相对：不是项目内的相对引用
+  const pathPart = v.split(/[?#]/)[0] ?? "";
+  if (!pathPart) return null;
+  const joined = posix.normalize(posix.join(posix.dirname(draftRel), decodeRefPath(pathPart)));
+  if (joined === "." || joined.startsWith("../")) return null;   // 指到项目外
+  return joined;
 }
 
-/** 谁引用了这个文件（S15 的 referencedBy）：扫所有稿的 href / src / url()，返回 { file, line }。 */
+/** 地址里可能写着 `%E4%B8%AD`。⚠️ 解不开就原样用 —— **别让一个坏编码把整件事炸掉**（#85 同族）。 */
+function decodeRefPath(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+
+/** 遍历一份稿里所有引用的**值**：回调回新值就替换，回 null 就不动。
+ *  ⚠️ 按**匹配到的区间**替换，不是 `split/join` —— 同一个值在正文里出现也不碰。 */
+function mapDraftRefs(
+  src: string,
+  fn: (value: string, line: number) => string | null,
+): { out: string; changed: number } {
+  let out = "", last = 0, changed = 0, cursor = 0, line = 1;
+  for (const m of src.matchAll(REF_VALUE_RE)) {
+    const at = m.index ?? 0;
+    while (cursor < at) { if (src.charCodeAt(cursor) === 10) line++; cursor++; }
+    const isAttr = m[3] !== undefined;
+    const value = isAttr ? m[3] : m[6];
+    if (value === undefined) continue;
+    const vOff = at + (isAttr ? (m[1]?.length ?? 0) + (m[2]?.length ?? 0)
+                              : (m[4]?.length ?? 0) + (m[5]?.length ?? 0));
+    const next = fn(value, line);
+    if (next === null || next === value) continue;
+    out += src.slice(last, vOff) + next;
+    last = vOff + value.length;
+    changed++;
+  }
+  return { out: out + src.slice(last), changed };
+}
+
+/** 稿里该怎么写这个文件的路径：相对稿自己的位置。
+ *  保住原来的写法 —— 本来写 `./x.png` 的就还是 `./`，本来带 `?v=2` 的把后缀带回去。 */
+function refValueFor(draftRel: string, targetRel: string, oldValue: string): string {
+  const suffix = oldValue.match(/[?#].*$/)?.[0] ?? "";
+  let next = posix.relative(posix.dirname(draftRel), targetRel);
+  if (oldValue.trim().startsWith("./") && !next.startsWith(".")) next = "./" + next;
+  return next + suffix;
+}
+
+/** 谁引用了这个文件（S15 的 referencedBy）：扫所有稿的 href / src / url()，返回 { file, line }。
+ *  ⚠️ **按解出来的路径比，不按 basename**（issue #76）—— 原来 `icons/logo.png` 和
+ *  根目录的 `logo.png` 是同一个 basename，于是「谁引用了我」把别人的引用也算进来，
+ *  而改写那一步按真实路径算 → **找到的和改的对不上**。两处现在共用 `resolveRefTarget`。 */
 export async function referencesOf(p: Project, rel: string): Promise<Array<{ file: string; line: number }>> {
   const target = basename(rel);
   const out: Array<{ file: string; line: number }> = [];
@@ -547,11 +659,9 @@ export async function referencesOf(p: Project, rel: string): Promise<Array<{ fil
     let src: string;
     try { src = await readFile(abs, "utf8"); } catch { continue; }
     if (!src.includes(target)) continue;          // 先粗筛，避免每份稿都逐行
-    src.split("\n").forEach((line, i) => {
-      // 只认出现在 href / src / url() 里的 —— 正文里提到文件名不算引用
-      if (new RegExp(`(?:href|src)\\s*=\\s*["'][^"']*${escapeRe(target)}|url\\(\\s*["']?[^"')]*${escapeRe(target)}`).test(line)) {
-        out.push({ file: draftRel, line: i + 1 });
-      }
+    mapDraftRefs(src, (value, line) => {
+      if (resolveRefTarget(draftRel, value) === rel) out.push({ file: draftRel, line });
+      return null;                                 // 只看不改
     });
   }
   return out;
