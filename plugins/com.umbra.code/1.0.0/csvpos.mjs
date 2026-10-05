@@ -189,9 +189,18 @@ export function parseCsv(text, delimiter) {
 
 /** 源码偏移落在第几条记录上 —— 源码档里光标动时，状态行要说出行和列名。 */
 export function rowAt(rows, off) {
+  /* ⚠️ **左闭右开**（issue #56，2026-10-05）。
+     原来是 `off >= from && off <= to` —— 而一条记录的 `to` 就是**下一条的 `from`**
+     （`to` 指到换行符之后），于是**行首的光标会被算成上一行**：
+     用户把光标放在第 3 行开头，状态行说「第 2 行 · 最后一列」。
+     左闭右开之后每个偏移只属于一条记录。 */
   for (let i = 0; i < rows.length; i++) {
-    if (off >= rows[i].from && off <= rows[i].to) return i;
+    if (off >= rows[i].from && off < rows[i].to) return i;
   }
+  /* 文件末尾那一个偏移（`off === 最后一条的 to`）左闭右开会落空 ——
+     而光标确实可以停在那里（按 ⌘↓ 就到了）。单独放行，算最后一条。 */
+  const last = rows.length - 1;
+  if (last >= 0 && off === rows[last].to) return last;
   return -1;
 }
 

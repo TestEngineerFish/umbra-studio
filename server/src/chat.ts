@@ -161,8 +161,23 @@ export async function loadChat(projectDir: string, id: string): Promise<ChatSess
   return JSON.parse(await readFile(f, "utf8")) as ChatSession;
 }
 
-export async function saveChat(projectDir: string, session: ChatSession): Promise<void> {
-  session.updatedAt = new Date().toISOString();
+/** 存一份会话。
+ *
+ *  ⚠️ **`touch: false` 的时候不刷 `updatedAt`**（issue #58，2026-10-05）。
+ *  这一行原来是无条件 `session.updatedAt = new Date()…` ——
+ *  而 `renameChat` 和 `setChatChannel` 的注释**都明明白白写着「不动 updatedAt」**：
+ *
+ *  > **不动 updatedAt** —— 那一栏是「最后说话的时间」，历史列表按它排序。
+ *  > 改个名字就把会话顶到最前面，会打乱用户对列表顺序的预期。
+ *
+ *  两处注释说的是意图，而它们调的这个函数做的是另一件事 ——
+ *  **注释也会变成说谎的状态列**（§六十四那条「硬编码工具名单过时」同族）。
+ *
+ *  缺省仍然 touch：**发消息那条路最常走，默认行为要对它最合适**，
+ *  而「改名 / 换引擎」是少数，让它们显式说「别刷」。
+ */
+export async function saveChat(projectDir: string, session: ChatSession, opts: { touch?: boolean } = {}): Promise<void> {
+  if (opts.touch !== false) session.updatedAt = new Date().toISOString();
   await writeAtomic(sessionFile(projectDir, session.id), JSON.stringify(session, null, 2) + "\n");
 }
 
@@ -233,7 +248,7 @@ export async function setChatChannel(projectDir: string, sessionId: string, chan
   if (!s) throw new Error(`没有这个会话：${sessionId}`);
   s.channel = channel;
   if (channel === "b") { if (tool) s.tool = tool; } else delete s.tool;   // 换出 b 就没有「哪个 CLI」这回事了
-  await saveChat(projectDir, s);
+  await saveChat(projectDir, s, { touch: false });   // 换引擎不是「说了话」（issue #58）
   return s;
 }
 
@@ -243,7 +258,9 @@ export async function renameChat(projectDir: string, sessionId: string, title: s
   const t = title.replace(/\s+/g, " ").trim().slice(0, 120);
   if (t) s.title = t; else delete s.title;
   /* **不动 updatedAt** —— 那一栏是「最后说话的时间」，历史列表按它排序。
-     改个名字就把会话顶到最前面，会打乱用户对列表顺序的预期。 */
-  await saveChat(projectDir, s);
+     改个名字就把会话顶到最前面，会打乱用户对列表顺序的预期。
+     ⚠️ 这句话写在这里很久了，而 `saveChat` 一直在无条件刷它（issue #58）——
+     现在真的传 `touch: false` 了。 */
+  await saveChat(projectDir, s, { touch: false });
   return s;
 }

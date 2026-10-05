@@ -138,5 +138,36 @@ console.log("\nCSV 解析与位置（M10-5）");
   ok("只有表头时没有坏行", only.rows.length === 1 && only.badCount === 0, only.rows.length);
 }
 
+/* ── 光标落在哪一行（issue #56）──
+   `rowAt` 原来是 `off >= from && off <= to`，而一条记录的 `to` 就是
+   **下一条的 `from`**（`to` 指到换行符之后）—— 于是**行首的光标被算成上一行**：
+   用户把光标放在第 3 行开头，状态行说「第 2 行 · 最后一列」。
+
+   ⚠️ 顺带：这两个函数写了之后**一处都没调用过**（只被 import 了）——
+   **写了而没接上，比没写更坏**：它让下一个人以为这件事已经做了。
+   现在插件的状态行真的在用它们了。 */
+console.log("\n 光标落在哪一行（issue #56）");
+{
+  const text = "订单,金额\n1,100\n2,200\n";
+  const { rows, delimiter } = parseCsv(text);
+  ok("三条记录", rows.length === 3, String(rows.length));
+  /* ⚠️ **每一行的行首都要落在它自己身上** —— 这是左闭右开的直接后果，
+     而逐行验（不是只验一行）才能发现「只有第一行对」那种半对的实现。 */
+  for (let i = 0; i < rows.length; i++) {
+    ok(`第 ${i + 1} 条记录的**行首**落在它自己身上（原来会算成上一条）`,
+       rowAt(rows, rows[i]!.from) === i, `rowAt(${rows[i]!.from}) = ${rowAt(rows, rows[i]!.from)}，该是 ${i}`);
+  }
+  /* 文件末尾那个偏移：光标按 ⌘↓ 能停在那里，左闭右开会落空 —— 单独放行 */
+  const end = text.length;
+  ok("**文件末尾的偏移落在最后一条**（左闭右开会让它落空，而光标真能停在那里）",
+     rowAt(rows, end) === rows.length - 1, `rowAt(${end}) = ${rowAt(rows, end)}`);
+  ok("范围外的偏移回 -1（不是硬凑一个答案）", rowAt(rows, 9999) === -1, String(rowAt(rows, 9999)));
+  /* 列：行首是第 0 列，分隔符之后进下一列 */
+  ok("行首是第 0 列", colAt(text, rows[1]!, rows[1]!.from, delimiter) === 0, String(colAt(text, rows[1]!, rows[1]!.from, delimiter)));
+  ok("**分隔符之后进下一列**（第 2 条记录 `1,100` 的 `100` 是第 1 列）",
+     colAt(text, rows[1]!, rows[1]!.from + 2, delimiter) === 1,
+     String(colAt(text, rows[1]!, rows[1]!.from + 2, delimiter)));
+}
+
 console.log(fail === 0 ? `\n✓ CSV 解析与位置 ${pass}/${pass + fail}\n` : `\n✗ CSV 解析与位置 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

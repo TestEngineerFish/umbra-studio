@@ -10,7 +10,7 @@
  */
 import { deflateSync } from "node:zlib";
 import { chat } from "./provider.js";
-import { getAiConfig, setAiConfig, type ChannelAConfig } from "./ai_config.js";
+import { getAiConfig, setAiConfig, mergeChannel, type ChannelAConfig } from "./ai_config.js";
 
 /** 区分度高、说法不容易撞车的六个颜色 */
 const COLORS: Array<{ rgb: [number, number, number]; names: string[] }> = [
@@ -86,19 +86,48 @@ export async function probeImageSupport(channel: "a" | "b" | "c" = "a"): Promise
   const answered = (typeof last?.content === "string" ? last.content : "").trim().slice(0, 80);
   if (r.error) {
     // 发不出去（4xx / 端点不认多模态）也是一种答案：不支持
-    await save(channel, a, false);
-    return { supportsImage: false, asked: pick.names[0]!, answered: "", saved: true, why: `这条通道拒了带图的消息：${r.error.slice(0, 120)}` };
+    /* ⚠️ **发不出去 ≠ 不支持图**（issue #59 的另一半）。
+       网络不通、key 错、端点 5xx 都会走到这里，而把它们记成「这条通道不吃图」
+       是个**错的结论，而且会一直留着** —— 之后用户带图提问时我们会悄悄不发图。
+       所以：只有**明确是「拒了带图的消息」**才记；其余一律不记，
+       并在 `why` 里说清「这次没测出来」。 */
+    const looksLikeImageRefusal = /image|multimodal|vision|不支持|媒体|content type/i.test(r.error);
+    const savedErr = looksLikeImageRefusal ? await save(channel, a, false) : false;
+    return {
+      supportsImage: false, asked: pick.names[0]!, answered: "", saved: savedErr,
+      why: looksLikeImageRefusal
+        ? `这条通道拒了带图的消息：${r.error.slice(0, 120)}`
+        : `这一次没测出来（请求本身就没成功：${r.error.slice(0, 100)}）—— 没有记成「不吃图」，换个时间再试`,
+    };
   }
   const hit = pick.names.some((n) => answered.toLowerCase().includes(n.toLowerCase()));
-  await save(channel, a, hit);
+  const saved = await save(channel, a, hit);
   return {
-    supportsImage: hit, asked: pick.names[0]!, answered, saved: true,
+    supportsImage: hit, asked: pick.names[0]!, answered, saved,
     why: hit ? `发了一张纯${pick.names[0]}的图，它答「${answered}」—— 答对了` : `发了一张纯${pick.names[0]}的图，它答「${answered}」—— 没答对，按不支持算`,
   };
 }
 
-async function save(channel: "a" | "c", a: ChannelAConfig, supportsImage: boolean): Promise<void> {
-  const cfg = await getAiConfig();
-  const next = { ...a, supportsImage };
-  await setAiConfig(channel === "c" ? { ...cfg, channelC: next } : { ...cfg, channelA: next });
+/** 把探出来的结果记回配置。回 `false` = **没记**（期间通道被换掉了，结果作废）。
+ *
+ *  ⚠️ **只合并一个字段，而且要先确认通道还是那一条**（issue #59，2026-10-05）。
+ *  原来是 `{ ...a, supportsImage }` 整条回写，而 `a` 是**探测开始时**的那份配置ーー
+ *  探一次要好几秒（真发一次带图的请求），用户在这期间改了 baseUrl / key / model
+ *  的话，**探完一回写就把他的改动全盖回旧值**。
+ *  而他看到的现象是「我刚改的设置自己变回去了」，完全想不到和「探一下吃不吃图」有关。
+ *
+ *  两条一起：
+ *  ① 用 `mergeChannel`（issue #34 为同一件事抽的）只合并 `supportsImage`，
+ *     不碰别的字段 —— 哪怕配置在期间被改过，也只会多这一个字段；
+ *  ② **而且先比一次**：`baseUrl` / `model` 变了就说明探的已经不是现在这条通道了，
+ *     那个结果**对现在这条没有意义**，不记。
+ *
+ *  ⚠️ ② 不是多余的 —— 只有 ① 的话，「换了模型」之后仍会把**旧模型**的
+ *  探测结果记到新模型上，而那是个错的结论（能力按模型不同）。 */
+async function save(channel: "a" | "c", probed: ChannelAConfig, supportsImage: boolean): Promise<boolean> {
+  const cur = await getAiConfig();
+  const now = channel === "c" ? cur.channelC : cur.channelA;
+  if (!now || now.baseUrl !== probed.baseUrl || now.model !== probed.model) return false;
+  await setAiConfig(mergeChannel(cur, channel, { supportsImage }));
+  return true;
 }

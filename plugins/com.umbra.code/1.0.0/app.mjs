@@ -936,6 +936,25 @@ function paint() {
   }] : [];
   /* 光标路径：源码档看光标，树档看选中那一行。**算不出来就不写** ——
      写一个「$」在那里会让人以为光标真在根上。 */
+  /* CSV 源码档的光标位置：「第 N 行 · 列名」（issue #56，2026-10-05）。
+     ⚠️ `rowAt` / `colAt` 写了之后**一处都没调用过** —— 只在第 19 行被 import 了。
+     而 S20 的形制里状态行是要说这句话的（`csvpos.mjs` 顶部注释也写着
+     「状态行要的是『第 3 行 · 金额』」）。
+     **写了而没接上，和没写一样** —— 而它比没写更坏：
+     它让下一个人以为这件事已经做了。 */
+  let ccur = "";
+  if (isCsv() && cparsed && cparsed.rows.length && mode === "src" && view) {
+    const off = view.state.selection.main.head;
+    const i = rowAt(cparsed.rows, off);
+    if (i >= 0) {
+      const row = cparsed.rows[i];
+      const col = colAt(view.state.doc.toString(), row, off, cparsed.delimiter);
+      const name = col >= 0 ? (cparsed.header?.cells[col] ?? `第 ${col + 1} 列`) : "";
+      /* 表头那一行就说「表头」—— 说「第 1 行」对，但没说出它是什么 */
+      ccur = (i === 0 ? "表头" : `第 ${row.line} 行`) + (name ? ` · ${name}` : "");
+    }
+  }
+
   let crumb = "";
   if (isJson() && jparsed && jparsed.ok) {
     /* ⚠️ `jpick` 现在存的是 `jkey(segs)`（JSON 字符串），不是显示用的 path ——
@@ -986,6 +1005,7 @@ function paint() {
         + (ro && !curVersion ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : "")
         + (jbad ? ` · 解析不了 L${jparsed.line}:${jparsed.col}` : "")
         + (crumb ? ` · ${crumb}` : "")
+        + (ccur ? ` · ${ccur}` : "")
         + (isCsv() && cparsed && cparsed.rows.length
             ? ` · ${cparsed.rows.length} 行 · ${Math.max(...cparsed.rows.map((r) => r.cells.length))} 列`
               + ` · 分隔符 ${cparsed.delimiter === "\t" ? "制表符" : cparsed.delimiter}`

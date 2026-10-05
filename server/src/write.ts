@@ -107,9 +107,38 @@ export async function writeDraft(
   const before = await readIfExists(abs);
   const unchanged = before === prep.content;
 
-  // ①½ 并发写保护：如果传了预期 sha256，盘上不一致就拒绝
-  if (opts?.expectedSourceSha256 && before !== undefined) {
-    const currentSha = createHash("sha256").update(before as string, "utf8").digest("hex");
+  /* ①½ 并发写保护：如果传了预期 sha256，盘上不一致就拒绝。
+   *
+   * ⚠️ **判据是 `!== null` 不是 `!== undefined`**（issue #65，2026-10-05）。
+   * `readIfExists` 文件不存在时返回的是 **`null`**，所以
+   * `before !== undefined` **永远为真** —— 守卫形同虚设，
+   * 然后走到 `hash.update(null)`，实测抛 `ERR_INVALID_ARG_TYPE`。
+   * 调用方拿到的是一个**未包装的内部错误**，而不是「写成功」或一条可读的拒绝。
+   *
+   * ⚠️ 而 `as string` 正是把这个类型错误**盖住**的那一行 ——
+   * TypeScript 本来会告诉我们 `before` 可能是 null。
+   * **断言不是「我知道它是什么」，是「别再提醒我」** —— 去掉它。
+   *
+   * ⚠️ 顺带：`patchDraft`（下面那个函数）用的是 `original !== ""`，
+   * 两处判据不一致 —— 而这种不一致正是 §136.1 那条「两份几乎一样的代码，
+   * 差别藏在那一行里」。
+   */
+  if (opts?.expectedSourceSha256 && before === null) {
+    /* 盘上没这份稿而调用方传了 sha —— 它以为自己在覆盖一个已有版本。
+       **说清楚，而不是抛内部错误**：和下面那个冲突分支同形，调用方只认一种形状。 */
+    return {
+      outcome: {
+        path: relPath, written: false,
+        refused: "并发写入冲突：你传了预期的 sha256（说明以为盘上已有一版），而盘上没有这份稿",
+        steps: ["并发保护：盘上没有这份稿，而调用方给了预期版本 —— 新建时不要传 expectedSourceSha256"],
+        bytes: prep.content.length, version: null, snapshot: null,
+        runtimeCopied: [], unchanged: false, change: null, changelog: null,
+      },
+      diags: [], stats: {},
+    };
+  }
+  if (opts?.expectedSourceSha256 && before !== null) {
+    const currentSha = createHash("sha256").update(before, "utf8").digest("hex");
     if (currentSha !== opts.expectedSourceSha256) {
       return {
         outcome: {

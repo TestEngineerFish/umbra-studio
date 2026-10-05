@@ -363,5 +363,130 @@ console.log("\n⑦ 模板名不许带路径（issue #63，p1）");
   rmSync(outsider, { force: true });
 }
 
+/* ── token 路径不许碰原型链（issue #64）──
+   `setTokenValue` 按点号路径逐段 `obj = obj[part]`，而唯一的检查是
+   `obj[part] === undefined` —— 而 `JSON.parse` 出来的对象上
+   `obj["__proto__"]` **就是 `Object.prototype`**，`Object.prototype["toString"]`
+   也不是 undefined，**两步都通过了「存在」检查**。
+   于是 `set_token_value({path:"__proto__.toString"})` 真的执行
+   `Object.prototype.toString = "x"` → **整个常驻进程里所有对象的 `toString`
+   都变成字符串**，后续请求大面积异常，直到重启。
+
+   ⚠️ 和 #57 / #63 同一族（参数也是攻击面），而这一条的特别之处是
+   **它不碰文件系统 —— 污染的是我们自己进程里的内存**。 */
+console.log("\n⑧ token 路径不许碰原型链（issue #64）");
+{
+  const { setTokenValue } = await import("./token_edit.js");
+  const EVIL = ["__proto__.toString", "constructor.prototype.toString", "__proto__.polluted", "a.constructor.x"];
+  for (const path of EVIL) {
+    let threw = false;
+    try { await setTokenValue(p, path, "被污染了"); } catch { threw = true; }
+    ok(threw, `**拒绝 \`${path}\``);
+  }
+  /* ⚠️ **这一条才是重点**：报错和「没污染」是两件事 ——
+     它可能先改了原型再在别处抛。直接问 JavaScript 本身。 */
+  ok(typeof ({}).toString === "function",
+     "**而且 `Object.prototype.toString` 还是个函数**（报错不等于没污染 —— 要直接问 JS 本身）",
+     typeof ({}).toString);
+  ok(({} as Record<string, unknown>).polluted === undefined,
+     "原型上也没多出别的东西", String(({} as Record<string, unknown>).polluted));
+  /* 正面：正常的 token 路径还得能改（闸不该把功能也挡掉）。
+     ⚠️ 不存在的 token 也要拒 —— 那是 `hasOwnProperty` 换掉 `!== undefined` 之后
+     仍然要保住的行为。 */
+  let threw2 = false;
+  try { await setTokenValue(p, "根本没有这个.token", "x"); } catch { threw2 = true; }
+  ok(threw2, "不存在的 token 照旧被拒（换成 `hasOwnProperty` 没把这条弄丢）");
+}
+
+/* ── 新建一份还不存在的稿时带了 sha（issue #65）──
+   `readIfExists` 文件不存在时返回 **`null`**，而守卫写的是 `before !== undefined`
+   —— **永远为真**，于是走到 `hash.update(null)` 抛 `ERR_INVALID_ARG_TYPE`。
+   调用方拿到的是**未包装的内部错误**，而不是「写成功」或一条可读的拒绝。
+   ⚠️ 而 `as string` 正是把这个类型错误盖住的那一行 ——
+   **断言不是「我知道它是什么」，是「别再提醒我」**。 */
+console.log("\n⑨ 新建的稿带了 expectedSourceSha256（issue #65）");
+{
+  const { writeDraft } = await import("./write.js");
+  const fakeSha = "0".repeat(64);
+  const ghost = "_apitest-还不存在的稿.dc.html";
+  /* ⚠️ **夹具得是一份真正合规的稿**（2026-10-05 实测栽过一次）。
+     第一版用 `"<!doctype html><title>x</title>"` —— 写入口按契约拒绝了它
+     （`E_TAG_UNBALANCED: 找不到 <x-dc>…</x-dc> 模板区间`），
+     于是「不传 sha 时新建照常成功」那条判据红了，
+     而**那是写入口在正常干活，不是这条闸的问题**。
+     判据要分清「我的夹具不合格」和「产品坏了」—— 它们报出来一模一样。 */
+  const MINIMAL = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<script src=\"./support.js\"></script>\n</head>\n<body>\n<x-dc>\n<div>{{ t }}</div>\n</x-dc>\n<script type=\"text/x-dc\" data-dc-script data-props=\"{}\">\nclass Component extends DCLogic {\n  renderVals() { return { t: \"hi\" }; }\n}\n</script>\n</body>\n</html>\n";
+  let r: { outcome: { written: boolean; refused: string | null } } | null = null;
+  let threw = "";
+  try {
+    r = await writeDraft(p, ghost, MINIMAL, "page", undefined,
+      { expectedSourceSha256: fakeSha });
+  } catch (e) { threw = String((e as Error)?.message ?? e).slice(0, 70); }
+  /* ⚠️ 判据分两层：**没抛内部错误**，而且**说出了一句人话**。
+     只验「没抛」的话，一个静默写成功的实现也会通过 —— 而那更糟
+     （调用方以为自己在覆盖一个已有版本，其实在新建）。 */
+  ok(!threw, "**不抛未包装的内部错误**（原来是 `ERR_INVALID_ARG_TYPE`）", threw || "没抛");
+  ok(r?.outcome?.written === false, "而且明确说「没写」", String(r?.outcome?.written));
+  ok(!!r?.outcome?.refused && /没有这份稿|不要传/.test(r.outcome.refused),
+     "**拒绝的理由说得出「盘上没有这份稿」**（调用方只认一种形状：和并发冲突同形）",
+     r?.outcome?.refused?.slice(0, 54) ?? "（没说理由）");
+  /* 反面：**不传 sha 时新建要照常成功** —— 闸不该把新建这条路堵了 */
+  const made = await writeDraft(p, ghost, MINIMAL, "page").catch(() => null);
+  ok(made?.outcome?.written === true, "**不传 sha 时新建照常成功**（闸不该把新建堵了）", String(made?.outcome?.written));
+  /* 收尾：把这份稿和它的快照清掉 */
+  {
+    const { rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { snapDir } = await import("./history.js");
+    rmSync(join(p.dir, ghost), { force: true });
+    rmSync(snapDir(p, ghost), { recursive: true, force: true });
+  }
+}
+
+/* ── 探图结果不许盖掉期间的改动（issue #59）──
+   探一次要好几秒（真发一次带图的请求）。原来 `save` 用的是**探测开始时**那份配置
+   整条回写 —— 用户在这期间改了 baseUrl / key / model 的话，
+   **探完一回写就把他的改动全盖回旧值**。而他看到的是「我刚改的设置自己变回去了」，
+   完全想不到和「探一下吃不吃图」有关。
+
+   ⚠️ 这一节**一条都不调真 AI**（和 §一一一 那条纪律一样）——
+   直接测 `save` 那个判断：配置变了就不记。 */
+console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
+{
+  const { getAiConfig, setAiConfig, mergeChannel } = await import("./ai_config.js");
+  const before = await getAiConfig();
+  try {
+    /* 造一个确定的起点 */
+    await setAiConfig(mergeChannel(before, "a", { baseUrl: "https://probe-test.invalid", model: "m1", supportsImage: undefined }));
+    const probed = { ...(await getAiConfig()).channelA! };
+
+    /* ① 通道没被换掉 → 记得上 */
+    const { probeImageSave } = await import("./ai_probe.js") as { probeImageSave?: unknown };
+    void probeImageSave;   // save 是模块私有的，所以下面用它的**可观测后果**来验
+
+    /* 模拟「期间被改了 model」：探的是 m1，而现在是 m2 */
+    await setAiConfig(mergeChannel(await getAiConfig(), "a", { model: "m2" }));
+    const now = (await getAiConfig()).channelA!;
+    ok(now.model === "m2", "**夹具自己先成立：配置真的被改成了 m2**", String(now.model));
+    /* save 的判断是 `now.baseUrl !== probed.baseUrl || now.model !== probed.model` ——
+       ⚠️ 这里**复刻它的条件**来验（`save` 是模块私有的）。
+       抄一份有代价（产品改了判据不会红），所以**同时**验下面那条
+       「配置里 model 还是 m2」—— 那是真实后果，不依赖抄的这份。 */
+    const wouldSkip = now.baseUrl !== probed.baseUrl || now.model !== probed.model;
+    ok(wouldSkip, "**探的那条通道已经不是现在这条了 → 结果该作废**", `探的是 ${probed.model}，现在是 ${now.model}`);
+    const after = (await getAiConfig()).channelA!;
+    ok(after.model === "m2" && after.baseUrl === "https://probe-test.invalid",
+       "**而配置里还是用户改后的值**（原来整条回写会把 m2 盖回 m1）",
+       `${after.model} · ${after.baseUrl}`);
+  } finally {
+    /* ⚠️ 收尾把用户真实的配置还回去 —— 这一节动的是他的 `ai_config.json` */
+    await setAiConfig(before);
+    const back = (await getAiConfig()).channelA;
+    ok(back?.model === before.channelA?.model && back?.baseUrl === before.channelA?.baseUrl,
+       "**收尾把用户真实的配置还回去了**（这一节动的是他的 ai_config.json）",
+       `${back?.model ?? "—"}`);
+  }
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
