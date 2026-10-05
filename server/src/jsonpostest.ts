@@ -129,5 +129,54 @@ ok("根是 `$`", prettyPath("") === "$");
      !/at position/.test(say(`{\n  "a": 1\n  "b": 2\n}`)), say(`{\n  "a": 1\n  "b": 2\n}`));
 }
 
+/* ── JSONC：注释和尾逗号（issue #49）──
+   实测确证过：一份**合法的** `.jsonc`（`{ // 说明\n "a": 1 }`）原来被报成
+   「解析不了 L2:3 · 这里该是一个键名」—— 那是**误报**（纪律③），树档还整个打不开。
+   而 `.jsonc` 在 `CODE_EXT` 里、`langFor` 也给了它 json 高亮 ——
+   **所以它看起来是支持的，点开却红着一条假错误。**
+
+   ⚠️ 这一节最要紧的不是「能解析了」，是「**偏移一个字节都没动**」——
+   删掉注释也能让它解析，但那样后面每个节点的位置全偏，
+   而「看起来在工作、点过去跳到别的地方」**比「解析不了」更坏**。 */
+console.log("\n JSONC 的注释与尾逗号（issue #49）");
+{
+  const { stripJsonc } = await import("./../../plugins/com.umbra.code/1.0.0/jsonpos.mjs" as string) as { stripJsonc: (t: string) => string };
+  const CASES: Array<[string, string]> = [
+    ["行注释", '{\n  // 说明\n  "a": 1\n}'],
+    ["块注释", '{\n  /* 多行\n     注释 */\n  "a": 1\n}'],
+    ["尾逗号（对象）", '{\n  "a": 1,\n}'],
+    ["尾逗号（数组）", '{\n  "a": [1, 2,]\n}'],
+    ["纯 JSON（什么都不该动）", '{\n  "a": 1\n}'],
+  ];
+  for (const [name, src] of CASES) {
+    const out = stripJsonc(src);
+    let parsed: unknown = null, why = "";
+    try { parsed = JSON.parse(out); } catch (e) { why = String((e as Error).message).slice(0, 40); }
+    ok(`**${name}**：抹完能过 \`JSON.parse\``, parsed !== null, why || JSON.stringify(parsed));
+    /* ⚠️ 长度和行数**都**要一样 —— 长度对而行数变了（比如把块注释里的换行吃掉）
+       会让行号偏，而行号是「解析不了 L12:5」和「在源码里看 L12–17」的依据。 */
+    ok(`${name}：长度一个字节都没变`, out.length === src.length, `${src.length} → ${out.length}`);
+    ok(`${name}：行数也没变`, out.split("\n").length === src.split("\n").length);
+  }
+  /* ⚠️ **字符串里的 `//` 和 `/*` 不是注释。** 把它们抹掉会把这份文件真的弄坏 —— 
+     这是 `stripJsonc` 里唯一有难度的地方，所以单独钉两条。 */
+  const url = '{\n  "url": "https://x.com/a//b"\n}';
+  ok("**字符串里的 `//` 不当注释**（抹掉它这份文件就真坏了）",
+     JSON.parse(stripJsonc(url)) !== null && (JSON.parse(stripJsonc(url)) as { url: string }).url === "https://x.com/a//b",
+     (JSON.parse(stripJsonc(url)) as { url: string }).url);
+  const star = '{\n  "s": "a /* b */ c"\n}';
+  ok("字符串里的 `/*` 也不当注释",
+     (JSON.parse(stripJsonc(star)) as { s: string }).s === "a /* b */ c",
+     (JSON.parse(stripJsonc(star)) as { s: string }).s);
+
+  /* 位置：注释占掉一整行之后，后面节点的 from/to 还得指到原文里对的地方 */
+  const src2 = '{\n  // 注释占一行\n  "key": "值",\n  "b": 2,\n}';
+  const r2 = parseWithPos(stripJsonc(src2));
+  const kn = (r2.ok ? r2.nodes : []).find((n: { path: string }) => n.path === "key");
+  ok("**抹完之后位置没偏**（`key` 的值在原文里正好是 `\"值\"`，而且在 L3）",
+     !!kn && src2.slice(kn.from, kn.to) === '"值"' && kn.line === 3,
+     kn ? `from/to ${kn.from}/${kn.to} → ${JSON.stringify(src2.slice(kn.from, kn.to))} · L${kn.line}` : "找不到那个节点");
+}
+
 console.log(fail === 0 ? `\n✓ 位置感知 JSON ${pass}/${pass + fail}\n` : `\n✗ 位置感知 JSON ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

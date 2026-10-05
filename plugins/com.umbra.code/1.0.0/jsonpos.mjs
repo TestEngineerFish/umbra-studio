@@ -252,3 +252,68 @@ export function prettyPath(path) {
   if (!path) return "$";
   return "$" + path.split(".").map((seg) => (/^\d+$/.test(seg) ? `[${seg}]` : `.${seg}`)).join("");
 }
+
+/** 把 JSONC 的注释和尾逗号**换成等长的空白**，让它能过 `JSON.parse`（issue #49）。
+ *
+ *  ### 为什么是「等长替换」而不是删掉
+ *  **偏移必须一个字节都不动。** `parseWithPos` 算出来的 `from/to` 要和
+ *  编辑器里的光标位置对得上（S19 的「在源码里看 L12–17」和「光标路径」都靠它）。
+ *  删掉注释的话后面每个节点的偏移全偏，而**那种错比「解析不了」更坏** ——
+ *  它看起来在工作，点过去却跳到别的地方。
+ *
+ *  把注释的每个字符换成空格、换行**保留**（行号也不能变），尾逗号换成一个空格。
+ *  换完长度完全相同，`JSON.parse` 看到的是一份合法 JSON。
+ *
+ *  ### 为什么不引 `node-jsonc-parser`
+ *  它能做这件事，但它要带一整套自己的 AST 和位置模型进来，
+ *  而我们**已经有** `parseWithPos`（§一二五）。引它等于多一个
+ *  「什么是合法 JSON」的定义 —— 那正是 `jsonpos.mjs` 开头那条⚠️ 要避开的。
+ *  这里只需要「把非 JSON 的那几样抹平」，三十行够了。
+ *
+ *  ### ⚠️ 字符串里的 `//` 不是注释
+ *  `{"url": "https://x.com"}` —— 把它当注释抹掉的话这份文件就真的坏了。
+ *  所以要真的走一遍词法：认引号、认转义。**这是这个函数唯一有难度的地方。**
+ */
+export function stripJsonc(text) {
+  const out = Array.from(text);
+  const n = text.length;
+  let i = 0;
+  /** 把 [a, b) 换成空格，但换行留着（行号不能变） */
+  const blank = (a, b) => {
+    for (let k = a; k < b && k < n; k++) if (out[k] !== "\n" && out[k] !== "\r") out[k] = " ";
+  };
+  while (i < n) {
+    const c = text[i];
+    if (c === '"') {
+      /* 字符串：整段跳过。**转义要认** —— `"a\\"` 的结尾是第二个引号不是第一个 */
+      i++;
+      while (i < n) {
+        if (text[i] === "\\") { i += 2; continue; }
+        if (text[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      let j = i;
+      while (j < n && text[j] !== "\n") j++;
+      blank(i, j); i = j; continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      let j = i + 2;
+      while (j < n && !(text[j] === "*" && text[j + 1] === "/")) j++;
+      blank(i, Math.min(j + 2, n)); i = j + 2; continue;
+    }
+    i++;
+  }
+  /* 尾逗号：`,` 后面只有空白然后是 `}` 或 `]`。
+     ⚠️ 这一步在抹完注释**之后**做 —— 不然 `[1, /* x *​/ ]` 里那个逗号认不出是尾逗号。 */
+  const s2 = out.join("");
+  const re = /,(\s*[}\]])/g;
+  let m, res = Array.from(s2);
+  while ((m = re.exec(s2)) !== null) {
+    res[m.index] = " ";
+    re.lastIndex = m.index + 1;       // 允许连续的 `,,]` 逐个处理
+  }
+  return res.join("");
+}

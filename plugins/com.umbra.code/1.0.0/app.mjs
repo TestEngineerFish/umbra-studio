@@ -15,7 +15,7 @@ const CM = "/__shared/codemirror.js";
 
 /* 位置感知 JSON 解析（M10-4）。**和插件一起发**，不走 `/__shared/` ——
    那里只放「多个插件都要」的大依赖，这一份是这个插件自己的逻辑，才几 KB。 */
-import { parseWithPos, prettyPath, nodeAt } from "./jsonpos.mjs";
+import { parseWithPos, prettyPath, nodeAt, stripJsonc } from "./jsonpos.mjs";
 import { parseCsv, sniffEncoding, decodeAs, rowAt, colAt } from "./csvpos.mjs";
 
 const el = (id) => document.getElementById(id);
@@ -143,6 +143,29 @@ const fail = (title, body) => {
 
 /** 按扩展名挑语言。**挑不到就不高亮**，不猜 —— 猜错的高亮比没有高亮更碍眼
  *  （整段标成字符串色那种）。 */
+/** 这个扩展名用哪套高亮。`null` = 没有（纯文本那样显示）。
+ *
+ *  ⚠️ **原来 `CODE_EXT` 有 37 种而这里只认 16 种** —— 剩下 **27 种能打开但一片灰**
+ *  （`.yaml` `.toml` `.sh` `.sql` `.go` `.rs` `.java` `.c` `.swift` `.rb` …），
+ *  而配置文件和脚本是设计项目里最常见的那一类（issue #37，2026-10-05 补齐）。
+ *
+ *  两套来源，各有各的用处：
+ *  | 来源 | 给谁 | 代价 |
+ *  | --- | --- | --- |
+ *  | `lang-*`（带 lezer 语法树） | 需要**结构**的格式：`.json` 的树档、`.html` 的标签配对 | 每种几十到几百 KB |
+ *  | **`StreamLanguage` + legacy 模式** | 只需要**看清**的格式 | 每种 2–6 KB |
+ *
+ *  高亮只要 token 级别准就够 —— 语法树是给折叠、缩进、结构化编辑用的，
+ *  而那几件对「看一眼 nginx 配置」没有价值。
+ *
+ *  ⚠️ **`.php` 真的没有**：legacy 里没这个模式，要 `@codemirror/lang-php`（不小）。
+ *  照实写在这里，别让下一个人以为是漏了（§九 那条「状态列会说谎」）。
+ *  ⚠️ **`.graphql` 也没有** legacy 模式（要 `codemirror-graphql`，另一个生态）。
+ *  `CODE_EXT` 37 种里现在只剩 `.php` / `.graphql` 没高亮，
+ *  以及 `.txt` / `.lock` —— 后两种**本来就不该有**（纯文本）。
+ *  ⚠️ **`.vue` / `.svelte` 也没有**：它们是「HTML 里嵌 JS 和 CSS」的多语言文件，
+ *  legacy 的 htmlmixed 接不住 `<script setup lang="ts">` 这种。
+ *  给它们 `html()` 比给 `null` 好 —— 模板那一半是对的。 */
 function langFor(path, cm) {
   const ext = (path.split(".").pop() ?? "").toLowerCase();
   const js = ["js", "mjs", "cjs", "jsx"], ts = ["ts", "tsx", "mts", "cts"];
@@ -153,7 +176,37 @@ function langFor(path, cm) {
   if (ext === "css") return cm.css();
   if (ext === "html" || ext === "htm") return cm.html();
   if (ext === "md" || ext === "markdown") return cm.markdown();
-  return null;
+  /* `.vue` / `.svelte`：模板那一半按 HTML 高亮（见上面那条⚠️） */
+  if (ext === "vue" || ext === "svelte") return cm.html();
+
+  /* 下面全走 `StreamLanguage.define(<legacy 模式>)`。
+     ⚠️ **`cm.StreamLanguage` 可能不在**（共享库是版本化的，旧版没导出这几个）——
+     所以每一条都经 `stream()` 走，它拿不到就回 `null`（纯文本显示），
+     **不抛** —— 一个少了的高亮不该让整个文件打不开。 */
+  const stream = (mode) => {
+    if (!cm.StreamLanguage || !mode) return null;
+    try { return cm.StreamLanguage.define(mode); } catch { return null; }
+  };
+  const LEGACY = {
+    yaml: cm.yaml, yml: cm.yaml,
+    toml: cm.toml,
+    ini: cm.properties, properties: cm.properties, env: cm.properties,
+    xml: cm.xml,
+    rb: cm.ruby, ruby: cm.ruby,
+    rs: cm.rust,
+    go: cm.go,
+    sh: cm.shell, bash: cm.shell, zsh: cm.shell, fish: cm.shell,
+    sql: cm.standardSQL,
+    swift: cm.swift,
+    c: cm.c, h: cm.c,
+    cpp: cm.cpp, cc: cm.cpp, hpp: cm.cpp, cxx: cm.cpp,
+    java: cm.java,
+    cs: cm.csharp,
+    kt: cm.kotlin, kts: cm.kotlin,
+    scss: cm.sCSS,
+    less: cm.less,
+  };
+  return stream(LEGACY[ext]) ?? null;
 }
 
 let view = null, cm = null, curPath = null;
@@ -390,6 +443,20 @@ let jshown = new Map();
 let jpick = null;
 
 const isJson = () => /\.jsonc?$/i.test(curPath || "");
+/** 这份是 `.jsonc` 吗（允许注释和尾逗号） */
+const isJsonc = () => /\.jsonc$/i.test(curPath || "");
+
+/** 解析当前这份 JSON / JSONC。**一处定义** —— 两处调用点（打开时、边改边重解）
+ *  原来各写一遍 `parseWithPos(...)`，少改一处就会出现「打开时解析得了、
+ *  改一个字之后又解析不了」这种说不通的现象。
+ *
+ *  ⚠️ **`.jsonc` 先把注释和尾逗号抹成等长空白**（issue #49，2026-10-05）。
+ *  实测：一份**合法的** `.jsonc`（`{ // 说明\n "a": 1 }`）原来被报成
+ *  「解析不了 L2:3 · 这里该是一个键名」—— 那是**误报**（纪律③），
+ *  而且树档整个打不开。
+ *  等长替换的理由见 `stripJsonc` 的注释：**偏移一个字节都不能动**，
+ *  否则「在源码里看 L12–17」会跳到别的地方 —— 那比「解析不了」更坏。 */
+const parseNow = (text) => parseWithPos(isJsonc() ? stripJsonc(text) : text);
 
 /** 这一行的祖先里有没有被折叠的。
  *  ⚠️ **按路径前缀判，不按行号** —— 行号会随展开收起变，而路径不会。 */
@@ -1043,7 +1110,7 @@ async function load(path, theme, opt = {}) {
     cfilter = false; csel = null; ccol = -1; creadAs = null;
   }
   opt = { ...opt, freshOpen };
-  jparsed = /\.jsonc?$/i.test(path) ? parseWithPos(shown ?? disk.content) : null;
+  jparsed = /\.jsonc?$/i.test(path) ? parseNow(shown ?? disk.content) : null;
   /* CSV：先判编码，再解析。
      ⚠️ **编码没确定之前只读**（S20 的原话：「按错的编码落盘会把原文写坏」）——
      我们手上只有已经按 UTF-8 解过的文本，所以嗅探拿它的替换字符密度来判。
@@ -1095,7 +1162,7 @@ async function load(path, theme, opt = {}) {
 
            **`docText()` 只给「落盘 / 和盘上那份比较」用，位置计算一律用编辑器坐标。**
            两类用途混成一个函数就是下一个 bug。 */
-        if (isJson()) { jparsed = parseWithPos(view.state.doc.toString()); if (mode === "tree") renderTree(); }
+        if (isJson()) { jparsed = parseNow(view.state.doc.toString()); if (mode === "tree") renderTree(); }
         paint(); markChanged(); scheduleStage(); markJsonError();
       }
       else if (u.selectionSet) paint();

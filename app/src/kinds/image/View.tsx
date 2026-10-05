@@ -58,6 +58,39 @@ export function ImageView({ core, path, supportsImage, channelLabel, onSelection
     document.addEventListener("keydown", on); return () => document.removeEventListener("keydown", on);
   }, [supportsImage, onSelection]);
 
+  /* ── 滚轮 / 触控板缩放（issue #32）──
+     ⚠️ **以光标为锚点**，不是以容器中心。放大时用户看的是鼠标底下那一块，
+     按中心缩放会把它推出视野 —— 那种缩放用一次就不想再用。
+     做法：记下光标在图上的归一化位置，缩放后把滚动位置调回去，
+     让那一点仍在光标底下。
+
+     ⚠️ `ctrl/⌘ + 滚轮` 是浏览器的页面缩放，而**触控板捏合在 Chrome 里
+     正是以 `ctrlKey=true` 的 wheel 事件送来的** —— 所以这里两样都接，
+     并且一律 `preventDefault()`（不拦的话捏合会把整个工作台放大）。
+     普通滚轮不拦：那是正常的平移滚动，图比容器大时用户要用它。 */
+  const onWheel = (e: React.WheelEvent) => {
+    const el = box.current;
+    if (!el || !info?.width) return;
+    /* 只有「捏合 / ⌘+滚轮」才缩放；普通滚轮留给平移 */
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    const cur = zoom === "fit" ? fitScale() : zoom;
+    /* 每格 ~10%，按指数走 —— 线性步长在放大后显得越来越慢 */
+    const next = Math.min(16, Math.max(0.05, cur * Math.exp(-e.deltaY / 400)));
+    if (Math.abs(next - cur) < 1e-4) return;
+    /* 光标那一点在「内容坐标系」里的位置（含当前滚动量） */
+    const r = el.getBoundingClientRect();
+    const cx = e.clientX - r.left + el.scrollLeft;
+    const cy = e.clientY - r.top + el.scrollTop;
+    setZoom(next);
+    /* 缩放在下一帧生效，所以滚动位置也等到那时再调 */
+    requestAnimationFrame(() => {
+      const k = next / cur;
+      el.scrollLeft = cx * k - (e.clientX - r.left);
+      el.scrollTop = cy * k - (e.clientY - r.top);
+    });
+  };
+
   /** 屏幕坐标 → 原图像素 */
   const toImage = (clientX: number, clientY: number) => {
     const r = img.current!.getBoundingClientRect();
@@ -120,10 +153,19 @@ export function ImageView({ core, path, supportsImage, channelLabel, onSelection
           }}>{probing ? "正在探…" : "探一次"}</button>
         </div>
       )}
-      <div ref={box} className="flex-1 min-h-0 overflow-auto grid place-items-center p-6" style={{ background: "repeating-conic-gradient(var(--tool-panel-2) 0 25%, transparent 0 50%) 50% / 16px 16px" }}>
+      <div ref={box} onWheel={onWheel} className="flex-1 min-h-0 overflow-auto grid place-items-center p-6" style={{ background: "repeating-conic-gradient(var(--tool-panel-2) 0 25%, transparent 0 50%) 50% / 16px 16px" }}>
         <div className="relative" style={{ lineHeight: 0 }} onMouseDown={onDown}>
+          {/* ⚠️ **`maxWidth: "none"` 是必须的**（2026-10-05 实测抓到的既存缺陷）。
+              Tailwind 的 preflight 有一条 `img,video{max-width:100%;height:auto}` ——
+              于是放大到超过容器宽度时，`width` 被压回容器宽而 `height` **不受限**，
+              图被**横向压扁**。实测：style 要 `1075.61px × 717.07px`，
+              实际渲染 `612 × 717` —— 宽高比从 1.50 变成 1.08。
+
+              ⚠️ 这**不是滚轮缩放引入的** —— 用工具栏的 zoom 按钮放大到
+              超过容器宽一样会变形，只是没人往那么大放过。
+              `height: auto` 那一半也要解掉，否则显式给的 `height` 会被忽略。 */}
           <img ref={img} src={src} alt={path} draggable={false}
-            style={{ width: info?.width ? info.width * scale : undefined, height: info?.height ? info.height * scale : undefined, cursor: picking ? "crosshair" : "default", userSelect: "none" }} />
+            style={{ width: info?.width ? info.width * scale : undefined, height: info?.height ? info.height * scale : undefined, maxWidth: "none", maxHeight: "none", cursor: picking ? "crosshair" : "default", userSelect: "none" }} />
           {(drag ?? rect) && (
             <div className="absolute pointer-events-none" style={{
               left: (drag ?? rect)!.x * scale, top: (drag ?? rect)!.y * scale,
