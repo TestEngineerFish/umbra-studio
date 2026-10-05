@@ -178,5 +178,50 @@ console.log("\n JSONC 的注释与尾逗号（issue #49）");
      kn ? `from/to ${kn.from}/${kn.to} → ${JSON.stringify(src2.slice(kn.from, kn.to))} · L${kn.line}` : "找不到那个节点");
 }
 
+/* ── 键名带点号（issue #54，p1）──
+   带点号的键名**很常见**：i18n 词条（`"home.title"`）、依赖名（`"lodash.merge"`）、
+   带版本的配置键。而路径原来是 `` `${path}.${k}` `` 拼出来、消费方按 `.` 切回去 ——
+   **这个来回不可逆**。实测 `{deps:{"lodash.merge":…}, "a.b":1, a:{b:2}}`：
+
+   | 节点 | 原来拿到的 path |
+   | --- | --- |
+   | `deps` 下的 `lodash.merge` | `deps.lodash.merge` ← 被切成**三层** |
+   | 顶层键 `a.b` | `a.b` |
+   | `a` 下的 `b` | `a.b` ← **和上一条完全一样** |
+
+   两个不同节点同一个路径 → 树画错、取值取错、折叠互相串。
+   修法不是转义（要在六处拼接和切分之间保持一致，迟早漏一处），
+   而是**把段数组 `segs` 带着走**：寻址用 `segs`，`path` 只用于显示。 */
+console.log("\n 键名带点号（issue #54）");
+{
+  const src = JSON.stringify({ deps: { "lodash.merge": "4.6.2" }, "a.b": 1, a: { b: 2 } }, null, 2);
+  const r = parseWithPos(src);
+  ok("带点号的 JSON 解析得通", r.ok === true);
+  const nodes = r.ok ? r.nodes : [];
+  /* ⚠️ **最要紧的一条：每个节点的 `segs` 唯一。**
+     这是「两个节点同一个路径」那条 bug 的直接否命题。 */
+  const keys = (nodes as Array<{ segs: string[]; depth: number }>).map((n) => JSON.stringify(n.segs));
+  const dup = keys.filter((v: string, i: number, a: string[]) => a.indexOf(v) !== i);
+  ok("**每个节点的 `segs` 唯一**（原来顶层 `\"a.b\"` 和 `a` 下的 `b` 拿到同一个 path）",
+     dup.length === 0, dup.length ? `重复：${dup.join(" ")}` : `${keys.length} 个节点都不重`);
+
+  /* 逐个核对层级 —— 「不重复」还不够，层数也得对 */
+  const find = (segs: string[]) => (nodes as Array<{ segs: string[]; depth: number }>).find((n) => JSON.stringify(n.segs) === JSON.stringify(segs));
+  ok("**`lodash.merge` 是 `deps` 的直接子项**（原来被当成 deps→lodash→merge 三层）",
+     !!find(["deps", "lodash.merge"]), find(["deps", "lodash.merge"]) ? "depth " + find(["deps", "lodash.merge"])!.depth : "找不到");
+  ok("顶层键 `a.b` 在第一层", find(["a.b"])?.depth === 1, String(find(["a.b"])?.depth));
+  ok("而 `a` 下的 `b` 在第二层（两者不再互相覆盖）", find(["a", "b"])?.depth === 2, String(find(["a", "b"])?.depth));
+
+  /* 显示：`$["a.b"]` 和 `$.a.b` 必须不一样 —— 否则用户看不出是一层还是两层 */
+  ok("**`prettyPath` 区分得开**：`$[\"a.b\"]` vs `$.a.b`",
+     prettyPath(["a.b"]) === '$["a.b"]' && prettyPath(["a", "b"]) === "$.a.b",
+     `${prettyPath(["a.b"])} / ${prettyPath(["a", "b"])}`);
+  ok("带点号的键在 pretty 里也用方括号写法",
+     prettyPath(["deps", "lodash.merge"]) === '$.deps["lodash.merge"]', prettyPath(["deps", "lodash.merge"]));
+  /* 数组下标仍然是 `[i]`（别为了修这条把原来对的改坏） */
+  ok("数组下标照旧是 `[i]`（修这条没把原来对的改坏）",
+     prettyPath(["list", "0", "name"]) === "$.list[0].name", prettyPath(["list", "0", "name"]));
+}
+
 console.log(fail === 0 ? `\n✓ 位置感知 JSON ${pass}/${pass + fail}\n` : `\n✗ 位置感知 JSON ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

@@ -30,9 +30,22 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, p
   /* 重名时显示**能区分它们的那一段** —— 父目录加自己，前面用 … 省掉。
      完整路径太长，在一张窄卡片里会被 truncate 成一样的开头（`/Users/sam/Doc…`），
      **那等于没显示**。 */
+  /* ⚠️ **两种分隔符都要认**（issue #55，2026-10-05 —— 这是 #12 修法自己的漏洞）。
+     第一版只按 `/` 切，而 Windows 上 `p.dir` 是 `C:\Users\sam\…`：
+     `split("/")` 只得到**一段** → 走 else 分支 → 输出 `/C:\Users\sam\…`，
+     而卡片第二行是 `truncate` 的，两张同名卡都显示成 `/C:\Users\sam\Doc…` ——
+     **正是 #12 注释里说的「那等于没显示」，这个修法在 Windows 上压根不生效**。
+     顺带还给不重名的卡多加了一个不存在的前导 `/`。
+
+     ⚠️ 这一条提醒的是：**修一个「分不清」的问题时，自己的实现也可能分不清** ——
+     而我在 mac 上测，看不到。同仓 `chat_run.ts` 早就在做
+     `.split("\\").join("/")`，说明服务端给出的就是原生分隔符。
+
+     不拼回前导分隔符：**路径短到只有两段时，原样给比拼一个可能错的前缀好** ——
+     `C:\shop` 拼成 `/C:\shop` 是个不存在的路径。 */
   const shortDir = (dir: string) => {
-    const parts = dir.replace(/\/+$/, "").split("/").filter(Boolean);
-    return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : `/${parts.join("/")}`;
+    const parts = dir.replace(/[\\/]+$/, "").split(/[\\/]+/).filter(Boolean);
+    return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : dir;
   };
 
   const reveal = (p: ProjectRow) => void host.revealInFinder(p.dir).catch((e: Error) => toast("打开目录失败", e.message, "error"));

@@ -2931,8 +2931,12 @@ console.log("\n语言高亮覆盖面（issue #37）");
   for (const [name, body, wantHl] of CASES) {
     const abs = join(bootHl.dir, name);
     writeFileSync(abs, body, "utf8");
-    await pg.waitForTimeout(1100);
+    /* ⚠️ **等它出现，别固定睡一段**（2026-10-05 实测：`.go` 那一条偶发没刷出来）。
+       磁盘监听 → WS 通知 → React 重渲染这条链路的耗时不是常数，
+       而一条连着七个样本的循环里，前面几个的渲染会把后面的往后推。
+       `waitFor` 到点才走，比 `waitForTimeout(1100)` 既快又稳。 */
     const row = pg.locator('[role="treeitem"]').filter({ hasText: name }).first();
+    await row.waitFor({ state: "attached", timeout: 8000 }).catch(() => {});
     if (!await row.count()) { ok(false, `${name}：样本在树里刷出来`); rmSync(abs, { force: true }); continue; }
     await clearGuard();
     await row.click(); await pg.waitForTimeout(2100);
@@ -3077,6 +3081,38 @@ console.log("\n首页：同名项目要分得清（issue #12）");
       .filter((li) => !(li.querySelector(".font-semibold")?.textContent ?? "").includes(nm))
       .filter((li) => (li.textContent ?? "").includes("同名")).length, DUPNAME);
     ok(others === 0, "**不重名的项目没有被加上「同名」标记**（只在真重名时才变）", `${others} 张误标`);
+
+    /* ⚠️ **Windows 路径也要缩得对**（issue #55 —— 这是 #12 修法自己的漏洞）。
+       第一版 `shortDir` 只按 `/` 切，而 Windows 上 `p.dir` 是 `C:\Users\sam\…`：
+       `split("/")` 只得到**一段** → 走 else 分支 → 输出 `/C:\Users\sam\…`，
+       而第二行是 `truncate` 的，两张同名卡都显示成 `/C:\Users\sam\Doc…` ——
+       **正是 #12 注释里说的「那等于没显示」，这个修法在 Windows 上压根不生效**。
+
+       ⚠️ 判据在 mac 上跑，拿不到真的 Windows 路径 —— 所以**喂一个 Windows 形状的
+       字符串给页面里那段逻辑**。这和 #25 的做法同源：**在 mac 上验 win 的行为**
+       （那次是用 `path.win32` 跑同一个函数）。
+       这里 `shortDir` 是组件内的闭包、拿不到，所以把它的规则**原样抄一份**进判据 ——
+       ⚠️ 抄一份是有代价的（产品改了判据不会红），所以**同时**验卡片上真实渲染的
+       那一行「看起来像个缩写路径」，两条合起来才算钉住。 */
+    const winCases = await pg.evaluate(() => {
+      const shortDir = (dir) => {
+        const parts = dir.replace(/[\\/]+$/, "").split(/[\\/]+/).filter(Boolean);
+        return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : dir;
+      };
+      return {
+        win: shortDir("C:\\Users\\sam\\Documents\\design\\shop"),
+        posix: shortDir("/Users/sam/Documents/design/shop"),
+        shortWin: shortDir("C:\\shop"),
+      };
+    });
+    ok(winCases.win === "…/design/shop",
+       "**Windows 路径缩得对**（原来输出 `/C:\\Users\\sam\\…`，truncate 之后两张卡一模一样）", winCases.win);
+    ok(winCases.posix === "…/design/shop", "posix 路径照旧对（修 Windows 没把它改坏）", winCases.posix);
+    ok(!winCases.shortWin.startsWith("/"),
+       "**短路径不拼前导分隔符**（`C:\\shop` 拼成 `/C:\\shop` 是个不存在的路径）", winCases.shortWin);
+    /* 另一半：卡片上**真实渲染**的那一行得像个缩写路径（不是 title、不是空） */
+    ok(dupSubs.every((t) => t.startsWith("…/") || t.includes("/")),
+       "而卡片上真实渲染的那一行也确实是路径形状（抄的那份规则没和产品走偏）", JSON.stringify(dupSubs));
   } finally {
     await post("recent_remove", { dir: twin }).catch(() => {});
     rmSync(twin, { recursive: true, force: true });

@@ -122,8 +122,28 @@ function scan(text) {
   };
   const ws = () => { while (i < text.length && WS.includes(text[i])) i++; };
 
-  /** 解析一个值，push 一条记录，返回它的记录 */
-  const value = (key, path, depth) => {
+  /** 解析一个值，push 一条记录，返回它的记录。
+   *
+   *  ⚠️ **`segs` 是真实的段数组，`path` 只是给人看的拼接**（issue #54，2026-10-05）。
+   *  原来只有 `path`，而它是 `` `${path}.${k}` `` 拼出来的、消费方再按 `.` 切回去 ——
+   *  **键名里带点号时这个来回是不可逆的**。实测
+   *  `{deps:{"lodash.merge":"4.6.2"}, "a.b":1, a:{b:2}}`：
+   *
+   *  | 节点 | 拿到的 path |
+   *  | --- | --- |
+   *  | `deps` 下的 `lodash.merge` | `deps.lodash.merge` ← 被切成 deps→lodash→merge **三层** |
+   *  | 顶层键 `a.b` | `a.b` |
+   *  | `a` 下的 `b` | `a.b` ← **和上一条完全一样** |
+   *
+   *  两个不同节点同一个路径，于是树画错、取值取错、折叠状态互相串。
+   *  而带点号的键名**很常见**：i18n 词条（`"home.title"`）、
+   *  依赖名（`"lodash.merge"`）、带版本的配置键。
+   *
+   *  修法不是转义 —— 转义要在六处拼接和切分之间保持一致，迟早漏一处。
+   *  **直接把段数组带着走**：消费方要层级关系时用 `segs`，
+   *  要显示时用 `path`。**字符串拼接只用于显示，不用于寻址。**
+   */
+  const value = (key, path, depth, segs) => {
     ws();
     const from = i;
     const c = text[i];
@@ -142,7 +162,7 @@ function scan(text) {
           ws();
           if (text[i] !== ":") fail("键后面没有冒号");
           i++;
-          kids.push(value(k, path ? `${path}.${k}` : k, depth + 1));
+          kids.push(value(k, path ? `${path}.${k}` : k, depth + 1, [...segs, k]));
           ws();
           if (text[i] === ",") { i++; continue; }
           if (text[i] === "}") { i++; break; }
@@ -159,7 +179,7 @@ function scan(text) {
       else {
         for (;;) {
           const k = String(kids.length);
-          kids.push(value(k, path ? `${path}.${k}` : k, depth + 1));
+          kids.push(value(k, path ? `${path}.${k}` : k, depth + 1, [...segs, k]));
           ws();
           if (text[i] === ",") { i++; continue; }
           if (text[i] === "]") { i++; break; }
@@ -177,7 +197,7 @@ function scan(text) {
       if (!m) fail("既不是字面量也不是数字");
       i += m[0].length;
     }
-    const rec = { key, path, depth, kind, count, from, to: i };
+    const rec = { key, path, depth, kind, count, from, to: i, segs };
     /* ⚠️ **父节点要排在子节点前面**（树是按这个顺序画的），
        而递归是先算完子节点才回到这里 —— 所以按 `from` 排一次，不要按 push 顺序。
        不排的话对象的第一个子节点会跑到对象自己前面。 */
@@ -198,7 +218,7 @@ function scan(text) {
     fail("字符串没有收尾的引号");
   };
 
-  value("", "", 0);
+  value("", "", 0, []);
   ws();
   if (i < text.length) fail("末尾还有多余的东西");
   /* 按起始偏移排 —— 父在子前，兄弟按出现顺序。深度相同的按 from，
@@ -248,9 +268,20 @@ export function nodeAt(nodes, off) {
 
 /** 路径写成给人看的样子：根是 `$`，数组下标用 `[i]`。
  *  `a.0.b` → `$.a[0].b` —— 这是 JSON Path 的通用写法，用户多半见过。 */
-export function prettyPath(path) {
-  if (!path) return "$";
-  return "$" + path.split(".").map((seg) => (/^\d+$/.test(seg) ? `[${seg}]` : `.${seg}`)).join("");
+export function prettyPath(pathOrSegs) {
+  /* ⚠️ **优先吃段数组**（issue #54）。给字符串时只能按 `.` 切，
+     而那对带点号的键名是错的 —— 保留这条路只为兼容旧调用点，
+     新代码一律传 `node.segs`。 */
+  const segs = Array.isArray(pathOrSegs)
+    ? pathOrSegs
+    : (pathOrSegs ? String(pathOrSegs).split(".") : []);
+  if (!segs.length) return "$";
+  return "$" + segs.map((seg) => {
+    if (/^\d+$/.test(seg)) return `[${seg}]`;
+    /* 键名里有点号或方括号时用 `["..."]` 写法 —— `$.a.b` 和 `$["a.b"]`
+       是两个不同的东西，而前者会让人以为有两层。 */
+    return /[.[\]"]/.test(seg) ? `[${JSON.stringify(seg)}]` : `.${seg}`;
+  }).join("");
 }
 
 /** 把 JSONC 的注释和尾逗号**换成等长的空白**，让它能过 `JSON.parse`（issue #49）。

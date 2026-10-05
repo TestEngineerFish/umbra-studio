@@ -460,10 +460,19 @@ const parseNow = (text) => parseWithPos(isJsonc() ? stripJsonc(text) : text);
 
 /** 这一行的祖先里有没有被折叠的。
  *  ⚠️ **按路径前缀判，不按行号** —— 行号会随展开收起变，而路径不会。 */
-function jhidden(path) {
-  if (jcollapsed.has("")) return path !== "";
-  const segs = path.split(".");
-  for (let i = 1; i <= segs.length - 1; i++) if (jcollapsed.has(segs.slice(0, i).join("."))) return true;
+/** 一条路径的**唯一键** —— 折叠集、展开计数、选中项都用它（issue #54）。
+ *
+ *  ⚠️ 原来直接用拼出来的 `path` 当键，而键名带点号时
+ *  `{"a.b":1, a:{b:2}}` 两个节点的 `path` **完全一样** ——
+ *  于是折叠一个会把另一个也折叠、选中一个会高亮另一个。
+ *  `JSON.stringify(segs)` 是**可逆的**，不会撞。 */
+const jkey = (segs) => JSON.stringify(segs ?? []);
+
+function jhidden(segs) {
+  if (jcollapsed.has(jkey([]))) return (segs ?? []).length > 0;
+  const a = segs ?? [];
+  /* 看每一级祖先（不含自己）折叠了没 —— 按**段**比，不按字符串前缀 */
+  for (let i = 1; i <= a.length - 1; i++) if (jcollapsed.has(jkey(a.slice(0, i)))) return true;
   return false;
 }
 
@@ -475,10 +484,11 @@ const JVAL = {
 };
 
 /** 从路径取值 —— 树上要显示叶子的值，而 `jsonpos` 只给位置不给值。 */
-function jvalueAt(root, path) {
-  if (!path) return root;
+function jvalueAt(root, segs) {
+  const a = segs ?? [];
+  if (!a.length) return root;
   let cur = root;
-  for (const seg of path.split(".")) {
+  for (const seg of a) {
     if (cur === null || typeof cur !== "object") return undefined;
     cur = Array.isArray(cur) ? cur[Number(seg)] : cur[seg];
   }
@@ -494,34 +504,37 @@ function renderTree() {
      ⚠️ 判断「第几个子项」看的是**路径最后一段**（数组是下标，对象是键名）：
      数组才截（对象的键名不是数字，一个对象有几百个键也不该截 ——
      那时候用户要找的多半就是某个键名，截掉等于把它藏起来）。 */
-  const limitOf = (parent) => jshown.get(parent) ?? PAGE;
-  const cutAt = new Map();          // 父路径 → 这个父下面被截掉了几项
+  /* ⚠️ **父路径和末段按 `segs` 算，不按 `lastIndexOf(".")`**（issue #54）。
+     键名 `"lodash.merge"` 的末段是 `lodash.merge`，而按最后一个点切会得到 `merge`、
+     父路径多出一层 `deps.lodash` —— 于是「第几个子项」算在一个不存在的父上。 */
+  const limitOf = (parentKey) => jshown.get(parentKey) ?? PAGE;
+  const cutAt = new Map();          // 父路径的 key → 这个父下面被截掉了几项
   for (const n of jparsed.nodes) {
-    if (!n.path) continue;
-    const i = n.path.lastIndexOf(".");
-    const parent = i < 0 ? "" : n.path.slice(0, i);
-    const last = i < 0 ? n.path : n.path.slice(i + 1);
+    const a = n.segs ?? [];
+    if (!a.length) continue;
+    const parentKey = jkey(a.slice(0, -1));
+    const last = a[a.length - 1];
     if (!/^\d+$/.test(last)) continue;                     // 只截数组
-    if (Number(last) >= limitOf(parent)) cutAt.set(parent, (cutAt.get(parent) ?? 0) + 1);
+    if (Number(last) >= limitOf(parentKey)) cutAt.set(parentKey, (cutAt.get(parentKey) ?? 0) + 1);
   }
-  const overLimit = (path) => {
-    if (!path) return false;
-    const i = path.lastIndexOf(".");
-    const parent = i < 0 ? "" : path.slice(0, i);
-    const last = i < 0 ? path : path.slice(i + 1);
-    return /^\d+$/.test(last) && Number(last) >= limitOf(parent);
+  const overLimit = (segs) => {
+    const a = segs ?? [];
+    if (!a.length) return false;
+    const last = a[a.length - 1];
+    return /^\d+$/.test(last) && Number(last) >= limitOf(jkey(a.slice(0, -1)));
   };
 
   for (const n of jparsed.nodes) {
-    if (jhidden(n.path)) continue;
-    if (overLimit(n.path)) continue;
+    if (jhidden(n.segs)) continue;
+    if (overLimit(n.segs)) continue;
+    const nk = jkey(n.segs);
     const row = document.createElement("div");
-    row.className = "jrow" + (jpick === n.path ? " on" : "");
+    row.className = "jrow" + (jpick === nk ? " on" : "");
     row.setAttribute("role", "treeitem");
     row.dataset.path = n.path;
     row.style.paddingLeft = (8 + n.depth * 16) + "px";
     const canToggle = (n.kind === "object" || n.kind === "array") && n.count > 0;
-    row.setAttribute("aria-expanded", canToggle ? String(!jcollapsed.has(n.path)) : "false");
+    row.setAttribute("aria-expanded", canToggle ? String(!jcollapsed.has(nk)) : "false");
 
     const tw = document.createElement("span");
     tw.className = "jtw";
@@ -530,10 +543,10 @@ function renderTree() {
       b.type = "button";
       b.setAttribute("aria-label", "展开或收起");
       b.innerHTML = '<svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 3l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
-      b.querySelector("svg").style.transform = jcollapsed.has(n.path) ? "rotate(0deg)" : "rotate(90deg)";
+      b.querySelector("svg").style.transform = jcollapsed.has(nk) ? "rotate(0deg)" : "rotate(90deg)";
       b.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (jcollapsed.has(n.path)) jcollapsed.delete(n.path); else jcollapsed.add(n.path);
+        if (jcollapsed.has(nk)) jcollapsed.delete(nk); else jcollapsed.add(nk);
         renderTree();
       });
       tw.appendChild(b);
@@ -554,7 +567,7 @@ function renderTree() {
       const c = document.createElement("span");
       c.className = "jcolon"; c.textContent = ": ";
       row.appendChild(c);
-      const v = JVAL[n.kind](jvalueAt(jparsed.value, n.path));
+      const v = JVAL[n.kind](jvalueAt(jparsed.value, n.segs));
       const vs = document.createElement("span");
       vs.className = v.cls;
       /* 值太长就截 —— 一行几千字符会把树撑成横向滚动条 */
@@ -563,7 +576,7 @@ function renderTree() {
     }
 
     /* 选中那一行才挂两颗钮（稿里就是这样，不是每行都挂） */
-    if (jpick === n.path) {
+    if (jpick === nk) {
       const act = document.createElement("span");
       act.className = "jact";
       const jump = document.createElement("button");
@@ -579,13 +592,13 @@ function renderTree() {
       row.appendChild(act);
     }
 
-    row.addEventListener("click", () => { jpick = n.path; renderTree(); paint(); });
+    row.addEventListener("click", () => { jpick = nk; renderTree(); paint(); });
     frag.appendChild(row);
 
     /* 这个容器被截了就在它最后一个可见子项之后补一行（S19 演示态 6） */
-    const cut = cutAt.get(n.path);
-    if (cut && !jcollapsed.has(n.path)) {
-      const shown = limitOf(n.path);
+    const cut = cutAt.get(nk);
+    if (cut && !jcollapsed.has(nk)) {
+      const shown = limitOf(nk);
       const more = document.createElement("div");
       more.className = "jrow jmore";
       more.style.paddingLeft = (8 + (n.depth + 1) * 16 + 18) + "px";
@@ -596,7 +609,7 @@ function renderTree() {
       btn.type = "button"; btn.className = "jjump"; btn.textContent = `再显示 ${Math.min(PAGE, cut)} 项`;
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        jshown.set(n.path, shown + PAGE);
+        jshown.set(nk, shown + PAGE);
         renderTree();
       });
       more.appendChild(t); more.appendChild(btn);
@@ -636,7 +649,7 @@ function jumpToNode(n) {
 function sendNode(n) {
   if (!jparsed || !disk) return;
   const raw = disk.content.slice(n.from, n.to);
-  const p = prettyPath(n.path);
+  const p = prettyPath(n.segs);
   const body = raw.length > 4000
     ? `${raw.slice(0, 3800)}\n… 这一段共 ${raw.length} 字符，${n.count} 个子项（已截断）`
     : raw;
@@ -925,10 +938,14 @@ function paint() {
      写一个「$」在那里会让人以为光标真在根上。 */
   let crumb = "";
   if (isJson() && jparsed && jparsed.ok) {
-    if (mode === "tree" && jpick !== null) crumb = prettyPath(jpick);
+    /* ⚠️ `jpick` 现在存的是 `jkey(segs)`（JSON 字符串），不是显示用的 path ——
+       要显示就先解回段数组（issue #54）。 */
+    if (mode === "tree" && jpick !== null) {
+      try { crumb = prettyPath(JSON.parse(jpick)); } catch { crumb = ""; }
+    }
     else if (mode === "src" && view) {
       const n = nodeAt(jparsed.nodes, view.state.selection.main.head);
-      if (n) crumb = prettyPath(n.path);
+      if (n) crumb = prettyPath(n.segs);
     }
   }
   umbra.setChrome(
