@@ -113,6 +113,14 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
     ["/tmp/projects/Umbra_design_old/x.dc.html", false],         // ← 同上
     ["/tmp/projects/other/x.dc.html", false],
     ["/tmp/projects", false],
+    /* ⚠️ **反面：项目内以两个点开头的文件名不许被拦**（2026-10-05）。
+       `rel.startsWith("..")` 这种写法会把 `...dc.html` / `..备份.md` 判成「跨出项目」——
+       方向是过度拦截而不是漏放，所以不报警、只是「这份文件在产品里打不开」，
+       而报错文案说的是一句假话。**一道闸拦错东西和它漏放东西一样是缺陷。** */
+    ["/tmp/projects/Umbra_design/...dc.html", true],
+    ["/tmp/projects/Umbra_design/..备份.md", true],
+    ["/tmp/projects/Umbra_design/sub/..x", true],
+    ["/tmp/projects/Umbra_design/..", false],                    // 真的跳出去：还得拦
   ];
   let allRight = true;
   for (const [abs, want] of cases) {
@@ -120,6 +128,24 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
     if (got !== want) { allRight = false; console.log(`    ✗ ${abs} → ${got}，该是 ${want}`); }
   }
   ok("**同前缀的兄弟目录不算项目内**（issue #19：原来 startsWith 不带分隔符，Umbra_design2 能穿过去）", allRight);
+
+  /* Windows 分隔符下跑同一个函数（#25 那套做法：**在 mac 上验 win 的行为**）。 */
+  {
+    const { win32 } = await import("node:path");
+    const wb = "C:\\projects\\Umbra_design";
+    const wcases: Array<[string, boolean]> = [
+      ["C:\\projects\\Umbra_design\\...dc.html", true],
+      ["C:\\projects\\Umbra_design\\a\\b.dc.html", true],
+      ["C:\\projects\\Umbra_design2\\x", false],
+      ["C:\\projects\\Umbra_design\\..\\x", false],
+    ];
+    let wRight = true;
+    for (const [abs, want] of wcases) {
+      const got = isInside(wb, abs, win32);
+      if (got !== want) { wRight = false; console.log(`    ✗ [win] ${abs} → ${got}，该是 ${want}`); }
+    }
+    ok("**Windows 分隔符下同一份判定也对**（含 `...dc.html` 不被误拦）", wRight);
+  }
 
   /* 六处调用方共用这一份判定 —— 少一处没跟上就等于没修。
      判据：那六个文件里**不许再出现** `startsWith(p.dir)` 这种写法。 */

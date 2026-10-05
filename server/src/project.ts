@@ -7,7 +7,7 @@
  *  - git 自动探测租户目录下有没有 .git，不手填。
  */
 import { readdir, readFile, stat, rename, cp } from "node:fs/promises";
-import { isInside } from "./pathguard.js";
+import { isInside, resolveInside, plainNameProblem } from "./pathguard.js";
 import { existsSync, cpSync } from "node:fs";
 import { join, resolve, relative, dirname, basename, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -382,10 +382,16 @@ export async function createProject(
     created.push(".gitignore");
   }
 
-  // 3. 第一份空白稿
+  /* 3. 第一份空白稿 —— ⚠️ **也走写入口**（issue #71）。
+     原来是 `writeAtomic` 直写，于是**新建项目的第一份稿就没有 `__resources`**：
+     用户建完项目、点开第一份稿、断网 → 白屏。
+     这是三条绕过写入口的路里**最先被看到**的那一份。
+
+     ⚠️ `project.json` 在上面第 1 步已经写好了，所以这里 `buildProject` 拿得到 ——
+     顺序不能换（写入口要靠 `Project` 才知道 `@ds` 怎么展开、运行时放哪）。 */
   const firstDraftName = `${projTitle}.dc.html`;
-  const firstDraftPath = join(dir, firstDraftName);
-  await writeAtomic(firstDraftPath, blankDraft(projTitle));
+  const freshProj = await buildProject(dir);
+  await newDraftToDisk(freshProj, firstDraftName, blankDraft(projTitle));
   created.push(firstDraftName);
 
   // 4. 可选：初始化 git
@@ -518,10 +524,20 @@ export async function createDraft(
       break;
     }
     case "copy": {
-      const srcAbs = resolve(p.dir, source.sourceFile);
-      if (!existsSync(srcAbs)) {
-        throw new Error(`源稿 "${source.sourceFile}" 不存在`);
+      /* ⚠️ **来源也要守**（issue #69，p0，2026-10-05）。
+         原来是裸的 `resolve(p.dir, sourceFile)` + `readFile` ——
+         只有**目标** `path` 过了 `isInside`（#19 修的那一处），来源一点守卫都没有。
+         于是 `create_draft({ source: { kind:"copy", sourceFile:"../../../../.umbrastudio/ai_config.json" } })`
+         把**三条通道的明文 apiKey 读进一份新稿** —— 而那份稿接着就进了 AI 上下文。
+
+         `draftPath()` 自带 `isInside` + 存在性检查（现成的，#63 给
+         `saveAsTemplate` 用的也是它）。
+         ⚠️ 顺带要求 `.dc.html`：复制一份稿就是复制稿，不是读任意文件。 */
+      if (!/\.dc\.html$/i.test(source.sourceFile)) {
+        throw new ToolError(err(X.BAD_INPUT, source.sourceFile, { kind: "path", name: source.sourceFile },
+          "只能复制设计稿", { fix: "sourceFile 要指向一份 .dc.html" }));
       }
+      const srcAbs = draftPath(p, source.sourceFile);
       content = await readFile(srcAbs, "utf8");
       sourceDesc = "复制自 " + source.sourceFile;
       break;
@@ -533,11 +549,30 @@ export async function createDraft(
       break;
     }
     case "template": {
-      if (!existsSync(source.templatePath)) {
-        throw new Error(`模板文件 "${source.templatePath}" 不存在`);
+      /* ⚠️ **模板路径必须在这个项目的模板目录里**（issue #69）。
+         原来是 `readFile(source.templatePath)` —— schema 的描述就是「模板绝对路径」，
+         于是**任意绝对路径**都读得到（`ai_config.json`、`~/.ssh/config`…）。
+         而 `cap/drafts.ts` 的 `tplPath` 用 `join(..., name + ".dc.html")`，
+         `join` 又折叠 `..` —— 两条路都通。
+
+         这里设两道（和 #57 / #63 同一套）：结果必须在模板目录里 + 必须是 `.dc.html`。
+         ⚠️ 用 `resolveInside(模板目录, …)` 而不是 `isInside(项目, …)` ——
+         **闸的粒度要配需求的粒度**：套模板只需要读模板目录，
+         给它整个项目的读权限是多给的（M10-3 那条 `frame-src` 同一条道理）。 */
+      const tplDir = join(p.dir, ".umbrastudio", "templates");
+      let tplAbs: string;
+      try { tplAbs = resolveInside(tplDir, relative(tplDir, resolve(source.templatePath))); }
+      catch {
+        throw new ToolError(err(X.BAD_INPUT, source.templatePath, { kind: "path", name: source.templatePath },
+          "模板只能来自这个项目的模板目录",
+          { fix: "用 list_templates 看现有的模板，传它给出的那个路径。" }));
       }
-      content = await readFile(source.templatePath, "utf8");
-      sourceDesc = "模板 " + basename(source.templatePath);
+      if (!/\.dc\.html$/i.test(tplAbs) || !existsSync(tplAbs)) {
+        throw new ToolError(err(X.BAD_INPUT, source.templatePath, { kind: "path", name: source.templatePath },
+          `找不到模板 "${basename(source.templatePath)}"`, { fix: "用 list_templates 看现有的模板。" }));
+      }
+      content = await readFile(tplAbs, "utf8");
+      sourceDesc = "模板 " + basename(tplAbs);
       break;
     }
     default: {
@@ -546,8 +581,7 @@ export async function createDraft(
     }
   }
 
-  await writeAtomic(abs, content);
-  emit("write", p.dir, { file: relative(p.dir, abs).split(sep).join("/"), version: null, origin: "create" });   // 新建也算一次落盘，前端据此刷列表（M7-4）
+  await newDraftToDisk(p, relative(p.dir, abs).split(sep).join("/"), content);
 
   return {
     path,
@@ -572,6 +606,50 @@ export interface DuplicateDraftResult {
  * 如果该名字冲突，自动加序号：`<原名> 副本 2.dc.html`。
  * 快照不跟着复制 —— 新稿从 v1 起（doc/12 M1-5 的建议）。
  */
+/** 新建一份稿时怎么落盘 —— **走唯一写入口**（issue #71，2026-10-05）。
+ *
+ *  ### 原来的样子：三条新建路都 `writeAtomic` 直写
+ *  而 `create_draft` 给 AI 的说明写的是
+ *  「走的是唯一写入口（归一化 → @ds 展开 → `__resources` 注入 → 快照），
+ *  所以断网也能打开」—— 实测**四样一个都没有**：
+ *
+ *  | | `__resources` | 节点地址 | 同目录 `support.js` | v1 快照 |
+ *  | --- | --- | --- | --- | --- |
+ *  | `create_draft`（三条路） | ✗ | ✗ | ✗ | ✗ |
+ *  | **走写入口** | ✓ | ✓ | ✓ | ✓ |
+ *
+ *  后果都是实打实的：没有 `__resources` → `support.js` 去 unpkg 拉 React →
+ *  **断网白屏**（`00` §十五 实测踩过）· 建到新子目录 → 那个目录没有运行时三件套 →
+ *  **直接打开白屏** · 没有节点地址 → **点选不可用**（#31 同族）·
+ *  没有 v1 快照 → `startsAtV1: true` 这个返回值**名不副实**。
+ *
+ *  ### ⚠️ 这是纪律① 的正面例子，而我们自己破了它
+ *  CLAUDE.md 第一条就是「**唯一写入口**：界面编辑、AI 会话、生命周期操作、
+ *  工具自己生成的入口页，**一个都不例外**」。而「新建一份稿」恰恰是
+ *  最该走它的那一种，却是三条绕过它的路。
+ *
+ *  ### 为什么用动态 `import()`
+ *  `write.ts` 依赖 `project.ts`（它要 `Project` 和 `draftPath`），
+ *  静态 import 回去会成环。动态 import 在**调用时**才解析，环就断了。
+ *  ⚠️ 代价是类型要手写一次 —— 写在这里，不扩散。
+ */
+async function newDraftToDisk(p: Project, rel: string, content: string): Promise<void> {
+  const { writeDraft } = await import("./write.js") as {
+    writeDraft: (p: Project, rel: string, content: string, kind: "page" | "component",
+      note?: string, opts?: { origin?: string }) => Promise<{ outcome: { written: boolean; refused: string | null } }>;
+  };
+  const r = await writeDraft(p, rel, content, "page", "新建", { origin: "新建" });
+  /* ⚠️ **写入口拒了就要抛**，不能静默留一份半成品。
+     它拒绝的理由只有一种：稿里有 error 级诊断 —— 那意味着这份模板本身有问题
+     （比如 `blankDraftContent` 产出的内容不合契约），**那是我们的 bug**，
+     而静默写下去会让用户拿到一份打不开的稿。 */
+  if (!r.outcome.written) {
+    throw new ToolError(err(X.BAD_INPUT, rel, { kind: "path", name: rel },
+      `新建没能落盘：${r.outcome.refused ?? "写入口拒绝了"}`,
+      { fix: "这多半是我们模板的问题，请报一条 issue 并附上这句话。" }));
+  }
+}
+
 export async function duplicateDraft(
   p: Project,
   path: string,
@@ -581,8 +659,23 @@ export async function duplicateDraft(
   const srcDir = dirname(srcAbs);
   const srcBase = basename(path).replace(/\.dc\.html$/, "");
 
-  // 确定新稿名
-  let newBase = opts.newName ?? srcBase + " 副本";
+  /* ⚠️ **新名字要守**（issue #70，2026-10-05）。原来 `newName` 原样进 `resolve` ——
+     `duplicate_draft({ newName: "../../x" })` 把副本写到**项目目录外面**，
+     而返回的 `newPath` 还是用 `slice(p.dir.length + 1)` 算的，
+     于是那个字符串也是错的（指向一个项目内不存在的路径）。
+
+     这里走 `plainNameProblem()` —— **全项目唯一一份「这是名字不是路径」的判定**
+     （`pathguard.ts`，我在 #23 / #57 / #63 各写过一遍之后抽出来的）。
+     ⚠️ 名字里的 `.dc.html` 后缀**在校验之后再补** ——
+     先补的话 `"../x"` 会变成 `"../x.dc.html"`，形状判定看到的还是一段路径，
+     但报错文案里会多出一个用户没写的后缀，让人看不懂。 */
+  const want = opts.newName ?? srcBase + " 副本";
+  const bad = plainNameProblem(want.replace(/\.dc\.html$/i, ""));
+  if (bad) {
+    throw new ToolError(err(X.BAD_INPUT, path, { kind: "key", name: "newName" },
+      `副本名不合法：${bad}`, { fix: "newName 是一个名字（副本会建在原稿同一个目录里），不是路径。" }));
+  }
+  let newBase = want;
   if (!newBase.endsWith(".dc.html")) newBase += ".dc.html";
 
   // 如果名字冲突，加序号
@@ -597,11 +690,23 @@ export async function duplicateDraft(
     } while (existsSync(newAbs) && i < 100);
   }
 
+  /* 第二道：算出来的路径必须还在项目里。
+     ⚠️ 形状那一道已经把分隔符挡掉了，这一道**不依赖我对形状想得全不全** ——
+     和 #57 / #63 同一套做法（`00` §140.1 的「为什么设两道」）。 */
+  if (!isInside(p.dir, newAbs)) {
+    throw new ToolError(err(X.BAD_INPUT, path, { kind: "key", name: "newName" },
+      "副本的路径跨出了项目目录", { fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue。" }));
+  }
+
   // 复制内容
   const content = await readFile(srcAbs, "utf8");
-  await writeAtomic(newAbs, content);
+  await newDraftToDisk(p, relative(p.dir, newAbs).split(sep).join("/"), content);
 
-  const newRel = newAbs.slice(p.dir.length + 1).split(sep).join("/");
+  /* ⚠️ `relative()` 而不是 `slice(p.dir.length + 1)`（issue #70 第 3 点）——
+     后者假设 `newAbs` 一定以 `p.dir` 开头，而那正是上面两道闸要保证的事；
+     闸漏了的时候它会算出一个**看起来像项目内路径的错字符串**，
+     而调用方拿它去读会得到「文件不存在」这种对不上的错误。 */
+  const newRel = relative(p.dir, newAbs).split(sep).join("/");
   return {
     originalPath: path,
     newPath: newRel,

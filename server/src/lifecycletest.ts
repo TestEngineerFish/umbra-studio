@@ -8,7 +8,7 @@
  */
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createProject, createDraft, loadProject, listDrafts, buildProject, updateProject, archiveProject } from "./project.js";
 import { buildRefGraph, renameDraft, moveDraft, deleteDraft, restoreDraft, listTrash, deleteDraftImpact } from "./refs.js";
@@ -17,6 +17,11 @@ import { touchProject, listRecentProjects } from "./workspace.js";
 
 const bar = (s: string) => console.log("\n" + "─".repeat(4) + " " + s + " " + "─".repeat(Math.max(0, 62 - s.length)));
 const ok = (msg: string) => console.log(`  ✓ ${msg}`);
+/** 带判断的那一种。
+ *  ⚠️ **这个文件的 `ok()` 只打印、不判断** —— 写成 `ok("…", cond)` 的话
+ *  那个条件会被当成多余的参数**丢掉**，于是判据永远绿（2026-10-05 差点这么写）。
+ *  **一个只打印的函数，长得和判据一模一样。** 需要判断的一律走这个。 */
+const expect = (cond: boolean, msg: string) => { if (cond) ok(msg); else fail(msg); };
 const fail = (msg: string) => { console.log(`  ✗ ${msg}`); failed.push(msg); };
 
 const failed: string[] = [];
@@ -130,6 +135,89 @@ async function step2_createDrafts() {
 
   // 验证两份稿都能通过校验（没有 E_IMPORT_MISSING）
   await checkNoMissingImports("创建后");
+
+  /* ── 新建的稿**真的走了写入口**（issue #71，2026-10-05）──
+     `create_draft` 给 AI 的说明写的是「走的是唯一写入口（归一化 → @ds 展开 →
+     `__resources` 注入 → 快照），所以断网也能打开」，而实现是三条路都
+     `writeAtomic` 直写 —— 实测**四样一个都没有**。
+     ⚠️ 这一步原来只断言「文件存在」，所以**测不出来**（回归盲区）。
+
+     后果都是实打实的：没有 `__resources` → `support.js` 去 unpkg 拉 React →
+     **断网白屏**（§十五 实测踩过）· 没有节点地址 → **点选不可用**（#31 同族）·
+     没有 v1 快照 → `startsAtV1: true` 这个返回值名不副实。 */
+  {
+    const { snapDir } = await import("./history.js");
+    const { readdirSync, readFileSync: readFileSyncLocal } = await import("node:fs");
+    const check = (rel: string) => {
+      const abs = join(p.dir, rel);
+      const t = existsSync(abs) ? readFileSyncLocal(abs, "utf8") : "";
+      const dir = rel.includes("/") ? join(p.dir, rel.split("/").slice(0, -1).join("/")) : p.dir;
+      let snaps = 0;
+      try { snaps = readdirSync(snapDir(p, rel)).length; } catch { snaps = 0; }
+      return {
+        res: /__resources|umbradesign:resources/.test(t),
+        node: /data-ud-node/.test(t),
+        rt: existsSync(join(dir, "support.js")),
+        snaps,
+      };
+    };
+    const a = check("登录页.dc.html");
+    expect(a.res, `新建的稿有 \`__resources\`（没有它断网白屏）：${a.res}`);
+    expect(a.node, `新建的稿打了节点地址（没有它点选不可用）：${a.node}`);
+    expect(a.rt, `同目录分发了运行时 \`support.js\`：${a.rt}`);
+    expect(a.snaps > 0, `新建就有一版快照（\`startsAtV1\` 才不是空话）：${a.snaps} 份`);
+
+    /* ⚠️ **建到新子目录**单独验 —— 运行时三件套是**按目录**分发的，
+       根目录有不代表子目录有，而「子目录里的稿直接打开白屏」正是 #71 列的后果之一。 */
+    await createDraft(p, "新子目录/深一层.dc.html", { kind: "blank" });
+    const b = check("新子目录/深一层.dc.html");
+    expect(b.rt, `**建到新子目录时那个目录也有运行时**（根目录有不代表子目录有）：${b.rt}`);
+    expect(b.res, `子目录里的稿也有 \`__resources\`：${b.res}`);
+
+    /* ── 来源不许跨出项目（issue #69，p0）+ 副本名不许是路径（issue #70）── */
+    const { duplicateDraft } = await import("./project.js");
+    const outside = join(p.dir, "..", `_lct-项目外-${Date.now()}.dc.html`);
+    await writeFile(outside, readFileSyncLocal(join(p.dir, "登录页.dc.html"), "utf8"), "utf8");
+    const before = (await listDrafts(p)).length;
+    const evilSources: Array<[string, { kind: "copy"; sourceFile: string } | { kind: "template"; templatePath: string }]> = [
+      ["copy 项目外的 .dc.html", { kind: "copy", sourceFile: `../${outside.split(sep).pop()}` }],
+      ["copy 项目外的绝对路径", { kind: "copy", sourceFile: outside }],
+      ["template 绝对路径", { kind: "template", templatePath: outside }],
+    ];
+    for (const [what, src] of evilSources) {
+      let threw = false;
+      try { await createDraft(p, `偷来的-${Math.random().toString(36).slice(2, 6)}.dc.html`, src); } catch { threw = true; }
+      expect(threw, `**拒绝：${what}**（issue #69，p0 —— 原来能把 ai_config.json 读进一份新稿）`);
+    }
+    /* ⚠️ **判据要钉住它自己说的那道闸** —— 2026-10-05 反向验证实测：
+       把 `plainNameProblem` 撤掉之后这四条里**三条照样绿**，
+       因为它们各自被别的机制挡住了（`../逃出去` 和 `..` 撞在写入口的
+       `isInside` 上、`a/b` 撞在「子目录里的稿有 error 级诊断」上）。
+       「它被拒了」是真的，但**不是因为 #70 修的那道闸** ——
+       于是闸没了判据也不会红。改成认**拒因**。 */
+    for (const nm of ["../逃出去", "a/b", "..", ".hidden"]) {
+      let why = "";
+      try { await duplicateDraft(p, "登录页.dc.html", { newName: nm }); } catch (e) { why = String((e as Error)?.message ?? e); }
+      expect(/副本名不合法/.test(why), `**拒绝副本名 ${JSON.stringify(nm)}**（issue #70）：${why || "✗ 没拒"}`);
+    }
+    /* ⚠️ **「被拒」和「没留下东西」是两件事** —— 分开验 */
+    expect((await listDrafts(p)).length === before, `而项目里没多出稿（${before} 份没变）`);
+    expect(!readdirSync(join(p.dir, "..")).some((f) => f.includes("逃出去")), "项目外也没多出「逃出去」");
+    /* 正面：正常的副本名还得能用（闸不该把功能也挡掉） */
+    const dup = await duplicateDraft(p, "登录页.dc.html", { newName: "正常副本" }).catch(() => null);
+    expect(dup?.newPath === "正常副本.dc.html", `**正常副本名照常能用**：${dup?.newPath ?? "✗ 失败"}`);
+    await rm(outside, { force: true });
+
+    /* ⚠️ **把这一节造的稿清掉** —— 它们也引用那个组件，
+       而后面几步断言的是「PC 按钮被 **1** 份稿引用」。
+       （2026-10-05 实测栽过：不清的话后面三条红，而红的原因在这一节。
+       **判据之间会互相干扰，而干扰的症状出现在别的判据上。**） */
+    for (const leftover of ["正常副本.dc.html", "新子目录/深一层.dc.html"]) {
+      await rm(join(p.dir, leftover), { force: true });
+      try { await rm(snapDir(p, leftover), { recursive: true, force: true }); } catch { /* 没有就算了 */ }
+    }
+    await rm(join(p.dir, "新子目录"), { recursive: true, force: true });
+  }
 }
 
 async function step3_checkReferences() {
