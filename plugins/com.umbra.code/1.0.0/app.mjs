@@ -210,6 +210,25 @@ function langFor(path, cm) {
 }
 
 let view = null, cm = null, curPath = null;
+/* ── 逐行对比（issue #38，2026-10-06）──
+   `cmpBase` = 在和哪一版对比（`null` = 没在对比）；`cmpOrig` = 那一版的原文。
+
+   ⚠️ **和 M10-2b 的「看旧版」是两件事，别混**：
+   「看旧版」是**只读**地看那一版（设计侧定的：只读 + 差异标红），版本列表归宿主画；
+   「对比」是把**当前这一版**放在编辑器里（可改），拿上一版当底，
+   **逐块接受 / 拒绝**，然后照常 ⌘S 落盘。
+   前者回答「那一版长什么样」，后者回答「这一版相对上一版改了什么，我认不认」。
+
+   ⚠️ 这一档只在**代码 / 文本**类型上有意义：宿主的变更面板走的是
+   `diff.ts` 的**语义** diff（按 dc 节点指纹配对、L1–L4 分级），
+   对 `.ts` / `.py` / `.yaml` 不适用 —— 所以这些类型在它之前**等于没有 diff 视图**，
+   只能整版回退。 */
+let cmpBase = null, cmpOrig = null;
+/** 上一版的版本号（`null` = 没有可比的）。每次 load 时问一次。
+ *  ⚠️ **不是「最新那一版」** —— 盘上当前的内容就是最新那一版（写入口刚存的），
+ *  拿它当底比出来永远是「没差异」。要的是**它前面那一个**。 */
+let prevVersion = null;
+
 /** 现在在看哪一个历史版本（`null` = 看盘上当前那份）。M10-2b。
  *
  *  ⚠️ **不是这个插件自己的状态** —— 它由宿主经 `ctx.version` 推进来。
@@ -1061,6 +1080,19 @@ function paint() {
           : []),
         /* CSV 表档时这颗按钮的语义不同：带的是选中的**记录**，不是编辑器选区。
            ⚠️ 没选中就**置灰并说清原因** —— 一颗点了没反应的钮比一颗灰的更糟。 */
+        /* 逐行对比（issue #38）。只在源码档给 —— 表档/树档里没有「行」这个东西。
+           ⚠️ 没有上一版时**置灰并说清原因**（这份文件还没经写入口落过第二版），
+           不是让它点了没反应。 */
+        ...(mode === "src" ? [{
+          label: cmpBase ? `对比 ${cmpBase} · 退出` : "对比上一版",
+          pressed: !!cmpBase,
+          disabled: !cmpBase && !prevVersion,
+          title: cmpBase
+            ? `正在和 ${cmpBase} 比：每块右上角可以接受或拒绝，改完照常 ⌘S`
+            : prevVersion
+              ? `拿 ${prevVersion} 当底，逐块看这一版改了什么（可以逐块拒绝）`
+              : "这份文件还没有第二版可比 —— 经写入口落一次盘之后就有了",
+        }] : []),
         isCsv() && mode === "table"
           ? { label: "选中行给 AI",
               disabled: !csel && ccol < 0,
@@ -1069,6 +1101,10 @@ function paint() {
                 : csel ? "带表头 + 选中那几行的原文（不然 AI 不知道每列是什么）" : "带表头 + 这一列的值" }
           : { label: "选中行给 AI", hint: "把选中的那几行连同行号带进会话" },
       ],
+      /* 对比档的读数：**还有几块没处理**。
+         ⚠️ `getChunks` 在 merge 扩展还没初始化完时回 `null` ——
+         那时**不写数字**，写「算着」。写 0 的话「没有差异」和「还没算」长得一模一样
+         （和 §一一四 那条、`markDiff` 里那条是同一件事）。 */
       /* ⚠️ **读数是行数 + 大小，不是「未改过」。**
          `read_file` 不返回快照号，第一版我照抄 md 插件写了 `disk.snapshot ?? "未改过"` ——
          那会永远显示「未改过」，而文件可能改过一百次，我们只是不知道。
@@ -1078,6 +1114,7 @@ function paint() {
         ? `${(view?.state.doc.lines ?? 0)} 行 · 在看 ${curVersion}`
         : `${disk?.lines ?? "?"} 行 · ${fmtSize(disk?.size ?? 0)}`)
         + (ro && !curVersion ? ` · 只读（${roReason}）` : "") + (dirty ? " · 未落盘" : "")
+        + (cmpBase ? ` · 和 ${cmpBase} 比：${cmpChunksText()}` : "")
         + (jbad ? ` · 解析不了 L${jparsed.line}:${jparsed.col}` : "")
         + (crumb ? ` · ${crumb}` : "")
         + (ccur ? ` · ${ccur}` : "")
@@ -1093,11 +1130,17 @@ function paint() {
       const names = [
         ...(jbad ? ["err"] : []),
         ...(isCsv() && cparsed && cparsed.badCount ? ["badfilter"] : []),
+        ...(mode === "src" ? ["cmp"] : []),
         "ask",
       ];
+      /* 探针：宿主把哪一下传过来了 + 当下的按钮名单。
+         ⚠️ 下标映射错过一次（写死 0，JSON 出错时点「给 AI」会跳到出错行），
+         所以这里把**名单**也记下来 —— 只记下标看不出错在哪。 */
+      window.__hit = { kind, a, b, names: names.slice(), mode };
       if (kind === "button") {
         if (names[a] === "err") jumpToError();
         if (names[a] === "badfilter") { cfilter = !cfilter; if (mode !== "table") setMode("table"); else { renderTable(); paint(); } }
+        if (names[a] === "cmp") void toggleCompare();
         if (names[a] === "ask") {
           /* CSV 在表档时，「选中行给 AI」带的是选中的**记录**，不是编辑器里的选区 */
           if (isCsv() && mode === "table") sendCsvRows(); else askAboutSelection();
@@ -1107,6 +1150,51 @@ function paint() {
       if (kind === "seg" && a === 0) setMode(b === 0 ? "src" : isCsv() ? "table" : "tree");
     },
   );
+}
+
+/** 对比档的读数：还有几块差异没处理。
+ *  ⚠️ `getChunks` 在 merge 扩展还没初始化完时回 `null` —— 那时**不写数字**。
+ *  写 0 的话「没有差异」和「还没算」长得一模一样，而后者会让人以为这一版和上一版相同
+ *  （`markDiff` 里那条、§一一四 都是同一件事）。 */
+function cmpChunksText() {
+  if (!view || !cm || !cm.getChunks) return "算着";
+  const g = cm.getChunks(view.state);
+  if (!g) return "算着";
+  return g.chunks.length ? `还有 ${g.chunks.length} 块` : "没有差异了";
+}
+
+/** 进 / 出「对比上一版」（issue #38）。
+ *
+ *  ⚠️ **只在能改的时候进**：编码没定、在看旧版、在看草稿时都不该进 ——
+ *  那几种状态下编辑器本来是只读的，而对比档的全部意义是「逐块决定要不要」，
+ *  决定不了的话它就只是一个更花的只读视图。
+ *  **一个点了之后什么都决定不了的档，比没有这个档糟。** */
+async function toggleCompare() {
+  /* ⚠️ **探针**（和 `__cm` / `__menuResult` 同一套做法）：把「为什么没进对比档」
+     写在插件 frame 的 `window` 上。judgments 读它，手验也读它 ——
+     不然提前返回的原因只在一个 toast 里，而 toast 是宿主画的、一秒就没了。 */
+  window.__cmp = { at: Date.now(), why: "进来了", prevVersion, curVersion, draftPreview };
+  if (cmpBase) {
+    cmpBase = null; cmpOrig = null;
+    await load(curPath, document.documentElement.dataset.theme, { keepCursor: true });
+    return;
+  }
+  if (!prevVersion) { window.__cmp.why = "没有上一版"; umbra.toast("没有上一版可比", "这份文件还没经写入口落过第二版", "warn"); return; }
+  if (curVersion || draftPreview) {
+    window.__cmp.why = "在看旧版或草稿";
+    umbra.toast("先回到当前版", "对比档比的是「当前这一版相对上一版」，所以得先退出「看旧版 / 看草稿」", "warn");
+    return;
+  }
+  const r = await umbra.call("read_file_version", { path: curPath, version: prevVersion });
+  if (!r || !r.ok) {
+    window.__cmp.why = "取不到上一版：" + ((r && r.errors && r.errors[0] && r.errors[0].message) || "宿主没给出原因");
+    umbra.toast("取不到上一版", (r && r.errors && r.errors[0] && r.errors[0].message) || "宿主没给出原因", "warn");
+    return;
+  }
+  cmpOrig = String((r.data && r.data.content) ?? "");
+  cmpBase = prevVersion;
+  window.__cmp.why = `进了对比档：和 ${cmpBase} 比，底稿 ${cmpOrig.length} 字`;
+  await load(curPath, document.documentElement.dataset.theme, { keepCursor: true });
 }
 
 /** 把当前选中的那几行带进会话。**带上文件名和行号** ——
@@ -1195,6 +1283,10 @@ async function load(path, theme, opt = {}) {
   ensureDiffField(cm);
   /* 换文件就回到只读（解锁只对一个页签生效，S18 §一.4） */
   if (path !== curPath) unlocked = false;
+  /* ⚠️ **换文件要退出对比档**（issue #38）：`cmpOrig` 是模块级状态，
+     而 `load` 不会动它 —— 不清的话会拿**上一个文件**的某一版当底去比这个文件，
+     画出满屏红绿而没有任何地方说错在哪。 */
+  if (path !== curPath) { cmpBase = null; cmpOrig = null; }
   /* `read_file` 给的是 path / kind / size / updatedAt / **sha256** / content / lines
      —— 字段名去 `server/src/cap/files.ts` 查过，不是猜的（猜错的话 sha 对不上，
      每次落盘都会被写前校验拦住，而错误信息只说「校验不过」，很难想到是字段名）。 */
@@ -1212,6 +1304,17 @@ async function load(path, theme, opt = {}) {
     diskEol = nLF > 0 && nCRLF === nLF ? "\r\n" : "\n";
   }
   curVersion = opt.version ?? null;
+  /* 问一下有没有「上一版」可比（issue #38）。
+     ⚠️ 失败不该影响打开文件 —— 没有版本历史的文件（刚建的、别的编辑器放进来的）
+     是常态，那时这颗钮置灰就行。 */
+  prevVersion = null;
+  try {
+    const lv = await umbra.call("list_file_versions", { path });
+    /* ⚠️ 这件能力回的字段叫 **`snapshots`**，不是 `versions`（我第一版照直觉写成了后者）。
+       `doc/00` §65.6 那条：**按文档/直觉写的字段一律当没验过** —— 去看一眼 `cap/files.ts`。 */
+    const vs = (lv && lv.ok && lv.data && lv.data.snapshots) || [];
+    if (vs.length >= 2) prevVersion = String(vs[vs.length - 2].version);
+  } catch { /* 问不到就当没有 */ }
   draftPreview = !!opt.draftPreview;
   /* JSON：解析一次，树和光标路径都靠它。
      ⚠️ **换文件要把树的状态清掉** —— 折叠集和选中行是按路径存的，
@@ -1342,7 +1445,20 @@ async function load(path, theme, opt = {}) {
      于是**连焦点都拿不到** → 选不中、复制不了、keydown 也收不到，
      而设计侧明确要「只读下照样能选中、复制、给 AI」（S18 §一.4）。
      `EditorState.readOnly` 只挡改动，选区、光标、键盘导航全都还在 —— 这才是这里要的。 */
-  if (roReason && !unlocked) exts.push(cm.EditorState.readOnly.of(true));
+  /* ⚠️ 排在只读那一行**前面**：对比档要能改（接受/拒绝就是在改文档）。
+     而只读的理由（编码没定、在看旧版）仍然优先 —— 那时不该进对比档，
+     所以下面开对比时会先挡掉。 */
+  if (cmpOrig != null && cm.unifiedMergeView) {
+    exts.push(cm.unifiedMergeView({
+      original: cmpOrig,
+      /* 每块自带「接受 / 拒绝」—— 这是这一档存在的理由，默认就是 true，显式写着免得被人关掉 */
+      mergeControls: true,
+      gutter: true,
+      /* 只改了一行里几个字的块，内联显示比上下两行红绿好读 */
+      allowInlineDiffs: true,
+    }));
+  }
+    if (roReason && !unlocked) exts.push(cm.EditorState.readOnly.of(true));
 
   if (view) view.destroy();
   view = new cm.EditorView({

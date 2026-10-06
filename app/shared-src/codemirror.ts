@@ -25,6 +25,19 @@ export { closeBrackets, closeBracketsKeymap, autocompletion, completionKeymap } 
 export { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentUnit, foldGutter, foldKeymap, bracketMatching, StreamLanguage, LanguageSupport } from "@codemirror/language";
 export { tags } from "@lezer/highlight";
 
+/* ── 逐行对比（issue #38，2026-10-06）──
+ *  `unifiedMergeView` 是**一个 CM 扩展**（不是另起一个视图）：挂上去之后
+ *  删的行标红、加的行标绿，**每块自带接受 / 拒绝按钮**。
+ *  那正是「AI 改完一段，用户逐块看、逐块决定」要的形制 ——
+ *  在它之前代码/文本类型只能整版回退（宿主的变更面板走的是
+ *  `diff.ts` 的**语义** diff，按 dc 节点配对，对 `.ts` / `.py` / `.yaml` 不适用）。
+ *
+ *  ⚠️ 只导出**插件真会用的四件**：装扩展、取块数、接受、拒绝。
+ *  `MergeView`（左右并排）**没导出** —— 插件只有正文那一块矩形，
+ *  并排要两栏，形制上该由宿主决定，不是插件自己摆。
+ *  摊得越开，将来升 CM 大版本时插件坏得越多（这份文件头注那条规矩）。 */
+export { unifiedMergeView, getChunks, acceptChunk, rejectChunk } from "@codemirror/merge";
+
 /* 语言包：按「用户真会打开的文件类型」给。
    ⚠️ 每加一种都会让这份产物变大 —— 加之前先问「这种文件真的有人在设计项目里放吗」。 */
 export { javascript } from "@codemirror/lang-javascript";

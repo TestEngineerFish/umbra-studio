@@ -2259,6 +2259,100 @@ console.log("\n插件 UI 的边界（M11-4）");
               } else ok(false, "建不出大表样本");
             }
 
+            /* ═══ 逐行对比：和上一版比，逐块接受 / 拒绝（issue #38，2026-10-06）═══
+               在它之前**代码 / 文本类型等于没有 diff 视图** ——
+               宿主的变更面板走 `diff.ts` 的**语义** diff（按 dc 节点指纹配对、L1–L4 分级），
+               对 `.ts` / `.py` / `.txt` 不适用，所以这些文件只能**整版回退**。
+               而「选中后让 AI 改」最需要的恰恰是**逐块看、逐块决定**。
+
+               ⚠️ **判据必须先把编辑栏打开**：插件的工具条在编辑栏里，默认收起
+               （祖先链上那个 `anim-block` 高 0 + `overflow: hidden`）。
+               手验时漏了这一步，量到「按钮中心点上最上层是 iframe」，
+               **差点把它当成一条布局缺陷**（§七十二 那条「目录列被页签条压着」的反面：
+               这次 DOM 几何是真的，而**结论是错的**）。 */
+            {
+              const CP = "csv回归-对比.txt";
+              const mk1 = await pg.evaluate(async ({ name }) => {
+                const b = window.__UD_APP;
+                const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                const w1 = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ path: name, content: "第一行\n第二行\n第三行\n", expectSha256: "0" }) });
+                if (!(await w1.json()).ok) return { ok: false, step: "第一版" };
+                const rd = await (await fetch(u("file_read") + `&path=${encodeURIComponent(name)}`)).json().catch(() => null);
+                const sha = rd?.data?.sha256;
+                const w2 = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ path: name, content: "第一行\n第二行改过了\n第三行\n第四行是新加的\n", expectSha256: sha }) });
+                const j2 = await w2.json();
+                return { ok: !!j2.ok, snapshot: j2?.data?.snapshot };
+              }, { name: CP });
+              ok(mk1.ok, "（前提）造出一个有两版的文本文件", JSON.stringify(mk1));
+              if (mk1.ok) {
+                await settleTree(CP);
+                const pRow = pg.locator('[role="treeitem"]').filter({ hasText: CP }).first();
+                if (await pRow.count()) {
+                  await pRow.click();
+                  const pf = pg.frameLocator('iframe[data-role="body"]');
+                  for (let q = 0; q < 40; q++) { if (await pf.locator(".cm-content").count().catch(() => 0)) break; await pg.waitForTimeout(300); }
+                  /* 先开编辑栏（上面注释那条） */
+                  const eb2 = pg.locator('[data-ud="toggle-edit"]');
+                  if (await eb2.count() && (await eb2.getAttribute("aria-pressed")) !== "true") { await eb2.click(); await pg.waitForTimeout(600); }
+                  const cmpBtn = pg.locator("button").filter({ hasText: /对比上一版|对比 s\d+/ }).first();
+                  ok(await cmpBtn.count() === 1 && !(await cmpBtn.isDisabled()),
+                     "**有两版时「对比上一版」这颗钮亮着**", await cmpBtn.count() ? `disabled=${await cmpBtn.isDisabled()}` : "没有这颗钮");
+                  if (await cmpBtn.count()) {
+                    await cmpBtn.click(); await pg.waitForTimeout(1800);
+                    /* ⚠️ 读的是插件 frame 里那个探针 —— 它说得出**为什么没进**
+                       （没有上一版 / 在看旧版 / 取不到）。少了它，所有失败都长成「点了没反应」。 */
+                    const probe = await pf.locator("body").evaluate(() => window.__cmp ?? null).catch(() => null);
+                    ok(!!probe && /进了对比档/.test(String(probe.why)),
+                       "**点了真进对比档**（探针说得出没进的原因）", probe ? String(probe.why) : "（探针没跑 = 点击没到插件）");
+                    /* 真正的读数：**改动块画出来了 + 每块有接受/拒绝** */
+                    const marks = await pf.locator(".cm-changedLine, .cm-deletedChunk").count().catch(() => 0);
+                    ok(marks >= 2, "**改动的行真的标出来了**（改过的 + 新加的）", `${marks} 处标记`);
+                    const ctrls = await pf.locator("button, .cm-merge-revert").filter({ hasText: /接受|拒绝|Accept|Reject/ }).count().catch(() => 0);
+                    ok(ctrls >= 2, "**每一块都有「接受 / 拒绝」**（这一档存在的理由 —— 不然它只是更花的只读视图）", `${ctrls} 个控件`);
+                    /* 读数在 `⋯` 浮层头（§一一四），不在工具条 */
+                    const more2 = pg.locator('button:has-text("⋯")').first();
+                    if (await more2.count()) {
+                      await more2.click(); await pg.waitForTimeout(500);
+                      const mt2 = (await pg.locator('[data-ud="more-meta"]').innerText().catch(() => "")).trim();
+                      ok(/和 s\d+ 比/.test(mt2) && /还有 \d+ 块|没有差异了/.test(mt2),
+                         "**读数说得出「和哪一版比、还有几块」**（算不出来时写「算着」，不写 0）", mt2.slice(0, 80) || "（空）");
+                      await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+                    }
+                    /* 拒绝第一块 → 文档该退回上一版那一行 */
+                    const rej = pf.locator("button, .cm-merge-revert").filter({ hasText: /拒绝|Reject/ }).first();
+                    if (await rej.count()) {
+                      await rej.click(); await pg.waitForTimeout(800);
+                      const txt = await pf.locator(".cm-content").innerText().catch(() => "");
+                      ok(/第二行(?!改过了)/.test(txt.replace(/\s+/g, "")) || !/第二行改过了/.test(txt),
+                         "**拒绝一块之后那一行退回上一版**（逐块决定，不是整版回退）", txt.replace(/\n/g, "⏎").slice(0, 60));
+                    } else ok(false, "找不到「拒绝」那颗钮");
+                    /* ⚠️ **把状态还回去**（2026-10-06 实测栽过）：这一节留下的
+                       「对比档开着 + 编辑栏开着」会让**后面几节**红 ——
+                       编码那一组报「读不到横条」、树那一组报「上一层还在」。
+                       **症状全出现在别的判据上，而原因在这一节。**
+                       §143.6 那条「样本之间互相毁夹具」的同一族：
+                       这次毁的不是夹具，是**界面状态**。 */
+                    await cmpBtn.click().catch(() => {});       // 退出对比档
+                    await pg.waitForTimeout(600);
+                  }
+                  if (await eb2.count() && (await eb2.getAttribute("aria-pressed")) === "true") {
+                    await eb2.click(); await pg.waitForTimeout(400);   // 编辑栏收回去
+                  }
+                } else ok(false, "对比样本建好了但树里没刷出来");
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { name: CP });
+              }
+            }
+
             /* ═══ CSV 演示态 7：编码不对（M10-5，S20）═══
                设计侧的原话是「**编码没确定之前只读 —— 按错的编码落盘会把原文写坏**」。
                这一节钉三件事，顺序就是用户会碰到的顺序：
