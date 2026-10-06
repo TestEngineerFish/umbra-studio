@@ -20,5 +20,5 @@ import type { ViewContext } from "./context";
  *  而 `loader` 把它 catch 成「这个插件没能接上」。 */
 export const fallback: KindModule = {
   ids: ["other"],
-  View: ({ ctx }: { ctx: ViewContext }) => <FileCard core={ctx.core} host={ctx.host} path={ctx.path} onOpen={ctx.open} />,
+  View: ({ ctx }: { ctx: ViewContext }) => <FileCard core={ctx.core} host={ctx.host} path={ctx.path} projectDir={ctx.project.dir} onOpen={ctx.open} />,
 };

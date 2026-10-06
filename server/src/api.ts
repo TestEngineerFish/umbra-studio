@@ -400,12 +400,46 @@ export async function handleApi(
     if (route === "reveal_dir" && req.method === "POST") {
       if (!originOk(req, ctx.port)) { json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] }); return true; }
       const b = await readBody(req);
-      const dir = str(b.dir, "dir");
-      if (!existsSync(dir)) throw new Error(`目录不存在：${dir}`);
+      const target = str(b.dir, "dir");
+      if (!existsSync(target)) throw new Error(`路径不存在：${target}`);
+      /* ⚠️ **「显示」不是「打开」**（issue #110，2026-10-06）。
+         这条路由原来按「给的一定是目录」写（字段叫 `dir`、报错说「目录不存在」），
+         而前端传给它的**大多是文件路径**（文件 `⋯`、树里右键、文件卡都是）。
+         而 `open <文件>` / `xdg-open <文件>` / `explorer <文件>` 的含义是
+         **用默认程序打开这个文件**：
+           · 对 `.dc.html` → 在浏览器里打开那份稿；
+           · 对 `.zip` → 「归档实用工具」**直接把它解压到旁边**（在用户项目里多出一个目录）；
+           · 对 `.sh` / `.command` → 按系统默认动作处理。
+         **按钮名字说的是「显示」，实际做的是「打开 / 解压」，而副作用落在用户的项目里。**
+         桌面壳走的是 `shell.showItemInFolder`，行为本来就是对的 ——
+         **同一颗按钮在两种宿主里做的是两件事**。
+
+         现在按平台做成真正的「定位」：
+           mac   `open -R <路径>`（-R = reveal）
+           win   `explorer /select,<路径>`
+           linux 没有通用的「定位」—— 退一步**打开它所在的目录**（而不是打开它本身） */
       const { spawn } = await import("node:child_process");
-      const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-      spawn(cmd, [dir], { stdio: "ignore", detached: true }).unref();
-      json(reply, 200, { ok: true, data: { revealed: dir } });
+      const { statSync } = await import("node:fs");
+      const { dirname } = await import("node:path");
+      const isDir = statSync(target).isDirectory();
+      const plat = process.platform;
+      const [cmd, args] = plat === "darwin"
+        ? ["open", isDir ? [target] : ["-R", target]]
+        : plat === "win32"
+          ? ["explorer", isDir ? [target] : [`/select,${target}`]]
+          /* ⚠️ linux 这一支**退而不是硬上**：没有通用的 reveal，
+             打开它所在的目录比「用默认程序打开这个文件」安全得多 ——
+             后者正是这条 bug。 */
+          : ["xdg-open", [isDir ? target : dirname(target)]];
+      /* ⚠️ **测试缝**（照 `UMBRASTUDIO_NO_GIT=1` 的先例）：判据要验「命令拼得对不对」，
+         而真 spawn 会在跑回归时弹出一串访达窗口。
+         设了它就只算不跑 —— 而 `how` 这个字段本来就是回执的一部分，
+         **判据读的是产品真实算出来的那个命令串，不是判据自己复刻一份**（§九十一 那条「循环判据」）。 */
+      const how = `${cmd} ${args.join(" ")}`;
+      if (process.env.UMBRASTUDIO_NO_REVEAL !== "1") {
+        spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
+      }
+      json(reply, 200, { ok: true, data: { revealed: target, how } });
       return true;
     }
     if (route === "inspect_dir" && req.method === "GET") {

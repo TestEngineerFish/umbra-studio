@@ -85,7 +85,22 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
   };
 
   return <Sheet onClose={onClose}>
-    <div className="w-[460px] max-w-full grid gap-[18px]" onKeyDown={(e) => { if (e.key === "Enter" && !blocked) { e.preventDefault(); void submit(); } }}>
+    {/* ⚠️ **Enter 只在文件名输入框里当提交**（issue #124，2026-10-06）。
+        原来是在**容器**上统一拦的、不看焦点落在哪里，于是：
+          · Tab 到「取消」按 Enter → `preventDefault()` 吃掉按钮自己的激活 → **提交** ——
+            **按「取消」却新建了一份稿**；
+          · Tab 到「组件稿」按 Enter 想选它 → 直接提交，类型还是原来的「页稿」；
+          · 走到「从现有稿复制…」按 Enter → 没切到复制，用当前模板直接建了。
+        只要文件名已经合法（`blocked === false`）以上都会**真落盘**。
+        **一个「全局快捷键」挂在容器上，就会把容器里每个控件的回车都吃掉。** */}
+    <div className="w-[460px] max-w-full grid gap-[18px]" onKeyDown={(e) => {
+      if (e.key !== "Enter" || blocked) return;
+      /* 焦点在别的控件上时让它走原生行为（按钮激活、单选切换…） */
+      const t = e.target as HTMLElement | null;
+      if (!t || t.tagName !== "INPUT") return;
+      e.preventDefault();
+      void submit();
+    }}>
       <h2 className="text-base font-semibold">新建稿件</h2>
 
       <div className="grid gap-1.5">

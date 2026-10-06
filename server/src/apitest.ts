@@ -162,6 +162,41 @@ console.log("\n④ 预览路由的三道闸（M10-3）");
   ok(await code("__preview/..%2f..%2fetc%2fpasswd.html") === 403, "**路径逃不出项目目录**（走 `pathguard` 那一份判定，issue #19）");
   ok(await code("__preview/这个肯定没有.html") === 404, "不存在的回 404");
 
+  /* ── 「在访达中显示」是**定位**，不是「用默认程序打开」（issue #110，2026-10-06）──
+     这条路由原来按「给的一定是目录」写（字段叫 `dir`、报错说「目录不存在」），
+     而前端传给它的**大多是文件路径**。而 `open <文件>` 的含义是
+     **用默认程序打开它** —— 对 `.zip` 就是**直接解压到旁边**，
+     在用户的项目目录里多出一个目录。
+     **按钮名字说的是「显示」，实际做的是「打开 / 解压」。**
+     桌面壳走的是 `shell.showItemInFolder`，所以**同一颗按钮在两种宿主里做的是两件事**。
+
+     ⚠️ 判据读的是回执里的 `how`（产品**真实算出来**的命令串），
+     并设 `UMBRASTUDIO_NO_REVEAL=1` 让它只算不跑 ——
+     不然跑一轮回归会弹出一串访达窗口。 */
+  {
+    process.env.UMBRASTUDIO_NO_REVEAL = "1";
+    const ask = async (target: string) => {
+      const r = await fetch(`${s.url}__ud/reveal_dir?token=${encodeURIComponent(s.token)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: s.url.replace(/\/$/, "") },
+        body: JSON.stringify({ dir: target }),
+      }).then((x) => x.json() as Promise<{ ok: boolean; data?: { how?: string }; errors?: Array<{ message: string }> }>);
+      return r.ok ? String(r.data?.how ?? "") : `✗ ${r.errors?.[0]?.message ?? "没说原因"}`;
+    };
+    const { join: j3 } = await import("node:path");
+    const { readdir: rd3 } = await import("node:fs/promises");
+    const oneFile = (await rd3(p.dir)).find((f: string) => f.endsWith(".dc.html")) ?? "project.json";
+    const howFile = await ask(j3(p.dir, oneFile));
+    const howDir = await ask(p.dir);
+    if (process.platform === "darwin") {
+      ok(/^open -R /.test(howFile), "**给文件时用 `open -R`（定位）而不是 `open`（打开它）**", howFile.slice(0, 60));
+      ok(/^open [^-]/.test(howDir), "给目录时就是 `open <目录>`（那本来就对）", howDir.slice(0, 60));
+    } else {
+      ok(howFile !== howDir, "（非 mac）文件和目录走的不是同一条命令", `${howFile} | ${howDir}`);
+    }
+    delete process.env.UMBRASTUDIO_NO_REVEAL;
+  }
+
   /* ── 命名管道（FIFO）不能挂住服务（issue #104，2026-10-06）──
      `open` 一个 FIFO 是**阻塞**而不是报错。两条路各有后果：
        · `routeStatic`（预览项目里的文件，#96 自己说的「最常走的那条」）走异步读流 ——

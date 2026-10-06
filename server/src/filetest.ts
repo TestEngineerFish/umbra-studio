@@ -1039,6 +1039,31 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
        `${(j.steps as unknown[])?.length ?? 0} 条`);
   }
 
+  /* ── 子目录里的稿也要有**点选桥**（2026-10-06 实测挖出来的）──
+     S2 预览壳里写的是 `BRIDGE = "./.umbradesign/select-bridge.js"` ——
+     **相对壳自己的位置**，而 `build_index` 只把桥拷到**项目根**。
+     于是子目录里的稿预览时请求 `<子目录>/.umbradesign/select-bridge.js` → **404**，
+     后果是**点选在那些稿上完全不可用**（桥没加载，壳收不到任何消息）。
+     ⚠️ 同一个目录里 `support.js` **是有的** —— 三件套本来就按目录分发，**只有桥漏了**。
+     ⚠️ 判据**两样都查**：少查 `support.js` 的话，哪天分发整条坏了也看不出来
+     （「桥在」不能证明「分发这件事还在工作」）。 */
+  {
+    const { existsSync: ex3 } = await import("node:fs");
+    const { writeDraft: wd2 } = await import("./write.js");
+    const sub = join(D2, "子目录");
+    /* ⚠️ `MIN` / `wd` 在**上一节**的作用域里（#86/#87 那块），这里拿不到 ——
+       各写一份比把它们提到文件头安全：提上去就得保证两节用的是同一份夹具，
+       而那两节要的东西不一样。 */
+    const MIN2 = 坏.replace("{{ 没给值的洞 }}", "{{ t }}")
+      .replace("renderVals() { return {}; }", "renderVals() { return { t: \"hi\" }; }")
+      .replace("<img src=\"坏图.png\">\n", "");
+    await wd2(proj92, "子目录/稿.dc.html", MIN2, "page");
+    ok("**子目录里的稿旁边有运行时**（`support.js`）", ex3(join(sub, "support.js")));
+    ok("**子目录里也有点选桥**（原来只拷到项目根 → 子目录的稿点选不可用）",
+       ex3(join(sub, ".umbradesign", "select-bridge.js")),
+       ex3(join(sub, ".umbradesign", "select-bridge.js")) ? "在" : "✗ 没有 —— 预览时会 404");
+  }
+
   await rm(D2, { recursive: true, force: true });
 }
 

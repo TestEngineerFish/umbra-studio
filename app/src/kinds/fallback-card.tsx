@@ -7,7 +7,9 @@ import { askText } from "../ui/Ask";
 
 /** 通用文件卡（S15 形制，M8-5）：没有专用预览器的文件 —— 元数据 + 被谁引用 + 四个动作。
  *  一张居中卡片，最宽 520。禁用项的原因直接写在按钮下面，不藏在 hover 里。 */
-export function FileCard({ core, host, path, onOpen }: { core: Core; host: HostAdapter; path: string; onOpen: (p: string, isDir: boolean) => void }) {
+/** ⚠️ `projectDir` 是 issue #109 加的：「在访达中显示」要**绝对路径**，
+ *  而这个组件原来只有相对项目根的 `path`。 */
+export function FileCard({ core, host, path, projectDir, onOpen }: { core: Core; host: HostAdapter; path: string; projectDir: string; onOpen: (p: string, isDir: boolean) => void }) {
   const [info, setInfo] = useState<ReadFileResult | null>(null);
   const [refs, setRefs] = useState<Array<{ file: string; line: number }> | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -56,7 +58,15 @@ export function FileCard({ core, host, path, onOpen }: { core: Core; host: HostA
           <button className="btn sm" onClick={() => void rename()}>改名</button>
           <button className="btn sm" onClick={() => toast("移动", "在目录视图里选中它，用底部的「移动…」")}>移动</button>
           <div className="flex flex-col gap-1">
-            <button className="btn sm" disabled={!cap.ok} onClick={() => void host.revealInFinder(path)}>在访达中显示</button>
+            {/* ⚠️ **绝对路径**（issue #109，2026-10-06）：`path` 是**相对项目根**的，
+                而别的三处调用点传的都是 `${projectDir}/${path}` —— 只有这一处传相对路径。
+                两个宿主拿到相对路径都没法用（Electron 的 `showItemInFolder` 要完整路径；
+                浏览器那条在核心侧按**进程 cwd** 解析，几乎必然报「目录不存在」）。
+                ⚠️ 而且原来**没有 `.catch`** —— 浏览器模式下是一条未处理的 rejection，
+                桌面版下什么都不发生，**两种情况都没有任何提示**。
+                于是用户看到两颗同名按钮（这里一颗、`⋯` 菜单里一颗），**一颗能用一颗不能用**。 */}
+            <button className="btn sm" disabled={!cap.ok}
+              onClick={() => { void host.revealInFinder(`${projectDir}/${path}`).catch((e) => toast("打不开", String(e?.message ?? e), "error")); }}>在访达中显示</button>
             {!cap.ok && <span className="text-muted">{cap.why}</span>}
           </div>
           <span className="flex-1" />

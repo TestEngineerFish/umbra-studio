@@ -44,6 +44,12 @@ const b = await chromium.launch({ channel: "chrome" }).catch(() => chromium.laun
 const pg = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
 const errs = [];
 pg.on("console", (m) => { const t = m.text(); if (m.type() === "error" && !NOISE.some((r) => r.test(t))) errs.push(t.slice(0, 120)); });
+/* ⚠️ **把 4xx 的 URL 也记下来**（2026-10-06 加）：
+   浏览器给的控制台文本是「Failed to load resource: the server responded with a status of 404」——
+   **不带 URL**。而那条判据红了之后第一句话一定是「哪个 404？」，
+   于是只能靠猜或者另起一个探针。**一条说不出「是哪一个」的判据，红了也用不上。** */
+const bad4xx = [];
+pg.on("response", (r) => { if (r.status() >= 400) bad4xx.push(`${r.status()} ${r.url().replace(/[?&]token=[^&]*/, "")}`); });
 pg.on("pageerror", (e) => { const t = String(e); if (!NOISE.some((r) => r.test(t))) errs.push("pageerror: " + t.slice(0, 120)); });
 
 await pg.goto(URL_, { waitUntil: "domcontentloaded" });
@@ -534,6 +540,103 @@ if (await ctxDirRow.count()) {
   ok(/移到回收站/.test(t) && !/删除/.test(t), "右键目录：写的是「移到回收站」不是「删除」");
   ok(!/重建索引/.test(t), "右键目录：**没有**重建索引（它作用于整个项目，只在空白处出）");
   await closeCtx();
+
+  /* ── 新建稿件那一屏：键盘走到「取消」按回车**不该建稿**（issue #124，2026-10-06）──
+     Enter 原来是在**容器**上统一拦的、不看焦点落在哪里：
+       · Tab 到「取消」按 Enter → `preventDefault()` 吃掉按钮自己的激活 → **提交**；
+       · Tab 到「组件稿」按 Enter 想选它 → 直接提交，类型还是原来的「页稿」；
+       · 走到「从现有稿复制…」按 Enter → 没切到复制，用当前模板直接建了。
+     只要文件名已经合法，以上都会**真落盘**。
+     **一个「全局快捷键」挂在容器上，就会把容器里每个控件的回车都吃掉。**
+
+     ⚠️ 判据量的是**盘上有没有多出那份稿** —— 不是「弹窗关了没关」。
+     「取消」和「建了」都会关掉弹窗，**在那个维度上两者完全相同**（§一六五 那一族）。 */
+  {
+    /* ⚠️ **记下树的状态，结束时还回去**（2026-10-06 实测栽过）：
+       这一节右键 / 开弹窗的过程会把那个目录**展开**，于是后面几节用
+       「树里第一份不以 `_` 开头的稿」挑出来的是**另一份**（`uploads` 里那份
+       **有节点地址**的）→ 「没有地址那一态」那条判据报假红，
+       连带「零 error」也红（那份稿的资源 404）。
+       **症状出现在两节之后，而原因是这一节把树展开了。**
+       §143.6 那一族的又一种：**这次留下的是「树展开到第几层」。** */
+    const wasExpanded = await ctxDirRow.getAttribute("aria-expanded");
+    const rowsBefore = await pg.locator('[role="treeitem"]').count();
+    await ctxDirRow.click({ button: "right" }); await pg.waitForTimeout(400);
+    /* ⚠️ 右键菜单的容器是 **`[data-ud="ctxmenu"]`** 不是 `[role="menu"]`
+       （后者是插件那套浮层）。第一版写错了容器，于是 `mkItem.count()` 是 0 ——
+       而我那条「找不到就 `ok(false)`」的兜底把它报成「这一条没验到」，
+       **看着像菜单里真的没有这一项**。上面第 532 行的判据用的就是正确的那个选择器，
+       我**抄的时候换了一个**。 */
+    const mkItem = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
+      .filter({ hasText: /新建稿件/ }).first();
+    if (await mkItem.count()) {
+      await mkItem.click(); await pg.waitForTimeout(700);
+      const sheet = pg.locator('[role="dialog"], [data-ud="sheet"]').first();
+      /* ⚠️ 按 **placeholder** 定位那个文件名框 —— 第一版写的是 `input` 的 `.last()`，
+         选到了一个**复选框**（`fill` 当场报「不可编辑」）。
+         `.first()` / `.last()` 这种「按位置选」的定位器，在一屏上有多个同类元素时
+         **选中的是哪一个取决于渲染顺序**，而那不是判据该依赖的东西。 */
+      const nameInput = pg.locator('input[placeholder^="例如"]').first();
+      const NAME = `_uitest回车误建-${Date.now()}`;
+      await nameInput.fill(NAME);
+      await pg.waitForTimeout(200);
+      /* Tab 走到「取消」那颗钮上再按回车 */
+      const cancel = pg.locator("button").filter({ hasText: /^取消/ }).first();
+      const hasCancel = await cancel.count();
+      ok(hasCancel === 1, "（前提）新建稿件那一屏上有「取消」", `${hasCancel} 颗`);
+      if (hasCancel) {
+        await cancel.focus();
+        await pg.keyboard.press("Enter");
+        await pg.waitForTimeout(1200);
+        /* ⚠️ **建在哪取决于右键点的是哪一行**（和 §158.3 ② 同一个错法，当天第二次）：
+           从**目录**右键建的稿落在**那个目录里**，而第一版只列了项目根 →
+           读到「盘上没有」→ **判据在 bug 版本下照样绿**（反向验证当场抓到）。
+           现在**项目根和那个目录都列**。 */
+        const parentDir = (await ctxDirRow.getAttribute("title").catch(() => "")) || "";
+        const made = await pg.evaluate(async ({ nm, pd }) => {
+          const b = window.__UD_APP;
+          const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}${r.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+          const list = async (d) => JSON.stringify((await fetch(u("files") + `&dir=${encodeURIComponent(d)}`).then((x) => x.json()).catch(() => null))?.data?.entries ?? []);
+          return (await list("")).includes(nm) || (pd ? (await list(pd)).includes(nm) : false);
+        }, { nm: NAME, pd: parentDir });
+        ok(made === false, "**在「取消」上按回车不会把稿建出来**（原来：容器统一拦 Enter → 直接提交）",
+           made ? "✗ 真建出来了" : "盘上没有这份稿");
+        /* ⚠️ **无条件清**（2026-10-06 第三次栽在这件事上）。
+           原来写的是 `if (made)` —— 而 `made` 是**判据自己算的**，
+           算错位置（只列了项目根）时它是 `false`，于是清理**压根不跑**，
+           而稿真的建在了 `uploads/` 里。实测在用户项目里留下**两份**
+           `_uitest回车误建-*.dc.html`，并且顺带暴露了一个真缺口
+           （子目录里的稿 → 点选桥 404，见 `normalize.ts` 的 `ensureRuntimeBeside`）。
+           **清理不该依赖「判据认为有没有建出来」** —— 建没建是待验的事，清是无条件的。 */
+        await pg.evaluate(async ({ nm, pd }) => {
+          const b = window.__UD_APP;
+          const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+          /* ⚠️ 路由名是 **`delete_draft`**（不是 `draft_delete`），入参是 **`file`**（不是 `path`）——
+             两个我都写反了，而症状只是控制台里一条 `404 /__ud/draft_delete`：
+             **清理静默失败，而判据照样绿**。
+             是「让零 error 判据说出哪个 URL」之后才看见的。
+             ⚠️ 而且**只删真在的那一条**：两个候选路径里至多一个存在，
+             对不存在的那个调 `delete_draft` 回 **400**（`E_DRAFT_NOT_FOUND`）——
+             于是「零 error」那条判据红在**我的清理**上。
+             「无条件清理」说的是**不看判据的结论**，不是「不看盘上有没有」。 */
+          const list = async (d) => JSON.stringify((await fetch(u("files") + `&dir=${encodeURIComponent(d)}`).then((x) => x.json()).catch(() => null))?.data?.entries ?? []);
+          const roots = [["", ""], ...(pd ? [[pd, pd + "/"]] : [])];
+          for (const [d, pre] of roots) {
+            if (!(await list(d)).includes(nm)) continue;
+            await fetch(u("delete_draft"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: `${pre}${nm}.dc.html` }) }).catch(() => {});
+          }
+        }, { nm: NAME, pd: parentDir });
+      }
+      await pg.keyboard.press("Escape"); await pg.waitForTimeout(400);
+      await closeCtx();
+    } else ok(false, "右键菜单里找不到「新建稿件」—— 这一条没验到");
+    /* 把展开状态还回去 */
+    const nowExpanded = await ctxDirRow.getAttribute("aria-expanded").catch(() => null);
+    if (nowExpanded === "true" && wasExpanded !== "true") { await ctxDirRow.click(); await pg.waitForTimeout(500); }
+    const rowsAfter = await pg.locator('[role="treeitem"]').count();
+    ok(rowsAfter === rowsBefore, "**（收尾）树的展开状态还回去了**（不还的话后面几节会挑到另一份稿）",
+       `${rowsBefore} → ${rowsAfter} 行`);
+  }
 } else ok(false, "树里没有目录行");
 
 const fileRow = pg.locator('[role="treeitem"]:not([aria-expanded])').first();
@@ -1389,10 +1492,22 @@ console.log("\n没有节点地址时要说话（issue #31）");
      `_uitest三档.dc.html` 下划线开头、排在最前，那一份是**有地址**的，
      于是这一组会量到「提示条不出」并报一条假红（实测踩到）。
      这里显式挑一份不以 `_` 开头的用户稿。 */
-  const userDraft = (await pg.locator('[role="treeitem"]').allTextContents())
-    .map((t) => t.replace(/\s+/g, " ").trim())
-    .find((t) => /\.dc\.html$/.test(t) && !/[_◧▤]?\s*_/.test(t));
-  const openUser = userDraft ? await openByName(userDraft.replace(/^\W+\s*/, "").slice(0, 12)) : false;
+  /* ⚠️ **用自己的样本，不赌用户项目里的稿**（2026-10-06 改）。
+     原来挑「树里第一份不以 `_` 开头的 `.dc.html`」，而那是**用户的内容** ——
+     今天实测 `IconGlyph.dc.html` 有 5 个 `data-ud-node`（别的 0 个），
+     于是这一条读到「这份稿有地址」而红，连带「零 error」也红（那份稿的资源 404）。
+     而它红不红取决于**树里第一份是哪一个**，也就是取决于上一轮留了什么 ——
+     **一条判据的成败不该由用户项目里的内容决定。**
+     ⚠️ 样本**绕过写入口**用 fs 直写 —— 写入口会给每个节点打地址，
+     而我们要的恰恰是「一份没有地址的稿」。**样本不是产品行为，它是仪器**（GBK 那条同一句）。 */
+  const NOADDR = "_uitest无地址.dc.html";
+  {
+    const dir = await pg.evaluate(() => window.__UD_APP.dir);
+    writeFileSync(`${dir}/${NOADDR}`,
+      "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<script src=\"./support.js\"></script>\n</head>\n<body>\n<x-dc>\n<div>没有地址的稿</div>\n</x-dc>\n<script type=\"text/x-dc\" data-dc-script data-props=\"{}\">\nclass Component extends DCLogic { renderVals() { return {}; } }\n</script>\n</body>\n</html>\n", "utf8");
+  }
+  await settleTree(NOADDR);
+  const openUser = await openByName(NOADDR);
   if (openUser) {
     await pg.waitForTimeout(2600);
     const eb = pg.locator('[data-ud="toggle-edit"]');
@@ -1412,7 +1527,23 @@ console.log("\n没有节点地址时要说话（issue #31）");
       await pg.waitForTimeout(400);
       ok((await bar.getAttribute("data-nudge")) !== before, "点了画布提示条抖一下（「你点了，这就是为什么没反应」）", `nudge ${before} → ${await bar.getAttribute("data-nudge")}`);
     }
-  } else ok(false, "项目里没有（不以 _ 开头的）.dc.html，这一组测不了");
+  } else ok(false, "造出来的无地址样本没打开，这一组测不了");
+  /* 收尾：这份样本是绕过写入口直写的，所以也直接删（纪律⑥）。
+     ⚠️ 名字带 `_uitest` 前缀，收尾那三条判据也认得它 —— 两道都留着。 */
+  {
+    /* ⚠️ **删之前先切走**：这份稿还开着的时候删掉它，应用会继续轮询
+       `comments?file=…` / `validate?file=…`，而那两条对不存在的稿回 **400**
+       （`E_DRAFT_NOT_FOUND`），于是「零 error」那条判据红在**我的清理**上。
+       **清理也会制造噪声** —— 而那种噪声和产品缺陷在判据里长得一样。 */
+    /* ⚠️ **切 `.md` 不是 `.dc.html`** —— `openByName` 挑的是树里**第一份**，
+       而这份样本名字以 `_` 开头正好排第一：拿 `.dc.html` 切等于**切回它自己**，
+       400 一条不少。「切走」要切到一个**确定不是它**的东西上。 */
+    await openByName(".md").catch(() => {});
+    await pg.waitForTimeout(600);
+    const dir = await pg.evaluate(() => window.__UD_APP.dir);
+    rmSync(`${dir}/${NOADDR}`, { force: true });
+    await pg.waitForTimeout(400);
+  }
 }
 
 /* ── 换格式不许动目录列（用户 tmp.txt 第 1 条，2026-09-27）──
@@ -1484,7 +1615,8 @@ else {
 }
 
 console.log("\n控制台");
-ok(errs.length === 0, "零 error（已排除解析期的模板洞噪声）", errs[0] ?? "");
+ok(errs.length === 0, "零 error（已排除解析期的模板洞噪声）",
+   errs.length ? `${errs[0]}${bad4xx.length ? ` ⟵ 4xx：${[...new Set(bad4xx)].slice(0, 3).join(" · ")}` : ""}` : "");
 
 /* ── 插件 UI 的边界（M11-4）──
    这是整套插件机制唯一的**安全**断言，所以钉在这儿：
