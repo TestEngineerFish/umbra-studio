@@ -19,6 +19,8 @@
 
   var ROOT = document.documentElement;
   var HL = null, CUR = null;
+  /** 选中的那个 **DOM 元素**（`CUR` 只是它的地址）。测间距要两个矩形，所以得留着它。 */
+  var CUREL = null;
 
   function on() { return ROOT.hasAttribute("data-ud-select-on"); }
 
@@ -120,22 +122,139 @@
     send("preview", { node: nodeId || null, cleared: true, rules: flush() });
   }
 
+  /* ════ 按住 Option/Alt 悬停测间距（issue #17，2026-10-06）════
+   *
+   *  看稿、对稿时问得最多的就是间距（「这两块之间是 16 还是 24？」），
+   *  而在它之前只能点进属性面板逐个看 margin / padding / gap **再心算**。
+   *
+   *  ⚠️ **没有 vendor spacingjs**，直接写在这儿。它的源码是 4 个 TS 文件（约 17 KB），
+   *  要为它引一条构建链；而这件事的核心就是「两个矩形算四个方向的差值再画线」。
+   *  issue 自己也写了这条退路（「只借它的判定分支自己重写」）。
+   *  **借过来的是它的边界情况清单**，那才是省下的部分：
+   *    · 包含关系画四条内距（不是画两条间距，那时「间距」是 0，没意义）
+   *    * 只在一个轴上分开时**只画那一轴**（另一轴画出来是一条穿过元素的线）
+   *    · 标签贴线中点，**顶到视口外就翻到线的另一侧**（§PREVIEW_BRIDGE 那条同理）
+   *    · 鼠标离开窗口要清掉（spacingjs 的 v1.0.9 修的正是这一条）
+   *
+   *  ⚠️ 和点选**同一个闸**（`data-ud-select-on`）：关掉之后稿的交互一切照旧，
+   *  不然在「真的用这个界面」时按一下 Option 就会蹦出一堆线。
+   *
+   *  ⚠️ **数字画在页面里，不往外发消息。** issue 原本写的是「测出来的值走现有
+   *  shell-state 消息回传给工作台，工具栏或状态行显示即可」—— 第一版我真发了一条
+   *  `send("spacing", …)`，然后去核了一下：**S2 壳只认** `ready` / `select` /
+   *  `clear` / `edit-request` / `edit-commit`，这一条**没有任何消费方**。
+   *  那正是 §一〇三 记过的那件事（「我 dispatch 了一个没人听的 `ud-focus-chat`」——
+   *  自制版的「点了没反应」）。所以删掉了。
+   *  要让工作台也显示，得先有 S2 壳的转发 + 一个状态位，而那是形制决定（设计侧的事），
+   *  不是顺手加一句 postMessage 就算接上了。
+   *  **而且用户看的就是画布** —— Figma 也是把数字画在线上。 */
+  var SP = null;      // 容器
+  function spacingBox() {
+    if (SP) return SP;
+    SP = document.createElement("div");
+    /* ⚠️ 打 `data-ud-overlay` —— 和高亮框同一个规矩：
+       不打的话它会被当成稿里的东西（`addressOf` 虽然只认 `[data-ud-node]`，
+       但别的地方按 overlay 标记做排除，少打一个标记就得排查一圈）。 */
+    SP.setAttribute("data-ud-overlay", "");
+    /* 再打一个自己的标记：高亮框也带 `data-ud-overlay`，两个分不开。
+       ⚠️ 判据**按这个标记找**，不按 `style` 里的 z-index ——
+       `cssText` 会把它规整成 `z-index: …`（带空格），按样式串匹配一定落空
+       （2026-10-06 手验第一版就是这么空的，而症状是「一条线都没画」）。 */
+    SP.setAttribute("data-ud-spacing", "");
+    SP.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483646";
+    document.body.appendChild(SP);
+    return SP;
+  }
+  function clearSpacing() { if (SP) SP.textContent = ""; }
+
+  /** 画一条线 + 一个数字。`horiz` = 这是一条水平线（量的是左右间距）。 */
+  function drawGap(x1, y1, x2, y2, val, horiz) {
+    var box = spacingBox();
+    var line = document.createElement("div");
+    var L = Math.min(x1, x2), T = Math.min(y1, y2);
+    line.style.cssText = "position:fixed;background:#e5484d;" +
+      (horiz ? "height:1px;left:" + L + "px;top:" + T + "px;width:" + Math.abs(x2 - x1) + "px"
+             : "width:1px;left:" + L + "px;top:" + T + "px;height:" + Math.abs(y2 - y1) + "px");
+    box.appendChild(line);
+    var tag = document.createElement("div");
+    tag.textContent = String(Math.round(val));
+    tag.style.cssText = "position:fixed;font:10px/14px ui-monospace,SFMono-Regular,Menlo,monospace;" +
+      "background:#e5484d;color:#fff;padding:0 3px;border-radius:2px;white-space:nowrap";
+    box.appendChild(tag);
+    /* 标签贴线中点；贴不住就翻到另一侧 —— 不翻的话贴着视口边的那条线上的数字看不见 */
+    var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    var w = tag.offsetWidth || 16, h = tag.offsetHeight || 14;
+    var tx = horiz ? mx - w / 2 : mx + 3;
+    var ty = horiz ? my - h - 2 : my - h / 2;
+    if (ty < 0) ty = my + 2;
+    if (tx < 0) tx = mx + 3;
+    if (tx + w > innerWidth) tx = mx - w - 3;
+    tag.style.left = tx + "px"; tag.style.top = ty + "px";
+  }
+
+  /** 量 a（选中的）和 b（鼠标下的）之间的距离并画出来。回画了几条。 */
+  function measure(a, b) {
+    clearSpacing();
+    if (!a || !b || a === b) return 0;
+    var A = a.getBoundingClientRect(), B = b.getBoundingClientRect();
+    var n = 0;
+    var inside = function (o, i) { return i.left >= o.left && i.right <= o.right && i.top >= o.top && i.bottom <= o.bottom; };
+    /* ① 包含关系 → 画**四条内距**（那时「间距」是 0，画它没意义） */
+    if (inside(A, B) || inside(B, A)) {
+      var O = inside(A, B) ? A : B, I = inside(A, B) ? B : A;
+      var cx = (I.left + I.right) / 2, cy = (I.top + I.bottom) / 2;
+      drawGap(cx, O.top, cx, I.top, I.top - O.top, false); n++;
+      drawGap(cx, I.bottom, cx, O.bottom, O.bottom - I.bottom, false); n++;
+      drawGap(O.left, cy, I.left, cy, I.left - O.left, true); n++;
+      drawGap(I.right, cy, O.right, cy, O.right - I.right, true); n++;
+      return n;
+    }
+    /* ② 左右分开 → 画一条水平线，y 取两者竖直重叠段的中点；
+       不重叠时取较近的那条边 —— 取中点会把线画到两个元素之外。 */
+    if (A.right <= B.left || B.right <= A.left) {
+      var l = A.right <= B.left ? A.right : B.right, r = A.right <= B.left ? B.left : A.left;
+      var ov = Math.min(A.bottom, B.bottom) - Math.max(A.top, B.top);
+      var y = ov > 0 ? (Math.max(A.top, B.top) + Math.min(A.bottom, B.bottom)) / 2
+                     : (A.bottom < B.top ? (A.bottom + B.top) / 2 : (B.bottom + A.top) / 2);
+      drawGap(l, y, r, y, r - l, true); n++;
+    }
+    /* ③ 上下分开 → 同理 */
+    if (A.bottom <= B.top || B.bottom <= A.top) {
+      var t = A.bottom <= B.top ? A.bottom : B.bottom, bo = A.bottom <= B.top ? B.top : A.top;
+      var ovx = Math.min(A.right, B.right) - Math.max(A.left, B.left);
+      var x = ovx > 0 ? (Math.max(A.left, B.left) + Math.min(A.right, B.right)) / 2
+                      : (A.right < B.left ? (A.right + B.left) / 2 : (B.right + A.left) / 2);
+      drawGap(x, t, x, bo, bo - t, false); n++;
+    }
+    return n;
+  }
+
   function send(type, payload) {
     try { window.parent.postMessage({ source: "umbradesign", type: type, payload: payload }, "*"); }
     catch (e) { /* 没有父窗口就当没这回事 */ }
   }
 
   document.addEventListener("mousemove", function (e) {
-    if (!on()) { hide(); return; }
+    if (!on()) { hide(); clearSpacing(); return; }
     var node = e.target && e.target.closest ? e.target.closest("[data-ud-node]") : null;
     if (node) show(node); else hide();
+    /* 按住 Option/Alt 且**已经选中过一个**节点时测间距（issue #17）。
+       ⚠️ 没选中时什么都不画 —— 「和谁比」是这件事的前提，
+       而一个「按了 Option 但只画出鼠标下那个框」的行为会让人以为功能坏了。 */
+    if (e.altKey && CUREL && node && node !== CUREL) measure(CUREL, node);
+    else clearSpacing();
   }, true);
 
   /* ⚠️ 这里**不能**用捕获阶段。mouseleave 不冒泡，但捕获阶段是 document → target，
      所以挂在 document 上的捕获监听会收到**任意**子元素的 mouseleave ——
      鼠标在稿里一动，高亮框就被藏掉。实测踩到：点完一个节点高亮框是 display:none。
      不加 true，document 上的 mouseleave 只在真的离开文档时才触发。 */
-  document.addEventListener("mouseleave", hide);
+  document.addEventListener("mouseleave", function () { hide(); clearSpacing(); });
+  /* ⚠️ **松开 Option 要清掉**：不清的话线会一直留着，而用户会以为它测的是现在鼠标下那个。
+     `keyup` 里 `e.key` 在 mac 上是 "Alt"，但**按住 Option 打字时 key 会变**，
+     所以判 `!e.altKey` 而不是判键名。 */
+  document.addEventListener("keyup", function (e) { if (!e.altKey) clearSpacing(); }, true);
+  addEventListener("blur", clearSpacing);
 
   // 捕获阶段拦下来，**只在点选模式下**阻止稿自己的处理器 ——
   // 关掉开关之后稿的交互一切照旧
@@ -145,12 +264,13 @@
     if (!a) return;
     e.preventDefault(); e.stopPropagation();
     CUR = a;
+    CUREL = e.target && e.target.closest ? e.target.closest("[data-ud-node]") : null;
     send("select", a);
   }, true);
 
   document.addEventListener("keydown", function (e) {
     if (EDIT) return;                                   // 编辑中的 Esc 由编辑器自己处理
-    if (e.key === "Escape") { CUR = null; hide(); send("clear", null); }
+    if (e.key === "Escape") { CUR = null; CUREL = null; hide(); clearSpacing(); send("clear", null); }
   }, true);
 
   /* ── 文字就地编辑（doc/12 M6-5）──

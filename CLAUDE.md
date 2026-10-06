@@ -261,6 +261,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run selftest` | 静态回归（三层判据） |
 | `npm --prefix server run lifecycletest` | 生命周期回归（建/改/删/恢复全流程） |
 | `npm --prefix server run filetest` | 泛型文件层回归（第二条写入口：写前校验 / 快照 / 回退 / 引用改写） |
+| `npm --prefix server run bridgetest` | **预览点选桥回归**（2026-10-06 新建，issue #17）：`runtime/select-bridge.js` 的几何。⚠️ 它在那之前**一条判据都没有** —— `uitest` 测工作台那一侧、`rendertest` 测控制台，两边都碰不到它。判据是**像素级数值**，不是「有没有画出来」 |
 | `npm --prefix server run difftest` | **跨版本净变更回归**（2026-10-06 新建，issue #91）：`doc/07` §六 那张合并规则表到底成不成立。⚠️ 夹具**必须写在 `<x-dc>` 里面** —— 放外面的话每一版只量到 `bytes_only`，而「至少一条」那种判据照样绿 |
 | `npm --prefix server run ziptest` | **发件包编码回归**（2026-09-29 新建）：中文文件名在严格解压方那边对不对。⚠️ **别拿系统 `unzip` 当仪器** —— 它不认 bit 11，正确的包也会被它报成乱码 |
 | `npm --prefix server run apitest` | **HTTP 路由层回归**（2026-09-28 新建）：住在路由层、别处测不到的行为。第一条是「同一会话并发发两条」（issue #35）。⚠️ **一条都不调真 AI** —— 用 `jobs.start` 塞慢作业造出「正忙」，要测的那条路照样走到 |
