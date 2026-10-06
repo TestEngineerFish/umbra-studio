@@ -2167,6 +2167,79 @@ console.log("\n插件 UI 的边界（M11-4）");
               } else ok(false, "建不出 csv 样本");
             }
 
+            /* ═══ 大表只画视口里的那几十行（issue #52，2026-10-06）═══
+               原来是 `for (let i = 1; i < rows.length; i++)` 全画 ——
+               5 万行 × 10 列 = 50 万个 DOM 节点，一打开就卡死。
+               ⚠️ 判据读的是**真实画出来的 `.crow` 个数**和**滚动高度**，不看截图：
+               「卡不卡」没法量，「画了几个节点」能量。
+               样本名走 `csv回归` 前缀 —— 收尾那三条判据按它清（纪律⑥）。 */
+            {
+              const BIG = "csv回归大表.csv";
+              const ROWS = 3000;
+              const mkb = await pg.evaluate(async ({ name, n }) => {
+                const b = window.__UD_APP;
+                const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                let body = "id,name,note\n";
+                for (let i = 1; i <= n; i++) body += `${i},行${i},备注${i}\n`;
+                const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ path: name, content: body, expectSha256: "0" }) });
+                return (await w.json()).ok;
+              }, { name: BIG, n: ROWS });
+              if (mkb) {
+                await pg.waitForTimeout(1400);
+                const bRow = pg.locator('[role="treeitem"]').filter({ hasText: BIG }).first();
+                if (await bRow.count()) {
+                  await bRow.click();
+                  const bf = pg.frameLocator('iframe[data-role="body"]');
+                  /* 等它画出来 —— 别抢（§113 那条「抢跑的判据会把慢误报成坏」）。
+                     ⚠️ **而「画出来了」要认是哪个文件的表**（2026-10-06 实测栽过）：
+                     第一版等的是「`.crow` 个数 > 0」，而**上一个 csv 样本正好 4 行**，
+                     它还在 DOM 里 → 循环第一轮就跳出，于是
+                     「只画视口里的几十行」这条判据**量的是上一个文件**（4 < 200，照样绿）。
+                     判准改成「滚动高度对得上这张大表」—— 那是**只有这张表才有**的特征。 */
+                  let drawn = 0, geo0 = { sh: 0, ch: 0 };
+                  for (let q = 0; q < 60; q++) {
+                    geo0 = await bf.locator("#table").evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight })).catch(() => ({ sh: 0, ch: 0 }));
+                    drawn = await bf.locator(".crow").count().catch(() => 0);
+                    if (geo0.sh > ROWS * 20 && drawn > 0) break;
+                    await pg.waitForTimeout(300);
+                  }
+                  ok(geo0.sh > ROWS * 20 && drawn > 0,
+                     "（前提）**这张大表**真画出来了（不是上一个文件的表还留在 DOM 里）",
+                     `scrollHeight ${geo0.sh} · 画了 ${drawn} 行`);
+                  /* ① 只画一小扇窗 —— 不是全画 */
+                  ok(drawn > 0 && drawn < 200,
+                     `**${ROWS} 行的表只画视口里的几十行**（原来全画：${ROWS} × 3 格 = 上万个节点）`,
+                     `画了 ${drawn} 行`);
+                  /* ② 而滚动条还是真的 —— 垫片把没画的部分占住了。
+                     ⚠️ 这一条必须有：少了它，一个「只画前 50 行、剩下的不管」的实现
+                     也会让 ① 通过，而那是**数据看不到了**，比卡死更糟。 */
+                  const geo = geo0;
+                  ok(geo.sh > ROWS * 20,
+                     `**滚动高度仍对应全部 ${ROWS} 行**（垫片占住了没画的部分，滚动条不说谎）`,
+                     `scrollHeight ${geo.sh}`);
+                  /* ③ 滚下去之后窗口真的跟着动，而且到得了最后一行 */
+                  await bf.locator("#table").evaluate((el) => { el.scrollTop = el.scrollHeight; });
+                  await pg.waitForTimeout(600);
+                  const lastRow = await bf.locator(".crow").last().getAttribute("data-row").catch(() => null);
+                  ok(String(lastRow) === String(ROWS),
+                     `**滚到底能看到最后一行**（第 ${ROWS} 条）`, `最后画的是第 ${lastRow} 条`);
+                  const firstRow = Number(await bf.locator(".crow").first().getAttribute("data-row").catch(() => 0));
+                  ok(firstRow > ROWS - 200,
+                     "**窗口跟着滚动走了**（滚到底之后开头那几行已经不在 DOM 里）", `窗口从第 ${firstRow} 条起`);
+                } else ok(false, "大表样本建好了但树里没刷出来");
+                await pg.evaluate(async ({ name }) => {
+                  const b = window.__UD_APP;
+                  const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                  await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: name }) });
+                  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (it.originalName === name)
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { name: BIG });
+              } else ok(false, "建不出大表样本");
+            }
+
             /* ═══ CSV 演示态 7：编码不对（M10-5，S20）═══
                设计侧的原话是「**编码没确定之前只读 —— 按错的编码落盘会把原文写坏**」。
                这一节钉三件事，顺序就是用户会碰到的顺序：

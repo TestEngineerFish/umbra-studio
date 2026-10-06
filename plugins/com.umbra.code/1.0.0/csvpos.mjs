@@ -218,3 +218,18 @@ export function colAt(text, row, off, delim) {
   }
   return col;
 }
+
+/** 一份 CSV 有多少列（最宽那一行的单元格数）。
+ *  ⚠️ **不用 `Math.max(...rows.map(…))`**（issue #106，2026-10-06）：
+ *  展开是把每个元素当一个实参传，受**调用栈的实参上限**约束 ——
+ *  本机实测 12.3 万个还行、12.5 万就 `RangeError: Maximum call stack size exceeded`。
+ *  而 `parseCsv` 没有行数上限，于是**十几万行的 CSV 原来是「打不开」而不是「卡」**。
+ *
+ *  ⚠️ 放在这里（纯模块）而不是 `app.mjs` 里，为的是**判据测得到它** ——
+ *  `app.mjs` 要浏览器环境，Node 里 import 不进来。
+ *  原来这个计算在 `app.mjs` 里写了**两遍**，所以同一个缺陷有两份。 */
+export function widthOf(rows) {
+  let w = 0;
+  for (const r of rows) if (r.cells.length > w) w = r.cells.length;
+  return w;
+}

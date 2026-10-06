@@ -16,7 +16,7 @@ const CM = "/__shared/codemirror.js";
 /* 位置感知 JSON 解析（M10-4）。**和插件一起发**，不走 `/__shared/` ——
    那里只放「多个插件都要」的大依赖，这一份是这个插件自己的逻辑，才几 KB。 */
 import { parseWithPos, prettyPath, nodeAt, stripJsonc } from "./jsonpos.mjs";
-import { parseCsv, sniffEncoding, decodeAs, rowAt, colAt } from "./csvpos.mjs";
+import { parseCsv, sniffEncoding, decodeAs, rowAt, colAt, widthOf } from "./csvpos.mjs";
 
 const el = (id) => document.getElementById(id);
 
@@ -301,6 +301,11 @@ const isCsv = () => /\.(csv|tsv)$/i.test(curPath || "");
  *  用下标的话，只看坏行时第 3 行会显示成「1」，而用户照着去源码里找会找错。 */
 function renderTable() {
   const host = el("table");
+  /* ⚠️ **先记下滚动位置**（issue #52）：下面要把内容整个清掉，
+     而内容高度一归零，浏览器会把 `scrollTop` 也归零 ——
+     于是「选中一行」这种重画会把用户弹回表头。虚拟滚动之前这一点也存在，
+     只是以前整表都在 DOM 里，重画后高度立刻恢复，看不出来。 */
+  const keepTop = host.scrollTop;
   host.textContent = "";
   if (!cparsed) return;
 
@@ -359,7 +364,12 @@ function renderTable() {
 
   const rows = cparsed.rows;
   if (!rows.length) return;
-  const width = Math.max(...rows.map((r) => r.cells.length));
+  /* ⚠️ **不用展开求列数**（issue #106，2026-10-06）：`Math.max(...arr)` 是把每个
+     元素当一个实参传进去，受**调用栈的实参上限**约束 —— 本机实测 12.3 万个还行、
+     12.5 万就 `RangeError: Maximum call stack size exceeded`。
+     而 `parseCsv` 没有行数上限，所以**十几万行的 CSV 原来是「打不开」而不是「卡」**。
+     线性扫一遍没有上限。 */
+  const width = widthOf(rows);
   const grid = document.createElement("div");
   grid.className = "cgrid";
   grid.setAttribute("role", "table");
@@ -385,9 +395,47 @@ function renderTable() {
   }
   grid.appendChild(headRow);
 
-  for (let i = 1; i < rows.length; i++) {
+  /* ── 只画视口里的那几十行（issue #52，2026-10-06）──
+     原来是 `for (let i = 1; i < rows.length; i++)` **全画** ——
+     5 万行 × 10 列 = 50 万个 DOM 节点，一打开就卡死。
+
+     ⚠️ 这里**不需要库也不需要测量**：行高是确定的 ——
+     `#table` 的 CSS 是 `font: 12px/24px`，而每个单元格 `white-space: pre`
+     + `overflow: hidden`，所以每一行正好一行高；坏行的原因条（`.cwhy`）同样。
+     行高确定 → 位置能直接算，这是虚拟滚动最省事的那种情形。
+
+     ⚠️ **小表全画**（阈值 400 行，远大于一屏）—— 省掉所有滚动数学，
+     也让「数一数画了几行」那类既有判据照旧成立（`uitest` 有好几条）。 */
+  const visIdx = [];
+  for (let i = 1; i < rows.length; i++) { if (cfilter && !rows[i].bad) continue; visIdx.push(i); }
+  /* 每条数据行占 1 行，**坏行多占 1 行**（原因那条）。前缀和把「滚到第几行」换成「从第几条画」——
+     不算这一笔的话，前面有坏行时垫片高度会短，表现为滚动条位置和内容对不上。 */
+  const lineAt = new Int32Array(visIdx.length + 1);
+  for (let k = 0; k < visIdx.length; k++) lineAt[k + 1] = lineAt[k] + (rows[visIdx[k]].bad ? 2 : 1);
+  const totalLines = lineAt[visIdx.length];
+  const ROWH = parseFloat(getComputedStyle(host).lineHeight) || 24;
+  const virt = visIdx.length > 400;
+
+  /* 两个垫片把没画出来的部分「占住」，于是滚动条的长度和位置还是真的。
+     `grid-column: 1 / -1` 让它横跨整行（和 `.cwhy` 一个做法）。 */
+  const pad = (h) => { const d = document.createElement("div"); d.style.gridColumn = "1 / -1"; d.style.height = h + "px"; return d; };
+  const top = pad(0), bot = pad(0);
+  /* 行都挂在这个壳里，重画时只清它。**`display: contents`** —— 它自己不占格子，
+     不然它会变成一个格子，整张表就塌了。 */
+  const wrap = document.createElement("div");
+  wrap.style.display = "contents";
+  grid.appendChild(top); grid.appendChild(wrap); grid.appendChild(bot);
+
+  /** 第 `line` 行（视觉行）落在第几条数据上 —— 前缀和里二分 */
+  const rowAtLine = (line) => {
+    let lo = 0, hi = visIdx.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (lineAt[m + 1] <= line) lo = m + 1; else hi = m; }
+    return lo;
+  };
+
+  const buildRow = (k) => {
+    const i = visIdx[k];
     const r = rows[i];
-    if (cfilter && !r.bad) continue;
     const inSel = csel && i >= csel[0] && i <= csel[1];
     const row = document.createElement("div");
     row.className = "crow" + (r.bad ? " bad" : "") + (inSel ? " on" : "");
@@ -413,16 +461,43 @@ function renderTable() {
       d.textContent = r.cells[c] ?? "";
       row.appendChild(d);
     }
-    grid.appendChild(row);
+    wrap.appendChild(row);
     /* 坏行：行尾一句原因，单独占一行铺满（S20 演示态 5） */
     if (r.bad) {
       const why = document.createElement("div");
       why.className = "cwhy";
       why.textContent = r.bad;
-      grid.appendChild(why);
+      wrap.appendChild(why);
     }
+  };
+
+  const paintWindow = () => {
+    let s = 0, e = visIdx.length;
+    if (virt) {
+      /* 上下各多画 20 行（overscan）—— 快速滚动时不至于看见白边 */
+      s = rowAtLine(Math.max(0, Math.floor(host.scrollTop / ROWH) - 20));
+      e = Math.min(visIdx.length, rowAtLine(Math.ceil((host.scrollTop + host.clientHeight) / ROWH) + 20) + 1);
+    }
+    top.style.height = (lineAt[s] * ROWH) + "px";
+    bot.style.height = ((totalLines - lineAt[e]) * ROWH) + "px";
+    wrap.textContent = "";
+    for (let k = s; k < e; k++) buildRow(k);
+  };
+  paintWindow();
+  if (virt) {
+    /* ⚠️ 用赋值不用 `addEventListener` —— `renderTable()` 每次选中都会重跑，
+       `addEventListener` 会越挂越多（而旧的那些还指着已经扔掉的闭包）。 */
+    let queued = false;
+    host.onscroll = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => { queued = false; paintWindow(); });
+    };
+  } else {
+    host.onscroll = null;
   }
   host.appendChild(grid);
+  if (keepTop) host.scrollTop = keepTop;
 }
 
 /* ════ JSON 的树档（M10-4，S19）════ */
@@ -1007,7 +1082,7 @@ function paint() {
         + (crumb ? ` · ${crumb}` : "")
         + (ccur ? ` · ${ccur}` : "")
         + (isCsv() && cparsed && cparsed.rows.length
-            ? ` · ${cparsed.rows.length} 行 · ${Math.max(...cparsed.rows.map((r) => r.cells.length))} 列`
+            ? ` · ${cparsed.rows.length} 行 · ${widthOf(cparsed.rows)} 列`
               + ` · 分隔符 ${cparsed.delimiter === "\t" ? "制表符" : cparsed.delimiter}`
               + (cenc && !cenc.confident ? " · 编码没确定" : "")
             : ""),

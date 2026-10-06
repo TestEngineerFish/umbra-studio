@@ -7,7 +7,7 @@
  */
 const MOD = new URL("../../plugins/com.umbra.code/1.0.0/csvpos.mjs", import.meta.url).href;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const { parseCsv, sniffDelimiter, sniffEncoding, decodeAs, rowAt, colAt } = (await import(MOD)) as any;
+const { parseCsv, sniffDelimiter, sniffEncoding, decodeAs, rowAt, colAt, widthOf } = (await import(MOD)) as any;
 
 let pass = 0, fail = 0;
 const ok = (label: string, cond: boolean, extra?: unknown) => {
@@ -167,6 +167,36 @@ console.log("\n 光标落在哪一行（issue #56）");
   ok("**分隔符之后进下一列**（第 2 条记录 `1,100` 的 `100` 是第 1 列）",
      colAt(text, rows[1]!, rows[1]!.from + 2, delimiter) === 1,
      String(colAt(text, rows[1]!, rows[1]!.from + 2, delimiter)));
+}
+
+/* ── 十几万行不许炸（issue #106，2026-10-06）──
+   `widthOf` 原来是 `Math.max(...rows.map((r) => r.cells.length))` ——
+   展开把每个元素当一个实参传，受**调用栈的实参上限**约束。
+   而 `parseCsv` 没有行数上限，于是**十几万行的 CSV 是「打不开」而不是「卡」**。
+
+   ⚠️ 阈值**现量，不写死**：它跟栈大小有关，换机器 / 换 Node 版本就会变。
+   写死 12 万的话，哪天阈值降到 8 万，这条判据会在一个**本该报警的环境里**照样绿。 */
+{
+  /* 先现量一次「展开到多少个就抛」—— 这既是样本有效性，也是读数 */
+  let spreadLimit = 0;
+  for (let n = 20000; n <= 400000; n += 20000) {
+    try { Math.max(...new Array(n).fill(1)); spreadLimit = n; }
+    catch { break; }
+  }
+  const N = spreadLimit + 40000;            // 一定超过这台机器的阈值
+  ok(`（样本有效性）展开求极值在这台机器上约 ${spreadLimit} 个还行，样本取 ${N} 行`,
+     spreadLimit > 0 && N > spreadLimit);
+  const big: Array<{ cells: string[] }> = [];
+  for (let i = 0; i < N; i++) big.push({ cells: i === 7 ? ["a", "b", "c", "d"] : ["a", "b"] });
+  let threw = "";
+  let w = -1;
+  try { w = widthOf(big); } catch (e) { threw = String((e as Error)?.constructor?.name ?? e); }
+  ok(`**${N} 行也求得出列数**（原来：\`Math.max(...)\` 抛 RangeError —— 文件直接打不开）`,
+     !threw && w === 4, threw || `${w} 列`);
+  /* 反面：**真的会抛** —— 证明这条判据量的是一件真事，不是一条永远绿的断言 */
+  let spreadThrew = "";
+  try { Math.max(...big.map((r) => r.cells.length)); } catch (e) { spreadThrew = String((e as Error)?.constructor?.name ?? e); }
+  ok("（对照）同一份数据用展开求就是 RangeError", spreadThrew === "RangeError", spreadThrew || "居然没抛");
 }
 
 console.log(fail === 0 ? `\n✓ CSV 解析与位置 ${pass}/${pass + fail}\n` : `\n✗ CSV 解析与位置 ${pass}/${pass + fail}\n`);
