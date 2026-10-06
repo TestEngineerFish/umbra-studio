@@ -5,7 +5,7 @@
  *
  * 服务活在 MCP server 进程里，跨工具调用保持运行 —— 起一次，浏览器里一直能开。
  */
-import { createReadStream, existsSync, statSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, statSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { extname, normalize, resolve, relative, sep } from "node:path";
@@ -14,11 +14,12 @@ import { emit, subscribe } from "./events.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { TOOL_ROOT, type Project } from "./project.js";
+import { sendFile } from "./sendfile.js";
 import { isToolPage } from "./indexpage.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
 import { BUILTIN, kindOf } from "./shared/kinds.js";
-import { resolveInside } from "./pathguard.js";
+import { resolveInside, isInside } from "./pathguard.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -45,9 +46,12 @@ const NO_BUILD_PAGE = `<!doctype html><meta charset="utf-8"><title>Umbra Studio<
 
 function serveStatic(root: string, rel: string, reply: import("node:http").ServerResponse, extra?: Record<string, string>): boolean {
   const f = resolve(root, "." + normalize(rel));
-  if (!f.startsWith(root) || !existsSync(f) || statSync(f).isDirectory()) return false;
-  reply.writeHead(200, { "content-type": MIME[extname(f).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-store", ...extra });
-  createReadStream(f).pipe(reply);
+  /* ⚠️ `isFile()` 而不是 `!isDirectory()`（issue #96）——
+     FIFO / socket / 块设备都「不是目录」，而 `open` 一个 FIFO 会**一直阻塞在
+     libuv 线程池里**（默认 4 个线程），请求几次就能把同进程所有 fs 操作卡住。
+     `isInside` 而不是 `startsWith`（#19 那一族）。 */
+  if (!isInside(root, f) || !existsSync(f) || !statSync(f).isFile()) return false;
+  sendFile(reply, f, { "content-type": MIME[extname(f).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-store", ...extra });
   return true;
 }
 
@@ -436,8 +440,7 @@ function routeStatic(
       reply.end(src);
       return;
     }
-    reply.writeHead(200, head);
-    createReadStream(abs).pipe(reply);
+    sendFile(reply, abs, head);
 }
 
 /** abs → 相对项目根、用 / 分隔 —— isToolPage 认的是这种形状 */

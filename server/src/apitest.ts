@@ -517,6 +517,32 @@ console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
      `${alive.code} · ${alive.body}`);
   const gone = await hit("/没有这个.png");
   ok(gone.code === 404, "正常的找不到还是 404（兜底不该把 404 也变成 400）", String(gone.code));
+
+  /* ── 打不开的文件（issue #96，2026-10-06）──
+     `existsSync` + `!isDirectory()` 只证明「路径在、不是目录」，**不证明打得开**。
+     `createReadStream` 异步打开，失败时在流上 emit `'error'`，而 `.pipe()`
+     **不会**替它挂监听 → 没人听的 `'error'` 直接 throw → 进程退出。
+     ⚠️ **#85 那层 `try/catch` 兜不住它** —— 它发生在回调返回之后的下一轮事件循环里。
+     「整体包一层」这个修法让这一类看起来已经被覆盖了，这是它最坏的地方。 */
+  {
+    const { chmod, writeFile: wf3 } = await import("node:fs/promises");
+    const { accessSync, constants } = await import("node:fs");
+    const locked = join(root, "锁着的.txt");
+    await wf3(locked, "读不到我", "utf8");
+    await chmod(locked, 0o000);
+    let readable = true;
+    try { accessSync(locked, constants.R_OK); } catch { readable = false; }
+    /* ⚠️ **先问样本有不有效** —— root 身份下 `chmod 000` 照样读得到，
+       那时候这条判据测的是「正常文件回 200」，和它声称的事无关。 */
+    ok(!readable, "（样本有效性）那个文件现在真的读不了", readable ? "还读得到（root？）跳过下面两条" : "读不了");
+    if (!readable) {
+      const no = await hit("/锁着的.txt");
+      ok(no.code === 403, "**打不开的文件回 403**（原来：读流的 `'error'` 没人听 → 进程退出）", String(no.code));
+      const alive2 = await hit("/ok.txt");
+      ok(alive2.code === 200 && alive2.body === "活着", "**而服务还活着**", `${alive2.code} · ${alive2.body}`);
+    }
+    await chmod(locked, 0o600);
+  }
   await new Promise<void>((r) => server.close(() => r()));
   await rm(root, { recursive: true, force: true });
 }

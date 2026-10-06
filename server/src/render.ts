@@ -10,7 +10,8 @@
  */
 import { createServer, type Server } from "node:http";
 import { isInside } from "./pathguard.js";
-import { accessSync, constants, createReadStream, existsSync, statSync } from "node:fs";
+import { sendFile } from "./sendfile.js";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { saveCheck, sha256, type CheckRecord } from "./check.js";
 import { extname, join, normalize, relative, resolve, sep } from "node:path";
@@ -94,16 +95,18 @@ export function startStatic(rootDir: string): Promise<{ server: Server; port: nu
         /* `isInside` 而不是 `startsWith`（#19 那一族）—— 这里因为前面
            `normalize("/..")` 会钳到根，目前逃不出去，但**判定写法要统一**，
            免得下一个人把它当样板抄走。 */
-        if (!isInside(rootDir, abs) || !existsSync(abs) || statSync(abs).isDirectory()) {
+        /* ⚠️ `isFile()` 而不是 `!isDirectory()`（issue #96）—— 见 `sendfile.ts` 的头注。 */
+        if (!isInside(rootDir, abs) || !existsSync(abs) || !statSync(abs).isFile()) {
           reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
           reply.end("404");
           return;
         }
-        reply.writeHead(200, {
+        /* ⚠️ 走共用的 `sendFile`（issue #96）—— 上面那层 `try` **兜不住读流的
+           异步 `'error'`**，而「整体包一层」会让人以为已经兜住了。 */
+        sendFile(reply, abs, {
           "content-type": MIME[extname(abs).toLowerCase()] ?? "application/octet-stream",
           "cache-control": "no-store",
         });
-        createReadStream(abs).pipe(reply);
       } catch {
         if (!reply.headersSent) reply.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
         reply.end("400");
