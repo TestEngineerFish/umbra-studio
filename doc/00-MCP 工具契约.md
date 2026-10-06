@@ -10381,3 +10381,46 @@ issue 建议引 TanStack/virtual。实际不用：
 > **等待条件和判据条件不是一回事。** 等待条件要认「**我要量的那个东西到位了吗**」，
 > 而「有东西在那儿」几乎总是不够 —— 上一个状态常常也满足它。
 > 判据写对了也会被一个太松的等待条件毁掉，而症状是**它绿着**。
+
+## 一四九、#94 的前提核实：那条「等 Node 25 就免费解决」的路，**现在看不到时间表**（2026-10-06，实测）
+
+#94 提的是「插件 B 面换进 QuickJS-WASM，网络不是被拦住而是不存在」。
+它自己给了一条更便宜的替代：**等 Electron 升到带 Node ≥ 25 的大版本**，
+用上游的 `--allow-net`，`net-block.cjs` 那个桩就能按它头注里的删除条件删掉，不引新依赖。
+
+动手之前先核这条替代 —— **因为整个权衡都挂在它身上**。两条实测：
+
+```
+本机 node v24.11.0
+$ node --permission --allow-fs-read=/ --allow-net -e "…"
+node: bad option: --allow-net          ← 确认 Node 24 没有这个 flag
+```
+
+```
+（releases.electronjs.org/releases.json，2026-10-06 取）
+Electron  40  Node 24.15.0
+Electron  41  Node 24.18.0
+Electron  42  Node 24.19.0
+Electron  43  Node 24.21.0
+Electron  44  Node 24.21.0   ← 我们装的（44.4.5）
+Electron  45  Node 24.21.0   ← alpha
+Electron  46  Node 24.21.0   ← nightly
+```
+
+**连 nightly（46）都还是 Node 24.21。** Electron 从 43 到 46 四个大版本把 Node 钉在 24.21 上
+（它要的是和自己 Chromium 的 V8 对得上的那一支），所以「等一个带 Node 25 的 Electron」
+**不是「等几个月」，是「不知道等到哪一版」**。
+
+> ⚠️ 这条读数本身比结论重要：**一条「以后会免费解决」的替代方案，要先量它什么时候到。**
+> 量不到时间表的「以后」，在排期上等于「不会」——
+> 而它会让当下那条真实可做的路一直排在后面。
+> （`net-block.cjs` 的头注写着「这是防呆，不是安全边界」，已经挂了 **9 天**。）
+
+另外两个前提也核了（都成立，所以迁移成本是真的低）：
+
+| 前提 | 实测 |
+| --- | --- |
+| 「现在只有一个插件有 B 面」 | ✅ `plugins/*/*/tools.mjs` 只有 `com.umbra.markdown` 一份 |
+| 「`tools.mjs` 57 行、一个 `import` 都没有」 | ✅ 57 行；`import` / `require(` / `process.` / `Buffer` / `fetch(` **一处都没有**，全部能力从注入的 `host` 拿 |
+
+结论与方案记在 `doc/11` **Q48**（待用户拍板）。
