@@ -1580,6 +1580,56 @@ console.log("\n插件 UI 的边界（M11-4）");
         /* ═══ chrome 由宿主代画（M11-9a）═══
            插件只有正文那块矩形，编辑栏 / 属性面板 / `⋯` 都在它够不着的地方。
            这几条钉的是「插件给数据 → 宿主照自己的形制画出来」这条路通不通。 */
+        /* ═══ 桥不许留下永远不回的 Promise（issue #97，2026-10-06）═══
+           插件侧 `await umbra.menu(...)` 等的是宿主的一条 `{t:"reply"}`，
+           而**旧契约自己写着「点空关掉就一直不返回」** —— 把一个缺陷写成了规格。
+           后果不是「菜单没反应」（菜单是宿主画的，它关掉了），
+           而是**插件里那一行之后的收尾一次都不会跑**（清高亮、解锁按钮、恢复光标）。
+
+           ⚠️ 判据读的是**插件 frame 里那个 await 之后写的值**，不是「菜单关掉了」——
+           「菜单关掉了」在坏的实现下**也是真的**（§142.4 那一族：
+           判据要钉住它自己声称的那件事）。 */
+        {
+          /* ⚠️ **点在表格行上，不是 iframe 的空白处**（2026-10-06 实测栽过）。
+             插件那个监听器挂在 `document.body` 上，而 iframe 下半截是空白 ——
+             点在那里 target 是 `<html>`，事件**不经过 body**（html 是 body 的父节点，
+             不是子节点），于是监听器压根没被调用。
+             症状是「探针没跑」，看着像**桥坏了**。
+             用 frame 内的定位器点元素，坐标的事交给 Playwright。 */
+          const target = inner.locator("tbody tr").first();
+          if (await target.count()) {
+            await target.click({ button: "right" });
+            await pg.waitForTimeout(400);
+            const popped = await pg.locator('[data-ud="pluginmenu"]').count();
+            ok(popped === 1, "插件请求的菜单由宿主画出来了（前提）", `${popped} 个`);
+            const waiting = await inner.locator("body").evaluate(() => window.__menuResult ?? "（探针没跑）").catch(() => "（读不到）");
+            ok(waiting === "等着", "（样本有效性）此刻插件确实停在那个 await 上", String(waiting));
+            /* ⚠️ **不能按 Escape**（2026-10-06 实测栽过第二次）：
+               我们刚在插件 frame 里点过，焦点就在那个 iframe 上，
+               而**键盘事件不跨 iframe 边界**（`00` §八十一 那条教训的第 N 次）——
+               Escape 落在插件自己的 document 里，宿主收不到。
+               浮层的「点别处收起」走的是 `installAcrossFrames` 挂的 `mousedown`，
+               而它**挂不上插件那个 iframe**（不透明源，拿不到它的 document）。
+               所以要在**宿主自己的 DOM 上**点一下，这也正是真实用户关掉它的方式。
+               ⚠️ 点哪儿有讲究：第一版点 `[data-ud="bottombar"]` —— 这个布局下
+               **底栏压根没渲染**，判据超时报「waiting for locator」，
+               看着像浮层不收。改点目录列的表头（`tree-head`）左上角那 2px：
+               它只有 contextmenu 处理器，左键点它**不改任何状态**。 */
+            await pg.locator('[data-ud="tree-head"]').click({ position: { x: 2, y: 2 } });
+            let got = "";
+            for (let i = 0; i < 24; i++) {
+              got = await inner.locator("body").evaluate(() => window.__menuResult ?? "").catch(() => "");
+              if (got && got !== "等着") break;
+              await pg.waitForTimeout(250);
+            }
+            ok(got === "menu→null",
+               "**关掉菜单时插件那个 `await` 真的回来了**（issue #97：原来它永远挂着，而插件界面一声不响）",
+               got || "（等了 6 秒还停在 await 上）");
+          } else {
+            ok(false, "**插件表格里没有行可点，桥那一组（3 条）没跑到**");
+          }
+        }
+
         const eb = pg.locator('[data-ud="toggle-edit"]');
         ok(await eb.count() === 1, "插件声明了编辑栏 → ✎ 这颗钮出现了");
         if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }

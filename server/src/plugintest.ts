@@ -404,5 +404,46 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   void decodePackage; void encodePackage;
 }
 
+/* ── 桥那一份 `umbra.js` 有**四份拷贝**，而没有任何机制让它们同步（issue #97）──
+   「插件把这一份拷进自己的包里」是刻意的（`umbra.js` 头注：插件关在不透明源的
+   iframe 里、CSP `connect-src 'none'`，它取不到我们的任何文件）。代价是：
+   **桥上修一个缺陷要同时改四处，而漏掉一处没有任何东西会红。**
+   实测这四份现在就不是同一份（115 / 115 / 119 / 98 行，三个不同的 sha）——
+   功能是增量叠加的，所以长度不同是正常的；**但关键不变量必须每一份都有**。
+
+   ⚠️ 这条判据不测功能，测的是「**散不散**」—— 和 `captest` 一个路子。 */
+{
+  const { readFileSync: rf } = await import("node:fs");
+  const { TOOL_ROOT: TR } = await import("./project.js");
+  const copies = [
+    "fixtures/插件/com.umbra.demo/umbra.js",
+    "plugins/com.umbra.markdown/1.0.0/umbra.js",
+    "plugins/com.umbra.html/1.0.0/umbra.js",
+    "plugins/com.umbra.code/1.0.0/umbra.js",
+  ];
+  /** 每一份都必须有的东西：超时常量 + `send` 真用上了它 + 菜单那一档 */
+  const MUST: Array<[string, RegExp]> = [
+    ["CALL_TIMEOUT 常量", /var CALL_TIMEOUT\s*=\s*\d+/],
+    ["MENU_TIMEOUT 常量", /var MENU_TIMEOUT\s*=\s*\d+/],
+    ["send 真的设了定时器", /setTimeout\(function \(\) \{[\s\S]{0,200}delete pending\[id\]/],
+    ["超时回失败信封而不是 reject", /E_BRIDGE_TIMEOUT/],
+    ["call 带着超时调 send", /send\(\{ t: "call"[\s\S]{0,120}CALL_TIMEOUT/],
+    ["menu 带着超时调 send", /send\(\{ t: "menu"[\s\S]{0,120}MENU_TIMEOUT/],
+  ];
+  const missing: string[] = [];
+  for (const rel of copies) {
+    let src = "";
+    try { src = rf(join(TR, rel), "utf8"); } catch { missing.push(`${rel}：读不到`); continue; }
+    for (const [what, re] of MUST) if (!re.test(src)) missing.push(`${rel} 缺「${what}」`);
+  }
+  ok(missing.length === 0,
+     `**四份 \`umbra.js\` 的桥都带超时**（issue #97；改一处漏三处没有任何东西会红）`,
+     missing.length ? missing.slice(0, 4).join(" · ") : `${copies.length} 份 × ${MUST.length} 条都在`);
+  /* 反面：**别把「同步」误解成「一字不差」** —— 它们是独立更新的，
+     功能叠加不同是正常的。所以判据只钉不变量，不比 sha。 */
+  ok(new Set(copies.map((rel) => { try { return rf(join(TR, rel), "utf8").length; } catch { return 0; } })).size > 1,
+     "（口径说明）四份本来就不一字不差 —— 所以判据钉的是不变量，不是 sha");
+}
+
 console.log(fail === 0 ? `\n✓ 插件机制 ${pass}/${pass + fail}` : `\n✗ 插件机制 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

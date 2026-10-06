@@ -29,10 +29,47 @@
     }
   });
 
-  function send(msg) {
+  /* ── 超时（issue #97，2026-10-06）──
+     原来 `send` 是 `new Promise(res => { pending[id] = res; postMessage })` ——
+     **没有 reject、没有超时**。宿主只要不回应答，这个 Promise 就永远挂着，
+     而插件界面上**一声不响**（和 #31「点了没反应」是同一种长相）。
+
+     宿主不回应答的路实测至少四条：
+       ① 菜单点空关掉 —— **旧契约自己明写着「就一直不返回」**；
+       ② `plugin_call` 抛异常 —— `await` 在 async 监听器里，
+          拒绝变成未处理的 rejection，而**应答根本不发**；
+       ③ 宿主不认这个消息类型（旧宿主 + 新插件，插件是独立更新的，这是常态）；
+       ④ iframe 在调用途中被卸载（换文件、关页签）。
+
+     ⚠️ 超时**不 reject，回一个失败信封** —— 调用方写的是
+     `const out = await umbra.call(...); if (!out.ok) …`，
+     reject 会变成未处理的拒绝，把一个「慢」变成一个「崩」。 */
+  var CALL_TIMEOUT = 20000;    // 读写文件可以慢，但不该慢过 20 秒
+  var MENU_TIMEOUT = 300000;   // 菜单由宿主回（点了或关掉都回），这一条只是兜底回收
+
+  function bridgeFail(cap, ms) {
+    return { ok: false, data: null, warnings: [], stats: {}, errors: [{
+      level: "error", code: "E_BRIDGE_TIMEOUT", where: "(bridge)",
+      message: "宿主没有在 " + Math.round(ms / 1000) + " 秒内应答 " + cap,
+      fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue 并附上这句话。",
+    }] };
+  }
+
+  /** `ms` 给 0 / 省略 = 不设超时。`onTimeout` 是超时时 resolve 的值（或算它的函数）。 */
+  function send(msg, ms, onTimeout) {
     var id = ++seq;
     msg.id = id;
-    return new Promise(function (res) { pending[id] = res; parent.postMessage(msg, "*"); });
+    return new Promise(function (res) {
+      var timer = ms ? setTimeout(function () {
+        if (!pending[id]) return;
+        delete pending[id];
+        res(typeof onTimeout === "function" ? onTimeout() : onTimeout);
+      }, ms) : null;
+      /* 包一层：应答到了就把定时器撤掉 —— 不撤的话定时器还在，
+         而那时 `pending[id]` 已经删了，所以不会重复 resolve（上面那道 `if` 兜着）。 */
+      pending[id] = function (payload) { if (timer) clearTimeout(timer); res(payload); };
+      parent.postMessage(msg, "*");
+    });
   }
 
   global.umbra = {
@@ -41,10 +78,14 @@
     /** 调一件宿主能力（read_file / write_file …）。
      *  ⚠️ 返回的是**信封** `{ok, data, errors}`，不是直接的数据 ——
      *  权限不够、文件被人改过都走 `ok:false`，别只看 `data`。 */
-    call: function (cap, input) { return send({ t: "call", cap: cap, input: input || {} }); },
+    call: function (cap, input) {
+      return send({ t: "call", cap: cap, input: input || {} }, CALL_TIMEOUT,
+        function () { return bridgeFail(cap, CALL_TIMEOUT); });
+    },
     /** 弹一个菜单。**由宿主画** —— 插件自己画会被矩形裁掉，形制也和主程序对不上。
-     *  返回被点的那一项的下标；点空关掉就一直不返回。`{label:"—"}` 是分隔线。 */
-    menu: function (x, y, items) { return send({ t: "menu", x: x, y: y, items: items }); },
+     *  返回被点的那一项的下标；**点空关掉回 `null`**（issue #97 —— 这一行原来写的是
+     *  「就一直不返回」，那是把一个缺陷写进了契约）。`{label:"—"}` 是分隔线。 */
+    menu: function (x, y, items) { return send({ t: "menu", x: x, y: y, items: items }, MENU_TIMEOUT, null); },
     /** 提示条。也由宿主画 */
     toast: function (title, body, level) { parent.postMessage({ t: "toast", title: title, body: body, level: level }, "*"); },
     /** 当前上下文（哪个文件、什么主题）。**插件不能自己去问** —— 它没有网络。

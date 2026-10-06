@@ -60,6 +60,22 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
   const src = `${ctx.core.url.replace(/\/$/, "")}/__plugin/${pluginId}/${entry}`;
   const key = chromeKey(pluginId, ctx.path);
 
+  /* ⚠️ **应答必须发得出去**（issue #97，2026-10-06）。
+     插件侧 `umbra.call` / `umbra.menu` 都在等一个 `{t:"reply", id}` ——
+     而它那个 Promise 原来**没有超时也没有 reject**，我们不回就永远挂着，
+     插件界面上一声不响。所以这一侧的规矩是：**凡是带 `id` 的消息，一定有一条应答出去**，
+     包括「出错了」和「我不认识这个消息」。
+     （插件侧也加了超时兜着 iframe 被卸载这一种 —— 两边都要有：
+     这一侧管得了「我决定不回」，管不了「我已经不在了」。） */
+  const replyTo = (id: number, payload: unknown) =>
+    ref.current?.contentWindow?.postMessage({ t: "reply", id, payload }, "*");
+  /** 桥这一层自己的失败信封 —— 形状和服务端的信封一样，插件只认 `ok` / `errors` */
+  const bridgeFail = (code: string, message: string) => ({
+    ok: false, data: null, warnings: [], stats: {},
+    errors: [{ level: "error", code, where: "(bridge)", message,
+      fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue 并附上这句话。" }],
+  });
+
   const push = () => {
     const c = ctxRef.current;
     ref.current?.contentWindow?.postMessage(
@@ -80,8 +96,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
       if (!ref.current || e.source !== ref.current.contentWindow) return;
       const m = e.data as FromPlugin;
       if (!m || typeof m !== "object") return;
-      const reply = (id: number, payload: unknown) =>
-        ref.current?.contentWindow?.postMessage({ t: "reply", id, payload }, "*");
+      const reply = replyTo;
 
       /* ⚠️ **必须处理 `ready`**：插件加载完之前，我们推的 context 会落空 ——
          `postMessage` 不排队，窗口里还没有监听器时发过去就没了。
@@ -136,9 +151,27 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
         /* 插件要读写文件 —— 走 `plugin_call`，**服务端按它的清单核权限**。
            前端在这里只是个传声筒，不替它做任何判断：判断放前端就等于
            「把门锁挂在门外面」，插件改不了服务端，但改得了页面。 */
-        const out = await ctx.core.post("plugin_call", { plugin: pluginId, cap: m.cap, input: m.input });
-        reply(m.id, out);
+        /* ⚠️ **抛了也得回**（issue #97）：这是个 `async` 监听器，
+           `await` 抛出来只会变成一条未处理的 rejection ——
+           **应答根本不发**，于是插件里那个 Promise 永远挂着。
+           网络断了、服务重启了、路由名打错了都走这条。 */
+        try {
+          const out = await ctx.core.post("plugin_call", { plugin: pluginId, cap: m.cap, input: m.input });
+          reply(m.id, out);
+        } catch (e) {
+          reply(m.id, bridgeFail("E_BRIDGE_CALL_FAILED",
+            `调 ${m.cap} 没能走通：${String((e as Error)?.message ?? e).slice(0, 120)}`));
+        }
         return;
+      }
+      /* ⚠️ **落到这里 = 我们不认识这个消息**（issue #97 第 ③ 条）。
+         插件是**独立更新**的，所以「新插件 + 旧宿主」是常态而不是异常。
+         带 `id` 的就回一条错 —— 插件于是知道「这个宿主没有这件能力」，
+         可以降级显示；不回的话它只会卡在那儿，而用户看到的是「点了没反应」。 */
+      const unknown = m as { t?: unknown; id?: unknown };
+      if (typeof unknown.id === "number") {
+        replyTo(unknown.id, bridgeFail("E_BRIDGE_UNKNOWN",
+          `这个版本的宿主不认识消息类型 ${JSON.stringify(unknown.t)}（宿主桥 v1）`));
       }
     };
     window.addEventListener("message", onMsg);
@@ -220,8 +253,12 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
         className="w-full h-full border-0 block"
       />
       {dead && <div className="absolute inset-0 grid place-items-center text-xs text-muted bg-canvas">{dead}</div>}
+      {/* ⚠️ **菜单关掉也要回一条**（issue #97）—— 回 `null` = 「用户没选」。
+          旧契约把这个缺陷写成了规格：「点空关掉就一直不返回」。
+          而插件那边 `await umbra.menu(...)` 之后往往要收尾（清高亮、解锁按钮），
+          永远不返回意味着那些收尾**一次都不会跑**。 */}
       {menu && (
-        <PopoverAt x={menu.x} y={menu.y} onClose={() => setMenu(null)} tag="pluginmenu">
+        <PopoverAt x={menu.x} y={menu.y} onClose={() => { setMenu(null); replyTo(menu.id, null); }} tag="pluginmenu">
           <div>
             {menu.items.map((mi, k) => mi.label === "—"
               ? <PopSep key={k} />

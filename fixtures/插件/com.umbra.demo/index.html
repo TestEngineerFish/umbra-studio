@@ -105,7 +105,13 @@
   umbra.onChanged(function () { load(); });
   document.body.addEventListener("contextmenu", async function (e) {
     e.preventDefault();
+    /* ⚠️ **探针：这个 await 到底回不回来**（issue #97 的回归面）。
+       原契约写的是「点空关掉就一直不返回」—— 也就是说这一行之后的收尾
+       （清高亮、解锁按钮）在用户关掉菜单时**一次都不会跑**。
+       判据从插件 frame 里读 `window.__menuResult`，不看截图（纪律②）。 */
+    window.__menuResult = "等着";
     var i = await umbra.menu(e.clientX, e.clientY, [{ label: "有 " + Math.max(0, cells.length - 1) + " 行" }, { label: "—" }, { label: "提示一下" }]);
+    window.__menuResult = "menu→" + String(i);
     if (i === 2) umbra.toast("插件发的提示", "由宿主画，形制和别处一致");
   });
   </script>
