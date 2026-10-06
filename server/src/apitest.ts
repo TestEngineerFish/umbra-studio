@@ -161,6 +161,60 @@ console.log("\n④ 预览路由的三道闸（M10-3）");
   ok(await code("__preview/umbra-tokens.json") === 415, "**非 .html 一律拒**（这条路由只渲染网页，不是第二条读文件的路）");
   ok(await code("__preview/..%2f..%2fetc%2fpasswd.html") === 403, "**路径逃不出项目目录**（走 `pathguard` 那一份判定，issue #19）");
   ok(await code("__preview/这个肯定没有.html") === 404, "不存在的回 404");
+
+  /* ── 命名管道（FIFO）不能挂住服务（issue #104，2026-10-06）──
+     `open` 一个 FIFO 是**阻塞**而不是报错。两条路各有后果：
+       · `routeStatic`（预览项目里的文件，#96 自己说的「最常走的那条」）走异步读流 ——
+         每请求一次占掉一个 libuv 线程（默认 4 个），四次之后同进程所有 fs 都排不上队；
+       · `/__preview/` 用的是 **`readFileSync`**，**一次就卡死主线程**（HTTP / WS / MCP 全不响应），
+         而这条路由**不要令牌**，只要那个 FIFO 叫 `x.html`。
+     ⚠️ #96 把判定换成 `isFile()` 时**只换到两处**，漏的正是这两条。
+
+     ⚠️ **这一节用临时项目 + 它自己的服务**，不碰上面那个 `p`（它是**用户真实的项目**）。
+     为什么非这样不可：2026-10-06 我第一版就在用户项目里 `mkfifo`，而反向验证时
+     **整个进程挂住了** → JS 里的清理永远不会跑 → 那个 FIFO 留在他项目里，
+     之后起界面服务一碰它就挂（纪律⑥ 的最坏一种：留下的不是脏文件，是个**陷阱**）。
+
+     ⚠️ 判据第二版还放错过服务：放在 `startStatic` 那一节里 ——
+     而**那台是 #96 已经修过的**，测的是已经对的那个。
+
+     ⚠️ **每一发都带上限**（纪律 3.4）：挂住的症状是「永远不返回」。 */
+  {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtemp, writeFile: wf4, rm: rm2 } = await import("node:fs/promises");
+    const { join: j2 } = await import("node:path");
+    const { tmpdir: td2 } = await import("node:os");
+    const T = await mkdtemp(j2(td2(), "umbrastudio-fifo-"));
+    await wf4(j2(T, "project.json"), JSON.stringify({ name: "fifotest", title: "FIFO 回归" }), "utf8");
+    await wf4(j2(T, "ok.html"), "<!doctype html><title>ok</title>", "utf8");
+    const pf = await buildProject(T);
+    const sf = await serveStart(pf);
+    const uf = (route: string) => `${sf.url}${route}?token=${encodeURIComponent(sf.token)}`;
+    const fifo = j2(T, "管道.html");
+    let made = false;
+    try { execFileSync("mkfifo", [fifo]); made = true; } catch { made = false; }
+    ok(made, "（样本有效性）临时项目里造出一个命名管道", made ? "管道.html" : "mkfifo 不可用（win？）→ 下面三条跳过");
+    if (made) {
+      const hitT = async (route: string) => {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 3000);
+        try { return String((await fetch(uf(route), { signal: ctl.signal })).status); }
+        catch { return "挂住了（3 秒没返回）"; }
+        finally { clearTimeout(t); }
+      };
+      const a = await hitT("__preview/管道.html");
+      ok(a === "404", "**`/__preview/` 请求 FIFO 回 404，不卡死主线程**（它用的是 readFileSync）", a);
+      const b = await hitT("管道.html");
+      ok(b === "404" || b === "403", "**`routeStatic` 请求 FIFO 也不挂住**（#96 漏掉的「最常走的那条」）", b);
+      /* 然后服务还得活着 —— 「这一发失败了」和「服务还能用」是两件事 */
+      const c = await hitT("ok.html");
+      ok(c === "200", "**而服务还活着**（那两发没占掉线程池、也没卡住主线程）", c);
+    }
+    /* 收尾：临时项目整个删掉。**挂住时这一步跑不到** —— 所以它在 tmp 里而不在用户项目里 */
+    try { const { serveStop } = await import("./serve.js"); serveStop(pf.dir); }
+    catch { /* 停不掉也无妨，进程结束时一起走 */ }
+    await rm2(T, { recursive: true, force: true });
+  }
   /* ⚠️ 注入的桥**只在这条路由上**，盘上那份文件一个字节都没动 */
   if (anyHtml) {
     const body = await fetch(u2(`__preview/${encodeURIComponent(anyHtml.name)}`)).then((x) => x.text());
@@ -542,6 +596,7 @@ console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
       ok(alive2.code === 200 && alive2.body === "活着", "**而服务还活着**", `${alive2.code} · ${alive2.body}`);
     }
     await chmod(locked, 0o600);
+
   }
   await new Promise<void>((r) => server.close(() => r()));
   await rm(root, { recursive: true, force: true });

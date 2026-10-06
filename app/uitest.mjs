@@ -2199,7 +2199,19 @@ console.log("\n插件 UI 的边界（M11-4）");
                 const b = window.__UD_APP;
                 const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
                 let body = "id,name,note\n";
-                for (let i = 1; i <= n; i++) body += `${i},行${i},备注${i}\n`;
+                for (let i = 1; i <= n; i++) {
+                  /* ⚠️ **样本里要有那两种坑**（issue #116，2026-10-06）——
+                     不然「每个单元格一行高」和「坏行那条也一行高」两条判据都是**空过的**：
+                       · 第 7 条：**引号里有换行** → `.ccell` 是 `white-space: pre`，
+                         不钉高度的话这一行实际 3 × 24 = 72px，而垫片按 24px 算；
+                       · 第 11 条：**多一列** → 画出 `.cwhy`（坏行的原因），
+                         而它的 `font:` 简写会把 `line-height` 重置成 ~14px。
+                     第一版样本是规规矩矩的三列，于是两条判据读到的是
+                     「量到 24」和「这份样本没有坏行」—— **都通过，而都没打中**。 */
+                  if (i === 7) body += `${i},"跨\n三\n行",备注${i}\n`;
+                  else if (i === 11) body += `${i},行${i},备注${i},多出来的一列\n`;
+                  else body += `${i},行${i},备注${i}\n`;
+                }
                 const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
                   body: JSON.stringify({ path: name, content: body, expectSha256: "0" }) });
                 return (await w.json()).ok;
@@ -2246,6 +2258,47 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const firstRow = Number(await bf.locator(".crow").first().getAttribute("data-row").catch(() => 0));
                   ok(firstRow > ROWS - 200,
                      "**窗口跟着滚动走了**（滚到底之后开头那几行已经不在 DOM 里）", `窗口从第 ${firstRow} 条起`);
+
+                  /* ── 虚拟滚动的那个前提得是**真的**（issue #116，2026-10-06）──
+                     垫片是按「普通行 24px、坏行 48px」算的。而这个前提原来有两处不成立：
+                       ① **引号里的换行**：`parseCsv` 把它留在单元格里，而 `.ccell` 是
+                          `white-space: pre` → 那一行实际 3 × 24 = 72px，模型里算 24px；
+                       ② **`.cwhy` 的 `font:` 简写**把 `line-height` 重置成 `normal`
+                          （11px 字体约 13–15px），覆盖了继承来的 24px。
+                     两者都让「垫片高度」和「真实排版」每过一行差一截 → 滚动一跳一跳。
+
+                     ⚠️ 判据量的是**真实的 `offsetHeight`**，不是「能不能滚」——
+                     「能滚」在错的高度下也成立，而那正是这条 bug 的样子。 */
+                  {
+                    /* ⚠️ **先滚回顶部**：那两个坑在第 7 / 第 11 条，
+                       而上面几条判据已经把窗口滚到底了 —— 虚拟滚动下它们**不在 DOM 里**。
+                       第一版没滚，读到「一条 .cwhy 都没画」。
+                       **虚拟滚动让「DOM 里有没有」变成了「现在看得见没有」** ——
+                       以前的判据不用考虑这件事，以后都要。 */
+                    await bf.locator("#table").evaluate((el) => { el.scrollTop = 0; });
+                    await pg.waitForTimeout(500);
+                    const geom = await bf.locator("#table").evaluate((el) => {
+                      const rows = [...el.querySelectorAll(".crow")];
+                      const cells = rows.flatMap((r) => [...r.querySelectorAll(".ccell")]);
+                      const whys = [...el.querySelectorAll(".cwhy")];
+                      const h = (n) => Math.round(n.getBoundingClientRect().height);
+                      return {
+                        cell: [...new Set(cells.map(h))],
+                        why: [...new Set(whys.map(h))],
+                        line: Math.round(parseFloat(getComputedStyle(el).lineHeight)),
+                      };
+                    });
+                    ok(geom.cell.length === 1 && geom.cell[0] === geom.line,
+                       `**每个单元格正好一行高**（${geom.line}px）—— 引号里的换行不许把行撑高`,
+                       `量到的高度：${geom.cell.join(" / ")}`);
+                    /* ⚠️ **不许「没有坏行」也算过**：第一版写的是
+                       `why.length === 0 || …`，而样本里恰好没有坏行 →
+                       那一条**通过而没打中**（§一一四 那条「判据在测别的东西也会绿」）。
+                       现在样本第 11 条故意多一列，所以 `.cwhy` 必须出现。 */
+                    ok(geom.why.length === 1 && geom.why[0] === geom.line,
+                       "**坏行那条原因也是一行高**（`font:` 简写会把 `line-height` 重置掉）",
+                       geom.why.length ? geom.why.join(" / ") : "✗ 一条 .cwhy 都没画（样本没打中？）");
+                  }
                 } else ok(false, "大表样本建好了但树里没刷出来");
                 await pg.evaluate(async ({ name }) => {
                   const b = window.__UD_APP;

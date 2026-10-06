@@ -139,15 +139,28 @@ body.hasdraft.dirty #table, body.ro.dirty #table { top: 66px; }
 .chead > * { position: sticky; top: 0; z-index: 1; background: var(--active);
   border-bottom: 1px solid var(--line); font-weight: 600; cursor: pointer; }
 .chead > .cnum { z-index: 3; }
-.ccell { padding: 0 10px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+/* ⚠️ **每个单元格正好一行高**（issue #116，2026-10-06）——
+   虚拟滚动的垫片是按「一行 24px」算的（`app.mjs` 的 `lineAt`），
+   而 `white-space: pre` 会把**引号里的换行**画成真换行：
+   `parseCsv` 把那种换行留在单元格里（一条记录 `line 2 / endLine 4`），
+   于是那一行实际 3 × 24 = 72px，而模型里算 24px → **滚动位置每过一条就差一截**。
+   `overflow: hidden` 只裁宽不封高，所以得显式钉住高度。
+   表档本来就是「一条记录一行」的看法，多行内容在源码档里看得到全貌，
+   而行号那一列已经写着 `2–4` 告诉用户这是跨行的。 */
+.ccell { padding: 0 10px; white-space: pre; overflow: hidden; text-overflow: ellipsis;
+  height: 24px; line-height: 24px; }
 .crow:hover .ccell { background: var(--active); }
 /* 选中的行 / 列 */
 .crow.on .ccell, .crow.on .cnum { background: rgba(58,109,240,.10); }
 .ccell.colon { background: rgba(58,109,240,.07); }
 /* 坏行：行号边一道 warn 竖线 + 行尾一句原因（S20 演示态 5） */
 .crow.bad .cnum { box-shadow: inset -2px 0 0 #c8821e; color: #c8821e; }
+/* ⚠️ `line-height` 要**显式写**（issue #116）：下面那句 `font:` 简写
+   会把 `line-height` 重置成 `normal`（11px 字体约 13–15px），
+   把从 `#table` 继承来的 24px 覆盖掉 —— 而垫片按「坏行占 2 行 = 48px」算，
+   实际是 24 + 14px。**一个简写属性悄悄重置了另一个属性**，这是 CSS 里最容易漏的一类。 */
 .cwhy { grid-column: 1 / -1; padding: 0 10px 0 56px; color: #c8821e;
-  font: 11px system-ui, sans-serif; background: rgba(210,140,40,.07); }
+  font: 11px system-ui, sans-serif; background: rgba(210,140,40,.07);   height: 24px; line-height: 24px; }
 /* 编码没确定时那一条 */
 /* 编码横条（S20 态 7 / 态 8，形制真值取自稿）。
    ⚠️ **底色 / 边色 / 点色不写在这里** —— 它们按档位走，由 JS 逐条 set

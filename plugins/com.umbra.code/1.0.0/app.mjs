@@ -224,6 +224,8 @@ let view = null, cm = null, curPath = null;
    对 `.ts` / `.py` / `.yaml` 不适用 —— 所以这些类型在它之前**等于没有 diff 视图**，
    只能整版回退。 */
 let cmpBase = null, cmpOrig = null;
+/** 上一次画表格时是哪个文件 —— 换文件就不该保住滚动位置（issue #116 ③） */
+let cmpTablePath = null;
 /** 上一版的版本号（`null` = 没有可比的）。每次 load 时问一次。
  *  ⚠️ **不是「最新那一版」** —— 盘上当前的内容就是最新那一版（写入口刚存的），
  *  拿它当底比出来永远是「没差异」。要的是**它前面那一个**。 */
@@ -324,7 +326,12 @@ function renderTable() {
      而内容高度一归零，浏览器会把 `scrollTop` 也归零 ——
      于是「选中一行」这种重画会把用户弹回表头。虚拟滚动之前这一点也存在，
      只是以前整表都在 DOM 里，重画后高度立刻恢复，看不出来。 */
-  const keepTop = host.scrollTop;
+  /* ⚠️ **只在同一个文件里才保住滚动位置**（issue #116 第 ③ 点，2026-10-06）。
+     原来不分是不是换了文件 —— 从一份滚到很深的 CSV 切到另一份时，
+     新表会停在上一份的滚动位置上（虚拟滚动之下更明显：那个位置可能根本不存在，
+     于是画出来是一片空白，看着像「这个文件打不开」）。 */
+  const keepTop = cmpTablePath === curPath ? host.scrollTop : 0;
+  cmpTablePath = curPath;
   host.textContent = "";
   if (!cparsed) return;
 

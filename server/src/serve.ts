@@ -14,7 +14,7 @@ import { emit, subscribe } from "./events.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { TOOL_ROOT, type Project } from "./project.js";
-import { sendFile } from "./sendfile.js";
+import { sendFile, isServable } from "./sendfile.js";
 import { isToolPage } from "./indexpage.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
@@ -50,7 +50,7 @@ function serveStatic(root: string, rel: string, reply: import("node:http").Serve
      FIFO / socket / 块设备都「不是目录」，而 `open` 一个 FIFO 会**一直阻塞在
      libuv 线程池里**（默认 4 个线程），请求几次就能把同进程所有 fs 操作卡住。
      `isInside` 而不是 `startsWith`（#19 那一族）。 */
-  if (!isInside(root, f) || !existsSync(f) || !statSync(f).isFile()) return false;
+  if (!isInside(root, f) || !isServable(f)) return false;
   sendFile(reply, f, { "content-type": MIME[extname(f).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-store", ...extra });
   return true;
 }
@@ -379,7 +379,10 @@ function routeStatic(
       let abs: string;
       try { abs = resolveInside(c.project.dir, rel); }
       catch { reply.writeHead(403); reply.end("路径跨出了项目目录"); return; }
-      if (!existsSync(abs) || statSync(abs).isDirectory()) { reply.writeHead(404); reply.end("没有这个文件"); return; }
+      /* ⚠️ 同上（issue #104）。这一条**更重**：下面用的是 `readFileSync`，
+         FIFO 会**直接卡死主线程**（HTTP / WS / MCP 全部不响应），
+         而这条路由**不要令牌**。 */
+      if (!isServable(abs)) { reply.writeHead(404); reply.end("没有这个文件"); return; }
       /* ⚠️ **不给这一页加 CSP**：它是用户自己的网页，我们不是它的作者，
          收紧了反而让它显示不出来（外链的 CSS / 图片全被挡）。
          它的隔离靠的是**装它的那个 iframe**（插件那一层已经 sandbox 过）。
@@ -433,7 +436,11 @@ function routeStatic(
       reply.writeHead(302, { location: "/__app/home" }); reply.end(); return;
     }
     const abs = resolve(dir, "." + normalize(raw));
-    if (!abs.startsWith(dir) || !existsSync(abs) || statSync(abs).isDirectory()) {
+    /* ⚠️ `isInside` + `isServable`（issue #104）：原来是
+       `abs.startsWith(dir)` + `!isDirectory()` —— 前者是 #19 那一族
+       （不带分隔符，同前缀兄弟目录能穿进去），后者是 #96 那一族（FIFO 会阻塞）。
+       **#96 的关单说明写的是「三处都换上」，而这一处没换** —— 而它恰恰是最常走的。 */
+    if (!isInside(dir, abs) || !isServable(abs)) {
       reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       reply.end(`404 ${raw}`);
       return;
