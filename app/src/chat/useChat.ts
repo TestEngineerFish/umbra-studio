@@ -22,7 +22,19 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
   /** 后端配的默认通道（`defaultChannel`）只在用户没切过时生效；切过一次就一直用用户的 */
   const followedDefault = useRef(false);
   const [sessions, setSessions] = useState<ChatSessionRow[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  /* ── 「界面现在在看哪条会话」要能在异步回调里读到（issue #117）──
+     ⚠️ 一轮最长跑 12 分钟，而轮询循环里每 1.2 秒**无条件** `setMessages(sid 那条会话的正文)`。
+     用户在这期间点「新建会话」或切到另一条 B，下一次轮询就把 **A 的消息写回消息区**：
+     界面看着还在 A 里，而 `sessionId` 已经是 `null` / `B` —— 于是他接着说的那句
+     **发进了另一条会话**，AI 看不到屏幕上那段上下文。
+     「看到的对话 ≠ AI 收到的上下文」比丢消息更难发现，因为两边都「看起来正常」。
+
+     ⚠️ **包住 `setSessionId` 而不是在六个调用点各加一行 ref 赋值** ——
+     漏一个就静默复发，而症状和没修一模一样。一处定义。 */
+  const [sessionId, setSessionIdRaw] = useState<string | null>(null);
+  /** 界面**此刻**在看哪条（`sessionId` 的同步镜像，给异步回调判过期用） */
+  const viewRef = useRef<string | null>(null);
+  const setSessionId = useCallback((id: string | null) => { viewRef.current = id; setSessionIdRaw(id); }, []);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [notes, setNotes] = useState<ChatNote[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
@@ -83,13 +95,23 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
     const r = await core.post("chat_delete", { session: id });
     if (!r.ok) { toast("删不掉", r.errors?.[0]?.message, "error"); return; }
     const list = await reloadSessions();
-    if (id === sessionId) {
+    /* ⚠️ **判的是「此刻」在看哪条，不是闭包里那一刻**（issue #118）。
+       这件事真会发生，而且是**确定性的**，不靠时序：
+       历史面板卸载时会把攒下的删除真删掉（`History.tsx` 那个依赖 `[]` 的清理函数），
+       它闭包里的 `chat` 是**挂载那一刻**的 —— 于是「删掉当前会话 A → 点新建会话」
+       走到这里时 `sessionId` 还是 A，命中这个分支 → `openSession(剩下最近的一条)`。
+       **用户明明点了「新建会话」，落到的却是另一条旧会话**，接下来说的话续进了它的上下文。
+
+       ⚠️ 只在 `History` 那边加 `chatRef` **不够** —— 卸载那一刻 `newSession()` 的
+       `setSessionId(null)` 还没提交到下一次渲染，`chatRef.current` 里的 `sessionId` 仍是 A。
+       所以判据必须读一个**同步**更新的镜像，也就是 `viewRef`（它在 `setSessionId` 里当场写）。 */
+    if (id === viewRef.current) {
       // 删掉的正是当前这条：接上剩下里最近的，没有就变成新会话
       const next = list.slice().sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))[0];
       if (next) await openSession(next.id);
       else { setSessionId(null); setMessages([]); setNotes([]); setUsage(null); }
     }
-  }, [core, reloadSessions, openSession, sessionId]);
+  }, [core, reloadSessions, openSession, setSessionId]);
 
   const newSession = useCallback(() => { setSessionId(null); setMessages([]); setNotes([]); setUsage(null); }, []);
   /** 换引擎。**三处都要写到**：
@@ -123,6 +145,10 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
     const node = sels.find((s) => s.kind === "node")?.ref;
     setInput(""); setRunning(true);
     setMessages((m) => m.concat([{ role: "user", content: text, timestamp: new Date().toISOString() }]));
+    /* ⚠️ **提到 `try` 外面**：`catch` 里也要判「界面还在不在这条会话上」，
+       而 `sid` 原来声明在 `try` 里面，`catch` 够不着它。
+       `null` = 还没拿到会话 id（起作业就失败了）—— 那时候用户一定还在原地，照常写正文。 */
+    let sid: string | null = null;
     try {
       const body: Record<string, unknown> = { message: text, channel, async: true };
       if (sessionId) body.sessionId = sessionId;
@@ -153,7 +179,7 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
         throw new Error(started.errors[0].message ?? "这个会话还有一轮在跑");
       }
       if (!started.ok || !started.data) throw new Error(started.errors?.[0]?.message ?? "起作业失败");
-      job.current = started.data.jobId; const sid = started.data.sessionId ?? sessionId!; setSessionId(sid);
+      job.current = started.data.jobId; sid = started.data.sessionId ?? sessionId!; setSessionId(sid);
       /* 作业起成功了 —— 这一刻「已经交给 AI」就成立，不必等它跑完。
          起失败会走上面那个 throw，`onStarted` 不会被调用，所以不会错标。 */
       onStarted?.();
@@ -163,7 +189,9 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
         await new Promise((r) => setTimeout(r, 1200));
         try {
           const g = await core.get<{ messages: ChatMessage[] }>("chat_get?session=" + encodeURIComponent(sid));
-          if (g.data?.messages) setMessages(g.data.messages);
+          /* ⚠️ **切走了就只继续轮询状态，不写界面**（issue #117）。
+             不能 `break` —— 这一轮还在跑，`running` 和中断按钮都靠这个循环收尾。 */
+          if (g.data?.messages && viewRef.current === sid) setMessages(g.data.messages);
           const st = await core.get<Done>("chat_status?job=" + encodeURIComponent(job.current!));
           if (st.data && st.data.running === false) done = st.data;
         } catch { /* 网络抖一下不算失败 */ }
@@ -173,16 +201,35 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
       const add: ChatNote[] = [];
       if (done.error) add.push({ kind: "err", idx: 0, text: "出错：" + (done.error.message ?? done.error.code) });
       if (done.result?.errors?.length) add.push({ kind: "err", idx: 0, text: "出错：" + (done.result.errors[0]!.message ?? done.result.errors[0]!.code) });
-      if (d.usage) setUsage(d.usage);
       if (d.interrupted) add.push({ kind: "err", idx: 0, text: "已中断（这一步之前落盘的改动照常可审可回退）" });
       for (const ch of d.changes ?? []) add.push({ kind: "change", idx: 0, path: ch.path, from: ch.from, to: ch.to, summary: ch.summary, reverted: false });
-      setNotes((n) => n.concat(add.map((x, i) => ({ ...x, idx: n.length + i }))));
       const g2 = await core.get<{ messages: ChatMessage[] }>("chat_get?session=" + encodeURIComponent(sid)).catch(() => null);
-      if (g2?.data?.messages) setMessages(g2.data.messages);
+      /* ── 收尾也要判过期（issue #117）──
+         ⚠️ 这一半比轮询那一半更要紧：变更卡（「回退到 vX」）和出错行会被追加到
+         **当前**会话的界面上 —— 一颗挂在不相干会话里的「回退」按钮，
+         用户点它是会真回退的。 */
+      if (viewRef.current === sid) {
+        if (d.usage) setUsage(d.usage);
+        setNotes((n) => n.concat(add.map((x, i) => ({ ...x, idx: n.length + i }))));
+        if (g2?.data?.messages) setMessages(g2.data.messages);
+      } else {
+        /* ⚠️ **切走了也要说一句它跑完了**（issue #117 第 3 点）：
+           不说的话用户不知道 A 已经结束 —— 而他切走之前看到的是「正在跑」。
+           改稿的结果照常落了盘，所以 `afterChanges` 不受这道闸影响。 */
+        const label = sessions.find((x) => x.id === sid)?.title ?? sid.slice(0, 8);
+        const n = (d.changes ?? []).length;
+        toast(`会话「${label}」那一轮跑完了`, n ? `改了 ${n} 处 —— 切回那条会话能看到变更卡` : "你已经切到别的会话，所以没往这儿写", "ok");
+      }
       if ((d.changes ?? []).length) ctxRef.current.afterChanges();
-    } catch (e) { setNotes((n) => n.concat([{ kind: "err", idx: n.length, text: "发送失败：" + String((e as Error).message ?? e) }])); }
+    } catch (e) {
+      /* ⚠️ 失败也一样：切走之后别把「发送失败」写进**别人的**会话里。
+         那时候用 toast —— 话一定要说出来，只是不往那条会话的正文里塞。 */
+      const msg = "发送失败：" + String((e as Error).message ?? e);
+      if (sid === null || viewRef.current === sid) setNotes((n) => n.concat([{ kind: "err", idx: n.length, text: msg }]));
+      else toast("那条会话出错了", msg, "error");
+    }
     finally { setRunning(false); job.current = null; }
-  }, [core, input, running, channel, sessionId]);
+  }, [core, input, running, channel, sessionId, sessions, setSessionId]);
 
   const interrupt = useCallback(async () => {
     if (!job.current) return;

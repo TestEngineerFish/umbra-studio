@@ -57,7 +57,14 @@ export function History({ chat, onClose }: { chat: ChatStore; onClose: () => voi
   const pendRef = useRef<string[]>([]); pendRef.current = pendingDel;
 
   useEffect(() => { void chat.reloadSessions(); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
-  /* 离开列表时把攒下的删除真正落实。**用 ref 取值** —— 卸载时 state 已经是旧闭包里的了。 */
+  /* 离开列表时把攒下的删除真正落实。**用 ref 取值** —— 卸载时 state 已经是旧闭包里的了。
+     ⚠️ **`chat` 本身也是挂载那一刻的**（issue #118）：注释里写了「用 ref 取值」，
+     而那只给 `pendingDel` 用了 ref。于是「删掉当前会话 A → 点新建会话」时，
+     这里调到的 `deleteSession` 闭包里 `sessionId` 还是 A → 它以为删的是当前会话
+     → 自动接上「剩下最近的一条」→ **用户点了「新建会话」却落进另一条旧会话**。
+     修在 `useChat` 那一侧（`deleteSession` 改判 `viewRef.current`，一个**同步**更新的镜像）——
+     在这儿加 `chatRef` 不够：卸载那一刻 `newSession()` 的 `setSessionId(null)`
+     还没提交到下一次渲染，`chatRef.current` 里的 `sessionId` 仍是 A。 */
   useEffect(() => () => { for (const id of pendRef.current) void chat.deleteSession(id); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => {
@@ -103,13 +110,16 @@ export function History({ chat, onClose }: { chat: ChatStore; onClose: () => voi
             {byGroup.get(g)!.map((s) => {
               const cur = s.id === chat.sessionId;
               if (pendingDel.includes(s.id)) return (
-                <div key={s.id} className="flex items-center gap-2 px-2 h-8 text-[11px] text-muted">
+                <div key={s.id} data-ud="sess-deleted" data-sid={s.id} className="flex items-center gap-2 px-2 h-8 text-[11px] text-muted">
                   <span className="flex-1 truncate">已删除 · {s.title || s.id.slice(0, 12)}</span>
                   <button className="btn sm ghost" onClick={() => setPendingDel((p) => p.filter((x) => x !== s.id))}>撤销</button>
                 </div>
               );
               return (
-                <div key={s.id} className={`group relative rounded px-2 py-1.5 cursor-pointer ${cur ? "bg-accentSoft" : "hover:bg-hover"}`}
+                /* `data-ud` / `data-sid` / `data-current` 是判据钩子（issue #118）——
+                   原来这一行只有样式类，「哪条是当前」只能靠背景色认，钉不住。 */
+                <div key={s.id} data-ud="sess-row" data-sid={s.id} data-current={cur || undefined}
+                  className={`group relative rounded px-2 py-1.5 cursor-pointer ${cur ? "bg-accentSoft" : "hover:bg-hover"}`}
                   onClick={() => { if (editing !== s.id) pick(s.id); }}>
                   <div className="flex items-center gap-1.5">
                     {editing === s.id ? (

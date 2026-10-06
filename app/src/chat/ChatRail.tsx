@@ -39,7 +39,9 @@ export function ChatRail({ chat, selections, onDropSelection, onClearSelections,
   /* 宽度和拖拽手柄**归 `layout/Frame`**（M8-26）—— 这里只管会话本身长什么样。
      下一轮把会话栏从左挪到右，改的是 Frame 的那个数组，不是这个文件。 */
   return (
-    <aside className="relative flex-1 min-w-0 flex flex-col bg-panel border-border min-h-0">
+    /* `data-ud="chatrail"` 是判据钩子（issue #118）：会话栏整块原来只有 `<aside>`
+       这一个选择器，而页面里不止一个 aside（目录列也是），钉不住。 */
+    <aside data-ud="chatrail" className="relative flex-1 min-w-0 flex flex-col bg-panel border-border min-h-0">
       {/* ═══ 会话栏头（第八轮 §四）═══ 只剩两样：
           **引擎 ▾**（模型名在这一栏里只出现这一次）和**历史钮**。
           删掉的：会话标题 ▾（标题是第一条消息的前 40 字，给人找会话用，放历史列表里才有用）、

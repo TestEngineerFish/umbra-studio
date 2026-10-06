@@ -25,7 +25,7 @@ import { chromium } from "../server/node_modules/playwright-core/index.mjs";
 /* ⚠️ **GBK 样本只能用 fs 写。** 写入口只收字符串，而字符串落盘一定是 UTF-8 ——
    拿它写不出一份「不是 UTF-8 的文件」，也就测不了「认出编码不对」这件事。
    绕过写入口在这里是对的：样本不是产品行为，**它是仪器**。 */
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 
 const URL_ = process.argv[2];
 if (!URL_) { console.error("用法：node app/uitest.mjs <__app 的 URL>"); process.exit(2); }
@@ -1665,6 +1665,94 @@ console.log("\n没有节点地址时要说话（issue #31）");
     await pg.waitForTimeout(600);
     const dir = await pg.evaluate(() => window.__UD_APP.dir);
     rmSync(`${dir}/${NOADDR}`, { force: true });
+    await pg.waitForTimeout(400);
+  }
+}
+
+/* ── 删掉当前会话之后点「新建会话」，不许被带进另一条旧会话（issue #118）──
+   历史面板卸载时会把攒下的删除真删掉（那个依赖 `[]` 的清理函数），而它闭包里的 `chat`
+   是**挂载那一刻**的 —— 于是「删掉当前会话 A → 点新建会话」走到 `deleteSession` 时
+   `sessionId` 还是 A，命中「删的是当前会话」分支 → `openSession(剩下最近的一条)`。
+   **用户明明点了「新建会话」，落到的却是另一条旧会话**，接下来说的话续进了它的上下文。
+
+   ⚠️ 这一条**不需要真 AI**：会话就是 `.umbrastudio/chats/<id>.json`，判据自己造两条。
+   A 的 `updatedAt` 更新（所以 A 是「最近」那条、会被自动接上），B 更旧 ——
+   于是删掉 A 之后「剩下最近的一条」正好是 B，缺陷会把人带到 B 去。
+   **样本的新旧顺序就是这条判据的全部机关**，反了就测不到。 */
+console.log("\n删掉当前会话后点「新建会话」（issue #118）");
+{
+  const dir = await pg.evaluate(() => window.__UD_APP.dir);
+  const cdir = `${dir}/.umbrastudio/chats`;
+  /* ⚠️ **会话 ID 的形状是有闸的**：`/^chat-\d{1,20}-[a-z0-9]{1,12}$/`（`chat.ts`）。
+     第一版我起名 `chat-uitest118-a` —— **列表照样把它列出来了**（`listChats` 只读文件），
+     而点它时 `chat_get` 回 `E_BAD_INPUT`、`openSession` 弹一句 toast 就结束。
+     于是「甲成了当前会话」从来没发生，**而后面两条判据照样是绿的**
+     （删的不是当前会话，根本进不到那个分支）——
+     只有那条「（前提）甲现在是当前会话」拦住了它。
+     **前提判据的全部价值就在这里**：它分得清「通过了」和「压根没跑到」。 */
+  const A = "chat-1790000000001-ut118a", B = "chat-1790000000000-ut118b";
+  const MARK_B = "乙会话的那句话uitest118";
+  const mk = (id, title, when, text) => JSON.stringify({
+    id, projectId: dir.split("/").pop(), channel: "a", model: "uitest",
+    createdAt: when, updatedAt: when, status: "active",
+    messages: [{ role: "user", content: text, timestamp: when }],
+  }, null, 2);
+  try {
+    mkdirSync(cdir, { recursive: true });
+    writeFileSync(`${cdir}/${A}.json`, mk(A, "甲", "2026-10-07T10:00:00.000Z", "甲会话的那句话uitest118"), "utf8");
+    writeFileSync(`${cdir}/${B}.json`, mk(B, "乙", "2026-10-07T09:00:00.000Z", MARK_B), "utf8");
+    /* 开历史面板 —— 它挂载时会重拉会话列表（所以不用刷整页） */
+    const hist = pg.locator('[data-ud="history"]');
+    await hist.click(); await pg.waitForTimeout(1200);
+    const rowA = pg.locator('[data-ud="sess-row"][data-sid="' + A + '"]');
+    const rowB = pg.locator('[data-ud="sess-row"][data-sid="' + B + '"]');
+    ok(await rowA.count() === 1 && await rowB.count() === 1, "（样本有效性）两条会话都在列表里",
+       `甲 ${await rowA.count()} · 乙 ${await rowB.count()}`);
+    if (await rowA.count() === 1 && await rowB.count() === 1) {
+      /* ① 切到 A，让它成为「当前会话」 */
+      await rowA.click(); await pg.waitForTimeout(1200);
+      await hist.click(); await pg.waitForTimeout(1000);
+      ok(await pg.locator('[data-ud="sess-row"][data-sid="' + A + '"][data-current]').count() === 1,
+         "（前提）甲现在是当前会话");
+      /* ② 在 ⋯ 里删掉 A（行塌成「已删除 · 撤销」，离开列表时才真删） */
+      await pg.locator('[data-ud="sess-row"][data-sid="' + A + '"] button[title="更多"]').click();
+      await pg.waitForTimeout(300);
+      await pg.locator("button").filter({ hasText: /^删除$/ }).first().click();
+      await pg.waitForTimeout(400);
+      ok(await pg.locator('[data-ud="sess-deleted"][data-sid="' + A + '"]').count() === 1,
+         "（前提）甲那一行塌成了「已删除 · 撤销」");
+      /* ③ 点「新建会话」—— 面板关掉，卸载清理这时才真删 A */
+      await pg.locator("button").filter({ hasText: "新建会话" }).first().click();
+      await pg.waitForTimeout(2500);
+      /* 判据一：消息区不许出现乙的内容 */
+      const txt = await pg.locator('[data-ud="chatrail"]').first().innerText().catch(() => "");
+      ok(!txt.includes(MARK_B),
+         "**没被带进另一条旧会话**（原来：`deleteSession` 判的是挂载那一刻的 `sessionId` → 自动接上「剩下最近的一条」= 乙）",
+         txt.includes(MARK_B) ? "消息区里出现了乙的内容" : "消息区里没有乙的内容");
+      /* 判据二：历史里不该有任何一行标着「当前」—— 新会话还没落盘，没有 id */
+      await hist.click(); await pg.waitForTimeout(1200);
+      const curN = await pg.locator('[data-ud="sess-row"][data-current]').count();
+      ok(curN === 0, "**历史里没有一行标着「当前」**（新建会话 = 还没有 id；有「当前」就说明落进了某条旧会话）",
+         `标着「当前」的行 ${curN} 个`);
+      await pg.keyboard.press("Escape"); await pg.waitForTimeout(400);
+      if (await pg.locator('[data-ud="sess-row"]').count()) { await hist.click().catch(() => {}); await pg.waitForTimeout(500); }
+    }
+  } finally {
+    /* 收尾：**无条件**删掉这两份（A 多半已经被产品真删了，`force` 兜着） */
+    for (const id of [A, B]) rmSync(`${cdir}/${id}.json`, { force: true });
+    /* ⚠️ **把应用切回一条真会话**（2026-10-07 实测踩到）。
+       这一节结束时当前会话是「新建的那条」—— 它**还没有 id**，
+       而 `pickChannel` 里那句 `if (sessionId) post("chat_channel", …)` 因此不发，
+       于是后面「换引擎要写进会话文件」那条判据红了（§1874）。
+       **我的判据把后面判据要用的前置状态改掉了** —— 和 §101.8 ③
+       「我的判据把别的判据要用的夹具删了」是同一族，只是这次改的是状态不是文件。
+       收尾要把世界放回去，不只是把自己的文件删掉。 */
+    const hist2 = pg.locator('[data-ud="history"]');
+    await hist2.click().catch(() => {});
+    await pg.waitForTimeout(1200);
+    const any = pg.locator('[data-ud="sess-row"]').first();
+    if (await any.count()) { await any.click(); await pg.waitForTimeout(1200); }
+    else { await pg.keyboard.press("Escape"); await pg.waitForTimeout(300); }
     await pg.waitForTimeout(400);
   }
 }
@@ -3981,7 +4069,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
 
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
-const EXPECT_AT_LEAST = 420;
+const EXPECT_AT_LEAST = 425;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
