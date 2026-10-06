@@ -764,6 +764,109 @@ console.log("\n插件市场四屏（M11-6）");
     ok(st.rows.every((r) => !!r.note), "每一种态都带一句给人看的话（每一种都要有出路）");
     ok(st.clock === false || st.clock === true, "时钟回拨这件事有报出来（界面要提一句）", `clockRolledBack=${st.clock}`);
   }
+  /* ── 切了版本之后这一行要跟着变（issue #115）──
+     ⚠️ 版本表原来只在**挂载时**取一次，而依赖数组 `[core, r.id, r.bundled]`
+     切完版本一个都不变、行的 `key` 是 `r.id` 不重挂 → `vs` 一直是切之前那份：
+     钮上写旧版号、下拉里**旧版标「在用」且不可点**、刚切到的新版反而标「切到这一版」。
+     于是「出了问题切回上一版」（设计侧给这一页定死的第 ① 条）**在这一页上点不了**。
+     **错得像「切换没成功」**，而服务端其实切过去了。
+
+     判据造一个插件的**两个版本**装进去（未签名 —— 本机没有 `keys/publisher.pub`，
+     走开发模式放行），然后在界面上切一次。
+     ⚠️ 两条都要：**钮上的字变了** + **原来那一版现在可点了**。
+     只看第一条的话，「钮重画了而下拉还是旧的」会漏掉 —— 而下拉才是切回去的入口。 */
+  {
+    const { mkdtempSync, writeFileSync: wfs, rmSync: rms, existsSync: ex, mkdirSync: mds, readFileSync: rfs, copyFileSync: cps } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join: pj } = await import("node:path");
+    const { generateKeyPairSync, sign: edSign } = await import("node:crypto");
+    const { packDir, encodePackage, canonical } = await import("../server/dist/plugin/pack.js");
+    const ID = "com.umbra.uitest.vers";
+    const T = mkdtempSync(pj(tmpdir(), "ud-vers-"));
+    /* ── 信任锚：**没有 `keys/publisher.pub` 就一个插件都装不了**（默认拒绝）──
+       所以现造一对临时密钥、签这两个包，收尾删掉 —— 和 `plugintest` 同一个做法。
+       ⚠️ **但不能覆盖用户可能已有的那一份**（`plugintest` 这一点是直接写的）：
+       先备份，收尾无条件还原。装着真公钥的机器上跑回归**不该把它弄丢**。
+       ⚠️ 也不走 `UMBRASTUDIO_PLUGIN_DEV=1` 那条路 —— 那要重启界面服务，
+       而「判据依赖某个环境变量」等于「忘了设就静默测不到」。 */
+    const KEYS = new URL("../keys/", import.meta.url).pathname;
+    const PUB = pj(KEYS, "publisher.pub");
+    const had = ex(PUB);
+    const bak = had ? pj(T, "publisher.pub.bak") : null;
+    if (bak) cps(PUB, bak);
+    mds(KEYS, { recursive: true });
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    wfs(PUB, publicKey.export({ type: "spki", format: "pem" }));
+    /** 造一版：写一个最小插件目录，打包，落成一个 `.udpkg` 文件 */
+    const mkPkg = async (version) => {
+      const d = pj(T, version);
+      mds(d, { recursive: true });
+      /* ⚠️ 清单的必填项照 `fixtures/插件/com.umbra.demo/manifest.json` 来 ——
+         第一版我按印象写（`api: 1` / `permissions.files: "read"`），`packDir` 当场
+         报「hostApi 必填 · surfaces 至少要有一个能力面」。**样本的形状要去真样本里抄。** */
+      wfs(pj(d, "manifest.json"), JSON.stringify({
+        id: ID, name: "版本切换样本", version, hostApi: "^1", surfaces: ["tools"],
+        permissions: { files: ["read"], scope: "project", net: [] },
+        tools: "index.mjs",
+      }), "utf8");
+      wfs(pj(d, "index.mjs"), "export default function register() { /* 什么都不做 */ }\n", "utf8");
+      const pkg = await packDir(d);
+      pkg.signature = edSign(null, canonical(pkg), privateKey).toString("base64");
+      const f = pj(T, `${version}.udpkg`);
+      wfs(f, encodePackage(pkg));
+      return f;
+    };
+    const lo = await mkPkg("1.0.0"), hi = await mkPkg("1.1.0");
+    const inst = await pg.evaluate(async ({ files }) => {
+      const b = window.__UD_APP;
+      const out = [];
+      for (const f of files) {
+        const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/plugin_install?token=${encodeURIComponent(b.token)}`,
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: f }) }).then((x) => x.json()).catch((e) => ({ ok: false, why: String(e) }));
+        out.push(r?.ok === true ? "ok" : JSON.stringify(r?.errors?.[0]?.message ?? r?.why ?? r).slice(0, 70));
+      }
+      return out;
+    }, { files: [lo, hi] });
+    ok(inst.every((x) => x === "ok"), "（样本有效性）两个版本都装上了", inst.join(" · "));
+    if (inst.every((x) => x === "ok")) {
+      /* 重开一次已装那一屏，让它读到新装的 */
+      await pg.locator('[data-ud="market"] button').filter({ hasText: "市场" }).first().click().catch(() => {});
+      await pg.waitForTimeout(500);
+      await pg.locator('[data-ud="market"] button').filter({ hasText: "已装" }).first().click();
+      await pg.waitForTimeout(1500);
+      const row = pg.locator('[data-ud="installed-row"]').filter({ hasText: "版本切换样本" }).first();
+      const vbtn = row.locator('[data-ud="version-btn"]');
+      ok(await vbtn.count() === 1 && (await vbtn.innerText()).includes("1.1.0"),
+         "（前提）装了两版，钮上写的是当前那一版", (await vbtn.innerText().catch(() => "量不到")).trim());
+      await vbtn.click(); await pg.waitForTimeout(400);
+      /* 下拉里挑 1.0.0 那一项 —— 当前那一版是**不可点**的，所以这一下必然点的是另一版 */
+      const pick = pg.locator('[role="menuitem"], [data-ud="popover"] button').filter({ hasText: "1.0.0" }).first();
+      ok(await pick.count() >= 1, "（前提）下拉里列着另一版", `${await pick.count()} 项`);
+      await pick.click(); await pg.waitForTimeout(2000);
+      ok((await vbtn.innerText()).includes("1.0.0"),
+         "**切完之后钮上写的是新切到的那一版**（原来还写旧版号 —— 错得像「切换没成功」）",
+         (await vbtn.innerText().catch(() => "量不到")).trim());
+      await vbtn.click(); await pg.waitForTimeout(400);
+      const back = pg.locator('[role="menuitem"], [data-ud="popover"] button').filter({ hasText: "1.1.0" }).first();
+      const clickable = await back.evaluate((el) => !el.disabled && getComputedStyle(el).pointerEvents !== "none").catch(() => false);
+      ok(clickable === true,
+         "**而原来那一版现在可点了** —— 不然「出了问题切回上一版」在这一页上点不了（下拉才是切回去的入口）",
+         `可点=${clickable}`);
+      await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+    }
+    /* 收尾：卸掉 + 删临时目录。**无条件**（§159.3 ④ 那条教训） */
+    await pg.evaluate(async (id) => {
+      const b = window.__UD_APP;
+      await fetch(`${b.url.replace(/\/$/, "")}/__ud/plugin_uninstall?token=${encodeURIComponent(b.token)}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) }).catch(() => {});
+    }, ID);
+    /* 信任锚还原（**无条件**）：原来有就拷回去，原来没有就把整个目录删掉 */
+    if (bak && ex(bak)) cps(bak, PUB);
+    else rms(KEYS, { recursive: true, force: true });
+    rms(T, { recursive: true, force: true });
+    void rfs;
+    await pg.waitForTimeout(600);
+  }
   await pg.locator('[data-ud="market"] button[title="关闭"]').click().catch(() => {});
   await pg.waitForTimeout(500);
 }
@@ -3878,7 +3981,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
 
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
-const EXPECT_AT_LEAST = 415;
+const EXPECT_AT_LEAST = 420;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
 import { Glyph } from "../ui/Glyph";
 import { PopItem, PopSep, Popover, usePopover } from "../ui/Popover";
@@ -67,11 +67,28 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
   const ver = usePopover();
   const [vs, setVs] = useState<{ versions: string[]; current: string | null } | null>(null);
   const [arming, setArming] = useState(false);
-  useEffect(() => {
+  /* ── 版本表要能**再取一次**（issue #115）──
+     ⚠️ 原来这件事只在挂载时做一次，而依赖数组里 `[core, r.id, r.bundled]`
+     **切完版本一个都不变** —— 行的 `key` 是 `r.id`，不重挂。于是 `vs` 一直是切之前那份：
+     版本钮上写的还是旧版号，下拉里**旧版标「在用」且不可点**，
+     刚切到的新版反而标「切到这一版」。
+     于是「出了问题切回上一版」（设计侧给这一页定死的第 ① 条）**在这一页上点不了**。
+     错得像「切换没成功」，而服务端其实切过去了。
+
+     ⚠️ **不用「把 `r.version` 加进依赖」那个修法** —— 那依赖一个没确认的前提
+     （`plugins` 表回的 `version` 恰好是 current 指针那一版）。显式重取不赌这个。
+
+     ⚠️ 带过期判断（`gen`）：**快速切两次时旧响应会盖掉新的**，
+     而症状和上面那个 bug 一模一样 —— 两件事长得一样，所以两件都要治。 */
+  const gen = useRef(0);
+  const loadVs = useCallback(async () => {
     if (r.bundled) return;
-    void core.get<{ versions: string[]; current: string | null }>(`plugin_versions?id=${encodeURIComponent(r.id)}`)
-      .then((x) => setVs(x.data ?? null));
+    const mine = ++gen.current;
+    const x = await core.get<{ versions: string[]; current: string | null }>(`plugin_versions?id=${encodeURIComponent(r.id)}`);
+    if (mine !== gen.current) return;   // 又发了一次，这个响应过期了
+    setVs(x.data ?? null);
   }, [core, r.id, r.bundled]);
+  useEffect(() => { void loadVs(); }, [loadVs]);
 
   const multi = (vs?.versions.length ?? 0) > 1;
   const cur = vs?.current ?? r.version;
@@ -87,6 +104,9 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
     const out = await core.post("plugin_switch", { id: r.id, version: v });
     if (!out.ok) { toast("切不过去", out.errors?.[0]?.message, "error"); return; }
     toast(`已切到 ${v}`, "立刻生效，不用重启", "ok");
+    /* ⚠️ **两件都要做**（issue #115）：`onChanged()` 重取的是 `plugins` 表（市场那一层），
+       而「这个插件装了哪几版 / 现在用哪一版」是这一行自己取的 —— 它不在那张表里。 */
+    await loadVs();
     onChanged();
   };
 
