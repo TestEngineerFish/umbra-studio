@@ -48,8 +48,14 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
     let moved = 0, rewrote = 0, stuck = 0;
     for (const path of selected) {
       const name = path.split("/").pop()!;
-      const r = await core.post<MoveOut>("file_move", { from: path, to: dest ? `${dest}/${name}` : name });
-      if (r.ok) { moved++; rewrote += r.data?.rewrote?.length ?? 0; stuck += stuckOf(r.data); }
+      const to = dest ? `${dest}/${name}` : name;
+      const r = await core.post<MoveOut>("file_move", { from: path, to });
+      if (r.ok) {
+        moved++; rewrote += r.data?.rewrote?.length ?? 0; stuck += stuckOf(r.data);
+        /* ⚠️ **挪走的文件可能正开着页签**（issue #105 同族）：页签以路径为键，
+           不报的话它还指着一个已经不在那儿的路径。工作台听这条事件迁。 */
+        window.dispatchEvent(new CustomEvent("ud-renamed", { detail: { from: path, to } }));
+      }
       else toast(`${name} 没挪成`, r.errors?.[0]?.message, "error");
     }
     /* ⚠️ **有没改成的引用就不是绿的**（issue #99）：原来只读 `rewrote`，

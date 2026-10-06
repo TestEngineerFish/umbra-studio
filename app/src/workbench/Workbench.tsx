@@ -188,6 +188,48 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     refresh: () => setLocalTick((t) => t + 1),
   });
 
+  /* ── 改名 / 移动之后，把所有以路径为键的状态迁过去（issue #105）──
+     ⚠️ 工作台里以路径为键的东西至少**六处**：`tabs`（也落在 `mem` 里）·
+     `store.selected`（详情区）· `us.lastDraft`（下次进来打开哪一份）·
+     `editBy`（编辑栏开合）· `dirtyStore`（那颗「未落盘」的点）。
+     原来改完名**一个都不跟着改** → 页签还叫旧名、指着一个已经不存在的路径。
+
+     **一处实现，两个入口**：目录列走下面那个必填的 `onRenamed`（类型强制，
+     少接一处编译就不过）· 目录视图的批量「移到…」和文件卡走 `ud-renamed` 事件
+     （它们是格式模块，不该反过来持有工作台的 setter）。
+     ⚠️ 事件这条路有「发了没人听」的风险（§103 栽过一次 `ud-focus-chat`），
+     所以 `uitest` 里**两条入口各钉一条**。 */
+  const fileRef = useRef<string | null>(null); fileRef.current = file;
+  const dirModeRef = useRef(false); dirModeRef.current = dirMode;
+  const applyRename = useCallback((from: string, to: string) => {
+    if (!from || !to || from === to) return;
+    /* ⚠️ 前缀判据带分隔符 —— `startsWith(from)` 会把同前缀的兄弟
+       （`src2/a.md` 对 `src`）一起改掉，和 #19 项目根那条是同一个错法 */
+    const mapPath = (x: string) => (x === from ? to : x.startsWith(from + "/") ? to + x.slice(from.length) : x);
+    setTabsRaw((ts) => {
+      if (!ts.some((t) => mapPath(t.path) !== t.path)) return ts;
+      const n = ts.map((t) => ({ ...t, path: mapPath(t.path) }));
+      mem.set(`us.tabs.${project.dir}`, n);
+      return n;
+    });
+    dirtyStore.rename(from, to);
+    setEditBy((m) => { const n: Record<string, boolean> = {}; for (const k of Object.keys(m)) n[mapPath(k)] = m[k]; return n; });
+    const last = mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
+    if (last) mem.set(`us.lastDraft.${project.dir}`, mapPath(last));
+    /* 详情区正开着它（或它底下的一份）→ 换成新路径重开。
+       ⚠️ 走 `doOpen` 不是 `open`：那道「未落盘」的闸在改名之前已经过了，
+       再过一次会**对同一件事问两遍**。 */
+    const cur = fileRef.current;
+    if (cur !== null && mapPath(cur) !== cur) doOpen(mapPath(cur), dirModeRef.current, "open");
+    void store.fetchDrafts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.dir]);
+  useEffect(() => {
+    const on = (e: Event) => { const d = (e as CustomEvent).detail ?? {}; applyRename(String(d.from ?? ""), String(d.to ?? "")); };
+    window.addEventListener("ud-renamed", on);
+    return () => window.removeEventListener("ud-renamed", on);
+  }, [applyRename]);
+
   const tree = (
     <FileTree core={core} current={dirMode ? null : file} projectName={project.name}
       expanded={layout.tree.expanded}
@@ -202,6 +244,13 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
       drafts={store.drafts} indexed={store.indexed} reindexing={store.checking === "__index__"}
       actions={ctxActions} trashed={trashed} onUndoTrash={(p) => setTrashed((xs) => xs.filter((x) => x !== p))}
       tick={`${store.lastEvent?.at ?? ""}:${localTick}`}
+      beforeRename={async (p) => {
+        /* 目录改名时，没落盘的那份可能在它**底下** —— 问的是那一份 */
+        const stuck = dirtyStore.list().find((d) => d === p || d.startsWith(p + "/"));
+        if (!stuck) return true;
+        return askLeave(stuck, LEAVE.rename);
+      }}
+      onRenamed={applyRename}
     />
   );
 

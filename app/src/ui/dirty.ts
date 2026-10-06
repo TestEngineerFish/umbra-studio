@@ -23,6 +23,21 @@ export const dirtyStore = {
   },
   /** 关掉页签时清掉，免得一个已经不在的文件永远挂着点 */
   drop(path: string): void { if (set.delete(path)) for (const f of subs) f(); },
+  /** 改名 / 移动之后把登记迁过去（issue #105）。
+   *
+   *  ⚠️ **这个登记处以路径为键**，而改名正是「键变了」—— 不迁的话那颗「未落盘」的点
+   *  会挂在一个**已经不存在的路径**上：页签上看不见它（页签已经是新名了），
+   *  而 `count()` 里它还在，于是**刷新时拦一下、用户却找不到是哪一份**。
+   *
+   *  ⚠️ **目录改名要连它底下的一起迁** —— 判据是 `from + "/"` 前缀，
+   *  不是 `startsWith(from)`：后者会把同前缀的兄弟（`src2/` 对 `src`）一起卷进来，
+   *  和 #19 项目根那条是同一个错法。 */
+  rename(from: string, to: string): void {
+    const hit = [...set].filter((p) => p === from || p.startsWith(from + "/"));
+    if (!hit.length) return;
+    for (const p of hit) { set.delete(p); set.add(to + p.slice(from.length)); }
+    for (const f of subs) f();
+  },
   /** 现在有几份没落盘。`beforeunload` 要它 —— 那一刻只需要「有没有」和「几份」。 */
   count(): number { return set.size; },
   list(): string[] { return [...set].sort(); },
@@ -60,8 +75,12 @@ export function guardUnsaved(): () => void {
  *  ⚠️ 放在这里而不是 `workbench/` —— 从属面板（变更卡的「回退」）也要用它，
  *  而面板不该反过来依赖工作台。 */
 export type LeaveVerb = { long: string; short: string };
-export const LEAVE: { close: LeaveVerb; switch: LeaveVerb; revert: LeaveVerb } = {
+export const LEAVE: { close: LeaveVerb; switch: LeaveVerb; revert: LeaveVerb; rename: LeaveVerb } = {
   close: { long: "关掉", short: "关" },
   switch: { long: "切走", short: "切" },
   revert: { long: "退回", short: "退" },
+  /** 改名（issue #105）。⚠️ **改名原来根本不经过这道闸** ——
+   *  那份改动还在插件的内存里、以**旧路径**为键，改完名插件按新路径重读，
+   *  改动就这么没了。而「改名」这个动作听起来完全无害，所以更要说一句。 */
+  rename: { long: "改名", short: "改名" },
 };

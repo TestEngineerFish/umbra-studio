@@ -794,7 +794,7 @@ console.log("\n✎ 永远显示：有能力直接编辑，没能力引导去市�
     await pg.waitForTimeout(1500);
     const btn = pg.locator('[data-ud="toggle-edit"]');
     ok(await btn.count() === 1 && !(await btn.getAttribute("data-locked")), "有插件的格式：✎ 不是锁定态，点了直接进编辑");
-  }
+  } else ok(false, "没打开 .md —— **这一整节静默跳过了**（全绿不代表验到了）");
 }
 
 /* ── 浮层形制（M8-28 · 设计侧第九轮 §四）──
@@ -898,7 +898,7 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
       ok(before === after, "信息卡不接 ↑↓（焦点没被浮层挪走，↑↓ 还归数字框/滑块）", `${before} → ${after}`);
       await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
     } else ok(false, "找不到信息卡钮，这条没测成");
-  }
+  } else ok(false, "没打开 .dc.html —— **这一整节静默跳过了**（全绿不代表验到了）");
 
   /* ④ 暗底不是接层，照稿取真值（§一.2）：让位浮层 22%、抽屉 18%，且不是纯黑 */
   const scrims = await pg.evaluate(() => {
@@ -1029,7 +1029,7 @@ console.log("\n浮层：不越界 / 点外面收起 / 不被 overflow 裁掉（M
       await pg.waitForTimeout(500);
       ok(await pg.locator('[data-ud="popover"]').count() === 0, "点在稿上（iframe 里）也收起");
     } else ok(false, "没开出浮层或没有 iframe");
-  }
+  } else ok(false, "没打开 .dc.html —— **这一整节静默跳过了**（全绿不代表验到了）");
 
   /* ③ Markdown 的 ⋯ ——「弹不出来」的根因是浮层用 absolute，
         被文件工具栏的 overflow-hidden 整个裁掉了。现在它是 fixed。
@@ -1544,6 +1544,75 @@ console.log("\n没有节点地址时要说话（issue #31）");
     rmSync(`${dir}/${NOADDR}`, { force: true });
     await pg.waitForTimeout(400);
   }
+}
+
+/* ── 就地改名之后，页签 / 详情区 / lastDraft 都要跟着走（issue #105）──
+   ⚠️ 原来目录列改完名只 `load(dir)` 重拉自己那一层，**别人手里的路径一个都没改**：
+   页签还叫旧名、指着一个已经不存在的路径；`us.lastDraft` 也还是旧的，
+   于是**刷新之后进来打开的还是那个不存在的路径**。
+
+   判据钉在 `[data-ud="tab"][data-path=…]` 上 —— **新路径有、旧路径没有**，两面都要查：
+   只查「新的有」的话，页签被**加了一个**（旧的留着）也算通过。 */
+console.log("\n就地改名要带着页签走（issue #105）");
+{
+  const A = "_uitest改名前.md", B = "_uitest改名后.md", C = "_uitest改名移走.md";
+  const dir = await pg.evaluate(() => window.__UD_APP.dir);
+  for (const n of [A, B, C]) rmSync(`${dir}/${n}`, { force: true });
+  writeFileSync(`${dir}/${A}`, "# 改名样本\n\n这一份是 uitest 造的。\n", "utf8");
+  await settleTree(A);
+  if (!(await openByName(A))) ok(false, "改名样本没打开，这一组测不了");
+  else {
+    const tabOf = (p) => pg.locator(`[data-ud="tab"][data-path="${p}"]`);
+    ok(await tabOf(A).count() === 1, "（前提）样本的页签开着");
+    /* 右键那一行 → 重命名 → 就地输入框 */
+    const row = pg.locator(`[role="treeitem"][data-path="${A}"]`);
+    await row.click({ button: "right" }); await pg.waitForTimeout(350);
+    const rn = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
+      .filter({ hasText: /^重命名/ }).first();
+    if (!(await rn.count())) ok(false, "右键菜单里找不到「重命名」—— 这一组没验到");
+    else {
+      await rn.click(); await pg.waitForTimeout(400);
+      /* ⚠️ 钉 `[data-ud="rename"]` —— 树里还有个搜索输入框，
+         「最后一个 input」会挑错（§159.3 ② 那个错法：`.last()` 挑到了复选框） */
+      const box = pg.locator('[data-ud="rename"]');
+      ok(await box.count() === 1, "（前提）就地改名的输入框出来了");
+      await box.fill(B);
+      await pg.keyboard.press("Enter");          // Enter → blur → file_move
+      await pg.waitForTimeout(2200);
+      ok(await tabOf(B).count() === 1, "**页签换成了新路径**（原来还叫旧名、指着一个不存在的路径）",
+         `${B} 的页签 ${await tabOf(B).count()} 个`);
+      ok(await tabOf(A).count() === 0, "**旧路径那个页签没了**（不是「多开一个」）",
+         `${A} 的页签 ${await tabOf(A).count()} 个`);
+      ok(await pg.locator(`[data-ud="tab"][data-path="${B}"][data-current]`).count() === 1,
+         "详情区跟着换到新路径（当前页签就是它）");
+      const last = await pg.evaluate((d) => { try { return JSON.parse(localStorage.getItem(`us.lastDraft.${d}`) ?? "null"); } catch { return "读不出来"; } }, dir);
+      ok(last === B, "**`us.lastDraft` 也迁了** —— 不迁的话刷新进来打开的是那个不存在的旧路径", `lastDraft = ${last}`);
+
+      /* ── 第二个入口：`ud-renamed` 事件（目录视图的批量「移到…」和文件卡走它）──
+         ⚠️ 这一条钉的是**「有人在听」**：事件这条路的经典死法是「发了没人听」
+         （§103 的 `ud-focus-chat`）。所以**真挪一次**再发事件，和那两处做的一模一样。 */
+      const movedOk = await pg.evaluate(async ({ from, to }) => {
+        const b = window.__UD_APP;
+        const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/file_move?token=${encodeURIComponent(b.token)}`,
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from, to }) }).then((x) => x.json()).catch(() => null);
+        if (!r?.ok) return false;
+        window.dispatchEvent(new CustomEvent("ud-renamed", { detail: { from, to } }));
+        return true;
+      }, { from: B, to: C });
+      if (!movedOk) ok(false, "挪不动，事件那条入口没验到");
+      else {
+        await pg.waitForTimeout(1800);
+        ok(await tabOf(C).count() === 1 && await tabOf(B).count() === 0,
+           "**`ud-renamed` 事件也迁得动**（格式模块那两处走它 —— 没人听的话这一条红）",
+           `${C} ${await tabOf(C).count()} 个 · ${B} ${await tabOf(B).count()} 个`);
+      }
+    }
+    /* 收尾：切走再删（§159.5 —— 不切的话应用继续轮询一个不存在的路径，400 算到「零 error」头上） */
+    await openByName(".dc.html").catch(() => {});
+    await pg.waitForTimeout(700);
+  }
+  for (const n of [A, B, C]) rmSync(`${dir}/${n}`, { force: true });
+  await pg.waitForTimeout(400);
 }
 
 /* ── 换格式不许动目录列（用户 tmp.txt 第 1 条，2026-09-27）──
@@ -3776,6 +3845,28 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
     ok(mine === 0,
        "**没往用户的 git 仓库塞提交**（起服务要带 `UMBRASTUDIO_NO_GIT=1`）",
        mine ? `有 ${mine} 个提交是回归样本的，请自己 git 收拾（判据不替你撤别人的提交）` : "干净");
+  }
+}
+
+/* ── 总数本身也是一条判据（2026-10-07）──
+   ⚠️ 实测踩到：加了 7 条，总数从 408 变成 **414** 而不是 415 —— 有一条**静默没跑**，
+   而那一轮**全绿**。「总数少一条没人看」这件事 §159.3 ① 已经吃过一次
+   （选择器指错容器 → 整段 skip → 没人发现）。
+   判据会**跳过**的路至少三种：`if (await openByName(…))` 没打开那份文件、
+   `if (await x.count())` 那个元素没出来、`try/catch` 把一整段吞了。
+   每一种都让「这一条没验到」长成「这一条通过了」。
+
+   ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
+   加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
+const EXPECT_AT_LEAST = 415;
+{
+  const ran = pass + fail;
+  if (ran < EXPECT_AT_LEAST) {
+    console.log(`  ✗ **少跑了 ${EXPECT_AT_LEAST - ran} 条判据**（这一轮只跑了 ${ran}，该有 ${EXPECT_AT_LEAST} 条）`);
+    console.log("    —— 某一节静默跳过了。全绿不代表验到了：先找哪一节少了，再看读数。");
+    /* 缺的那几条**都算红** —— 这样汇总行写的是 `408/415` 而不是 `408/409`：
+       「没验到」的条数要出现在分母里，否则汇总行自己就把问题藏了。 */
+    fail += EXPECT_AT_LEAST - ran;
   }
 }
 

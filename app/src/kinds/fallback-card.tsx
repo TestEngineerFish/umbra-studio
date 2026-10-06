@@ -27,6 +27,9 @@ export function FileCard({ core, host, path, projectDir, onOpen }: { core: Core;
     const r = await core.post<MoveOut>("file_move", { from: path, to });
     if (!r.ok) { toast("改名失败", r.errors?.[0]?.message, "error"); return; }
     moveToast(r.data, `已改名为 ${next}`);
+    /* ⚠️ **`onOpen` 只换详情区**（issue #105）：页签还叫旧名、`dirtyStore` 里那颗点
+       和 `us.lastDraft` 都还挂在旧路径上。工作台听这条事件把它们一起迁。 */
+    window.dispatchEvent(new CustomEvent("ud-renamed", { detail: { from: path, to } }));
     onOpen(to, false);
   };
   const del = async () => {

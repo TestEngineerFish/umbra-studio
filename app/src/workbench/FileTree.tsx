@@ -47,9 +47,22 @@ export interface TreeProps {
   onUndoTrash: (path: string) => void;
   /** 文件变动的信号（传最近一次事件的时刻即可）：变了就把已展开的层重新拉一遍 */
   tick: string;
+  /** 就地改名成功了（issue #105）。
+   *
+   *  ⚠️ **树自己只能重拉这一层，改不了别人手里的路径。** 工作台里以路径为键的状态
+   *  至少六处（`tabs` / `store.selected` / `us.lastDraft` / `editBy` / `dirtyStore`），
+   *  原来一个都不跟着改 —— 页签还叫旧名、指着一个已经不存在的路径。
+   *  所以改名这件事**要报出去**，由持有路径的那一层自己迁。 */
+  onRenamed: (from: string, to: string) => void;
+  /** 改名之前问一句（issue #105）。回 `false` = 用户反悔了，不改。
+   *
+   *  ⚠️ 这道闸是给「那份文件有没落盘的改动」用的：改动在插件的内存里、
+   *  以**旧路径**为键，改完名它按新路径重读 → **改动没了，一句话都不说**。
+   *  而切文件 / 关页签都经过这道闸，**只有改名绕过了它**。 */
+  beforeRename?: (path: string) => Promise<boolean>;
 }
 
-export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, healthOf, projectName, drafts, indexed, reindexing, actions, trashed, onUndoTrash, tick }: TreeProps) {
+export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, healthOf, projectName, drafts, indexed, reindexing, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename }: TreeProps) {
   const [goto, setGoto] = useState(false);
   const [q, setQ] = useState("");
   const [ctx, setCtx] = useState<{ x: number; y: number; target: CtxTarget } | null>(null);
@@ -160,7 +173,9 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
       if (renaming === e.path) {
         out.push(
           <div key={e.path} className="flex items-center gap-1.5 pr-2" style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT + 20 }}>
-            <input autoFocus defaultValue={e.name} className="flex-1 min-w-0 h-6 px-1.5 rounded border border-accent bg-bg outline-none text-xs"
+            {/* `data-ud="rename"` 是判据钩子（issue #105）—— 树里还有个搜索输入框，
+                按「最后一个 input」挑会挑错（§159.3 ② 同一个错法：`.last()` 挑到了复选框）。 */}
+            <input autoFocus defaultValue={e.name} data-ud="rename" className="flex-1 min-w-0 h-6 px-1.5 rounded border border-accent bg-bg outline-none text-xs"
               /* 默认选中去掉扩展名的部分（设计侧 §五）—— 改名十有八九只改名字那一段 */
               onFocus={(ev) => { const dot = e.name.indexOf("."); ev.target.setSelectionRange(0, dot > 0 ? dot : e.name.length); }}
               onKeyDown={(ev) => {
@@ -172,10 +187,18 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
                 setRenaming(null);
                 if (!name || name === e.name) return;
                 const dir = e.path.split("/").slice(0, -1).join("/");
-                void core.post("file_move", { from: e.path, to: dir ? `${dir}/${name}` : name }).then((r) => {
+                const to = dir ? `${dir}/${name}` : name;
+                void (async () => {
+                  /* ⚠️ **先过「未落盘」那道闸**（issue #105）：改完名插件按新路径重读，
+                     内存里那份以旧路径为键的改动就没了。 */
+                  if (beforeRename && !(await beforeRename(e.path))) return;
+                  const r = await core.post("file_move", { from: e.path, to });
                   if (!r.ok) { window.dispatchEvent(new CustomEvent("ud-toast", { detail: { title: "改不了名", body: r.errors?.[0]?.message, kind: "error" } })); return; }
                   void load(dir);
-                });
+                  /* ⚠️ **报出去**：树重拉了自己这一层，而页签 / 详情区 / 编辑栏开合
+                     还都指着旧路径（issue #105）。 */
+                  onRenamed(e.path, to);
+                })();
               }} />
           </div>,
         );
