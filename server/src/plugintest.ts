@@ -7,6 +7,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { checkManifest, HOST_API_MAJOR } from "./plugin/manifest.js";
 import { PluginSandbox } from "./plugin/sandbox.js";
 import { allowedCapNames } from "./plugin/host.js";
@@ -54,7 +55,8 @@ let started = true;
 try { await sb.start(); } catch (e) { started = false; ok(false, "沙箱起得来", (e as Error).message); }
 
 if (started) {
-  ok(sb.caps.length === 2, "插件声明的能力报上来了", `${sb.caps.map((c) => c.name).join(" / ")}`);
+  /* 3 件：rows（对照组）· probe（攻击样本）· spin（Q48 加的死循环样本） */
+  ok(sb.caps.length === 3, "插件声明的能力报上来了", `${sb.caps.map((c) => c.name).join(" / ")}`);
   ok(sb.caps.every((c) => c.name.startsWith("com.umbra.demo.")), "能力名带插件 id 前缀（防两个插件撞名）");
 
   /* **先做正向**：不先证明这条路是通的，后面「被拦住」就分不清是关住了还是本来就没通
@@ -74,38 +76,125 @@ if (started) {
     "**对照组**：插件经 host.call 真读到了文件（这条不通，下面的「被拦」就不算数）",
     JSON.stringify(normal).slice(0, 70));
 
-  /* 攻击样本 */
+  /* ── 攻击样本（Q48 之后预期读数变了，2026-10-06）──
+     插件代码现在在 **QuickJS-WASM** 里跑，不在 Node 里。
+     所以这几件不再是「被权限模型拦住」，而是**那个东西压根不存在**。
+     判据分四档认（`不存在` / `没这个模块` / `被拦 <码>` / `成了`），**不许合并** ——
+     合并了就分不出「这个 VM 里没有网络」和「网络在但这次连不上」，
+     而后者在 Q48 之前一直被当成前者（#24 / §101.8）。 */
   const r = await sb.invoke("com.umbra.demo.probe", {}, p) as Record<string, string>;
-  ok(!!r.readEtc?.startsWith("被拦"), "① 插件读不了 /etc/hosts（Node 权限模型）", r.readEtc);
-  ok(!!r.write?.startsWith("被拦"), "② 插件一个字节都写不了盘（没给 --allow-fs-write）", r.write);
-  ok(!!r.exec?.startsWith("被拦"), "③ **插件起不了子进程**（P1 的落点）", r.exec);
-  ok(!!r.offWhitelist?.startsWith("被拦"), "④ 白名单外的宿主能力调不到（write_draft 不在白名单里）", r.offWhitelist);
-  /* ⑤ 联网（issue #24）。⚠️ **判据是 `ERR_ACCESS_DENIED`，不是「连不上」** ——
-     `ECONNREFUSED` 也是连不上，这一件当初就是这么被漏掉的：
-     四件攻击样本里没有联网，而注释写着「（不给 --allow-net）不许联网」。
-     Node 24.x 的权限模型根本不拦网络（实测 24.11 / 24.21 都是 ECONNREFUSED）。 */
-  ok(r.net === "被拦 ERR_ACCESS_DENIED", "⑤ **插件联不出去**（判据是 ERR_ACCESS_DENIED，不是「连不上」）", r.net);
-  /* ⚠️ 这一条判据我第一版写成了 `startsWith("被拦")`，**撤掉桩之后它照样通过** ——
-     因为 `fetch` 连不上关着的端口时消息是 `fetch failed`，也以「被拦」开头。
-     反向验证当场抓住的（纪律④）。和 ⑤ 同一个道理：**要的是错误码，不是「失败了」**。 */
-  ok(r.fetch === "被拦 ERR_ACCESS_DENIED", "⑤b fetch 也封了（undici 那一套不经 net.connect）", r.fetch);
-  /* ⑥ env 白名单：原来 `...process.env` 把宿主 93 个变量整份交过去 */
+  ok(r.readEtc === "没这个模块", "① **插件连 `node:fs` 都 import 不到**（loader 只认它自己的目录）", r.readEtc);
+  ok(r.write === "没这个模块", "② 写盘同理 —— 没有 fs 这个模块可拿", r.write);
+  ok(r.exec === "没这个模块", "③ **起不了子进程**（P1 的落点）—— `node:child_process` 不在 loader 的名单里", r.exec);
+  ok(r.net === "没这个模块", "④ **联不出去**：`node:net` import 不到", r.net);
+  /* ⚠️ `fetch` 这一条和 `net` **不是同一档**：它不是模块，是全局名字。
+     Q48 之前它要靠 `net-block.cjs` 那个桩，判据得认 `ERR_ACCESS_DENIED`
+     （我第一版写成 `startsWith("被拦")`，撤掉桩之后照样通过 —— `fetch failed` 也以「被拦」开头）。
+     现在它**不存在**，所以判据认的是「不存在」。 */
+  ok(r.fetch === "不存在", "④b **`fetch` 这个名字在插件的世界里没有**（不是被拦，是不存在）", r.fetch);
+  ok(r.offWhitelist?.startsWith("被拦") === true,
+     "⑤ 白名单外的宿主能力调不到（`write_draft` 不在白名单里）—— **这一条不受 VM 影响，还是宿主在核**", r.offWhitelist);
+
+  /* ── Q48 的核心读数：**不是被拦，是不存在** ── */
+  ok(r.hasRequire === "undefined" && r.hasProcess === "undefined" && r.hasBuffer === "undefined",
+     "⑥ **`require` / `process` / `Buffer` 全都 `undefined`**（Q48：插件换到了另一个 VM 里）",
+     `require=${r.hasRequire} process=${r.hasProcess} Buffer=${r.hasBuffer}`);
+  /* ⚠️ 这一条是**代价**不是收益，但同样要钉住 —— 下一个人想在 B 面用 sql.js 时
+     应该在这里看到「为什么跑不了」，而不是自己调半天。 */
+  ok(r.hasWasm === "undefined",
+     "⑥b （代价）**QuickJS 里没有 `WebAssembly`** —— sql.js / mediabunny 这类只能放 A 面或由宿主提供",
+     String(r.hasWasm));
+  ok(Number(r.globalKeys) <= 3,
+     "⑥c 插件那个 `globalThis` 上几乎什么都没有（只有我们注入的）", `${r.globalKeys} 个键`);
+
+  /* ── env：插件已经看不到 `process` 了，所以**判据换了量法** ──
+     原来是从插件里数 `Object.keys(process.env)`。现在 `process` 不存在，
+     那条判据会变成一句**永远成立的空话**。
+     而 `sandbox.ts` 的 env 白名单仍然重要（它守的是我们自己的 runner 进程），
+     所以改成**静态判据**：那个文件里不许出现 `...process.env`。 */
   {
-    const keys = (r.envKeys ?? "").split(",").filter(Boolean);
-    /* `NODE_CHANNEL_*` 是 `fork` 自己为 IPC 加的（不加就没有 `process.send`）。
-       `__CF_USER_TEXT_ENCODING` 是 **macOS 往每个进程注入的** ——
-       实测「只传 PATH 起一个子进程」它照样出现，所以不是我们漏传。
-       写进允许列表并注明，免得下一个人以为白名单漏了一项而去"修"它。 */
-    const allowed = ["ELECTRON_RUN_AS_NODE", "NODE_CHANNEL_FD", "NODE_CHANNEL_SERIALIZATION_MODE",
-                     "PATH", "UD_PLUGIN_DIR", "UD_PLUGIN_ENTRY", "__CF_USER_TEXT_ENCODING"];
-    const extra = keys.filter((k) => !allowed.includes(k));
-    ok(extra.length === 0, "⑥ **插件只看得到白名单里那几个环境变量**（原来是宿主的全部）", extra.length ? "多出来：" + extra.join(",") : `${keys.length} 个`);
-    /* 再钉一条"意图判据"：宿主一定有、插件一定不该有的那几个。
-       上面那条会随平台注入项变化，这一条不会 —— 两条一起才说得清"要防的是什么"。 */
-    const hostOnly = ["HOME", "USER", "SHELL", "TMPDIR"].filter((k) => k in process.env && keys.includes(k));
-    ok(hostOnly.length === 0, "⑥b 宿主的 HOME / USER / SHELL / TMPDIR 一个都没传过去", hostOnly.join(",") || "一个都没有");
+    const { readFileSync: rfs } = await import("node:fs");
+    const { TOOL_ROOT: TR2 } = await import("./project.js");
+    const raw = rfs(join(TR2, "server", "src", "plugin", "sandbox.ts"), "utf8");
+    /* ⚠️ **先把注释去掉再查**（§107.2 那条教训，2026-10-06 原样又犯一次）：
+       `sandbox.ts` 里有一整段注释在讲「原来 `...process.env` 交过去 93 个」——
+       第一版判据直接在全文上 `test`，被**我自己写的那句注释**命中，当场红了。
+       **判据里出现的字符串，要是它检查的那个东西本身，不是提到它的文字。** */
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    ok(!/\.\.\.process\.env/.test(src),
+       "⑦ `sandbox.ts` 没把宿主的环境变量整份透传（原来 `...process.env` 交过去 93 个）",
+       /\.\.\.process\.env/.test(src) ? "又出现了" : "白名单还在（已去掉注释再查）");
   }
+
+  /* ── Q48 买到的那件新东西：**死循环真的打得断** ──
+     Q48 之前宿主那条 15 秒 RPC 超时只让调用方的 promise 落地，
+     **插件的死循环还在空转**（占着一个核，直到进程被 kill）。
+     QuickJS 的 `setInterruptHandler` 在解释器**里面**把它打断。
+     ⚠️ 判据两半：**抛了**（而且比 RPC 超时早）+ **沙箱还活着**（下一次调用照常能用）——
+     少了后半句，一个「超时就把进程杀掉」的实现也会让前半句通过，
+     而那意味着插件的其它能力跟着没了。 */
+  {
+    const t0 = Date.now();
+    let why = "";
+    try { await sb.invoke("com.umbra.demo.spin", {}, p); } catch (e) { why = (e as Error).message; }
+    const ms = Date.now() - t0;
+    ok(!!why && ms < 14_000,
+       "⑧ **死循环在解释器里被打断**（不是等宿主那条 15 秒 RPC 超时）", `${ms}ms · ${why.slice(0, 40)}`);
+    const again = await sb.invoke("com.umbra.demo.rows", { path: "表.udemo" }, p)
+      .catch((e) => ({ ok: false, why: (e as Error).message })) as Record<string, unknown>;
+    ok(again.ok === true,
+       "⑧b **而沙箱还活着**（打断一次不等于把插件整个弄死）", JSON.stringify(again).slice(0, 60));
+  }
+
   sb.stop();
+}
+
+/* ══════════ 真插件的 B 面照旧能用（Q48 的验收面，2026-10-06）══════════
+   ⚠️ **这一节以前不存在**：`com.umbra.markdown` 是唯一有 B 面的真插件，
+   而它的两件能力（`outline` / `replace_section`）**一条判据都没有**。
+   也就是说把插件搬进 QuickJS 这件事，本来可能**静默把它弄坏**而全套回归照旧全绿。
+
+   「迁移成本≈0」这句话（`doc/11` Q48 的理由之一）在这一节之前只是读了一眼代码得出的；
+   这里把它变成读数。 */
+{
+  const { TOOL_ROOT: TR3 } = await import("./project.js");
+  const MD_DIR = join(TR3, "plugins", "com.umbra.markdown", "1.0.0");
+  const mdMan = checkManifest(JSON.parse(readFileSync(join(MD_DIR, "manifest.json"), "utf8")));
+  ok(!!mdMan.manifest, "（前提）markdown 插件的清单合法", mdMan.problems?.join(" / ") || "合法");
+  if (mdMan.manifest) {
+    const mdSb = new PluginSandbox(mdMan.manifest, MD_DIR);
+    let up = true;
+    try { await mdSb.start(); } catch (e) { up = false; ok(false, "**真插件的 B 面在 QuickJS 里起得来**", (e as Error).message); }
+    if (up) {
+      ok(mdSb.caps.length === 2, "**它那两件能力照旧报上来**", mdSb.caps.map((c) => c.name).join(" / "));
+      const T2 = join(tmpdir(), `umbrastudio-mdtest-${Date.now()}`);
+      await mkdir(T2, { recursive: true });
+      await writeFile(join(T2, "project.json"), JSON.stringify({ name: "mdtest", title: "md 回归" }));
+      await writeFile(join(T2, "文档.md"), "# 标题\n\n开头\n\n## 第二节\n\n旧正文\n\n## 第三节\n\n尾\n", "utf8");
+      const p2 = await buildProject(T2);
+
+      const out = await mdSb.invoke("com.umbra.markdown.outline", { path: "文档.md" }, p2)
+        .catch((e) => ({ err: (e as Error).message })) as Record<string, unknown>;
+      const secs = (out.sections ?? []) as Array<{ title: string; level: number; line: number }>;
+      ok(secs.length === 3 && secs[1]?.title === "第二节",
+         "**`outline` 真读到了文件并切出章节**（经宿主的 `read_file`，它自己没有 fs）",
+         out.err ? String(out.err) : secs.map((x) => `${"#".repeat(x.level)}${x.title}@L${x.line}`).join(" "));
+
+      /* 写那一半更要紧：它**经宿主的 `write_file`**，所以快照 / 变更清单 / 回退都在
+         （纪律① 唯一写入口）。插件自己没有 fs，这条路不通的话「AI 改错了能退回来」就没了。 */
+      const w = await mdSb.invoke("com.umbra.markdown.replace_section",
+        { path: "文档.md", title: "第二节", content: "新正文一\n新正文二" }, p2)
+        .catch((e) => ({ ok: false, why: (e as Error).message })) as Record<string, unknown>;
+      ok(w.ok === true, "**`replace_section` 写进去了**（经宿主的 `write_file`）", JSON.stringify(w).slice(0, 70));
+      const after = readFileSync(join(T2, "文档.md"), "utf8");
+      ok(/## 第二节\n\n?新正文一\n新正文二/.test(after) && /开头/.test(after) && /## 第三节/.test(after),
+         "**只动了那一节**（标题行留着，前后两节一个字没改）", JSON.stringify(after.slice(0, 60)));
+      ok(typeof w.snapshot === "string" && !!w.snapshot,
+         "而且留下了快照（走写入口才有的那一半）", String(w.snapshot));
+      mdSb.stop();
+      await rm(T2, { recursive: true, force: true });
+    }
+  }
 }
 
 /* ── ④ 白名单是白名单，不是黑名单 ── */

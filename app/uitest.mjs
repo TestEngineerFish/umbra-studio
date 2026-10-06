@@ -390,6 +390,25 @@ const barH = async (frame, id) => await frame.locator("#" + id).evaluate((el) =>
   return st.display === "none" ? 0 : Math.round(el.getBoundingClientRect().height);
 }).catch(() => -1);
 
+/** 等目录列里出现某个名字 —— **轮询，不是定时等**（2026-10-06）。
+ *
+ *  ⚠️ 原来这些地方一律 `await pg.waitForTimeout(1200)` 然后**一次性**看一眼，
+ *  于是机器一忙就整批红在「样本建好了但树里没刷出来」上 ——
+ *  而样本其实写进去了（`file_write` 回的是 ok），只是磁盘事件 → WS → 重渲染
+ *  那一串没在 1200ms 内走完。实测同一轮里连掉四批，再跑一次就 387/387。
+ *
+ *  §113 那条「**抢跑的判据会把「慢」误报成「坏」**」说的就是这件事，
+ *  而它当时只修了共享库那一处。**一条教训只修一处，等于记了没用。**
+ */
+const settleTree = async (name, ms = 15000) => {
+  const row = pg.locator('[role="treeitem"]').filter({ hasText: name }).first();
+  for (let i = 0; i < Math.ceil(ms / 250); i++) {
+    if (await row.count()) return true;
+    await pg.waitForTimeout(250);
+  }
+  return false;
+};
+
 const clearGuard = async () => {
   if (await pg.locator('[role="alertdialog"]').count()) {
     await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click().catch(() => {});
@@ -641,7 +660,7 @@ console.log("\n✎ 永远显示：有能力直接编辑，没能力引导去市�
     return (await w.json()).ok;
   }, { name: LOCKED });
   if (made) {
-    await pg.waitForTimeout(1200);
+    await settleTree(LOCKED);   // 轮询等树刷出来，不是定时等
     const row = pg.locator('[role="treeitem"]').filter({ hasText: LOCKED }).first();
     /* 顺带钉住 M11-6 修的那条：**不认得的格式，树也要刷新** ——
        新建一个 .mp4 之后它得出现在树里（磁盘监听原来按类型过滤，落到 other 的不报） */
@@ -1531,7 +1550,7 @@ console.log("\n插件 UI 的边界（M11-4）");
     }, { name: SAMPLE });
     if (made) {
       /* 建完要让目录树刷出来 —— 服务端会发 fs 事件，给它一点时间 */
-      await pg.waitForTimeout(1200);
+      await settleTree(SAMPLE);   // 轮询等树刷出来，不是定时等
       const row = pg.locator('[role="treeitem"]').filter({ hasText: SAMPLE }).first();
       if (await row.count()) {
         await row.click(); await pg.waitForTimeout(2500);
@@ -1692,7 +1711,7 @@ console.log("\n插件 UI 的边界（M11-4）");
              建不出来，整个 A 面端到端那一节被跳过，`uitest` 从 198 掉到 183。
              **回归弄脏用户项目是纪律⑥，比判据红一条严重得多。** */
           try {
-          await pg.waitForTimeout(1200);
+          await settleTree(TS);   // 轮询等树刷出来，不是定时等
           const tsRow = pg.locator('[role="treeitem"]').filter({ hasText: TS }).first();
           if (await tsRow.count()) {
             await tsRow.click(); await pg.waitForTimeout(3000);
@@ -1918,7 +1937,7 @@ console.log("\n插件 UI 的边界（M11-4）");
               return (await w.json()).ok;
             }, { name: LOCK });
             if (lockOk) {
-              await pg.waitForTimeout(1200);
+              await settleTree(LOCK);   // 轮询等树刷出来，不是定时等
               const lockRow = pg.locator('[role="treeitem"]').filter({ hasText: LOCK }).first();
               if (await lockRow.count()) {
                 /* ⚠️ **清理要在点之后**：卡片是**这一次点击触发**的（当前文件还脏着），
@@ -2042,7 +2061,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 return (await w.json()).ok;
               }, { name: C });
               if (mkc) {
-                await pg.waitForTimeout(1200);
+                await settleTree(C);   // 轮询等树刷出来，不是定时等
                 const cRow = pg.locator('[role="treeitem"]').filter({ hasText: C }).first();
                 if (await cRow.count()) {
                   await cRow.click(); await pg.waitForTimeout(3000);
@@ -2186,7 +2205,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 return (await w.json()).ok;
               }, { name: BIG, n: ROWS });
               if (mkb) {
-                await pg.waitForTimeout(1400);
+                await settleTree(BIG);   // 轮询等树刷出来，不是定时等
                 const bRow = pg.locator('[role="treeitem"]').filter({ hasText: BIG }).first();
                 if (await bRow.count()) {
                   await bRow.click();
@@ -2389,7 +2408,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 return (await w.json()).ok;
               }, { name: J });
               if (made3) {
-                await pg.waitForTimeout(1200);
+                await settleTree(J);   // 轮询等树刷出来，不是定时等
                 const jRow = pg.locator('[role="treeitem"]').filter({ hasText: J }).first();
                 if (await jRow.count()) {
                   await jRow.click(); await pg.waitForTimeout(3000);
@@ -2527,7 +2546,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                   }, { name: BIG });
                   ok(bytes > 1024 * 1024, "（前置）造出一份 > 1 MB 的 JSON", `${(bytes / 1024 / 1024).toFixed(2)} MB`);
                   if (bytes > 1024 * 1024) {
-                    await pg.waitForTimeout(1500);
+                    await settleTree(BIG);   // 轮询等树刷出来，不是定时等
                     const gRow = pg.locator('[role="treeitem"]').filter({ hasText: BIG }).first();
                     if (await gRow.count()) {
                       await gRow.click(); await pg.waitForTimeout(4500);
@@ -2597,7 +2616,7 @@ console.log("\n插件 UI 的边界（M11-4）");
               if (back?.ok) {
                 ok(back.data?.stale === true && back.data?.baseVersion === "s1" && back.data?.currentVersion === "s2",
                    "**后端认出「草稿的底稿已经不是盘上那份了」**", `${back.data?.baseVersion} → ${back.data?.currentVersion}`);
-                await pg.waitForTimeout(1200);
+                await settleTree(D);   // 轮询等树刷出来，不是定时等
                 const dRow = pg.locator('[role="treeitem"]').filter({ hasText: D }).first();
                 if (await dRow.count()) {
                   await dRow.click(); await pg.waitForTimeout(3000);
@@ -2688,7 +2707,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 return w3.ok;
               }, { name: V });
               if (mk) {
-                await pg.waitForTimeout(1200);
+                await settleTree(V);   // 轮询等树刷出来，不是定时等
                 const vRow = pg.locator('[role="treeitem"]').filter({ hasText: V }).first();
                 if (await vRow.count()) {
                   await vRow.click(); await pg.waitForTimeout(2800);
@@ -2790,7 +2809,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 return (await w.json()).ok;
               }, { name: H });
               if (made2) {
-                await pg.waitForTimeout(1200);
+                await settleTree(H);   // 轮询等树刷出来，不是定时等
                 const hRow = pg.locator('[role="treeitem"]').filter({ hasText: H }).first();
                 if (await hRow.count()) {
                   await hRow.click(); await pg.waitForTimeout(800);
@@ -2974,7 +2993,7 @@ console.log("\n图片的捏合缩放（issue #32）");
   const NAME = "_uitest-wheel.png";
   const abs = join(bootImg.dir, NAME);
   writeFileSync(abs, png);
-  await pg.waitForTimeout(1500);
+  await settleTree(NAME);   // 轮询等树刷出来，不是定时等
   const row = pg.locator('[role="treeitem"]').filter({ hasText: NAME }).first();
   if (!await row.count()) { ok(false, "图片样本在树里刷出来"); rmSync(abs, { force: true }); }
   else {

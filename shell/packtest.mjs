@@ -300,5 +300,49 @@ console.log("\n四 · 打包版当 MCP server 起（秘书接入那条路）");
   await first.close();
 }
 
+/* ⚠️ **插件 B 面的 QuickJS 在打包版里起得来吗**（Q48 / issue #94，2026-10-06）。
+   和上面「宿主共享库进包了吗」是**同一族**（§63.1）：
+   `@jitl/quickjs-wasmfile-release-sync` 要在运行时读一个 **503 KB 的 `.wasm` 文件**，
+   而打包后 `server/node_modules` 是经 `extraResources` 拷进 `Resources/core/` 的，
+   那条 filter 里排掉了 `*.md` / `*.map` —— **再排掉一类，`.wasm` 就跟着没了**，
+   而开发模式下一切正常。
+
+   ⚠️ 判据**不是「那个文件在不在」** —— 文件在而加载不起来是另一回事
+   （路径算错、权限模型没放行 `node_modules`、Electron 当 node 跑时 import 解析不到）。
+   所以这里**真起一次**：用**打包版的 Electron** 跑**打包版的 runner**，
+   装**打包版的真插件**（markdown），看它那两件能力报不报上来。 */
+{
+  const { fork } = await import("node:child_process");
+  const CORE = join(RES, "core");
+  const RUNNER = join(CORE, "server", "dist", "plugin", "runner.js");
+  const NB = join(CORE, "server", "dist", "plugin", "net-block.cjs");
+  const SROOT = join(CORE, "server");
+  const PLUG = join(CORE, "plugins", "com.umbra.markdown", "1.0.0");
+  const wasm = join(SROOT, "node_modules", "@jitl", "quickjs-wasmfile-release-sync", "dist", "emscripten-module.wasm");
+  ok(existsSync(wasm), "QuickJS 的 `.wasm` 进包了", existsSync(wasm) ? `${Math.round(statSync(wasm).size / 1024)} KB` : "没有");
+  const out = await new Promise((res) => {
+    let caps = null, err = "";
+    const c = fork(RUNNER, [], {
+      execPath: exeCopy,
+      execArgv: ["--permission", `--allow-fs-read=${PLUG}/`, `--allow-fs-read=${RUNNER}`,
+                 `--allow-fs-read=${NB}`, `--allow-fs-read=${join(SROOT, "node_modules")}/`,
+                 `--allow-fs-read=${join(SROOT, "package.json")}`, "--require", NB],
+      env: { ELECTRON_RUN_AS_NODE: "1", UD_PLUGIN_DIR: PLUG, UD_PLUGIN_ENTRY: "tools.mjs", PATH: process.env.PATH ?? "" },
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    c.stderr.on("data", (b) => { err += b.toString(); });
+    c.on("message", (m) => {
+      if (m.type === "caps") caps = m.caps;
+      if (m.id === 1) { c.kill(); res({ caps, err: m.error ?? "", stderr: err }); }
+    });
+    c.on("exit", () => { if (caps === null) res({ caps: null, err: "子进程退了", stderr: err }); });
+    c.send({ id: 1, type: "init" });
+    setTimeout(() => { c.kill(); res({ caps, err: "20 秒没反应", stderr: err }); }, 20000);
+  });
+  ok(Array.isArray(out.caps) && out.caps.length === 2,
+     "**打包版里 QuickJS 真起来了，真插件的 B 面两件能力都在**（文件在 ≠ 加载得起来）",
+     out.caps ? out.caps.map((c) => c.name).join(" / ") : `${out.err} ${out.stderr.slice(0, 120)}`);
+}
+
 rmSync(sandbox, { recursive: true, force: true });
 bye();

@@ -34,9 +34,11 @@
     "difftest": "npm run build && node dist/difftest.js"
   },
   "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/ws": "^8.18.1",
     "playwright-core": "^1.63.0",
+    "quickjs-emscripten-core": "^0.32.0",
     "ws": "^8.21.3",
     "zod": "^3.25.0"
   },

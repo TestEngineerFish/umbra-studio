@@ -39,6 +39,9 @@ import type { PluginManifest } from "./manifest.js";
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
 const RUNNER = join(fileURLToPath(new URL(".", import.meta.url)), "runner.js");
+/** `server/` 根 —— `runner.js` 在 `<这里>/dist/plugin/` 下。
+ *  打包后是 `…/Resources/core/server/`（`extraResources` 把 `node_modules` 原样拷进去）。 */
+const SERVER_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
 /** 网络封堵桩（issue #24）。**是 `.cjs`** —— `--require` 要 CJS，
  *  而这个包是 ESM。构建时由 `build` 脚本拷进 `dist/`（`tsc` 不搬非 TS 文件）。 */
 const NET_BLOCK = join(fileURLToPath(new URL(".", import.meta.url)), "net-block.cjs");
@@ -63,6 +66,20 @@ export class PluginSandbox {
       `--allow-fs-read=${real(RUNNER)}`,
       /* 网络封堵桩：**必须能读到它自己**，否则权限模型会在预加载时就拒掉它 */
       `--allow-fs-read=${real(NET_BLOCK)}`,
+      /* ⚠️ **runner 现在有 npm 依赖了**（Q48：QuickJS-WASM）——
+         原来它只 import Node 内置模块，所以从没撞上这一条。
+         实测不给的话子进程**起不来**，报的是
+         `Error: Access to this API has been restricted`（栈在 `package_json_reader`）
+         —— 权限模型连「解析 `quickjs-emscripten-core` 时读它的 package.json」都拦。
+
+         这里放开的是**我们自己的只读代码**，而这件事的代价和 Q48 之前**不一样**：
+         权限模型原来的职责是**圈住插件代码**，而现在插件代码
+         **根本不在 Node 里跑**（它在 QuickJS 里，连 `require` 都没有）。
+         这一层现在守的是「我们自己的 runner 别乱来」，不是「插件别乱来」。
+         所以放开 `node_modules` 的**读**权限，拦插件那件事一点没松。
+         ⚠️ 写权限照旧**一个字节都不给**。 */
+      `--allow-fs-read=${real(join(SERVER_ROOT, "node_modules"))}/`,
+      `--allow-fs-read=${real(join(SERVER_ROOT, "package.json"))}`,
       "--require", NET_BLOCK,
     ];
     /* ⚠️ 用 `process.execPath` —— 打包后它是 Electron，`ELECTRON_RUN_AS_NODE` 让它当 node 跑。
