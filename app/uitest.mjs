@@ -2828,6 +2828,84 @@ console.log("\n插件 UI 的边界（M11-4）");
                     await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
                 }, { name: D });
               } else ok(false, "建不出草稿样本");
+
+              /* ═══ 改完马上切文件：两头都不许丢（issue #114，2026-10-06）═══
+                 暂存是 800ms 防抖，而回调原来**在触发那一刻**才读 `curPath` /
+                 `docText()` / `disk`；切文件时 `load()` 既不撤它也不先冲掉它。
+                 插件 iframe 在同一插件的文件之间是**复用**的，所以这个定时器
+                 活着跨过了换文件 → 两头都坏：
+                   · a 最后那 800ms 内敲的字**没进暂存**（整段改动都在 800ms 内时整份没了）；
+                   · 定时器到点读到的是 **b** 的内容 → `clear_staged_draft(b)`，
+                     把 b **已有的草稿清掉**。
+                 ⚠️ 判据**两头都要验** —— 只验一头的话，另一头丢了也照样绿。 */
+              {
+                const A = "草稿回归-甲.ts", B = "草稿回归-乙.ts";
+                const prep = await pg.evaluate(async ({ a, b }) => {
+                  const x = window.__UD_APP;
+                  const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}${r.includes("?") ? "&" : "?"}token=${encodeURIComponent(x.token)}`;
+                  const post = (r, body) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((y) => y.json());
+                  const w1 = await post("file_write", { path: a, content: "甲 = 1\n", expectSha256: "0" });
+                  const w2 = await post("file_write", { path: b, content: "乙 = 1\n", expectSha256: "0" });
+                  /* b 先有一份草稿 —— 它是「被误清掉」的那一半 */
+                  await post("draft_stage", { path: b, content: "乙 = 1\n乙的草稿 = 2\n" });
+                  return w1.ok && w2.ok;
+                }, { a: A, b: B });
+                ok(prep, "（前提）造出甲乙两份文件，乙先有一份草稿");
+                if (prep) {
+                  await settleTree(A);
+                  await pg.locator('[role="treeitem"]').filter({ hasText: A }).first().click();
+                  const af = pg.frameLocator('iframe[data-role="body"]');
+                  for (let q = 0; q < 40; q++) { if (await af.locator(".cm-content").count().catch(() => 0)) break; await pg.waitForTimeout(250); }
+                  /* 解锁才改得动（`.ts` 默认只读那一档由 roReason 决定；有锁就点开） */
+                  const unlock = pg.locator("button").filter({ hasText: /改它|解锁/ }).first();
+                  if (await unlock.count()) { await unlock.click(); await pg.waitForTimeout(400); }
+                  await af.locator(".cm-content").click();
+                  await pg.keyboard.type("甲的改动");
+                  /* ⚠️ **800ms 之内**就切走 —— 这是这条 bug 的全部条件 */
+                  await pg.waitForTimeout(120);
+                  await settleTree(B);
+                  await pg.locator('[role="treeitem"]').filter({ hasText: B }).first().click();
+                  /* ⚠️ 甲有**未落盘的改动** → 切走时工作台会弹那张「这些改动不要了吗」的卡。
+                     不处理的话它**挡住后面每一次点击** —— 而症状出现在**下一节**
+                     （版本历史那一节的 `vRow.click()` 等 30 秒超时），
+                     **原因在这一节**（§143.6 那一族：这次留下的是一个模态框）。
+                     ⚠️ 这里要点「**不要了**」而不是「回去接着改」——
+                     我们验的是「切过去之后草稿还在不在」，所以得真切过去。 */
+                  if (await pg.locator('[role="alertdialog"]').count()) {
+                    await pg.locator('[role="alertdialog"] button').filter({ hasText: /不要|丢弃|继续/ }).first()
+                      .click().catch(async () => { await clearGuard(); });
+                    await pg.waitForTimeout(600);
+                  }
+                  await pg.waitForTimeout(2500);
+                  const after = await pg.evaluate(async ({ a, b }) => {
+                    const x = window.__UD_APP;
+                    const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}${r.includes("?") ? "&" : "?"}token=${encodeURIComponent(x.token)}`;
+                    const get = (r) => fetch(u(r)).then((y) => y.json());
+                    return {
+                      a: await get(`draft_staged?path=${encodeURIComponent(a)}`),
+                      b: await get(`draft_staged?path=${encodeURIComponent(b)}`),
+                    };
+                  }, { a: A, b: B });
+                  ok(after.a?.data?.has === true && /甲的改动/.test(String(after.a?.data?.content ?? "")),
+                     "**甲最后那几个字进了暂存**（原来：800ms 内切走 → 整份没了）",
+                     String(after.a?.data?.content ?? "（没有草稿）").replace(/\n/g, "⏎").slice(0, 40));
+                  ok(after.b?.data?.has === true && /乙的草稿/.test(String(after.b?.data?.content ?? "")),
+                     "**而乙已有的草稿没被清掉**（原来：定时器到点读到的是乙 → clear_staged_draft(乙)）",
+                     String(after.b?.data?.content ?? "（被清掉了）").replace(/\n/g, "⏎").slice(0, 40));
+                }
+                await pg.evaluate(async ({ names }) => {
+                  const x = window.__UD_APP;
+                  const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}${r.includes("?") ? "&" : "?"}token=${encodeURIComponent(x.token)}`;
+                  for (const n of names) {
+                    await fetch(u("draft_clear"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: n }) });
+                    await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: n }) });
+                  }
+                  const t = await fetch(u("trash")).then((y) => y.json()).catch(() => null);
+                  for (const it of t?.data?.items ?? []) if (names.includes(it.originalName))
+                    await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
+                }, { names: [A, B] });
+                await clearGuard();      // 收尾：别把模态框留给下一节
+              }
             }
 
             /* ═══ 版本历史：药丸 / 下拉 / 看旧版 / 差异标红（M10-2b）═══

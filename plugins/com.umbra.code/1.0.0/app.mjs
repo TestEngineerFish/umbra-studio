@@ -824,16 +824,44 @@ let stageTimer = null;
  *  如果照「不脏就清掉草稿」走，用户会这样丢数据：
  *  改了几行（有草稿）→ 去看旧版 → 防抖触发 → 清掉 → **草稿没了**。
  *  两条各自正确的规则叠起来会丢数据，所以这里必须**先问「现在算不算在编辑」**。 */
+/** 这一次防抖要存的是**哪个文件、和哪一份盘上内容比** ——
+ *  在**排定那一刻**就定下来，不等回调触发时再读全局（issue #114，2026-10-06）。 */
+let stagePending = null;   // { path, diskContent, text() }
+
+/* ⚠️ **原来这个回调在触发那一刻才读 `curPath` / `docText()` / `disk`**，
+   而切文件时 `load()` 既不撤它也不先冲掉它（全文件只有 `save()` 撤）。
+   插件的 iframe 在同一插件的文件之间是**复用**的（同一个组件、`src` 只由
+   pluginId + entry 决定），所以 a.ts → b.ts 不重建 iframe，这个定时器活着跨过了换文件。
+
+   于是「改完马上点开另一个文件」会**两头都坏**：
+     · a.ts 最后那 800ms 内敲的字**没有进暂存**（整段改动都在 800ms 内时，a 的改动整份没了）；
+     · 定时器到点时 `curPath` 已经是 b、`docText()` 是 b 盘上那份（草稿只在横条里、没铺进编辑器）
+       → `now === disk.content` 成立 → **`clear_staged_draft(b)`**，把 b **已有的草稿清掉**。
+
+   **一个「等一会儿再做」的回调，如果在触发时才读「做什么」，它做的就是「那时候的事」而不是「当时想做的事」。**
+
+   两条一起修：排定时**捕获**要存什么；换文件前**先冲掉**上一份。 */
 function scheduleStage() {
   if (stageTimer) clearTimeout(stageTimer);
   if (curVersion || draftPreview) return;      // 看旧版 / 看草稿差异：不碰暂存
-  stageTimer = setTimeout(async () => {
-    stageTimer = null;
-    if (curVersion || draftPreview || !view || !disk) return;
-    const now = docText();
-    if (now === disk.content) { await umbra.call("clear_staged_draft", { path: curPath }); return; }
-    await umbra.call("stage_draft", { path: curPath, content: now });
-  }, 800);
+  if (!view || !disk) return;
+  const forPath = curPath, forDisk = disk.content, v = view;
+  /* ⚠️ `diskEol` 也要捕获 —— 它是**按文件**的（CRLF 往返，issue #66）。
+     只捕获 view 不捕获行尾的话，切到一份 CRLF 文件之后存出去的会是 LF。 */
+  const forEol = diskEol;
+  stagePending = { path: forPath, diskContent: forDisk, text: () => docTextOf(v, forEol) };
+  stageTimer = setTimeout(() => { void flushStage(); }, 800);
+}
+
+/** 把排定的那一份真写出去（或清掉）。**用捕获的值，不读全局。** */
+async function flushStage() {
+  if (stageTimer) { clearTimeout(stageTimer); stageTimer = null; }
+  const job = stagePending;
+  stagePending = null;
+  if (!job) return;
+  const now = job.text();
+  if (now === job.diskContent) { await umbra.call("clear_staged_draft", { path: job.path }); return; }
+  await umbra.call("stage_draft", { path: job.path, content: now });
 }
 
 /** 画草稿横条。三种样子：可直接恢复 / 底稿变过 / 正在看差异。 */
@@ -976,10 +1004,14 @@ let diskEol = "\n";
  *  每过一行多 1 字节 —— 到第 100 行就偏 100 个字符，
  *  「光标路径」和「在源码里看 L12–17」全错位。
  *  那几处一律直接用 `view.state.doc.toString()`，并在旁边写明原因。 */
-const docText = () => {
-  const t = view.state.doc.toString();
-  return diskEol === "\n" ? t : t.split("\n").join(diskEol);
+/** 取某一个**具体**编辑器实例里的文本，按某一个**具体**的行尾。
+ *  ⚠️ 要它是因为防抖（issue #114）：回调触发时全局的 `view` / `diskEol`
+ *  可能已经是**另一个文件**的了 —— 排定那一刻把它们捕获下来，回调只用捕获的。 */
+const docTextOf = (v, eol) => {
+  const t = v.state.doc.toString();
+  return eol === "\n" ? t : t.split("\n").join(eol);
 };
+const docText = () => docTextOf(view, diskEol);
 let busy = false;
 
 /* ⚠️ **看历史版时永远不脏。** 那时编辑器里的内容确实和盘上不一样，
@@ -1228,7 +1260,7 @@ function askAboutSelection() {
 async function save() {
   if (!isDirty() || busy) return;
   busy = true; paint();
-  if (stageTimer) { clearTimeout(stageTimer); stageTimer = null; }   // 别让防抖在落盘之后又存一份回去
+  if (stageTimer) { clearTimeout(stageTimer); stageTimer = null; stagePending = null; }   // 别让防抖在落盘之后又存一份回去
   const r = await umbra.call("write_file", { path: curPath, content: docText(), expectSha256: disk.sha });
   busy = false;
   if (!r || !r.ok) {
@@ -1294,6 +1326,12 @@ async function load(path, theme, opt = {}) {
      而 `load` 不会动它 —— 不清的话会拿**上一个文件**的某一版当底去比这个文件，
      画出满屏红绿而没有任何地方说错在哪。 */
   if (path !== curPath) { cmpBase = null; cmpOrig = null; }
+  /* ⚠️ **换文件之前先把上一份的草稿冲出去**（issue #114，2026-10-06）。
+     不冲的话两头都坏：上一个文件最后那 800ms 内敲的字没进暂存，
+     而定时器到点时读到的是**新文件**的内容 → 把新文件已有的草稿清掉。
+     `flushStage()` 用的是**排定那一刻捕获的** path / 盘上内容 / 编辑器 / 行尾，
+     所以这里 `await` 它是安全的 —— 它不会看现在的全局。 */
+  if (path !== curPath) await flushStage();
   /* `read_file` 给的是 path / kind / size / updatedAt / **sha256** / content / lines
      —— 字段名去 `server/src/cap/files.ts` 查过，不是猜的（猜错的话 sha 对不上，
      每次落盘都会被写前校验拦住，而错误信息只说「校验不过」，很难想到是字段名）。 */
