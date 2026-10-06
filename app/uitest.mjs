@@ -2895,13 +2895,42 @@ console.log("\n插件 UI 的边界（M11-4）");
                判据数的是**真的渲染出来了、真的点中了**，不是「iframe 标签在」。 */
             {
               const H = "插件回归样本.html";
-              const made2 = await pg.evaluate(async ({ name }) => {
+              /* ⚠️ **多行**样本（issue #46，2026-10-06）：原来是一整行的 HTML，
+                 那样「源码第几行」永远是 1 —— **一个恒为 1 的读数验不出任何东西**。
+                 顺带放两个专门的坑：
+                   · `<table><tr>` —— 浏览器和 parse5 都会补一个 `<tbody>`，
+                     而那个补出来的节点**没有源码位置**（选 parse5 而不是 htmlparser2 的全部理由）；
+                   · 一个**脚本运行期插进来**的 `<p id=runtime>` —— 源码里根本没有它；
+                   · `data-x=1` **无引号** —— 浏览器的 `outerHTML` 会把它规整成 `data-x="1"`，
+                     所以它能一眼区分「发的是源码原文」还是「发的是活 DOM」。 */
+              const HSRC = [
+                "<!DOCTYPE html>",
+                "<html>",
+                "<head><meta charset=\"utf-8\"><title>回归页</title></head>",
+                "<body>",
+                "  <main>",
+                "    <button class=\"primary\">买</button>",
+                "    <div id=\"hero\"><p>一</p><p>二</p></div>",
+                "    <p data-x=1>属性在源码里没有引号</p>",
+                "  </main>",
+                "  <table><tr><td>格子</td></tr></table>",
+                "  <script>",
+                "    var d = document.createElement(\"p\"); d.id = \"runtime\"; d.textContent = \"脚本插进来的\";",
+                "    document.querySelector(\"main\").appendChild(d);",
+                "  <\/script>",
+                "</body>",
+                "</html>",
+                "",
+              ].join("\n");
+              /** 期望的行号**从样本里算**，不写死 —— 写死的话谁动一下样本它就错，而错得像产品坏了 */
+              const lineOf = (needle) => HSRC.split("\n").findIndex((l) => l.includes(needle)) + 1;
+              const made2 = await pg.evaluate(async ({ name, content }) => {
                 const b = window.__UD_APP;
                 const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
                 const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
-                  body: JSON.stringify({ path: name, content: '<!DOCTYPE html><html><body><main><button class="primary">买</button><div id="hero"><p>一</p><p>二</p></div></main></body></html>', expectSha256: "0" }) });
+                  body: JSON.stringify({ path: name, content, expectSha256: "0" }) });
                 return (await w.json()).ok;
-              }, { name: H });
+              }, { name: H, content: HSRC });
               if (made2) {
                 await settleTree(H);   // 轮询等树刷出来，不是定时等
                 const hRow = pg.locator('[role="treeitem"]').filter({ hasText: H }).first();
@@ -2958,7 +2987,10 @@ console.log("\n插件 UI 的边界（M11-4）");
                   await btn.click({ force: true });
                   await pg.waitForTimeout(700);
                   const pill = (await plug.locator("#pill").innerText().catch(() => "")).trim();
-                  ok(pill === "<button.primary>", "**药丸写的是开始标签缩写**（不是选择器路径）", pill || "（没有药丸）");
+                  /* ⚠️ 药丸现在**带源码行号**（issue #46）—— 所以不再是全等比。
+                     行号从样本里算出来，不写死。 */
+                  ok(new RegExp(`^<button\\.primary>\\s+L${lineOf("button class")}$`).test(pill),
+                     "**药丸写的是开始标签缩写 + 源码行号**（不是选择器路径）", pill || "（没有药丸）");
                   const tip = await plug.locator("#pill").getAttribute("title").catch(() => "");
                   ok(/button/.test(tip ?? "") && /main/.test(tip ?? ""), "完整选择器路径在悬停提示里", (tip ?? "").slice(0, 50));
                   /* 三档范围 */
@@ -2972,6 +3004,70 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const sel = (await pg.locator("aside").first().innerText().catch(() => "")).replace(/\s+/g, " ");
                   ok(/插件回归样本\.html › <button\.primary>/.test(sel), "**点选的元素挂成了 range 药丸**",
                      (sel.match(/插件回归样本\.html › [^\s]+/) ?? ["（没找到）"])[0]);
+
+                  /* ═══ 给 AI 的是**源码原文 + 行号**，不是活 DOM 的 outerHTML（issue #46）═══
+                     原来发的是浏览器里那棵活 DOM 的 `outerHTML` —— 属性被规整过
+                     （引号、大小写、布尔属性、实体），脚本运行期改过的也一起带上，
+                     于是 AI 拿到的那段**在文件里搜不到原文**，改回去只能靠猜。
+                     而插件只有一个选择器，**不知道行号**，所以做不出
+                     `.json` / CSV 已经有的「在源码里看 L12–17」。 */
+                  {
+                    /* ① 无引号属性：一眼区分「源码原文」和「活 DOM」。
+                       ⚠️ 这个样本是**专门挑的** —— `data-x=1` 在 `outerHTML` 里一定是
+                       `data-x="1"`，所以这条判据不可能因为「碰巧一样」而通过。 */
+                    const pEl = page.locator("p[data-x]").first();
+                    ok(await pEl.count() === 1, "（前提）无引号属性那个 p 在页面上", `${await pEl.count()} 个`);
+                    await pEl.click({ force: true }); await pg.waitForTimeout(700);
+                    const pill2 = (await plug.locator("#pill").innerText().catch(() => "")).trim();
+                    ok(pill2.includes(`L${lineOf("data-x=1")}`),
+                       `**点选对回了源码行号**（这个 p 在第 ${lineOf("data-x=1")} 行）`, pill2);
+                    await plug.locator('#scope button[data-scope="all"]').click().catch(() => {});
+                    await pg.waitForTimeout(250);
+                    await plug.locator("#send").click(); await pg.waitForTimeout(1100);
+                    const body = await pg.evaluate(() => {
+                      for (const n of document.querySelectorAll("*")) {
+                        const t = n.getAttribute("title") || "";
+                        if (/data-x/.test(t)) return t;
+                      }
+                      return "";
+                    });
+                    ok(/data-x=1/.test(body) && !/data-x="1"/.test(body),
+                       "**给 AI 的正文是源码原文**（无引号属性原样 —— 活 DOM 的 outerHTML 会写成 `data-x=\"1\"`）",
+                       (body.match(/<p[^>]*>/) ?? ["（读不到正文）"])[0]);
+
+                    /* ② `<tbody>` 是**补出来的**：选 parse5 而不是 htmlparser2 的全部理由。
+                       桥是在**补完之后**的 DOM 上数下标的，所以树里也必须有它 ——
+                       htmlparser2 不补，表格类页面第一下就错位。 */
+                    const td = page.locator("td").first();
+                    if (await td.count()) {
+                      await td.click({ force: true }); await pg.waitForTimeout(700);
+                      const pill3 = (await plug.locator("#pill").innerText().catch(() => "")).trim();
+                      ok(pill3.includes(`L${lineOf("<td>")}`),
+                         `**父节点是隐式 \`tbody\` 时也对得上**（td 在第 ${lineOf("<td>")} 行）`, pill3);
+                    } else ok(false, "样本里的 td 选不到");
+
+                    /* ③ 脚本运行期插进来的元素：源码里**根本没有它**。
+                       ⚠️ 判据要的是「**明说**」而不是「不报错」——
+                       静默退回活 DOM 的话，AI 会拿着一段「文件里没有的 HTML」去改文件。 */
+                    const ghost = page.locator("#runtime");
+                    if (await ghost.count()) {
+                      await ghost.click({ force: true }); await pg.waitForTimeout(700);
+                      const tip3 = await plug.locator("#pill").getAttribute("title").catch(() => "");
+                      ok(/源码里找不到它/.test(tip3 ?? ""),
+                         "**脚本生成的元素明说「源码里找不到它」**（不给一个错位的行号）", (tip3 ?? "").replace(/\n/g, " ⏎ ").slice(0, 70));
+                      await plug.locator("#send").click(); await pg.waitForTimeout(1100);
+                      const warn = await pg.evaluate(() => {
+                        for (const n of document.querySelectorAll("*")) {
+                          const t = n.getAttribute("title") || "";
+                          if (/活 DOM/.test(t)) return t;
+                        }
+                        return "";
+                      });
+                      ok(/活 DOM/.test(warn) && /搜不到/.test(warn),
+                         "**而带给 AI 的正文里也写着这一句**（它才是真正会读到那段话的那一方）",
+                         warn ? "带上了警告" : "（正文里没有那句话）");
+                    } else ok(false, "样本里脚本插入的那个元素没出现（脚本没跑？）");
+                  }
                 } else ok(false, "`.html` 样本建好了但树里没刷出来");
                 await pg.evaluate(async ({ name }) => {
                   const b = window.__UD_APP;

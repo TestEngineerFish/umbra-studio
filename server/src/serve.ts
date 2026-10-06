@@ -115,6 +115,30 @@ const PREVIEW_BRIDGE = `<script>(function(){
     }
     return out.join(' > ');
   }
+  /* ⚠️ **下标路径**（issue #46，2026-10-06）：从 documentElement 往下数到它，
+     每一层记「在**元素兄弟**里排第几」。插件拿它在 parse5 的树上按同一条路
+     走下去，就能把这个元素对回源码的行号。
+
+     ⚠️ 这个注释在**模板字符串里面** —— 反引号要转义（\`），
+     不转的话它当场把模板串截断，而报错指向下面几十行之后的某个位置
+     （2026-10-06 实测：报 \`TS1005: ',' expected\`，看着像 idxPath 写错了）。
+
+     为什么不让插件回解上面那个选择器串：path() 里有 id 短路（遇到带 id 的就 break），
+     而**同一个 id 出现两次**时选择器只认第一个 —— 那正是 off-by-one 的温床。
+     下标是**构造上精确**的，不需要任何解析。
+
+     ⚠️ 我们注入的三样（body 结束前那个 script、挂在 html 下的两个 div）
+     **都排在最后**，所以用户元素的下标不受影响；而它们自己
+     pointer-events:none，点不到。 */
+  function idxPath(el){
+    var out=[];
+    while(el&&el.nodeType===1&&el!==document.documentElement){
+      var p=el.parentElement; if(!p) break;
+      out.unshift([].slice.call(p.children).indexOf(el));
+      el=p;
+    }
+    return out;
+  }
   addEventListener('mousemove',function(e){
     var el=e.target; if(!el||el.nodeType!==1||el===box||el===tag) return;
     var r=el.getBoundingClientRect();
@@ -135,7 +159,7 @@ const PREVIEW_BRIDGE = `<script>(function(){
     var el=e.target; if(!el||el.nodeType!==1) return;
     e.preventDefault(); e.stopPropagation();
     last=el;
-    parent.postMessage({t:'ud-pick',label:label(el),path:path(el),
+    parent.postMessage({t:'ud-pick',label:label(el),path:path(el),idx:idxPath(el),
       self:el.cloneNode(false).outerHTML,
       all:el.outerHTML,
       kids:el.children.length},'*');
