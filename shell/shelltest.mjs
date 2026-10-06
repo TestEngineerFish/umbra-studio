@@ -166,6 +166,105 @@ console.log("workbench:", await win.evaluate(() => document.querySelector("heade
     + ` | 窗口 ${r2.before} → ${r2.after}`
     + ` | ${asked44 ? `问的是「${r2.asked.message}」按钮 ${JSON.stringify(r2.asked.buttons)}` : "一句话都没说"}`);
 }
+/* ── 要输入的那几个入口在壳里也得能用（issue #103，2026-10-06）──
+   **Electron 不实现 `window.prompt`。** 而「新建目录」「存为模板」「改名」「移到…」
+   四处原来都是 `const name = window.prompt(...); if (!name) return;` ——
+   于是在桌面版里**没有输入框、什么都不发生、也不说为什么**。
+   而**用户真正在用的就是桌面版**，「新建目录」「存为模板」在那里只有这一个入口。
+
+   ⚠️ **这一类只有这里测得到**：`uitest` 走浏览器模式（Chromium 原生有 `prompt`），
+   所以它在那边永远是绿的。**同族：#44 的 `beforeunload`** ——
+   「依赖浏览器原生行为的 Web API 在 Electron 壳里表现不同」。
+
+   判据两半：① **先确认这个壳里 `prompt` 真的不能用**（样本有效性 ——
+   哪天 Electron 补上了它，这条 bug 的前提就不成立，而判据该说出来）；
+   ② 点那个入口，**我们自己的卡要出来**。 */
+{
+  const promptState = await win.evaluate(() => {
+    try { const v = window.prompt("探针", "x"); return v === null ? "回 null（点不出输入框）" : `回了 ${JSON.stringify(v)}`; }
+    catch (e) { return "抛了：" + String(e && e.message || e).slice(0, 40); }
+  });
+  console.log(`window.prompt in shell: ${/抛了|回 null/.test(promptState) ? "✓" : "⚠️"} ${promptState}`
+    + "（这是 #103 的前提：不成立的话下面那条判据测的就不是这件事）");
+
+  /* 右键目录树第一行 → 点「新建目录」→ 我们自己的卡该出来 */
+  const row = win.locator('[role="treeitem"]').first();
+  await row.click({ button: "right" });
+  await win.waitForTimeout(500);
+  const item = win.locator('[role="menu"] *').filter({ hasText: /^新建目录$/ }).first();
+  const hasItem = await item.count();
+  if (hasItem) {
+    await item.click();
+    await win.waitForTimeout(600);
+    const dlg = win.locator('[role="dialog"]');
+    const n = await dlg.count();
+    const title = n ? (await dlg.first().innerText()).split("\n")[0] : "";
+    console.log(`newFolder prompt: ${n === 1 && /新目录的名字/.test(title) ? "✓ 我们自己的输入卡出来了" : "✗ 没有输入卡 —— 点了没反应"}`
+      + ` | ${n} 个 dialog${title ? ` · 标题「${title}」` : ""}`);
+    /* ⚠️ **还要能走完**：出来一张卡但确认不了，和没有卡一样糟。
+       输入一个名字 → 回车 → 树里该多一行。 */
+    if (n === 1) {
+      const name = `_壳回归目录-${Date.now()}`;
+      await win.locator('[role="dialog"] input').fill(name);
+      await win.keyboard.press("Enter");
+      /* ⚠️ **直接看盘**（Node 侧，地面真相）。
+         第一版从页面里问 `/__ud/files` —— 而壳里 `window.__UD_APP` 指的是
+         **hub 服务**（没有项目上下文），真代码走的是**项目自己的**服务。
+         探针问错了服务，读到的「盘上 0」说明不了任何事；
+         诊断那一行把它暴露出来了（「hub 服务没有项目上下文」）。
+         **判据要么走产品真实的那条路，要么直接看盘 —— 不要走第三条路。**
+         ⚠️ **轮询**，别定时等（§150.7 那条）；而且「盘上有没有」和「树刷没刷」分开问。 */
+      const { existsSync: ex } = await import("node:fs");
+      /* ⚠️ **建在哪取决于右键点的是哪一行**（2026-10-06 实测栽过）：
+         右键一个**目录**行时 `newFolder(dir)` 收到的是那个目录，新目录建在它**里面**。
+         第一版判据写死 `umbra_copy/<名字>`，读到「盘上没有」——
+         而目录其实建在 `umbra_copy/design_handoff_umbra/<名字>` 里。
+         **判据写死了一个位置，而那个位置由界面状态决定。**
+         所以这里从那一行的 `title`（= 相对项目根的路径）算父目录。 */
+      const parent = (await row.getAttribute("title").catch(() => "")) || "";
+      const dirOnDisk = S + "/umbra_copy/" + (parent ? parent + "/" : "") + name;
+      /* ⚠️ **只等「盘上有」** —— 树里出不出现取决于那个父目录**展开了没有**，
+         而我们右键的那一行多半是收起的，所以子项**本来就不该画出来**。
+         第一版把 `inTree > 0` 也当成退出条件，于是白等 10 秒、还把
+         「盘上有而树没刷」当成一件事报出来 —— **那句话本身是错的**。
+         判据只认地面真相（盘），树的那个数只作为读数附带一句。 */
+      let onDisk = false;
+      for (let q = 0; q < 24; q++) {
+        onDisk = ex(dirOnDisk);
+        if (onDisk) break;
+        await win.waitForTimeout(400);
+      }
+      const inTree = await win.locator('[role="treeitem"]').filter({ hasText: name }).count();
+      /* 诊断：失败时界面会弹一条 toast（`toast("建不了", …, "error")`）——
+         读它比猜快。⚠️ toast 3.2 秒就消失，所以上面轮询的间隔内要抓得到。 */
+      if (!onDisk) {
+        /* 先问一句最关键的：那张卡**关掉了吗**？
+           关掉了 = `done()` 跑了（问题在 post 之后）；还开着 = Enter 没到输入框。 */
+        const still = await win.locator('[role="dialog"]').count();
+        const rowTitle = await row.getAttribute("title").catch(() => "?");
+        console.log(`  诊断：卡还开着吗 ${still ? "是（Enter 没到输入框）" : "否（done 跑了）"} · 右键点的那一行是「${rowTitle}」`);
+        const why = await win.evaluate(() => {
+          const t = [...document.querySelectorAll("div")].map((n) => n.textContent || "")
+            .filter((x) => /建不了|不合法|没有这个|跨出/.test(x) && x.length < 120);
+          return t[0] ?? "（界面上没有任何错误提示 —— 也就是说那次 post 可能压根没发）";
+        }).catch((e) => "探针炸了：" + String(e).slice(0, 50));
+        console.log("  诊断：", why);
+      }
+      console.log(`newFolder done: ${onDisk ? "✓ 目录真建出来了" : "✗ 卡走完了但盘上没有这个目录"}`
+        + ` | 建在 ${parent || "项目根"} 下 · 盘上 ${onDisk ? "有" : "没有"}`
+        + ` · 树里 ${inTree}（那个父目录收起时子项本来就不画，所以这个数不是判据）`);
+      /* 收尾：直接删掉盘上那个目录（纪律⑥）。
+         ⚠️ 这是**项目副本**（`umbra_copy`），但也不该留 ——
+         下一轮跑的时候树里会多一行，而那会让「树里 N 行」那类判据读数变错。 */
+      try { const { rmSync } = await import("node:fs"); rmSync(dirOnDisk, { recursive: true, force: true }); } catch { /* 删不掉也无妨，它在副本里 */ }
+    }
+  } else {
+    console.log("newFolder prompt: ✗ 右键菜单里找不到「新建目录」—— 这一条没验到");
+  }
+  await win.keyboard.press("Escape");
+  await win.waitForTimeout(300);
+}
+
 // 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
 /* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
    原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——

@@ -2,6 +2,7 @@ import { PopItem, PopSep, PopoverAt } from "../ui/Popover";
 import type { Core } from "../api/client";
 import type { HostAdapter } from "../host";
 import { toast } from "../ui/Toast";
+import { askText } from "../ui/Ask";
 
 /** 目录的右键菜单（M8-21，形制按设计侧第八轮 §五）。
  *
@@ -114,10 +115,10 @@ export function makeActions(opts: {
   const { core, host, projectDir } = opts;
   return {
     newDraft: opts.onNewDraft,
-    newFolder: (dir) => {
+    newFolder: async (dir) => {
       /* 新建目录用的是**就地输入**那一套的简化版：先问名字。
          设计侧没画这一屏，这里用最轻的做法，等它给形制再换。【判断】 */
-      const name = window.prompt("新目录的名字", "新建目录");
+      const name = await askText({ title: "新目录的名字", initial: "新建目录", okLabel: "新建" });
       if (!name) return;
       void core.post("dir_create", { path: dir ? `${dir}/${name}` : name }).then((r) => {
         if (!r.ok) { toast("建不了", r.errors?.[0]?.message, "error"); return; }

@@ -1,4 +1,5 @@
 import { SidePanels } from "../../workbench/SidePanels";
+import { askText } from "../../ui/Ask";
 import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
 import { Seg, SizeBtn } from "../toolbar";
@@ -101,8 +102,8 @@ function menu(ctx: ViewContext) {
     { label: "在浏览器中打开", run: () => void ctx.host.openExternal(`${ctx.project.url}${encodeURIComponent(ctx.path).replace(/%2F/g, "/")}`) },
     /* 「存为模板…」是第九轮给「用户永远不知道有模板」这件事的解法（§十.2）：
        新建稿件那一屏在项目没有模板时整组不出，用户存过一次，那一组就出现了。 */
-    { label: "存为模板…", run: () => {
-      const name = window.prompt("模板名", ctx.path.split("/").pop()?.replace(/\.dc\.html$/, "") ?? "");
+    { label: "存为模板…", run: async () => {
+      const name = await askText({ title: "模板名", initial: ctx.path.split("/").pop()?.replace(/\.dc\.html$/, "") ?? "", okLabel: "存为模板" });
       if (!name) return;
       void ctx.core.post("save_template", { path: ctx.path, name }).then((r) => {
         ctx.ui.toast(r.ok ? "已存为模板" : "存不了", r.ok ? name : r.errors?.[0]?.message, r.ok ? "ok" : "error");

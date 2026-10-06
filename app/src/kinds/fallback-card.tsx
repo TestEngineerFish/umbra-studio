@@ -3,6 +3,7 @@ import type { Core } from "../api/client";
 import { fmtSize, timeAgo, type ReadFileResult } from "../api/types";
 import type { HostAdapter } from "../host";
 import { toast, moveToast, type MoveOut } from "../ui/Toast";
+import { askText } from "../ui/Ask";
 
 /** 通用文件卡（S15 形制，M8-5）：没有专用预览器的文件 —— 元数据 + 被谁引用 + 四个动作。
  *  一张居中卡片，最宽 520。禁用项的原因直接写在按钮下面，不藏在 hover 里。 */
@@ -18,7 +19,7 @@ export function FileCard({ core, host, path, onOpen }: { core: Core; host: HostA
   const cap = host.capabilities().revealInFinder;
   const name = path.split("/").pop() ?? path;
   const rename = async () => {
-    const next = window.prompt("改成什么名字？", name);
+    const next = await askText({ title: "改成什么名字？", initial: name, selectBase: true, okLabel: "改名" });
     if (!next || next === name) return;
     const to = path.includes("/") ? `${path.slice(0, path.lastIndexOf("/"))}/${next}` : next;
     const r = await core.post<MoveOut>("file_move", { from: path, to });

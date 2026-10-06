@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Core } from "../../api/client";
 import { fmtSize, timeAgo, type FileEntry, type ListFilesResult } from "../../api/types";
 import { toast, stuckOf, type MoveOut } from "../../ui/Toast";
+import { askText } from "../../ui/Ask";
 import { kindDef } from "@shared/kinds";
 
 /** 目录视图（S12 形制，M8-3 / M8-4）。
@@ -41,7 +42,7 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
   const toggle = (path: string) => onSelectionChange(selected.includes(path) ? selected.filter((x) => x !== path) : [...selected, path]);
   const crumbs = dirRel ? dirRel.split("/") : [];
   const move = async () => {
-    const to = window.prompt(`把这 ${selected.length} 项移到哪个目录？（相对项目根，留空 = 项目根）`, dirRel);
+    const to = await askText({ title: `把这 ${selected.length} 项移到哪个目录？`, hint: "相对项目根，留空 = 项目根", initial: dirRel, okLabel: "移过去" });
     if (to === null) return;
     const dest = to.replace(/^\/+|\/+$/g, "");
     let moved = 0, rewrote = 0, stuck = 0;
