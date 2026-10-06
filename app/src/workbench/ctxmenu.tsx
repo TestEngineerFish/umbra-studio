@@ -130,9 +130,15 @@ export function makeActions(opts: {
     toChat: opts.onToChat,
     rename: opts.onRename,
     duplicate: (path) => {
-      void core.post<{ file: string }>("duplicate_draft", { path }).then((r) => {
+      /* ⚠️ 字段叫 **`newPath`** 不是 `file`（issue #99 第 ③ 点）——
+         读错名字的后果是「toast 第二行一直是空的」，而那看起来**像是没有第二行**，
+         不像读错了字段。**一个读错的字段名，长得和「本来就没有这个信息」一模一样。**
+         `carriedErrors` 也要说：不说的话用户以为副本是干净的，
+         而 `project.ts` 里那句注释正是为这件事写的。 */
+      void core.post<{ newPath?: string; carriedErrors?: number }>("duplicate_draft", { path }).then((r) => {
         if (!r.ok) { toast("复制不了", r.errors?.[0]?.message, "error"); return; }
-        toast("已复制一份", r.data?.file, "ok");
+        const n = r.data?.carriedErrors ?? 0;
+        toast("已复制一份", n ? `${r.data?.newPath ?? ""} · 带着原稿的 ${n} 条 error` : r.data?.newPath, n ? "warn" : "ok");
         opts.refresh();
       });
     },

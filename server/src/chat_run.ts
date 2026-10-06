@@ -113,7 +113,21 @@ export async function executeToolCall(p: Project, tc: ToolCall): Promise<string>
       }
       case "move_file": {
         const r = await moveFile(p, String(args.from ?? ""), String(args.to ?? ""));
-        return JSON.stringify({ ok: true, from: r.from, to: r.to, rewrote: r.rewrote });
+        /* ⚠️ **把警告一起给模型**（issue #99，2026-10-06）。
+           原来这里手挑了三个字段，把 `refused`（引用方被写入口拒绝、**引用没改成**）
+           和 `unresolved`（解不出来的写法）丢掉了 —— 于是模型拿到的是
+           `ok:true` 加一份「改了哪些」的清单，**它没有任何信号知道还有稿的引用断了**，
+           会照着这份结果告诉用户「挪好了，引用都更新了」。
+           #92 那句「**假回执比没有回执糟**」在这条路上原样存在。
+           ⚠️ `warning` 这个字段是**专门给模型读的一句话** ——
+           只给 `refused` 数组的话，它得自己判断「空不空意味着什么」。 */
+        const stuck = (r.refused?.length ?? 0) + (r.unresolved?.length ?? 0);
+        return JSON.stringify({
+          ok: true, from: r.from, to: r.to, rewrote: r.rewrote, steps: r.steps,
+          ...(r.refused ? { refused: r.refused } : {}),
+          ...(r.unresolved ? { unresolved: r.unresolved } : {}),
+          ...(stuck ? { warning: `有 ${stuck} 处引用没改成（见 refused / unresolved）—— 文件已经挪走了，那几处引用现在是断的，要照实告诉用户` } : {}),
+        });
       }
 
       // ── 设计系统检索 ──

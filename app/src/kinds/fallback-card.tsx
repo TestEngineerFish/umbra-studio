@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Core } from "../api/client";
 import { fmtSize, timeAgo, type ReadFileResult } from "../api/types";
 import type { HostAdapter } from "../host";
-import { toast } from "../ui/Toast";
+import { toast, moveToast, type MoveOut } from "../ui/Toast";
 
 /** 通用文件卡（S15 形制，M8-5）：没有专用预览器的文件 —— 元数据 + 被谁引用 + 四个动作。
  *  一张居中卡片，最宽 520。禁用项的原因直接写在按钮下面，不藏在 hover 里。 */
@@ -21,10 +21,9 @@ export function FileCard({ core, host, path, onOpen }: { core: Core; host: HostA
     const next = window.prompt("改成什么名字？", name);
     if (!next || next === name) return;
     const to = path.includes("/") ? `${path.slice(0, path.lastIndexOf("/"))}/${next}` : next;
-    const r = await core.post<{ rewrote: Array<{ file: string }> }>("file_move", { from: path, to });
+    const r = await core.post<MoveOut>("file_move", { from: path, to });
     if (!r.ok) { toast("改名失败", r.errors?.[0]?.message, "error"); return; }
-    const n = r.data?.rewrote.length ?? 0;
-    toast(`已改名为 ${next}`, n ? `顺带改了 ${n} 份稿里的引用` : undefined, "ok");
+    moveToast(r.data, `已改名为 ${next}`);
     onOpen(to, false);
   };
   const del = async () => {

@@ -1001,6 +1001,44 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("（对照）文件确实挪走了 —— 所以「没说」的后果是真的",
      existsSync(join(D2, "图", "坏图.png")) && !existsSync(join(D2, "坏图.png")));
 
+  /* ── 这件事**模型也得看得见**（issue #99，2026-10-06）──
+     #92 在服务端加了 `refused`，#76 加了 `unresolved`（注释写着「**不静默**」），
+     而应用内 AI 通道那一支**手挑了三个字段**，把两者都丢掉了：
+     模型拿到 `ok:true` 加一份「改了哪些」的清单，**没有任何信号知道还有引用断了**，
+     于是会照着这份结果告诉用户「挪好了，引用都更新了」。
+     **服务端说了不等于消费方听见了** —— 而这条路上的消费方是模型。 */
+  {
+    const { executeToolCall } = await import("./chat_run.js");
+    /* ⚠️ **自带夹具**：上一节已经把 `坏图.png` 挪走了，照用的话这里会变成
+       「文件不存在」→ 回执里自然没有 `refused`，而判据红在**夹具**上。
+       §143.6 那条「样本之间互相毁夹具」的第 N 次 —— 这次是跨小节。 */
+    await wf2(join(D2, "坏稿二.dc.html"), 坏.replace("坏图.png", "坏图二.png"), "utf8");
+    await wf2(join(D2, "坏图二.png"), "png", "utf8");
+    /* ⚠️ `ToolCall` 是 **OpenAI 那个形状**（`function.arguments` 是 **JSON 串**），
+       不是 `{ name, args }`。第一版照直觉写成后者，`executeToolCall` 里
+       `tc.function.arguments` 当场 `TypeError` ——
+       **判据照直觉拼的入参，和产品真实的入参不是一回事**（§65.6 同一族）。 */
+    const out = await executeToolCall(proj92, {
+      id: "t1", type: "function",
+      function: { name: "move_file", arguments: JSON.stringify({ from: "坏图二.png", to: "图二/坏图二.png" }) },
+    });
+    const j = JSON.parse(out) as Record<string, unknown>;
+    /* ⚠️ 这个文件的 `ok()` 是 `(label, cond)` —— 而 `plugintest` / `lifecycletest`
+       那边是 `(cond, label)`。**同名函数在不同文件里参数顺序相反**，
+       写反了编译器这次拦住了（`boolean` 不能当 `string`），
+       但 §9.1.7 那条教训说的正是「一个只打印的 `ok` 长得和判据一模一样」——
+       那次没有类型挡着。 */
+    ok("**模型拿到的回执里有 `refused`**（引用没改成的那几份）",
+       Array.isArray(j.refused) && (j.refused as unknown[]).length === 1, JSON.stringify(j.refused ?? null).slice(0, 70));
+    /* ⚠️ 光给数组不够：模型得知道「这个数组非空意味着什么」。
+       所以还给一句**专门写给它读**的 `warning`。 */
+    ok("**而且有一句专门给模型读的 `warning`**（只给数组的话它得自己猜空不空意味着什么）",
+       typeof j.warning === "string" && /没改成/.test(String(j.warning)),
+       String(j.warning ?? "（没有）").slice(0, 60));
+    ok("`steps` 也给了（里面那句「⚠️ X 的引用没改成」是人话）", Array.isArray(j.steps),
+       `${(j.steps as unknown[])?.length ?? 0} 条`);
+  }
+
   await rm(D2, { recursive: true, force: true });
 }
 

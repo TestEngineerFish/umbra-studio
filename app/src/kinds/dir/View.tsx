@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Core } from "../../api/client";
 import { fmtSize, timeAgo, type FileEntry, type ListFilesResult } from "../../api/types";
-import { toast } from "../../ui/Toast";
+import { toast, stuckOf, type MoveOut } from "../../ui/Toast";
 import { kindDef } from "@shared/kinds";
 
 /** 目录视图（S12 形制，M8-3 / M8-4）。
@@ -44,13 +44,19 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
     const to = window.prompt(`把这 ${selected.length} 项移到哪个目录？（相对项目根，留空 = 项目根）`, dirRel);
     if (to === null) return;
     const dest = to.replace(/^\/+|\/+$/g, "");
-    let moved = 0, rewrote = 0;
+    let moved = 0, rewrote = 0, stuck = 0;
     for (const path of selected) {
       const name = path.split("/").pop()!;
-      const r = await core.post<{ rewrote: Array<{ file: string }> }>("file_move", { from: path, to: dest ? `${dest}/${name}` : name });
-      if (r.ok) { moved++; rewrote += r.data?.rewrote.length ?? 0; } else toast(`${name} 没挪成`, r.errors?.[0]?.message, "error");
+      const r = await core.post<MoveOut>("file_move", { from: path, to: dest ? `${dest}/${name}` : name });
+      if (r.ok) { moved++; rewrote += r.data?.rewrote?.length ?? 0; stuck += stuckOf(r.data); }
+      else toast(`${name} 没挪成`, r.errors?.[0]?.message, "error");
     }
-    if (moved) toast(`挪了 ${moved} 项到 ${dest || "项目根"}`, rewrote ? `顺带改了 ${rewrote} 处引用` : undefined, "ok");
+    /* ⚠️ **有没改成的引用就不是绿的**（issue #99）：原来只读 `rewrote`，
+       于是「文件挪走了、某份稿的引用断了」这件事在界面上**一点痕迹都没有**。 */
+    if (moved) {
+      if (stuck) toast(`挪了 ${moved} 项，但有 ${stuck} 处引用没改成`, "那几处引用现在是断的 —— 打开那几份稿看一眼", "warn");
+      else toast(`挪了 ${moved} 项到 ${dest || "项目根"}`, rewrote ? `顺带改了 ${rewrote} 处引用` : undefined, "ok");
+    }
     onSelectionChange([]); setTick((t) => t + 1);
   };
   const del = async (path: string) => {
