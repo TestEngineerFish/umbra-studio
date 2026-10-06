@@ -3,6 +3,16 @@
 
    它同时是**沙箱的攻击样本**：下面 probe 那件能力故意去做插件不该做的事，
    plugintest 拿它来验「关不关得住」。沙箱不被攻一次，等于没验。 */
+/* ── issue #122 的样本（2026-10-06）──
+   ① **入口之外的相对 import**：第一版算到了「进程 cwd」上，于是整个插件装不起来；
+   ② **同名模块串号**：`./util.mjs` 和 `子目录/util.mjs` 在「规范化名没解析」时
+      是同一个缓存键，后者拿到前者那份 —— 这一种是**静默算错**，比报错难查。
+   ⚠️ 这两条**只有 B 面拆成多个文件时才会出现**，而唯一的内置 B 面插件
+   （markdown）一个 import 都没有，所以回归原来测不到。 */
+import { greet } from "./helper.mjs";
+import { who as rootWho } from "./util.mjs";
+import { sees } from "./子目录/a.mjs";
+
 export default function register(host) {
   host.defineCap({
     name: "com.umbra.demo.rows",
@@ -15,6 +25,15 @@ export default function register(host) {
       const lines = String(out.data.content ?? "").split("\n").filter((l) => l.trim());
       return { ok: true, rows: lines.length, header: (lines[0] ?? "").split(",") };
     },
+  });
+
+  /* issue #122：把上面三个 import 的结果报出来，判据读它 */
+  host.defineCap({
+    name: "com.umbra.demo.imports",
+    title: "（测试用）多文件 import 的结果",
+    summary: "报出入口之外的相对 import 和同名模块各自拿到了什么。给 plugintest 验 issue #122。",
+    input: {},
+    async run() { return { helper: greet(), root: rootWho, sub: sees }; },
   });
 
   /* ── 攻击样本：这几件插件都不该做成 ──
@@ -82,6 +101,23 @@ export default function register(host) {
      promise 落地，**插件的死循环还在空转**（进程占着一个核直到被 kill）。
      QuickJS 的 `setInterruptHandler` 能在解释器**里面**把它打断，
      所以这件能力该在 10 秒内抛，而且**沙箱还活着**（下一次调用照常能用）。 */
+  /* ⚠️ **把死循环挂在 `host.call` 的回调里**（issue #123，2026-10-06）。
+     和上面那件 `spin` 的区别是全部：`spin` 同步跑在 `run` 里，
+     而这一件**先返回**、把活挂在 `.then()` 上 —— 于是死循环发生在
+     「宿主回话之后的 `executePendingJobs()`」里。
+     第一版的期限只在 `invoke` 窗口里有值，那一刻已经归零 → **打不断**。
+     判据：调它之后再调对照组 `rows`，要在 11 秒内回来。 */
+  host.defineCap({
+    name: "com.umbra.demo.spinLater",
+    title: "（测试用）把死循环挂在回调里",
+    summary: "先返回，再在 host.call 的回调里死循环。给 plugintest 验「这一种也打得断吗」。",
+    input: {},
+    async run() {
+      host.call("read_file", { path: "表.udemo" }).then(function () { for (;;) { /* 就是要一直转 */ } });
+      return "已经返回了（死循环在回调里）";
+    },
+  });
+
   host.defineCap({
     name: "com.umbra.demo.spin",
     title: "（测试用）死循环",

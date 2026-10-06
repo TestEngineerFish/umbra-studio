@@ -55,8 +55,8 @@ let started = true;
 try { await sb.start(); } catch (e) { started = false; ok(false, "沙箱起得来", (e as Error).message); }
 
 if (started) {
-  /* 3 件：rows（对照组）· probe（攻击样本）· spin（Q48 加的死循环样本） */
-  ok(sb.caps.length === 3, "插件声明的能力报上来了", `${sb.caps.map((c) => c.name).join(" / ")}`);
+  /* 5 件：rows（对照组）· imports（#122）· probe（攻击样本）· spinLater（#123）· spin（Q48） */
+  ok(sb.caps.length === 5, "插件声明的能力报上来了", `${sb.caps.map((c) => c.name).join(" / ")}`);
   ok(sb.caps.every((c) => c.name.startsWith("com.umbra.demo.")), "能力名带插件 id 前缀（防两个插件撞名）");
 
   /* **先做正向**：不先证明这条路是通的，后面「被拦住」就分不清是关住了还是本来就没通
@@ -144,6 +144,53 @@ if (started) {
       .catch((e) => ({ ok: false, why: (e as Error).message })) as Record<string, unknown>;
     ok(again.ok === true,
        "⑧b **而沙箱还活着**（打断一次不等于把插件整个弄死）", JSON.stringify(again).slice(0, 60));
+  }
+
+  /* ── B 面拆成多个文件（issue #122，2026-10-06）──
+     Q48 的 module loader 第一版两条都错：**入口之外的相对 import 全被拒**
+     （算到了进程 cwd 上）· **同名模块串号**（规范化名没解析 → 缓存键相同）。
+     ⚠️ 回归原来测不到的原因写在这儿：唯一有 B 面的内置插件
+     `com.umbra.markdown/tools.mjs` **一个 import 都没有** ——
+     而 Q48 当时还把这句当成「迁移成本≈0」的理由。
+     **「没有人这么用」不等于「这么用没问题」。** */
+  {
+    const im = await sb.invoke("com.umbra.demo.imports", {}, p)
+      .catch((e) => ({ err: (e as Error).message })) as Record<string, string>;
+    ok(im.helper === "helper 在",
+       "① **入口之外的相对 import 装得起来**（原来算到了「进程 cwd」上，整个插件装不起来）",
+       im.err ?? im.helper);
+    /* ②「静默算错」那一种：子目录那份 `a.mjs` import 的是**它旁边**那个 util。
+       ⚠️ 判据必须比**具体是哪一份**，不能只比「有值」—— 串号的时候它也有值。 */
+    ok(im.root === "根目录的 util" && im.sub === "子目录的 util",
+       "② **同名模块各拿到自己那一份**（串号是静默算错，比报错难查）",
+       `root=${im.root} · sub=${im.sub}`);
+  }
+
+  /* ── 死循环挂在 `host.call` 的回调里（issue #123，2026-10-06）──
+     ⑧/⑧b 量的是**同步**写在 `run` 里的那一种。而插件可以不等 `host.call` 就返回、
+     把活挂在 `.then()` 上 —— 那时死循环跑在「宿主回话之后的 `executePendingJobs()`」里，
+     而第一版的期限只在 `invoke` 窗口里有值，**那一刻已经归零 → 打不断**。
+     后果正是 Q48 声称修掉的那种状态：沙箱 100% 占一个核、之后每次调用等满 15 秒。 */
+  {
+    const t0 = Date.now();
+    const ret = await sb.invoke("com.umbra.demo.spinLater", {}, p).catch((e) => ({ err: (e as Error).message }));
+    ok(typeof ret === "string" && /已经返回/.test(ret),
+       "⑨（前提）它确实**先返回**了，死循环在回调里", JSON.stringify(ret).slice(0, 40));
+    /* ⚠️ **先等一秒**，这一步是判据的一部分（2026-10-06 实测栽过）。
+       不等的话下一条 `invoke` 的消息会和 `host:done` **抢着被处理** ——
+       实测我这边 `invoke` 先到，它顺手设了期限，于是死循环被**它的**期限打断，
+       **撤掉修法判据照样绿**（反向验证第一次就是这样）。
+       issue 的复现里 `ping` 发得晚，那时子进程已经卡死、连消息都读不到。
+       **判据要复现那条时间线，而不是复现「我这次碰巧的时序」。** */
+    await new Promise((r) => setTimeout(r, 1200));
+    /* 真正的判据：**之后还调得动**。13 秒是 DEADLINE_MS(10s) 留余量；
+       超过宿主那条 15 秒 RPC 超时就说明没打断。 */
+    const after = await sb.invoke("com.umbra.demo.rows", { path: "表.udemo" }, p)
+      .catch((e) => ({ ok: false, why: (e as Error).message })) as Record<string, unknown>;
+    const ms = Date.now() - t0;
+    ok(after.ok === true && ms < 14_000,
+       "⑨b **回调里的死循环也打得断，沙箱还调得动**（原来：进程空转，之后每次调用等满 15 秒）",
+       `${ms}ms · ${JSON.stringify(after).slice(0, 50)}`);
   }
 
   sb.stop();

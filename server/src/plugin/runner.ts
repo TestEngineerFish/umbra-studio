@@ -78,6 +78,32 @@ let errToText: QuickJSHandle;
 /** 本次调用的截止时刻；0 = 不限（加载插件那一下用） */
 let deadline = 0;
 
+/** 把控制交给 VM 跑挂起的任务 —— **每次都现给一个期限**（issue #123，2026-10-06）。
+ *
+ *  ⚠️ 第一版 `deadline` 只在 `invoke` 那一段 `try…finally` 里有值，`run` 一返回就归零。
+ *  而插件可以**不等 `host.call` 就返回**、把活挂在 `.then()` 上：
+ *
+ *  ```js
+ *  run: () => { host.call("read_file", {}).then(() => { for(;;){} }); return "returned"; }
+ *  ```
+ *
+ *  这时死循环跑在**宿主回话之后**的 `executePendingJobs()` 里，而那一刻
+ *  `deadline === 0` → 中断判定永不成立 → 沙箱进程 100% 占一个核、再也不回话，
+ *  之后每次调用都要等满宿主那条 15 秒 RPC 超时。
+ *  **那正是 Q48 声称修掉的那种状态**（§150.3 的「退回去」那一列）。
+ *
+ *  `plugintest` ⑧/⑧b 测不到它 —— 它们量的是**同步**写在 `run` 里的死循环。
+ *
+ *  顺带修掉另一半：`deadline` 原来是全局单值，两个 invoke 在飞时**先完成的那个
+ *  `finally` 会把后一个的期限也清掉**。现在期限是「每次进 VM 的局部值」，
+ *  进来前存、出去后还，并发也不互相清。 */
+function runJobs(): void {
+  const prev = deadline;
+  deadline = Date.now() + DEADLINE_MS;
+  try { rt.executePendingJobs(); }
+  finally { deadline = prev; }
+}
+
 /** Node 的值 → VM 里的值 */
 function toVm(v: unknown): QuickJSHandle {
   return Scope.withScope((s) => {
@@ -107,33 +133,53 @@ function vmErrorText(h: QuickJSHandle): string {
 
 /** 插件能 `import` 到什么 —— **宿主的显式选择**。
  *  原来插件在 Node 里跑，`import` 得到任何它读得到的东西；
- *  现在只有它自己目录下的文件，而且**文件内容由我们读出来递进去**，
- *  VM 里没有 fs。 */
-function loadModule(name: string, fromFile: string): string {
-  const base = fromFile && fromFile !== "__boot__" ? dirname(fromFile) : dir;
-  const abs = isAbsolute(name) ? resolve(name) : resolve(base, name);
-  /* ⚠️ 必须在插件目录里 —— `resolve` 会折叠 `..`（#57 / #63 / #69 那一族）。
-     判定和那几条用同一个形状：解出来之后比，不比输入的字符串。 */
+ *  现在只有它自己目录下的文件，而且**文件内容由我们读出来递进去**，VM 里没有 fs。
+ *
+ *  ⚠️ **规范化和读取分成两步**（issue #122，2026-10-06）。
+ *  第一版把解析写在 loader 里、normalizer 只做 `return name`，于是两条都错：
+ *
+ *  ① **入口之外的任何相对 import 都被拒**：`tools.mjs` 里 `import "./helper.mjs"`，
+ *     normalizer 给 loader 的 base 是上一个模块的**规范化名**（也就是 `"./tools.mjs"`
+ *     这种相对串），`resolve(dirname("./tools.mjs"), "./helper.mjs")` 算出来是
+ *     **`<进程 cwd>/helper.mjs`** —— 不在插件目录下，当场抛「只能 import 自己目录下的文件」。
+ *  ② **同名模块串号**：QuickJS 按**规范化名**缓存模块，而名字没解析成绝对路径时
+ *     `./util.mjs` 和 `lib/` 里的 `./util.mjs` 是**同一个键** —— 后者拿到前者那份。
+ *     这一种是「静默算错」，比报错难查得多。
+ *
+ *  回归测不出来的原因也写在这儿：唯一有 B 面的内置插件 `com.umbra.markdown/tools.mjs`
+ *  **一个 import 都没有**（`doc/11` Q48 当时还把这句当成「迁移成本≈0」的理由）。
+ *
+ *  现在：normalizer 解析成**绝对路径**并在那里守闸，loader 只认绝对路径。
+ *  规范化名唯一 → 缓存键唯一 → ①② 一起消掉，`currentImporter` 那个全局变量也不用了
+ *  （它本来靠「normalizer 先跑、loader 紧跟」的时序，模块图稍深就会串）。 */
+function resolveSpec(base: string, name: string): string {
   const root = resolve(dir);
+  /* bootstrap 那一层的 base 是 `__boot__`（不是真路径）—— 它的相对基准是插件目录本身 */
+  const baseDir = base && base !== "__boot__" ? dirname(base) : root;
+  const abs = isAbsolute(name) ? resolve(name) : resolve(baseDir, name);
+  /* ⚠️ `resolve` 会折叠 `..`（#57 / #63 / #69 那一族）——
+     所以判定放在**解出来之后**，比的是结果不是输入的字符串。 */
   if (abs !== root && !abs.startsWith(root + sep)) {
     throw new Error(`插件只能 import 自己目录下的文件：${name}`);
   }
+  return abs;
+}
+
+function loadModule(abs: string): string {
   try { return readFileSync(abs, "utf8"); }
-  catch { throw new Error(`import 不到 ${name}`); }
+  catch { throw new Error(`import 不到 ${abs.startsWith(resolve(dir)) ? abs.slice(resolve(dir).length + 1) : abs}`); }
 }
 
 function buildVm(): void {
   rt.setMemoryLimit(MEM_LIMIT);
   /* 到点就打断。⚠️ 返回 `true` 才是「中断」—— 写反的话插件一死循环整个进程就没了 */
   rt.setInterruptHandler(() => deadline > 0 && Date.now() > deadline);
-  rt.setModuleLoader((name, modCtx) => {
-    void modCtx;
-    return loadModule(name, currentImporter);
-  }, (base, name) => {
-    /* 规范化：我们自己记住「谁在 import」，名字原样传给 loader */
-    currentImporter = base;
-    return name;
-  });
+  rt.setModuleLoader(
+    (abs) => loadModule(abs),
+    /* ⚠️ **闸在这里**（issue #122）：规范化的结果就是模块的身份（缓存键），
+       所以「能不能 import」必须在这一步定，而不是等 loader 再判。 */
+    (base, name) => resolveSpec(base, name),
+  );
 
   jsonParse = ctx.unwrapResult(ctx.evalCode("JSON.parse", "__json__"));
   jsonStringify = ctx.unwrapResult(ctx.evalCode("JSON.stringify", "__json__"));
@@ -162,7 +208,7 @@ function buildVm(): void {
           /* ⚠️ **必须自己驱动任务队列**：QuickJS 不像 Node 有事件循环，
              promise 的后续（插件 `await` 之后那几行）要我们推一把才会跑。
              不推的话症状是「插件的 run 永远不返回」—— 和 #97 一模一样的长相。 */
-          rt.executePendingJobs();
+          runJobs();
         },
       });
       send({ type: "host", id, cap, input });
@@ -183,9 +229,6 @@ function buildVm(): void {
   });
 }
 
-/** 模块加载时「谁在 import」—— `setModuleLoader` 的 normalizer 先跑，把它记下来 */
-let currentImporter = "__boot__";
-
 /** 把插件装进来：bootstrap 一个模块，把它的 default 导出当 `register(host)` 调掉。
  *  ⚠️ 用 bootstrap 而不是「把源码包进一个函数」—— 插件写的是标准 ESM
  *  （`export default`），包进函数是语法错误；而**什么能 import 由 loader 说了算**，
@@ -204,7 +247,7 @@ function loadPlugin(): void {
     throw new Error(why);
   }
   res.value.dispose();
-  rt.executePendingJobs();
+  runJobs();
 }
 
 process.on("message", async (raw: unknown) => {
@@ -248,9 +291,9 @@ process.on("message", async (raw: unknown) => {
           /* 返回的可能是 promise（`async run`），也可能是普通值 —— 两种都要接住。 */
           if (ctx.typeof(retH) === "object") {
             const nat = ctx.resolvePromise(retH);
-            rt.executePendingJobs();
+            runJobs();
             const settled = await nat;
-            rt.executePendingJobs();
+            runJobs();
             if (settled.error) {
               const why = vmErrorText(settled.error);
               settled.error.dispose();

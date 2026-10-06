@@ -115,6 +115,9 @@ export class PluginSandbox {
 
   /** 调插件声明的一件能力 */
   async invoke(capName: string, input: unknown, project: Project): Promise<unknown> {
+    /* ⚠️ 沙箱可能被上一次超时停掉了（issue #123）——**重开**，而不是报「沙箱没起来」。
+       后者会把一次性的卡死变成「这个插件从此不能用」。 */
+    if (!this.child) await this.start();
     this.ctx = { manifest: this.manifest, project };
     return this.rpc("invoke", { cap: capName, input });
   }
@@ -129,7 +132,17 @@ export class PluginSandbox {
       this.child.send({ id, type, ...payload });
       /* 超时必须有：插件里一个死循环会让整个会话卡住，而症状是「AI 不动了」 */
       setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`插件 ${this.manifest.id} 的 ${type} 超时（15s）`));
+        if (!this.pending.delete(id)) return;
+        /* ⚠️ **超时就把子进程停掉**（issue #123，2026-10-06）。
+           Q48 的读数是「打断之后沙箱还活着」，而那只对**同步**死循环成立 ——
+           挂在 `host.call` 回调里的那一种，VM 里的中断判定来不及生效（见 `runner.ts`
+           的 `runJobs`），结果是**那个进程 100% 占一个核、再也不回话**，
+           而这条 RPC 超时原来**不杀它、也不重启** → 之后每次调用都等满 15 秒。
+           「打不断时至少要能换一个活的」：停掉它，下次 `invoke` 会重新 `start()`。
+           ⚠️ 只在 `invoke` 超时时停 —— `init` 超时时进程多半还没起好，
+           `stop()` 它只会把真正的原因（起不来）盖成「超时」。 */
+        if (type === "invoke") this.stop();
+        reject(new Error(`插件 ${this.manifest.id} 的 ${type} 超时（15s）${type === "invoke" ? "；沙箱已停掉，下次调用会重开" : ""}`));
       }, 15_000);
     });
   }
