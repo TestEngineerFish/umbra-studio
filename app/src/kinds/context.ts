@@ -85,7 +85,11 @@ export interface ViewContext {
      *  给的是那些**会覆盖或丢掉内容**的动作用的（变更卡的「回退」）。
      *  没改动时同步放行，所以调用点不用自己判断。 */
     confirmLeave(path: string): Promise<boolean>;
-    toast(title: string, body?: string, kind?: "error" | "ok"): void;
+    /** ⚠️ **`warn` 这一档是给「成了一半」用的**（issue #99 加在 `Toast.tsx` 里，
+     *  #111 这里才接上）—— 格式模块原来只能说「成了 / 没成」，
+     *  于是「挪了 8 份，其中 2 份刚被 AI 改过所以没动」只能二选一：
+     *  说成功是**假回执**，说失败用户不知道那 6 份其实成了。 */
+    toast(title: string, body?: string, kind?: "error" | "ok" | "warn"): void;
   };
 
   /** AI 侧的能力查询。图片视图要问「这个引擎吃不吃图」，

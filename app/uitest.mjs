@@ -38,7 +38,27 @@ if (!URL_) { console.error("用法：node app/uitest.mjs <__app 的 URL>"); proc
 const NOISE = [/favicon/i, /attribute d: Expected moveto/i];
 
 let pass = 0, fail = 0;
-const ok = (c, s, d = "") => { c ? pass++ : fail++; console.log((c ? "  ✓ " : "  ✗ ") + s + (d ? ` — ${d}` : "")); };
+/* ── 每一节跑了几条（2026-10-07）──
+   ⚠️ 为什么要记：总数那道闸（文件末尾的 `EXPECT_AT_LEAST`）能发现「少跑了 1 条」，
+   但**发现之后无从下手** —— 414 和 415 之间差的是哪一节，日志里看不出来。
+   实测就这样：第一次抓到 414 时日志没留，重跑两轮都是 415，定位不了。
+   所以报警的时候**把逐节条数打出来**，和一轮正常的日志一比就知道是哪一节。
+
+   节名靠「这一行不以空格开头」认 —— 判据行是 `ok()` 打的，一律两个空格缩进。 */
+let section = "(开头)";
+const sectionN = new Map();
+const rawLog = console.log;
+console.log = (...a) => {
+  const t = String(a[0] ?? "");
+  const head = t.replace(/^\n+/, "");
+  if (head && !/^[\s✓✗–]/.test(head)) section = head.slice(0, 44);
+  rawLog(...a);
+};
+const ok = (c, s, d = "") => {
+  c ? pass++ : fail++;
+  sectionN.set(section, (sectionN.get(section) ?? 0) + 1);
+  console.log((c ? "  ✓ " : "  ✗ ") + s + (d ? ` — ${d}` : ""));
+};
 
 const b = await chromium.launch({ channel: "chrome" }).catch(() => chromium.launch());
 const pg = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
@@ -3864,6 +3884,8 @@ const EXPECT_AT_LEAST = 415;
   if (ran < EXPECT_AT_LEAST) {
     console.log(`  ✗ **少跑了 ${EXPECT_AT_LEAST - ran} 条判据**（这一轮只跑了 ${ran}，该有 ${EXPECT_AT_LEAST} 条）`);
     console.log("    —— 某一节静默跳过了。全绿不代表验到了：先找哪一节少了，再看读数。");
+    console.log("    逐节条数（和一轮正常的日志比，少的那一节就是它）：");
+    for (const [k, v] of sectionN) console.log(`      ${String(v).padStart(3)}  ${k}`);
     /* 缺的那几条**都算红** —— 这样汇总行写的是 `408/415` 而不是 `408/409`：
        「没验到」的条数要出现在分母里，否则汇总行自己就把问题藏了。 */
     fail += EXPECT_AT_LEAST - ran;

@@ -69,7 +69,12 @@ defineCap({
     const proj = p(c);
     const r = await rel(c, file);
     const src = await readFile(draftPath(proj, r), "utf8");
-    return envelope({ file: r, bytes: Buffer.byteLength(src, "utf8"), lines: src.split("\n").length, source: src });
+    /* ⚠️ **sha 一起给出来**（issue #111）：调用方要做「读 → 改 → 写回」时，
+       `write_draft` 的 `expectedSourceSha256` 需要「我读到的是哪一版」。
+       让服务端给，而不是让前端自己 `crypto.subtle.digest` 算 ——
+       两份 sha 实现迟早会在换行归一化之类的细节上分叉，而那时的症状是
+       **并发保护永远触发**（或永远不触发），两种都很难查。 */
+    return envelope({ file: r, bytes: Buffer.byteLength(src, "utf8"), lines: src.split("\n").length, source: src, sha256: sha256(src) });
   },
 });
 

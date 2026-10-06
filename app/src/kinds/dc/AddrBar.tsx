@@ -83,25 +83,46 @@ function AddrSheet({ ctx, onClose }: { ctx: ViewContext; onClose: () => void }) 
   const run = async () => {
     setBusy(true);
     const targets = [d.file, ...(all ? others : [])];
-    let ok = 0, skipped = 0; const failed: string[] = [];
+    let ok = 0, skipped = 0, conflict = 0; const failed: string[] = [];
     for (const f of targets) {
       /* **原样写回去**：写入口落盘时会自己给整份打地址（`stampNodes`，幂等）。
          所以这颗钮不需要任何新能力 —— 读一遍、原样写回。
          实测 5 份用户真实的稿全部能过落盘前的校验（`00` §102.3）。 */
-      const src = await ctx.core.get<{ source?: string }>(`source?file=${encodeURIComponent(f)}`);
+      const src = await ctx.core.get<{ source?: string; sha256?: string }>(`source?file=${encodeURIComponent(f)}`);
       if (!src.ok || typeof src.data?.source !== "string") { failed.push(f); continue; }
-      const w = await ctx.core.post<{ unchanged?: boolean }>("draft_write", { path: f, content: src.data.source });
+      /* ── 带上「我读到的是哪一版」（issue #111）──
+         ⚠️ 「读」和「写回」是**两个独立的请求**，中间这段时间里 AI（会话里正在跑的
+         那一轮、或者外部 MCP 客户端）完全可能改了同一份稿 —— 而勾了「全部」时
+         这个时间窗是 N 份稿串行读写的**总时长**，不是一次请求那么短。
+         不带 sha 的话 ② 会把**读之前的旧内容**整份写回去：**AI 刚做的改动被回滚，
+         而提示还是「加上了地址 · N 份」**。
+         ⚠️ sha 由服务端在 `source` 里一起给（`read_draft` 的 `sha256`），
+         不在浏览器里自己算 —— 见那边的注释。 */
+      const w = await ctx.core.post<{ unchanged?: boolean; written?: boolean; refused?: string | null }>(
+        "draft_write", { path: f, content: src.data.source, ...(src.data.sha256 ? { expectedSourceSha256: src.data.sha256 } : {}) });
+      /* ⚠️ **`ok: true` 不等于写成了**（issue #111 的第二半）：并发被拒时
+         `written:false` + `refused:"并发写入冲突…"` 而 `diags` 是空的，
+         于是信封给的是 **`ok: true`** —— 只看 `w.ok` 的话这一份会被算进「加上了」。
+         这是「调写入口不看返回的 `written` / `refused`」那一类。 */
       if (!w.ok) { failed.push(f); continue; }
+      if (w.data?.refused) { conflict++; continue; }
       /* `unchanged` = 这份稿本来就有地址，原样写回后内容一致，写入口短路了 —— 不算「加上了一份」 */
       if (w.data?.unchanged) skipped++; else ok++;
     }
     setBusy(false);
     onClose();
+    /* ⚠️ **「刚被别人改过所以没动」要单独说出来**（issue #111）：
+       把它混进「没成功」的话用户不知道该怎么办，而这件事有明确的下一步 ——
+       再点一次。混进「加上了」就更糟：那是**假成功**。 */
+    const retry = conflict ? `${conflict} 份刚被改过（多半是 AI 正在改），没动 —— 稍后再点一次` : "";
     if (ok) {
       d.recount();
       d.reload();
-      const tail = [skipped ? `${skipped} 份本来就有，没动` : "", failed.length ? `${failed.length} 份没成功` : ""].filter(Boolean).join(" · ");
-      ctx.ui.toast(`加上了地址 · ${ok} 份`, tail || "三档现在能用了，改前那版留在「变更」里", failed.length ? "error" : "ok");
+      const tail = [skipped ? `${skipped} 份本来就有，没动` : "", retry, failed.length ? `${failed.length} 份没成功` : ""].filter(Boolean).join(" · ");
+      ctx.ui.toast(`加上了地址 · ${ok} 份`, tail || "三档现在能用了，改前那版留在「变更」里",
+        failed.length ? "error" : conflict ? "warn" : "ok");
+    } else if (conflict && !failed.length) {
+      ctx.ui.toast("这会儿没动它", retry, "warn");
     } else if (skipped && !failed.length) {
       ctx.ui.toast("都已经有地址了", `${skipped} 份没动`, "ok");
     } else {

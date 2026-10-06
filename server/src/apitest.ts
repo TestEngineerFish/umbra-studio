@@ -637,5 +637,84 @@ console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
   await rm(root, { recursive: true, force: true });
 }
 
+/* ── 读 → 改 → 写回：中间别人改过就不许盖（issue #111）──
+   「加上地址」那颗钮对每一份稿做的是 ① `GET source` ② `POST draft_write` 整份写回。
+   这是**两个独立的请求**，中间 AI（会话里正在跑的那一轮、或外部 MCP 客户端）
+   完全可能改了同一份稿 —— 勾了「全部」时这个时间窗是 N 份稿串行读写的**总时长**。
+   不带 `expectedSourceSha256` 的话 ② 把**读之前的旧内容**整份写回去：
+   **AI 刚做的改动被回滚，而提示还是「加上了地址 · N 份」。**
+
+   ⚠️ 这一节钉**两件事**，第二件才是真正容易漏的：
+   ① 带旧 sha 写回要被拒，而且**盘上留的是新内容**；
+   ② 被拒时信封给的是 **`ok: true`**（`written:false` + `refused`，而 `diags` 是空的）——
+      所以「只看 `w.ok`」的调用方会把被拒算成成功。**判据要钉住 `ok === true`**，
+      否则哪天信封改成 `ok:false`，前端那句 `if (!w.ok)` 就自己对了，
+      而我们会以为是判据在守着它。
+
+   ⚠️ 用**临时项目**，不碰 `p`（它是用户真实的项目）—— 和 FIFO 那一节同一个理由。 */
+console.log("\n⑧ 读 → 改 → 写回，中间别人改过就不许盖（issue #111）");
+{
+  const { mkdtemp, writeFile: wf5, readFile: rf5, rm: rm3 } = await import("node:fs/promises");
+  const { join: j3 } = await import("node:path");
+  const { tmpdir: td3 } = await import("node:os");
+  const T = await mkdtemp(j3(td3(), "umbrastudio-rmw-"));
+  await wf5(j3(T, "project.json"), JSON.stringify({ name: "rmwtest", title: "读改写回归" }), "utf8");
+  const pr = await buildProject(T);
+  const sr = await serveStart(pr);
+  /* ⚠️ **route 里可能已经有 `?`** —— 第一版写死 `?token=`，于是
+     `source?file=X` 拼成了 `…/source?file=X?token=…`：读不到源码 → `content` 是空串
+     → 后面三条全部红在「有 1 条 error 级诊断，按契约拒绝落盘」上。
+     **四条红里只有一条红在它声称的那件事上**，另外三条红的是我的 URL ——
+     而「带旧 sha 写回被拒」这条读数**长得完全符合预期**（它确实被拒了，
+     只是为了另一个原因）。纪律④ 的又一例：量到「被拒」先问是哪一道闸拒的。 */
+  const ur = (route: string) => `${sr.url}__ud/${route}${route.includes("?") ? "&" : "?"}token=${encodeURIComponent(sr.token)}`;
+  const postR = (route: string, body: unknown) => fetch(ur(route), {
+    method: "POST", headers: { "content-type": "application/json", origin: sr.url.replace(/\/$/, "") },
+    body: JSON.stringify(body),
+  }).then((x) => x.json() as Promise<{ ok?: boolean; data?: Record<string, unknown>; errors?: Array<{ message?: string }> }>);
+
+  const F = "读改写.dc.html";
+  const made = await postR("draft_write", { path: F, content:
+    "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<script src=\"./support.js\"></script>\n</head>\n<body>\n<x-dc>\n<div>原来的一行</div>\n</x-dc>\n<script type=\"text/x-dc\" data-dc-script data-props=\"{}\">\nclass Component extends DCLogic { renderVals() { return {}; } }\n</script>\n</body>\n</html>\n" });
+  ok(made.ok === true && made.data?.written === true, "（前提）临时项目里建出一份稿",
+     made.ok ? `written=${String(made.data?.written)}` : JSON.stringify(made.errors?.[0]?.message ?? made).slice(0, 80));
+
+  /* ① 读一版，连 sha 一起拿到 —— **sha 由服务端给**，不让调用方自己算 */
+  const read1 = await fetch(ur(`source?file=${encodeURIComponent(F)}`)).then((x) => x.json()) as
+    { ok?: boolean; data?: { source?: string; sha256?: string } };
+  const sha1 = read1.data?.sha256 ?? "";
+  ok(/^[0-9a-f]{64}$/.test(sha1), "**`source` 把这一版的 sha256 一起给出来**（原来没有 → 调用方只能自己算）", sha1.slice(0, 12) + "…");
+
+  /* ② 中间有人改了它（这里用 `draft_patch`，就是 AI 改一处用的那件） */
+  const patched = await postR("draft_patch", { path: F, edits: [{ old: "原来的一行", new: "AI 刚改的一行" }] });
+  ok(patched.ok === true, "（样本有效性）中间真的被改了一次", patched.ok ? "改了" : JSON.stringify(patched.errors?.[0]?.message ?? "").slice(0, 60));
+
+  /* ③ 拿**第一次读到的**内容 + 旧 sha 写回去 —— 这正是那颗钮原来做的事 */
+  const w = await postR("draft_write", { path: F, content: read1.data?.source ?? "", expectedSourceSha256: sha1 });
+  ok(w.data?.written === false && typeof w.data?.refused === "string" && String(w.data.refused).includes("并发"),
+     "**带旧 sha 写回被拒**（原来：把读之前的旧内容整份盖回去，AI 刚做的改动被回滚）",
+     `written=${String(w.data?.written)} · refused=${String(w.data?.refused ?? "（没有）").slice(0, 40)}`);
+  ok(w.ok === true,
+     "⚠️ **而信封还是 `ok: true`** —— 所以「只看 `ok`」的调用方会把被拒算成成功（#111 的第二半）",
+     `ok=${String(w.ok)}`);
+  const disk = await rf5(j3(T, F), "utf8");
+  ok(disk.includes("AI 刚改的一行") && !disk.includes(">原来的一行<"),
+     "**盘上留的是新内容**（判活不看回执看盘 —— 「被拒了」和「拒了但还是写了」回执长得一样）",
+     disk.includes("AI 刚改的一行") ? "是新内容" : "被盖回旧内容了");
+
+  /* ④ 对照组：带**当前**的 sha 写回去要成 —— 不然这道闸可能是「一律拒绝」 */
+  const read2 = await fetch(ur(`source?file=${encodeURIComponent(F)}`)).then((x) => x.json()) as
+    { data?: { source?: string; sha256?: string } };
+  const w2 = await postR("draft_write", { path: F, content: (read2.data?.source ?? "").replace("AI 刚改的一行", "后来又改的一行"), expectedSourceSha256: read2.data?.sha256 });
+  ok(w2.data?.written === true && !w2.data?.refused,
+     "**（对照组）带当前的 sha 照样写得进去** —— 否则这道闸是「一律拒绝」，那也是坏的",
+     `written=${String(w2.data?.written)}`);
+
+  /* 收尾：和 FIFO 那一节同形 —— `serveStart` 回的是 `ServeInfo`（没有 `server`），停服务走 `serveStop(dir)` */
+  try { const { serveStop } = await import("./serve.js"); serveStop(pr.dir); }
+  catch { /* 停不掉也无妨，进程结束时一起走 */ }
+  await rm3(T, { recursive: true, force: true });
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
