@@ -11,7 +11,7 @@ import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import type { Project } from "./project.js";
 import { buildSnapshot, type Snapshot } from "./snapshot.js";
-import { conclusion, diffSnapshots, mergeDiffs, toMarkdown, type DiffResult } from "./diff.js";
+import { conclusion, diffSnapshots, toMarkdown, type DiffResult } from "./diff.js";
 
 export const CHANGELOG = "CHANGELOG-设计侧.md";
 
@@ -204,13 +204,29 @@ export async function changesSince(p: Project, relPath: string, since: string): 
     const only = await resolveSnapshot(p, relPath, since);
     return { file: relPath, from: since, to: since, counts: { L1: 0, L2: 0, L3: 0, L4: 0 }, changes: [], spans: [only.version] };
   }
-  const diffs: DiffResult[] = [];
-  for (let k = 0; k + 1 < tail.length; k++) {
-    const a = await readSnapshot(p, relPath, tail[k] as string);
-    const b = await readSnapshot(p, relPath, tail[k + 1] as string);
-    diffs.push(diffSnapshots(a, b));
-  }
-  return mergeDiffs(diffs);
+  /* ⚠️ **净变更 = 首尾直接对比**（issue #91，2026-10-06）。
+     `doc/07` §六 开头那句写得很清楚：「**不是把四份 diff 拼起来**」——
+     而原来的实现正是拼起来的（逐对 diff 再 `mergeDiffs` 按标签合并）。
+
+     `mergeDiffs` 的分组键是 `nodeLabel(y)` —— **给人看的标签，不是节点身份**：
+     - 有文字的节点标签带着文案 → **文案一改，标签就变**（同一个节点被拆成两条）；
+     - 没文字的节点标签是 `<div> (第一个 style 键)` → **大量不同节点共用一个标签**
+       （两个不同的 div 被并成一条，值恰好一来一回时还会被「改回原值」整条吞掉）。
+
+     于是契约表里五条规则两头都破。实测（issue 里给的例子，现在钉在 `difftest` 里）：
+       节点 A padding 4px→8px、节点 B padding 8px→4px  → 原来回「没有变化」
+       同一节点文案 A→B→A                               → 原来报 2 条
+
+     改成首尾对比之后，那五条规则**由构造成立**：
+     「加了又删」= 首尾都没有它 · 「改回原值」= 首尾相等 · 「多次变化」= 首尾之差。
+     不需要任何合并规则，也就不需要节点身份 —— **本来就不该有这个中间层**。
+
+     代价：每条变化后面那句「（中间改过 N 次）」没了。它不在契约里
+     （`doc/07` §六 只承诺五条规则 + `spans`），而 `spans` 还在，
+     `toMarkdown` 照样打「（跨 N 版）」。 */
+  const a = await readSnapshot(p, relPath, since);
+  const b = await readSnapshot(p, relPath, tail[tail.length - 1] as string);
+  return { ...diffSnapshots(a, b), spans: tail.slice(1) };
 }
 
 /** 工作区和最新快照对不对得上。

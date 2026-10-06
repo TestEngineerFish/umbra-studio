@@ -44,6 +44,7 @@ async function main() {
     await step7_restoreFromTrash();
     await step8_workspaceTracking();
     await step9_updateProject();
+    await step9b_exportImportGuards();
     await step10_archiveProject();
     await step11_sameNameProjects();
 
@@ -493,6 +494,60 @@ async function step9_updateProject() {
   if (p2.limits.elementsWarn !== 800) { fail("elementsWarn 没更新"); return; }
   if (p2.limits.elementsHard !== 1000) { fail("elementsHard 没更新"); return; }
   ok("重新加载后配置正确");
+}
+
+/* ── 导出 / 导入不许覆盖任何已有东西（issue #93，2026-10-06）──
+   这两件在 MCP 面上、参数是任意绝对路径、**由模型自己拼**，
+   而原来一道检查都没有：导回当前项目 = 用户的稿被旧版本整份盖掉，
+   **不经写入口、不留快照、变更清单上看不到**。 */
+async function step9b_exportImportGuards() {
+  bar("导出 / 导入的闸（issue #93）");
+  const { exportProject, importProject } = await import("./export.js");
+  const { mkdtemp, writeFile: wf } = await import("node:fs/promises");
+  const box = await mkdtemp(join(tmpdir(), "umbrastudio-io93-"));
+
+  // 正面先走通：导出到一个新路径
+  const good = join(box, "备份.tar.gz");
+  const exp = await exportProject(p.dir, good).catch((e) => { fail(`导出本身失败了：${String((e as Error).message)}`); return null; });
+  expect(!!exp && existsSync(good), `**正常导出照常能用**：${exp?.sizeBytes ?? "✗"} 字节`);
+
+  // ① 导出到已存在的文件 → 拒，且那个文件一个字节没动
+  const occupied = join(box, "别动我.tar.gz");
+  await wf(occupied, "我是别人的文件", "utf8");
+  let w = "";
+  try { await exportProject(p.dir, occupied); } catch (e) { w = String((e as Error).message); }
+  expect(/已经存在/.test(w), `**导出不覆盖已存在的文件**：${w || "✗ 没拒"}`);
+  expect(await readFile(occupied, "utf8") === "我是别人的文件", "而那个文件一个字节没动");
+
+  // ② 导出到项目里面 → 拒（tar 会把正在写的自己打进去）
+  w = "";
+  try { await exportProject(p.dir, join(p.dir, "自己.tar.gz")); } catch (e) { w = String((e as Error).message); }
+  expect(/不能落在项目目录里面/.test(w), `**导出目标不能在项目里**：${w || "✗ 没拒"}`);
+
+  // ③ 导入到非空目录 → 拒，且里面的东西没被动
+  const draftsBefore = (await listDrafts(p)).length;
+  const oneDraft = (await listDrafts(p))[0] as string;
+  const before = await readFile(oneDraft, "utf8");
+  w = "";
+  try { await importProject(good, p.dir); } catch (e) { w = String((e as Error).message); }
+  expect(/不是空目录/.test(w), `**导入不往非空目录里解**：${w || "✗ 没拒"}`);
+  /* ⚠️ 「被拒」和「没留下东西」是两件事 —— 这里要验的恰恰是**数据没丢**。 */
+  expect(await readFile(oneDraft, "utf8") === before, "**而项目里的稿一个字节没动**（这条 issue 的后果就是它被盖掉）");
+  expect((await listDrafts(p)).length === draftsBefore, `稿数也没变（${draftsBefore} 份）`);
+
+  // ④ tarPath 以 `-` 开头 → 拒（`tar -xzf -` 是读 stdin，#86 同一族）
+  w = "";
+  try { await importProject("-xzf", join(box, "新的")); } catch (e) { w = String((e as Error).message); }
+  expect(/不能以 `-` 开头/.test(w), `**路径不能以 \`-\` 开头**：${w || "✗ 没拒"}`);
+
+  // ⑤ 正面：导入到一个空目录要成，而且**不留临时目录**
+  const fresh = join(box, "新项目");
+  const imp = await importProject(good, fresh).catch((e) => { fail(`导入失败：${String((e as Error).message)}`); return null; });
+  expect((imp?.draftCount ?? 0) > 0, `**导入到空目录照常能用**：${imp?.draftCount ?? "✗"} 份稿`);
+  const leftovers = (await readdir(box)).filter((f) => f.startsWith(".import-"));
+  expect(leftovers.length === 0, `**没留下半个项目的临时目录**：${leftovers.join(" / ") || "(干净)"}`);
+
+  await rm(box, { recursive: true, force: true });
 }
 
 async function step10_archiveProject() {

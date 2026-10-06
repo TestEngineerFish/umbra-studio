@@ -76,7 +76,7 @@ async function gitHead(p: Project): Promise<string | null> {
 /** 写一份稿。内容相同则不落盘也不新增快照（避免版本号空转）。 */
 export async function writeDraft(
   p: Project, relPath: string, content: string, kind: "page" | "component",
-  note?: string, opts?: { expectedSourceSha256?: string; origin?: VersionOrigin },
+  note?: string, opts?: { expectedSourceSha256?: string; origin?: VersionOrigin; allowErrors?: boolean },
 ): Promise<{ outcome: WriteOutcome; diags: Diagnostic[]; stats: Record<string, unknown> }> {
   if (!/\.dc\.html$/.test(relPath)) {
     throw new ToolError(
@@ -155,7 +155,19 @@ export async function writeDraft(
     }
   }
 
-  if (hasError) {
+  /* ⚠️ **`allowErrors` 只跳过这一道**（issue #92，2026-10-06）。
+     为什么要有这一档：#71 把「复制一份稿」接上了写入口之后，
+     **复制一份本来就带 error 的稿变成做不到了** —— 而项目里现成就有这种稿
+     （`selftest` 钉着 `PC 端/任务.dc.html` 的 2 条 `E_HOLE_UNRESOLVED`，
+     而 `PC 端/Pages/任务.dc.html` 正是它的副本 —— **用户真做过这个动作**）。
+     更糟的是报错说「这多半是我们模板的问题，请报一条 issue」，
+     而内容是**用户自己的稿**。
+
+     ⚠️ 这一档**只给「内容来自用户现有的稿」那条路**（copy / duplicate）。
+     空白稿 / 模板 / 新建项目首稿照旧抛 —— 那些内容是我们自己生成的，
+     带 error 就真是我们的 bug。**同一个判断，按内容的来源分档，不是按方便分档。**
+     归一化 / `@ds` 展开 / `__resources` 注入 / 节点地址 / 快照 **一样都不跳**。 */
+  if (hasError && !opts?.allowErrors) {
     return {
       outcome: {
         path: relPath, written: false,

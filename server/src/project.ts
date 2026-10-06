@@ -436,6 +436,9 @@ export type DraftSource =
   | { kind: "template"; templatePath: string };
 
 export interface CreateDraftResult {
+  /** 副本从源稿带过来的 error 级诊断条数（issue #92）。
+   *  ⚠️ **不说的话用户以为复制出来是干净的** —— 而它带着原稿的毛病。 */
+  carriedErrors?: number;
   path: string;
   source: string;
   elements: number;
@@ -588,11 +591,17 @@ export async function createDraft(
     }
   }
 
-  await newDraftToDisk(p, relative(p.dir, abs).split(sep).join("/"), content);
+  /* ⚠️ `copy` 和 `template` 都算 `"copy"` 这一档（issue #92）——
+     判准是**内容是不是我们自己生成的**，而模板是用户用 `save_as_template`
+     从自己的稿存下来的，所以它和 copy 同类。只有 `blank` 是我们生成的。 */
+  const { errorDiags } = await newDraftToDisk(
+    p, relative(p.dir, abs).split(sep).join("/"), content,
+    source.kind === "blank" ? "blank" : "copy");
 
   return {
     path,
     source: sourceDesc,
+    ...(errorDiags ? { carriedErrors: errorDiags } : {}),
     elements: 0,  // 由调用方校验后填入
   };
 }
@@ -600,6 +609,8 @@ export async function createDraft(
 // ──────────────────────── M1-5: duplicate_draft ───────────────────────
 
 export interface DuplicateDraftResult {
+  /** 副本从源稿带过来的 error 级诊断条数（issue #92） */
+  carriedErrors?: number;
   originalPath: string;
   newPath: string;
   /** 新稿是否从 v1 开始（不复制快照） */
@@ -640,21 +651,41 @@ export interface DuplicateDraftResult {
  *  静态 import 回去会成环。动态 import 在**调用时**才解析，环就断了。
  *  ⚠️ 代价是类型要手写一次 —— 写在这里，不扩散。
  */
-async function newDraftToDisk(p: Project, rel: string, content: string): Promise<void> {
-  const { writeDraft } = await import("./write.js") as {
-    writeDraft: (p: Project, rel: string, content: string, kind: "page" | "component",
-      note?: string, opts?: { origin?: string }) => Promise<{ outcome: { written: boolean; refused: string | null } }>;
-  };
-  const r = await writeDraft(p, rel, content, "page", "新建", { origin: "新建" });
-  /* ⚠️ **写入口拒了就要抛**，不能静默留一份半成品。
-     它拒绝的理由只有一种：稿里有 error 级诊断 —— 那意味着这份模板本身有问题
-     （比如 `blankDraftContent` 产出的内容不合契约），**那是我们的 bug**，
-     而静默写下去会让用户拿到一份打不开的稿。 */
+/** 新建一份稿落盘 —— 走唯一写入口（issue #71）。
+ *
+ *  `why` 决定**内容的来源**，而来源决定「有 error 级诊断」该怎么办（issue #92）：
+ *  - `"blank"`：空白稿 / 模板 / 组件包装 / 新建项目首稿 —— 内容是**我们自己生成的**，
+ *    带 error 就真是我们的 bug，**抛**。
+ *  - `"copy"`：复制 / 套用用户现有的稿 —— 内容是**用户的**，带 error 照样要能复制。
+ *    走 `allowErrors`（只跳过那一道，归一化 / `__resources` / 节点地址 / 快照全走），
+ *    并把诊断条数回给调用方，让它能照实说一句。
+ *
+ *  ⚠️ #71 刚把这条路接上写入口时只有一档，于是**复制一份带 error 的稿变成做不到了**，
+ *  报错还说「这多半是我们模板的问题，请报一条 issue」—— 而内容是用户自己的稿。
+ *  项目里现成就有这种稿（`selftest` 钉着 `PC 端/任务.dc.html` 的 2 条 `E_HOLE_UNRESOLVED`，
+ *  而 `PC 端/Pages/任务.dc.html` 正是它的副本 —— **用户真做过这个动作**）。
+ *  `doc/00` §143.7 里我写过「#71 那一条没有这两个顾虑」—— **顾虑① 对 copy 恰好成立**，
+ *  当时没想到。 */
+async function newDraftToDisk(
+  p: Project, rel: string, content: string, why: "blank" | "copy" = "blank",
+): Promise<{ errorDiags: number }> {
+  const { writeDraft } = await import("./write.js");
+  const { parseDraft, draftKindOf } = await import("./draft.js");
+  /* ⚠️ `kind` 按内容算（issue #92 顺带）—— 原来写死 `"page"`，
+     于是复制一份**组件**稿时 `stats.kind` 是错的。
+     同一批里 `draftKindOf()` 的注释正是为这件事写的：
+     **「只是个读数」不是「可以随便写」。** */
+  const kind = draftKindOf(parseDraft(content, rel));
+  const r = await writeDraft(p, rel, content, kind, "新建",
+    { origin: "新建", ...(why === "copy" ? { allowErrors: true } : {}) });
   if (!r.outcome.written) {
     throw new ToolError(err(X.BAD_INPUT, rel, { kind: "path", name: rel },
       `新建没能落盘：${r.outcome.refused ?? "写入口拒绝了"}`,
-      { fix: "这多半是我们模板的问题，请报一条 issue 并附上这句话。" }));
+      { fix: why === "copy"
+          ? "源稿本身可能有问题，或者并发写入撞上了 —— 把这句话附上报一条 issue。"
+          : "这多半是我们模板的问题，请报一条 issue 并附上这句话。" }));
   }
+  return { errorDiags: r.diags.filter((d) => d.level === "error").length };
 }
 
 export async function duplicateDraft(
@@ -707,7 +738,7 @@ export async function duplicateDraft(
 
   // 复制内容
   const content = await readFile(srcAbs, "utf8");
-  await newDraftToDisk(p, relative(p.dir, newAbs).split(sep).join("/"), content);
+  const { errorDiags } = await newDraftToDisk(p, relative(p.dir, newAbs).split(sep).join("/"), content, "copy");
 
   /* ⚠️ `relative()` 而不是 `slice(p.dir.length + 1)`（issue #70 第 3 点）——
      后者假设 `newAbs` 一定以 `p.dir` 开头，而那正是上面两道闸要保证的事；
@@ -718,6 +749,8 @@ export async function duplicateDraft(
     originalPath: path,
     newPath: newRel,
     startsAtV1: true,
+    /* 照实说一句：副本带着原稿的 N 条 error。**不说的话用户以为复制出来是干净的。** */
+    ...(errorDiags ? { carriedErrors: errorDiags } : {}),
   };
 }
 

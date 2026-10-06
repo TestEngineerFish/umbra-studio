@@ -951,6 +951,59 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await rm(marker, { force: true });
 }
 
+/* ═════════ 带 error 诊断的稿：复制得动吗 · 引用改不成会说吗（issue #92） ═════════
+   这两条都是**我自己上一批修法的后果**：
+   #71 把「复制一份稿」接上了写入口 → 复制一份**本来就带 error 的稿**变成做不到了；
+   #76 改写引用时不看 `writeDraft` 的结果 → 引用没改成而回执说「改写引用 N 处」。 */
+{
+  const { writeFile: wf2, mkdtemp: mkt } = await import("node:fs/promises");
+  const { tmpdir: td2 } = await import("node:os");
+  const { duplicateDraft } = await import("./project.js");
+  const { validateDraft } = await import("./validate.js");
+  const D2 = await mkt(join(td2(), "umbrastudio-ft92-"));
+  await wf2(join(D2, "project.json"), JSON.stringify({ name: "ft92", title: "ft92" }), "utf8");
+  const proj92 = await buildProject(D2);
+  /* 夹具：一个**没给值的洞** → `E_HOLE_UNRESOLVED`（error 级）。
+     ⚠️ 直接落到盘上（绕开写入口）—— 写入口本来就不让这种稿进来，
+     而我们要测的恰恰是「盘上已经有这种稿时会怎样」。
+     项目里现成就有这种稿（`selftest` 钉着 `PC 端/任务.dc.html` 的 2 条）。 */
+  const 坏 = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<script src=\"./support.js\"></script>\n</head>\n<body>\n<img src=\"坏图.png\">\n<x-dc>\n<div>{{ 没给值的洞 }}</div>\n</x-dc>\n<script type=\"text/x-dc\" data-dc-script data-props=\"{}\">\nclass Component extends DCLogic {\n  renderVals() { return {}; }\n}\n</script>\n</body>\n</html>\n";
+  await wf2(join(D2, "坏稿.dc.html"), 坏, "utf8");
+  await wf2(join(D2, "坏图.png"), "png", "utf8");
+  /* ⚠️ **先验夹具真的带 error** —— 不验的话「复制成功了」可能只是因为
+     这份稿其实是干净的，判据什么都没测（§144.4 那条「样本没打中」同一族）。 */
+  const vd = validateDraft(proj92, "坏稿.dc.html", 坏, "坏稿.dc.html");
+  const errs = vd.diags.filter((d) => d.level === "error");
+  ok("（样本有效性）夹具真的带 error 级诊断", errs.length > 0,
+     errs.map((d) => d.code).join(" / ") || "(没有)");
+
+  // ① 复制一份带 error 的稿：要能成，而且要照实说它带着几条
+  let dupWhy = "";
+  const dup = await duplicateDraft(proj92, "坏稿.dc.html", { newName: "坏稿副本" })
+    .catch((e) => { dupWhy = msgOf(e); return null; });
+  ok("**带 error 的稿照样复制得动**（issue #92：#71 之后它变成做不到了）",
+     dup?.newPath === "坏稿副本.dc.html", dupWhy || dup?.newPath);
+  ok("**而且照实说副本带着几条 error**（不说的话用户以为复制出来是干净的）",
+     (dup?.carriedErrors ?? 0) === errs.length, String(dup?.carriedErrors ?? "没说"));
+  ok("副本也走了写入口（有 `__resources`）",
+     existsSync(join(D2, "坏稿副本.dc.html"))
+     && /__resources|umbradesign:resources/.test(await readFile(join(D2, "坏稿副本.dc.html"), "utf8")));
+
+  // ② 移动它引用的图：引用改不成，回执必须说
+  const mv92 = await moveFile(proj92, "坏图.png", "图/坏图.png");
+  ok("**引用改不成的稿不进 `rewrote`**（原来：文件挪走了、引用没改，而回执说改好了）",
+     !mv92.rewrote.some((r) => r.file === "坏稿.dc.html"),
+     mv92.rewrote.map((r) => r.file).join(" / ") || "(空)");
+  ok("**而是进 `refused` 并在 steps 里说出来**（假回执比没有回执糟）",
+     (mv92.refused ?? []).some((r) => r.file === "坏稿.dc.html" && /error/.test(r.reason))
+     && mv92.steps.some((t) => t.includes("没改成")),
+     (mv92.refused ?? []).map((r) => r.file).join(" / ") || "(空)");
+  ok("（对照）文件确实挪走了 —— 所以「没说」的后果是真的",
+     existsSync(join(D2, "图", "坏图.png")) && !existsSync(join(D2, "坏图.png")));
+
+  await rm(D2, { recursive: true, force: true });
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

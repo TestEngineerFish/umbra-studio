@@ -493,6 +493,8 @@ export interface MoveFileResult {
   steps: string[];
   /** 名字对得上、但路径解不出来所以没动的写法（外链 / 根相对）。**不静默**（issue #76 第 3 点） */
   unresolved?: Array<{ file: string; line: number; value: string }>;
+  /** 引用该改而**没改成**的稿（写入口拒了：那份稿本身有 error 级诊断）。issue #92 */
+  refused?: Array<{ file: string; reason: string }>;
 }
 
 /** 改名 / 移动一个普通文件，并把稿里指向它的 href / src / url() 一起改掉。
@@ -543,6 +545,8 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
   const rewrote: Array<{ file: string; count: number }> = [];
   /** 解不出来的那些（外链 / 根相对 / 指到项目外）—— **不静默**，列出来让人自己看一眼 */
   const unresolved: Array<{ file: string; line: number; value: string }> = [];
+  /** 写入口拒了的那些（稿里有 error 级诊断）—— 引用**没改成**，必须说（issue #92） */
+  const refused: Array<{ file: string; reason: string }> = [];
   for (const [draftRel, count] of byFile) {
     const abs = join(p.dir, draftRel.split("/").join(sep));
     let src: string;
@@ -550,8 +554,18 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
     const { out: next, changed } = mapDraftRefs(src, (value) =>
       resolveRefTarget(draftRel, value) === from ? refValueFor(draftRel, to, value) : null);
     if (changed === 0 || next === src) continue;
-    await writeDraft(p, draftRel, next, draftKindOf(parseDraft(next, draftRel)),
+    /* ⚠️ **看一眼写入口到底写没写**（issue #92，2026-10-06）。
+       原来不看 `outcome` 就 `rewrote.push` —— 而 `writeDraft` 对**改写后仍有
+       error 级诊断**的稿返回 `written:false`。文件已经挪走了（上面几行），
+       引用没改，而回执说「改写引用 N 处」。
+       **假回执比没有回执糟**（#35 那条同一句话）—— 用户按回执相信引用是好的。 */
+    const wr = await writeDraft(p, draftRel, next, draftKindOf(parseDraft(next, draftRel)),
       `引用跟着 ${basename(from)} 的移动改了`, { origin: "人手改" });
+    if (!wr.outcome.written && !wr.outcome.unchanged) {
+      refused.push({ file: draftRel, reason: wr.outcome.refused ?? "写入口拒绝了" });
+      steps.push(`⚠️ ${draftRel} 的引用**没改成**：${wr.outcome.refused ?? "写入口拒绝了"}`);
+      continue;
+    }
     rewrote.push({ file: draftRel, count: changed });
     steps.push(`改写引用 ${draftRel}（${changed} 处）`);
     if (changed !== count) {
@@ -572,7 +586,7 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
       return null;
     });
   }
-  return { from, to, rewrote, steps, ...(unresolved.length ? { unresolved } : {}) };
+  return { from, to, rewrote, steps, ...(unresolved.length ? { unresolved } : {}), ...(refused.length ? { refused } : {}) };
 }
 
 /* ── 稿里的「引用」是**有结构的东西**，不是一段文字（issue #76，2026-10-05）──

@@ -30,7 +30,8 @@
     "packplugin": "npm run build && node dist/packplugin.js",
     "ziptest": "npm run build && node dist/ziptest.js",
     "jsonpostest": "npm run build && node dist/jsonpostest.js",
-    "csvpostest": "npm run build && node dist/csvpostest.js"
+    "csvpostest": "npm run build && node dist/csvpostest.js",
+    "difftest": "npm run build && node dist/difftest.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

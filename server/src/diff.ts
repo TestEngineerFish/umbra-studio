@@ -346,47 +346,12 @@ function countBy(ch: Change[]): Record<Level, number> {
 
 // ─────────────────── 跨版本净变更（07 §六）───────────────────
 
-/** 合并规则：同目标多次变化只报最终值；加了又删不报；删了又加回同值不报；级别取最高。 */
-export function mergeDiffs(list: DiffResult[]): DiffResult {
-  if (!list.length) throw new Error("mergeDiffs: 空列表");
-  const first = list[0] as DiffResult, last = list[list.length - 1] as DiffResult;
-  const byKey = new Map<string, Change[]>();
-  for (const d of list) {
-    for (const c of d.changes) {
-      const key = `${c.target}${SEP}${c.prop ?? ""}`;
-      const l = byKey.get(key) ?? [];
-      l.push(c);
-      byKey.set(key, l);
-    }
-  }
-  const out: Change[] = [];
-  for (const seq of byKey.values()) {
-    const kinds = seq.map((c) => c.kind);
-    const firstC = seq[0] as Change, lastC = seq[seq.length - 1] as Change;
-    const hadAdd = kinds.some((k) => /_added$/.test(k));
-    const hadDel = kinds.some((k) => /_removed$/.test(k));
-    if (hadAdd && hadDel) {
-      // 加了又删 → 净结果不报；删了又加 → 报最后那一条
-      if (!/_added$/.test(lastC.kind)) continue;
-      out.push(lastC);
-      continue;
-    }
-    const from = firstC.from ?? null, to = lastC.to ?? null;
-    if (from !== null && from === to) continue;   // 改回原值 → 不报
-    const level = seq.map((c) => c.level)
-      .sort((x, y) => LEVEL_ORDER.indexOf(x) - LEVEL_ORDER.indexOf(y))[0] as Level;
-    const merged: Change = { ...lastC, level, from, to };
-    if (seq.length > 1 && from !== null && to !== null && lastC.prop) {
-      merged.message = `${lastC.target} 的 ${lastC.prop} 从 ${from} 改到 ${to}（中间改过 ${seq.length - 1} 次）`;
-    }
-    out.push(merged);
-  }
-  out.sort((p, q) => LEVEL_ORDER.indexOf(p.level) - LEVEL_ORDER.indexOf(q.level));
-  return {
-    file: last.file, from: first.from, to: last.to,
-    counts: countBy(out), changes: out, spans: list.map((d) => d.to),
-  };
-}
+/* ⚠️ **`mergeDiffs` 删掉了**（issue #91，2026-10-06）。
+   它把 v(k)→v(k+1) 的几份 diff 按 `nodeLabel` 分组再合并，而标签不是身份：
+   文案一改标签就变、没文字的节点大量共用同一个标签。
+   净变更改成**首尾直接对比**之后它就没有调用方了（见 `history.ts` 的 `changesSince`）。
+   **留着一个没人调的合并层，下一个人会以为净变更是拼出来的。**（§9.1.7 那条
+   「写了而没接上比没写更坏」的反面用法：接不上了就删掉。） */
 
 // ───────────────────── Markdown 投影（07 §4.2）─────────────────────
 
