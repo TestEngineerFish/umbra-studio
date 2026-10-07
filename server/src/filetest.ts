@@ -8,6 +8,7 @@
  *  用法：npm --prefix server run filetest
  */
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1065,6 +1066,71 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   }
 
   await rm(D2, { recursive: true, force: true });
+}
+
+/* ── 二进制往返（#108，2026-10-07）──
+   图片编辑要把一张 PNG 写回盘，而这条写入口原来**从头到尾按 utf8 走**
+   （`writeAtomic` / `byteLength` / `Buffer.from(content,"utf8")` / 末尾的 `sha256`）。
+   二进制进来是**静默损坏**：文件还在、还能打开、只是花了 ——
+   **「写坏了」和「没写」长得完全不一样，而前者更难发现。**
+
+   ⚠️ 这一节里有一条测的是**今天之前就坏着**的东西：`revertFile` 走
+   `readSnapshotContent`（utf8），所以「退回上一版」对**任何**二进制文件都是损坏 ——
+   包括被「外部改动」兜底存下来的图片。**只是没人退过图片，所以没人发现。**
+
+   判据一律**逐字节比**，不比大小 —— utf8 往返之后大小也会变，
+   而「大小对了」会让一次损坏看起来像成功（§161.3 同族）。 */
+{
+  const DB = join(DIR, "..", "umbrastudio-filetest-bin");
+  await rm(DB, { recursive: true, force: true });
+  await mkdir(DB, { recursive: true });
+  await writeFile(join(DB, "project.json"), JSON.stringify({ name: "bintest", title: "二进制回归" }), "utf8");
+  const projB = await buildProject(DB);
+
+  /** 造一张真 PNG：**里面故意带非法 utf8 字节**（0x80–0xFF 全套）——
+   *  用全 ASCII 的样本测不出 utf8 损坏，那种样本往返之后字节一样。 */
+  const { deflateSync } = await import("node:zlib");
+  const crcTab = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc32 = (b: Buffer) => { let c = 0xffffffff; for (const x of b) c = crcTab[(c ^ x) & 0xff]! ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (t: string, d: Buffer) => { const len = Buffer.alloc(4); len.writeUInt32BE(d.length); const body = Buffer.concat([Buffer.from(t, "ascii"), d]); const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body)); return Buffer.concat([len, body, crc]); };
+  const png = (w: number, seed: number) => {
+    const rows: Buffer[] = [];
+    for (let y = 0; y < w; y++) { const r = Buffer.alloc(1 + w * 3); for (let x = 0; x < w * 3; x++) r[1 + x] = (x * 7 + y * 13 + seed) & 0xff; rows.push(r); }
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(w, 4); ihdr[8] = 8; ihdr[9] = 2;
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.concat(rows))), chunk("IEND", Buffer.alloc(0))]);
+  };
+  const A = png(16, 0), B = png(16, 99);
+  ok("（样本有效性）样本里真有非法 utf8 字节（全 ASCII 的样本测不出损坏）",
+     !Buffer.from(A.toString("utf8"), "utf8").equals(A),
+     { 原始: A.length, utf8往返后: Buffer.byteLength(A.toString("utf8"), "utf8") });
+
+  const F = "图.png";
+  const w1 = await writeAnyFile(projB, F, A, { origin: "人手改" });
+  const onDisk1 = await readFile(join(DB, F));
+  ok("**二进制原样落盘**（逐字节比，不比大小）", onDisk1.equals(A), { 盘上: onDisk1.length, 应为: A.length });
+  ok("回执里的字节数与 sha 按字节算", w1.bytes === A.length && w1.sha256 === createHash("sha256").update(A).digest("hex"),
+     { bytes: w1.bytes, 应为: A.length });
+
+  /* 改成另一张，然后退回去 —— **这一条在修之前是红的** */
+  const r2 = await writeAnyFile(projB, F, B, { origin: "人手改" });
+  ok("（前提）第二张也写进去了，而且和第一张不同", (await readFile(join(DB, F))).equals(B) && !A.equals(B));
+  await revertFile(projB, F, w1.snapshot!);
+  const back = await readFile(join(DB, F));
+  ok("**退回上一版拿回的是原来那些字节**（原来走 utf8 → 退完图就花了，#108 之前就坏着）",
+     back.equals(A), { 退回后: back.length, 应为: A.length, 一致: back.equals(A) });
+
+  /* 写前校验对二进制也要成立 */
+  let refused = "";
+  try { await writeAnyFile(projB, F, B, { expectSha256: r2.sha256 }); }
+  catch (e) { refused = (e as ToolError)?.diagnostic?.message ?? String(e); }
+  ok("**带过期的 sha 写二进制照样被拒**（这道闸不该只对文本成立）", /被改过/.test(refused), refused.slice(0, 40));
+
+  /* 没多存重复快照 —— 原来按 utf8 比，二进制几乎必然判「不一样」 */
+  const snaps = await listSnapshots(projB, F);
+  ok("**没因为「按 utf8 比」而多存一串重复快照**", snaps.length <= 4, { 快照: snaps.join(" ") });
+
+  await rm(DB, { recursive: true, force: true });
 }
 
 await rm(DIR, { recursive: true, force: true });

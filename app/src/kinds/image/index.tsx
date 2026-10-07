@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 import type { ReadFileResult } from "../../api/types";
 import { fmtSize } from "../../api/types";
 import { Glyph } from "../../ui/Glyph";
@@ -6,6 +6,10 @@ import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
 import { SizeBtn } from "../toolbar";
 import { ImageView } from "./View";
+import { ImageEdit, type EditApi } from "./Edit";
+import { askSave, freeName } from "./Save";
+import { toast } from "../../ui/Toast";
+import type { Core } from "../../api/client";
 
 /** 图片（`00` §六十一；M8-15b 拆成目录）。没有从属面板 —— 一张图没有「属性」可列。
  *
@@ -20,6 +24,26 @@ interface ImgState {
   info: ReadFileResult | null; scale: number; isSvg: boolean;
   setReadout: (i: { info: ReadFileResult | null; scale: number; isSvg: boolean }) => void;
   supportsImage: boolean;
+  /* ── 裁剪态（issue #108）──
+     ⚠️ **是编辑栏里的一个开关，不是「进编辑态就接管画布」。**
+     圈选（给 AI）也在这条栏上，两个都要鼠标拖 —— 一进编辑态就铺上裁剪框的话，
+     用户分不清自己现在拖的是裁剪框还是圈选框。所以裁剪要再点一下，
+     点下去**换掉整个画布**（第九轮「看 / 改两分」的同一条）。 */
+  cropping: boolean; setCropping: (v: boolean) => void;
+  /** 裁剪框现在在原图像素里多大 —— 编辑栏上要显示它 */
+  cropSize: { w: number; h: number } | null;
+  setCropSize: (s: { w: number; h: number } | null) => void;
+  /** 画布那一侧注册进来的动作出口（旋转 / 翻转 / 复位 / 导出） */
+  api: MutableRefObject<EditApi | null>;
+  core: Core;
+  path: string;
+  /** 存完要让 `<img>` 重读 —— 路径没变，所以得破缓存（`src` 上带这个数）。
+   *  ⚠️ 不走 `ctx` —— `ViewContext` 里**没有**「让详情区重读这个文件」这件事
+   *  （磁盘监听走的是工作台那一层的 `store.lastEvent`，刷的是目录树）。
+   *  自己数一个就够，不为这一件事去改公共契约。 */
+  rev: number; bump: () => void;
+  /** 另存之后跳到新那份去 */
+  open: (p: string) => void;
 }
 const Ctx = createContext<ImgState | null>(null);
 const useImg = (): ImgState => {
@@ -31,23 +55,116 @@ const useImg = (): ImgState => {
 function Provider({ ctx, children }: { ctx: ViewContext; children: ReactNode }) {
   const [zoom, setZoom] = useState<number | "fit">("fit");
   const [picking, setPicking] = useState(false);
+  const [cropping, setCropping] = useState(false);
+  const [cropSize, setCropSize] = useState<{ w: number; h: number } | null>(null);
+  const [rev, setRev] = useState(0);
+  const api = useRef<EditApi | null>(null);
   const [readout, setReadout] = useState<{ info: ReadFileResult | null; scale: number; isSvg: boolean }>({ info: null, scale: 1, isSvg: false });
-  /* 换图片时缩放和圈选都归零 —— Provider 按 kind 挂载，换文件不会重建它 */
-  useEffect(() => { setZoom("fit"); setPicking(false); }, [ctx.path]);
-  return <Ctx.Provider value={{ zoom, setZoom, picking, setPicking, ...readout, setReadout, supportsImage: ctx.ai.supportsImage }}>{children}</Ctx.Provider>;
+  /* 换图片时缩放、圈选、裁剪都归零 —— Provider 按 kind 挂载，换文件不会重建它。
+     ⚠️ **裁剪态也要归零**：不归的话换到下一张图还顶着裁剪框，
+     而那张图的裁剪框是上一张的尺寸（和「停在某个旧版上」是同一种静默陷阱）。 */
+  useEffect(() => { setZoom("fit"); setPicking(false); setCropping(false); setCropSize(null); }, [ctx.path]);
+  return <Ctx.Provider value={{
+    zoom, setZoom, picking, setPicking, ...readout, setReadout, supportsImage: ctx.ai.supportsImage,
+    cropping, setCropping, cropSize, setCropSize, api, core: ctx.core, path: ctx.path, rev, bump: () => setRev((n) => n + 1), open: (pp: string) => ctx.open(pp),
+  }}>{children}</Ctx.Provider>;
 }
 
-/** 编辑栏：圈一块区域带给 AI —— 这是**改稿用**的（其实是"让 AI 改"用的） */
+/** 编辑栏：圈一块带给 AI（让 AI 改）+ 裁剪 / 旋转 / 翻转（自己改，issue #108）。
+ *  两者都是「改这份文件」那一层，所以都在这条栏上（第七轮那条判据）。 */
 function Toolbar() {
   const d = useImg();
+  const [busy, setBusy] = useState(false);
+
+  /** 一颗小方钮（旋转 / 翻转 / 复位共用） */
+  const Mini = ({ icon, title, onClick }: { icon: string; title: string; onClick: () => void }) => (
+    <button onClick={onClick} title={title} data-ud={`img-${icon}`}
+      className="inline-flex items-center justify-center w-[22px] h-[22px] rounded-sm border border-border bg-panel2 text-text2 hover:text-text shrink-0 font-mono text-[12px]">
+      {icon === "rot-cw" ? "↻" : icon === "rot-ccw" ? "↺" : icon === "flip-x" ? "⇄" : icon === "flip-y" ? "⇅" : "⬚"}
+    </button>
+  );
+
+  const save = async () => {
+    const api = d.api.current;
+    if (!api || busy) return;
+    setBusy(true);
+    try {
+      const out = await api.bytes();
+      /* ⚠️ **导不出来要说原因**，不能只是没反应（#31 那条「点了没反应」同族）。
+         真会发生：svg 和跨源图片的画布是被污染的，`toBlob` 回 null。 */
+      if (!out) { toast("这张图导不出来", "画布取不到像素（矢量图或跨源图片）—— 换成位图再试", "error"); return; }
+      /* 另存为的名字要**真去问盘上有什么**：连点两次保存会覆盖掉第一次的结果，
+         而那种丢失一句话都不会说。 */
+      const dir = d.path.includes("/") ? d.path.slice(0, d.path.lastIndexOf("/")) : "";
+      const ls = await d.core.get<{ entries: Array<{ name: string }> }>(`files?dir=${encodeURIComponent(dir)}`);
+      const taken = (ls.data?.entries ?? []).map((e) => e.name);
+      const choice = await askSave({
+        path: d.path, asName: freeName(d.path, taken),
+        from: { w: d.info?.width ?? 0, h: d.info?.height ?? 0 }, to: { w: out.w, h: out.h },
+      });
+      if (!choice) return;
+      const target = choice.how === "over" ? d.path : (dir ? `${dir}/${choice.name}` : choice.name);
+      /* ⚠️ **走第二条写入口**（`file_write` + `encoding: "base64"`）——
+         写前 sha 校验 / 快照 / 可回退全在那条路上。
+         覆盖原图时带上 `expectSha256`：这张图在我们编辑的这段时间里可能被别人改过
+         （AI 正在跑、或者别的编辑器）。新建那一份传 `"0"`。 */
+      const r = await d.core.post<{ snapshot?: string; bytes?: number }>("file_write", {
+        path: target, content: out.base64, encoding: "base64",
+        expectSha256: choice.how === "over" ? d.info?.sha256 : "0",
+        note: choice.how === "over" ? "裁剪 / 旋转（覆盖原图）" : "裁剪 / 旋转（另存）",
+      });
+      if (!r.ok) { toast("没存成", r.errors?.[0]?.message, "error"); return; }
+      if (choice.how === "over") {
+        toast("存好了", `${out.w}×${out.h} · 改前那版是 ${r.data?.snapshot ?? "上一版"}，能从「变更」退回`, "ok");
+        d.setCropping(false); d.bump();
+      } else {
+        /* 另存之后**跳到新那份去** —— 不跳的话用户看着原图、以为没生效 */
+        toast(`另存为 ${choice.name}`, `${out.w}×${out.h} · 原图没动`, "ok");
+        d.setCropping(false);
+        d.open(target);
+      }
+    } finally { setBusy(false); }
+  };
+
   return (
     <>
-      <button onClick={() => d.setPicking(!d.picking)} disabled={!d.supportsImage} aria-pressed={d.picking}
-        title={d.supportsImage ? "圈一块区域带给 AI（R）" : "当前引擎看不了图"}
+      <button onClick={() => { d.setPicking(!d.picking); if (!d.picking) d.setCropping(false); }}
+        disabled={!d.supportsImage || d.cropping} aria-pressed={d.picking}
+        title={d.cropping ? "正在裁剪 —— 先退出裁剪" : d.supportsImage ? "圈一块区域带给 AI（R）" : "当前引擎看不了图"}
         className={`inline-flex items-center gap-1.5 h-[22px] px-2 rounded-sm border shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
           d.picking ? "bg-accentSoft text-accent font-semibold border-accent" : "bg-panel2 text-text2 border-border hover:text-text"}`}>
         <Glyph icon="sel-region" size={12} />圈选{d.picking ? "中" : ""}
       </button>
+
+      {/* ── 裁剪（#108）。⚠️ **SVG 不给**：画布取不到它的像素（`View.tsx` 那条
+          catch 的注释早就记着「svg / 跨源画不出来」）。禁用态要**说出原因** ——
+          禁用而不解释和「点了没反应」是同一个病（#31）。 */}
+      <span className="w-px h-4 bg-border shrink-0" />
+      <button onClick={() => { d.setCropping(!d.cropping); if (!d.cropping) d.setPicking(false); }}
+        disabled={d.isSvg} aria-pressed={d.cropping} data-ud="img-crop-toggle"
+        title={d.isSvg ? "矢量图没法裁剪 —— 画布取不到它的像素" : "裁剪 / 旋转 / 翻转"}
+        className={`inline-flex items-center gap-1.5 h-[22px] px-2 rounded-sm border shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+          d.cropping ? "bg-accentSoft text-accent font-semibold border-accent" : "bg-panel2 text-text2 border-border hover:text-text"}`}>
+        ⬚ 裁剪{d.cropping ? "中" : ""}
+      </button>
+      {d.cropping && (
+        <>
+          <Mini icon="rot-ccw" title="左转 90°" onClick={() => d.api.current?.rotate(-90)} />
+          <Mini icon="rot-cw" title="右转 90°" onClick={() => d.api.current?.rotate(90)} />
+          <Mini icon="flip-x" title="水平翻转" onClick={() => d.api.current?.flip("x")} />
+          <Mini icon="flip-y" title="垂直翻转" onClick={() => d.api.current?.flip("y")} />
+          <Mini icon="reset" title="回到原样" onClick={() => d.api.current?.reset()} />
+          {d.cropSize && (
+            <span className="font-mono text-[11px] text-muted shrink-0 ml-1">
+              {d.info?.width ?? "?"}×{d.info?.height ?? "?"} → <span className="text-text">{d.cropSize.w}×{d.cropSize.h}</span>
+            </span>
+          )}
+          <button onClick={() => void save()} disabled={busy} data-ud="img-save-open"
+            className="inline-flex items-center h-[22px] px-2 rounded-sm border border-accent bg-accent text-onAccent font-semibold shrink-0 ml-1 disabled:opacity-40">
+            {busy ? "存…" : "保存…"}
+          </button>
+        </>
+      )}
       {d.isSvg && <span className="lvl shrink-0" style={{ background: "var(--tool-ok-soft)", color: "var(--tool-ok)" }}>矢量 · 可无损缩放</span>}
       <span className="flex-1" />
     </>
@@ -68,8 +185,13 @@ function Corner() {
 
 function View({ ctx }: { ctx: ViewContext }) {
   const d = useImg();
+  /* 存完要让 `<img>` 重读：路径没变，所以挂一个 `?v=` 破缓存（#108） */
+  const src = `${ctx.core.url}${ctx.path.split("/").map(encodeURIComponent).join("/")}${d.rev ? `?v=${d.rev}` : ""}`;
+  /* ⚠️ **裁剪时换掉整个画布**，不和看图那套缩放 / 圈选共存（「看 / 改两分」）。
+     共存的代价不是实现难，是**用户分不清自己在拖哪个框**。 */
+  if (d.cropping) return <ImageEdit src={src} path={ctx.path} onApi={(a) => { d.api.current = a; }} onChange={d.setCropSize} />;
   return (
-    <ImageView core={ctx.core} path={ctx.path} supportsImage={ctx.ai.supportsImage} channelLabel={ctx.ai.engineLabel}
+    <ImageView core={ctx.core} path={ctx.path} rev={d.rev} supportsImage={ctx.ai.supportsImage} channelLabel={ctx.ai.engineLabel}
       onProbed={ctx.ai.reloadCaps} onSelection={(s) => ctx.select("region", s)}
       zoom={d.zoom} setZoom={d.setZoom} picking={d.picking} setPicking={d.setPicking} onInfo={d.setReadout} />
   );

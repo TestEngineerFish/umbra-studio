@@ -12,13 +12,17 @@ import { toast } from "../../ui/Toast";
 
 /** ⚠️ 缩放和圈选**不住在这里** —— 它们在 `index.tsx` 的 Provider 里，
  *  因为第七轮把工具栏定成统一的一条横带，工具栏和视图是两个渲染位置（M8-15b）。 */
-export function ImageView({ core, path, supportsImage, channelLabel, onSelection, onProbed,
+export function ImageView({ core, path, rev = 0, supportsImage, channelLabel, onSelection, onProbed,
   zoom, setZoom, picking, setPicking, onInfo }: {
   core: Core; path: string; supportsImage: boolean; channelLabel: string; onSelection: (s: Selection | null) => void; onProbed: () => void;
   zoom: number | "fit"; setZoom: (z: number | "fit") => void;
   picking: boolean; setPicking: (v: boolean) => void;
   /** 读数交给工具栏与状态行：尺寸、体积、当前缩放百分比 */
   onInfo: (i: { info: ReadFileResult | null; scale: number; isSvg: boolean }) => void;
+  /** 存过几次（#108）。路径没变而内容变了，所以 `src` 和 `read_file` 都要跟着它重来 ——
+   *  不带的话存完画面还是旧那张，而**盘上已经是新的**：
+   *  「看着没生效」比「真没生效」更让人反复点保存。 */
+  rev?: number;
 }) {
   const [probing, setProbing] = useState(false);
   const [info, setInfo] = useState<ReadFileResult | null>(null);
@@ -27,14 +31,14 @@ export function ImageView({ core, path, supportsImage, channelLabel, onSelection
   const [note, setNote] = useState("");
   const box = useRef<HTMLDivElement>(null);
   const img = useRef<HTMLImageElement>(null);
-  const src = `${core.url}${path.split("/").map(encodeURIComponent).join("/")}`;
+  const src = `${core.url}${path.split("/").map(encodeURIComponent).join("/")}${rev ? `?v=${rev}` : ""}`;
   const isSvg = /\.svg$/i.test(path);
 
   useEffect(() => {
     setInfo(null); setRect(null); setDrag(null); setNote("");
     setZoom(isSvg ? 2 : "fit");   // svg 可无损放大，默认 200%（设计侧定的）
     void core.get<ReadFileResult>(`file?path=${encodeURIComponent(path)}`).then((r) => { if (r.ok && r.data) setInfo(r.data); });
-  }, [core, path, isSvg]);
+  }, [core, path, isSvg, rev]);
 
   const fitScale = useCallback(() => {
     const el = box.current, w = info?.width ?? 0, h = info?.height ?? 0;

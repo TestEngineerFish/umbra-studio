@@ -143,12 +143,19 @@ export function missingRuntime(draftAbs: string): string[] {
 }
 
 /** 原子写：先写临时文件再 rename，避免半截文件被浏览器读到。 */
-export async function writeAtomic(abs: string, content: string): Promise<void> {
+/** 原子写。
+ *
+ *  ⚠️ **`content` 可以是字节**（#108，2026-10-07）：图片编辑要把一张 PNG 写回盘，
+ *  而 `writeFile(tmp, content, "utf8")` 对二进制是**静默损坏** ——
+ *  非法 utf8 序列被替换成 U+FFFD，文件还在、还能打开、只是花了。
+ *  **「写坏了」和「没写」长得完全不一样，而前者更难发现。** */
+export async function writeAtomic(abs: string, content: string | Uint8Array): Promise<void> {
   await mkdir(dirname(abs), { recursive: true });
   /* 临时文件名要唯一：同一份稿两次写入并发时（实测：属性面板失焦落盘 + 横条「落盘」钮同时触发），
      共用一个 .tmp 会让第二次 rename 报 ENOENT。各写各的临时文件，rename 是原子的，后到的赢。 */
   const tmp = `${abs}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.umbrastudio.tmp`;
-  await writeFile(tmp, content, "utf8");
+  if (typeof content === "string") await writeFile(tmp, content, "utf8");
+  else await writeFile(tmp, content);
   const { rename, rm } = await import("node:fs/promises");
   try { await rename(tmp, abs); }
   catch (e) { await rm(tmp, { force: true }); throw e; }

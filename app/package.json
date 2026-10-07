@@ -13,6 +13,7 @@
   "dependencies": {
     "@codemirror/legacy-modes": "6.5.4",
     "@codemirror/merge": "^6.12.2",
+    "cropperjs": "1.6.3",
     "markdown-it": "^14.1.0",
     "parse5": "^8.0.1",
     "react": "^18.3.1",

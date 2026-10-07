@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { envelope } from "../envelope.js";
+import { envelope, err, ToolError } from "../envelope.js";
+import { X } from "../codes.js";
 import { countTypes, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { gitFallbackOf } from "../gitkeep.js";
 import { clearStagedDraft, getStagedDraft, listStagedDrafts, stageDraft } from "../staged.js";
@@ -16,6 +17,25 @@ import { originOf, type CapCtx } from "./types.js";
  *  这一层要做的就是把那两层样板合成一份。
  */
 const p = (c: CapCtx) => c.project!;    // scope: "project" 的能力，门面保证不为 null
+
+/** 把调用方给的 `content` 变成要落盘的东西（#108）。
+ *
+ *  ⚠️ **base64 不合法要当场拒**，不能让 `Buffer.from` 悄悄吃掉。
+ *  `Buffer.from(x, "base64")` 对非法输入**不报错**，它跳过认不出的字符
+ *  —— 于是一个打错的 base64 会写出一个**体积不对但确实存在**的文件，
+ *  而用户看到的是「保存成功了，图打不开」。
+ *  **静默损坏比报错糟得多**（§161.3「假成功」同一条）。 */
+function decodeContent(content: string, encoding?: "utf8" | "base64"): string | Buffer {
+  if (encoding !== "base64") return content;
+  const clean = content.replace(/^data:[^,]*,/, "").trim();   // 顺手吃掉 data URL 前缀
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean.replace(/\s+/g, ""))) {
+    throw new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name: "content" },
+      "这不是合法的 base64",
+      { fix: "encoding 给了 base64，而 content 里有 base64 之外的字符。要写文本就别给 encoding。" }));
+  }
+  return Buffer.from(clean.replace(/\s+/g, ""), "base64");
+}
+
 
 defineCap({
   name: "list_files", title: "列目录", scope: "project",
@@ -47,16 +67,22 @@ defineCap({
     "**不归一化、不改编码、不动换行、不碰 frontmatter** —— 写进去什么样，盘上就什么样。",
     "expectSha256 传 read_file 给的那个值：盘上被别人改过就拒绝。新建文件传 \"0\"。",
     "`.dc.html` 会被拒绝并指向 write_draft（那是另一条写入口，要做归一化与资源注入）。",
+    "写二进制（图片这类）给 `encoding: \"base64\"`，`content` 就是 base64 原文。",
   ].join("\n"),
   input: {
     path: z.string(), content: z.string(),
+    /* ⚠️ **加一档而不是再开一条写入口**（#108，2026-10-07）：
+       第二条写入口的全部价值在于「写非设计稿只有这一条路」——
+       为二进制再开一件 `write_binary_file` 等于把那句话变成两条路，
+       而两条路迟早会在「写前校验 / 快照 / 回退」上分叉（纪律① 的同一条道理）。 */
+    encoding: z.enum(["utf8", "base64"]).optional().describe("content 怎么解。默认 utf8（文本）；写图片这类二进制给 base64"),
     expectSha256: z.string().optional().describe("read_file 返回的 sha256；新建文件给 \"0\"。不给就不做写前校验"),
     note: z.string().optional().describe("这一版为什么改，记进快照元数据"),
   },
   http: { route: "file_write", method: "POST" },
   /* `origin` 就是两个门面唯一的真实差异，现在它从 `via` 来，不再各写一遍 */
-  run: async ({ path, content, expectSha256, note }, c) =>
-    envelope(await writeAnyFile(p(c), path, content, { expectSha256, origin: originOf(c.via), note })),
+  run: async ({ path, content, encoding, expectSha256, note }, c) =>
+    envelope(await writeAnyFile(p(c), path, decodeContent(content, encoding), { expectSha256, origin: originOf(c.via), note })),
 });
 
 defineCap({

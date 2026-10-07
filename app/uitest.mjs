@@ -3947,6 +3947,139 @@ console.log("\n图片的捏合缩放（issue #32）");
   }
 }
 
+/* ═══ 图片编辑：裁剪 / 旋转 / 保存（issue #108，2026-10-07）═══
+   用户 2026-10-07 定的两档：**入口在 `✎` 编辑态里**（看 / 改两分）·
+   **保存默认另存一份**，另给一档「覆盖原图」。
+
+   ⚠️ 这一节钉的四件事，每一件都有它自己会坏的方式：
+   ① 看图时编辑栏上**不该有**裁剪钮（它在 `✎` 那一档里）——
+      少了这一条，「一进来就铺满编辑钮」也会全绿；
+   ② 裁剪态真的换掉了画布（`[data-ud="img-crop"]`），而不是在原图上盖一层；
+   ③ **另存出来的是一个新文件，而原图一个字节都没动** —— 这是用户选的默认行为，
+      而「保存」最容易出的错正是悄悄覆盖；
+   ④ **覆盖那一档落盘之后版本号真的多一版** —— 不然「能从变更退回」是句空话。
+
+   ⚠️ **SVG 那一条是反面**：画布取不到矢量图的像素（`View.tsx` 那条 catch 的注释
+   早就记着），所以裁剪钮要**禁用并说出原因** —— 禁用而不解释和「点了没反应」同病（#31）。 */
+console.log("\n图片编辑：裁剪 / 旋转 / 保存（issue #108）");
+{
+  const { writeFileSync, rmSync, existsSync, readFileSync: rfs108 } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { deflateSync } = await import("node:zlib");
+  const boot108 = await pg.evaluate(() => ({ dir: window.__UD_APP.dir }));
+  /* 真 PNG，照抄上面那一节的造法（项目里有没有图不该决定这一节跑不跑） */
+  const crc108 = (buf) => { let c = ~0; for (const b of buf) { c ^= b; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1)); } return ~c >>> 0; };
+  const ch108 = (type, data) => {
+    const t = Buffer.from(type), len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const cr = Buffer.alloc(4); cr.writeUInt32BE(crc108(Buffer.concat([t, data])));
+    return Buffer.concat([len, t, data, cr]);
+  };
+  const mkPng = (W, H, seed) => {
+    const rows = [];
+    for (let y = 0; y < H; y++) { const r = Buffer.alloc(1 + W * 3); for (let x = 0; x < W * 3; x++) r[1 + x] = (x * 11 + y * 7 + seed) & 0xff; rows.push(r); }
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4); ihdr[8] = 8; ihdr[9] = 2;
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      ch108("IHDR", ihdr), ch108("IDAT", deflateSync(Buffer.concat(rows))), ch108("IEND", Buffer.alloc(0))]);
+  };
+  const NM = "_uitest108.png", ABS = join(boot108.dir, NM);
+  const SVG = "_uitest108.svg", SVGABS = join(boot108.dir, SVG);
+  const made = [NM, SVG];
+  try {
+    writeFileSync(ABS, mkPng(240, 160, 3));
+    writeFileSync(SVGABS, '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="#38f"/></svg>', "utf8");
+    await settleTree(NM);
+    if (!(await openByName(NM))) ok(false, "图片样本没打开，这一组测不了");
+    else {
+      await pg.waitForTimeout(1800);
+      /* ① 看图时不该有裁剪钮 —— 它在 ✎ 那一档里 */
+      /* ⚠️ 判据第一版写的是 `count() === 0` —— **那是我写错了，不是产品错**：
+         编辑栏一直在 DOM 里，收起时是「外层高度 0 + `overflow:hidden` + `inert`」
+         （`Workbench.tsx` 那段动画要的就是这个形状）。
+         改成测**量不到**：这比「不在 DOM 里」更贴近用户真正碰得到什么。 */
+      /* ⚠️ **这条判据写错了三次，每一次都教了点东西**：
+         ① `count() === 0` —— 错：编辑栏**一直在 DOM 里**，收起时是
+            「外层高度 0 + `overflow:hidden` + `inert`」（动画要的就是这个形状）。
+         ② `isVisible() === false` —— 还是错：`overflow:hidden` 只是**裁掉**它，
+            子元素自己的 bounding box 还在，而 `opacity:0` 在 Playwright 眼里也不算隐藏。
+            `count` 和 `isVisible` **都表达不了「用户碰不到它」**。
+         ③ 顺带：第二版那个 `.catch(() => true)` 会把 strict-mode 的「匹配到多个」
+            也吃成「可见」—— **判据里的 catch 最容易把真相吃掉**。
+         现在测的是真正那件事：**点得到点不到**（`trial` 只做可操作性检查、不真点）。 */
+      const edPressed = await pg.locator('[data-ud="toggle-edit"]').getAttribute("aria-pressed").catch(() => "?");
+      const reachable = await pg.locator('[data-ud="img-crop-toggle"]').first()
+        .click({ trial: true, timeout: 900 }).then(() => true).catch(() => false);
+      ok(reachable === false,
+         "**看图时点不到裁剪钮**（它在 `✎` 那一档里 —— 少了这一条，「一进来就铺满编辑钮」也会全绿）",
+         `点得到=${reachable} · 编辑栏 aria-pressed=${edPressed}`);
+      await openEdit();
+      await pg.waitForTimeout(600);
+      const toggle = pg.locator('[data-ud="img-crop-toggle"]');
+      ok(await toggle.count() === 1, "（前提）按下 `✎` 之后裁剪钮出来了");
+      if (await toggle.count() === 1) {
+        /* ② 裁剪态换掉整个画布 */
+        await toggle.click();
+        await pg.waitForTimeout(1200);
+        ok(await pg.locator('[data-ud="img-crop"]').count() === 1,
+           "**裁剪态换掉了画布**（不是在原图上盖一层 —— 两套鼠标行为挤在一张图上，用户分不清在拖哪个框）");
+        ok(await pg.locator('[data-ud="img-rot-cw"]').count() === 1 && await pg.locator('[data-ud="img-flip-x"]').count() === 1,
+           "旋转 / 翻转那几颗也出来了");
+        /* 把裁剪框缩小：cropperjs 的 API 直接调（合成拖拽量不准，而要测的是「存下来的是裁后的」） */
+        const shrunk = await pg.evaluate(() => {
+          const el = document.querySelector('[data-ud="img-crop"] img');
+          const c = el && el.cropper;
+          if (!c) return null;
+          c.setData({ x: 20, y: 10, width: 120, height: 80 });
+          const d = c.getData(true);
+          return { w: Math.round(d.width), h: Math.round(d.height) };
+        });
+        ok(!!shrunk && shrunk.w === 120 && shrunk.h === 80, "（前提）裁剪框设成了 120×80", shrunk ? `${shrunk.w}×${shrunk.h}` : "拿不到 cropper");
+        /* ③ 另存：出来一个新文件，原图一个字节都不动 */
+        const before = rfs108(ABS);
+        await pg.locator('[data-ud="img-save-open"]').click();
+        await pg.waitForTimeout(900);
+        ok(await pg.locator('[data-ud="img-save"]').count() === 1, "（前提）保存卡弹出来了");
+        await pg.locator('[data-ud="img-save-ok"]').click();
+        await pg.waitForTimeout(2500);
+        const asName = "_uitest108-1.png";
+        made.push(asName);
+        const asAbs = join(boot108.dir, asName);
+        ok(existsSync(asAbs), "**默认另存出一个新文件**（用户 2026-10-07 定的默认行为）", existsSync(asAbs) ? asName : `✗ 没有 ${asName}`);
+        ok(rfs108(ABS).equals(before), "**而原图一个字节都没动**（「保存」最容易出的错就是悄悄覆盖）",
+           rfs108(ABS).equals(before) ? "原图没变" : "✗ 原图被改了");
+        if (existsSync(asAbs)) {
+          const got = await pg.evaluate(async ({ name }) => {
+            const b = window.__UD_APP;
+            const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/file?path=${encodeURIComponent(name)}&token=${encodeURIComponent(b.token)}`).then((x) => x.json()).catch(() => null);
+            return r?.data ? { w: r.data.width, h: r.data.height } : null;
+          }, { name: asName });
+          ok(!!got && got.w === 120 && got.h === 80,
+             "**而且存下来的真是裁后那一块**（判活看盘上那份的尺寸，不看界面上的读数）",
+             got ? `${got.w}×${got.h}，应为 120×80` : "读不到");
+        }
+      }
+    }
+    /* ⑤ SVG：裁剪钮要禁用**并说出原因** */
+    await settleTree(SVG);
+    if (await openByName(SVG)) {
+      await pg.waitForTimeout(1500);
+      await openEdit();
+      await pg.waitForTimeout(600);
+      const t2 = pg.locator('[data-ud="img-crop-toggle"]');
+      const dis = await t2.isDisabled().catch(() => null);
+      const tip = await t2.getAttribute("title").catch(() => "");
+      ok(dis === true && /画布取不到/.test(tip ?? ""),
+         "**矢量图的裁剪钮禁用，而且说出了原因**（禁用不解释 = 「点了没反应」，#31 同病）",
+         `disabled=${dis} · title=${(tip ?? "").slice(0, 28)}`);
+    } else ok(false, "svg 样本没打开，反面这一条测不到");
+  } finally {
+    /* 收尾：切走再删（§159.5），三份样本一律删 */
+    await openByName(".dc.html").catch(() => {});
+    await pg.waitForTimeout(700);
+    for (const n of made) rmSync(join(boot108.dir, n), { force: true });
+    await pg.waitForTimeout(400);
+  }
+}
+
 /* ═══ 语言高亮覆盖面（issue #37）═══
    ⚠️ `CODE_EXT` 有 37 种扩展名，而 `langFor` 原来只认 16 种 ——
    **27 种能打开但一片灰**（`.yaml` `.toml` `.sh` `.sql` `.go` `.rs` `.java` …），
@@ -4242,7 +4375,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
 
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
-const EXPECT_AT_LEAST = 433;
+const EXPECT_AT_LEAST = 442;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

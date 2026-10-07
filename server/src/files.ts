@@ -222,7 +222,16 @@ export interface WriteFileResult {
 }
 
 /** 泛型落盘。`.dc.html` 在这里被拒 —— 它要走 `write_draft` 那条路。 */
-export async function writeAnyFile(p: Project, rel: string, content: string, opts: WriteFileOptions = {}): Promise<WriteFileResult> {
+/** 第二条写入口。
+ *
+ *  ⚠️ **`content` 可以是字节**（#108，2026-10-07）：图片编辑要把一张 PNG 写回盘。
+ *  原来这条路从头到尾按 utf8 走（`writeAtomic` / `byteLength` / `Buffer.from(content,"utf8")` /
+ *  末尾的 `sha256`），**二进制进来会被静默损坏** —— 文件还在、还能打开、只是花了。
+ *  现在一进来就归一成 Buffer，后面全按字节算；文本那条路**行为一个字没变**
+ *  （`Buffer.from(s,"utf8")` 再 `byteLength` 和原来是同一个数）。 */
+export async function writeAnyFile(p: Project, rel: string, content: string | Buffer, opts: WriteFileOptions = {}): Promise<WriteFileResult> {
+  /** 一进来就归一成字节 —— 后面每一处都用它，免得「有的地方按字符有的地方按字节」 */
+  const buf = typeof content === "string" ? Buffer.from(content, "utf8") : content;
   const clean = normalizeRel(p, rel);
   if (kindOf(clean) === "dc") {
     throw new ToolError(err(X.IO, clean, { kind: "file", name: basename(clean) },
@@ -270,7 +279,11 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
     const latest = (await listSnapshots(p, clean)).at(-1) ?? null;
     let same = false;
     if (latest) {
-      try { same = (await readSnapshotContent(p, clean, latest)) === before.toString("utf8"); }
+      /* ⚠️ **按字节比**（#108）：原来是 `readSnapshotContent(...) === before.toString("utf8")`，
+         而二进制经 utf8 往返之后几乎必然不等 —— 于是每写一次图片都多存一版重复快照。
+         那不是正确性问题（多一版而已），但版本列表上会多出一串没意义的行，
+         和 2026-09-30 那条「每次写都产生一个完全重复的快照」是同一个症状。 */
+      try { same = (await readSnapshotBytes(p, clean, latest)).equals(before); }
       catch { same = false; }   // 读不出来就当不一样，宁可多存一版
     }
     if (same) { previous = latest; steps.push(`上一版已经是 ${latest}，没重复存`); }
@@ -289,15 +302,15 @@ export async function writeAnyFile(p: Project, rel: string, content: string, opt
   }
 
   await mkdir(dirname(abs), { recursive: true });
-  await writeAtomic(abs, content);
-  steps.push(`写入 ${Buffer.byteLength(content, "utf8")} 字节`);
+  await writeAtomic(abs, buf);
+  steps.push(`写入 ${buf.length} 字节`);
 
   // ③ 新内容也留一份 —— 「回到这一版」要有得回
-  const snapshot = await saveSnapshot(p, clean, Buffer.from(content, "utf8"), opts.origin ?? "人手改", opts.note);
+  const snapshot = await saveSnapshot(p, clean, buf, opts.origin ?? "人手改", opts.note);
   steps.push(`当前版 ${snapshot}`);
   if (rescued) steps.unshift(`先记下了别处改的内容（git ${rescued}）`);
   void commitAfterWrite(p.dir, clean, snapshot ?? null, null);
-  return { path: clean, written: true, snapshot, previous, bytes: Buffer.byteLength(content, "utf8"), sha256: sha256(content), steps };
+  return { path: clean, written: true, snapshot, previous, bytes: buf.length, sha256: sha256(buf), steps };
 }
 
 export interface FileSnapshotMeta {
@@ -447,7 +460,14 @@ async function saveSnapshot(p: Project, rel: string, buf: Buffer, src: string, n
 }
 
 /** 读回某一版的原文 */
-export async function readSnapshotContent(p: Project, rel: string, version: string): Promise<string> {
+/** 取某一版的**字节**（#108）。
+ *
+ *  ⚠️ 快照存的一直是完整字节（`saveSnapshot` 收的是 Buffer），**只有读的那一步转了 utf8** ——
+ *  于是 `revertFile` 对任何二进制文件都是**静默损坏**：
+ *  退回一张图之后文件还在、大小变了、打不开。
+ *  这条路在 #108 之前就存在（被「外部改动」兜底存下来的图片也退不回来），
+ *  **只是没人退过图片，所以没人发现。** */
+export async function readSnapshotBytes(p: Project, rel: string, version: string): Promise<Buffer> {
   const f = join(snapDir(p, rel), `${version}.src.gz`);
   if (!existsSync(f)) {
     const have = await listSnapshots(p, rel);
@@ -458,12 +478,20 @@ export async function readSnapshotContent(p: Project, rel: string, version: stri
   /* ⚠️ **异步解压**（issue #48）：`gunzipSync` 在主线程上解一个几百 KB 的 gz
      会把整个服务停住，而这个进程同时在接 MCP、WS 和别的 HTTP 请求。
      异步版把活交给 zlib 的线程池。 */
-  return (await gunzip(await readFile(f))).toString("utf8");
+  return await gunzip(await readFile(f));
+}
+
+/** 取某一版的**文本**。二进制请用 `readSnapshotBytes` —— utf8 往返会毁掉它。 */
+export async function readSnapshotContent(p: Project, rel: string, version: string): Promise<string> {
+  return (await readSnapshotBytes(p, rel, version)).toString("utf8");
 }
 
 /** 回到某一版：把那一版的原文当新内容写一遍（历史不删，回退本身也留一版）。 */
 export async function revertFile(p: Project, rel: string, version: string): Promise<WriteFileResult> {
-  const old = await readSnapshotContent(p, rel, version);
+  /* ⚠️ **按字节取**（#108）：原来走 `readSnapshotContent`（utf8），
+     于是「退回上一版」对任何二进制文件都是静默损坏 —— 退完文件还在、打不开。
+     这是 #108 之前就有的缺陷，只是没人退过图片。 */
+  const old = await readSnapshotBytes(p, rel, version);
   const r = await writeAnyFile(p, rel, old, { origin: "人手改", note: `回到 ${version}` });
   r.steps.unshift(`取 ${version} 的原文`);
   return r;
