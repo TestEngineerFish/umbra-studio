@@ -135,8 +135,16 @@ function Grip({ r }: { r: Region }) {
         const w0: number = typeof r.width === "number" ? r.width : g.def;
         const dir = g.edge === "right" ? 1 : -1;
         const mv = (ev: MouseEvent) => g.onResize(Math.min(g.max, Math.max(g.min, Math.round(w0 + dir * (ev.clientX - x0)))));
-        const up = () => { document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up); document.body.style.cursor = ""; };
+        const up = () => {
+          document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up);
+          document.body.style.cursor = "";
+          document.body.classList.remove("ud-resizing");
+        };
         document.body.style.cursor = "col-resize";
+        /* ⚠️ **关掉 `.anim-col` 那条 240ms 的 width 过渡**（2026-10-07 用户报的「不跟手」）：
+           不关的话这一列永远追在鼠标后面 240ms。过渡是给「收起 / 展开」用的，不是给拖拽用的。
+           挂在 `body` 上而不是这一列上 —— 底栏改高度（`.anim-row`）是同一个病，一条规则管两处。 */
+        document.body.classList.add("ud-resizing");
         document.addEventListener("mousemove", mv); document.addEventListener("mouseup", up);
       }} />
   );

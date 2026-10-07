@@ -26,6 +26,8 @@ export function ImageView({ core, path, rev = 0, supportsImage, channelLabel, on
 }) {
   const [probing, setProbing] = useState(false);
   const [info, setInfo] = useState<ReadFileResult | null>(null);
+  /** 带 `crossOrigin` 加载失败过 —— 退回不带它（见下面 `<img>` 那段注释） */
+  const [coFail, setCoFail] = useState(false);
   const [rect, setRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [drag, setDrag] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [note, setNote] = useState("");
@@ -35,7 +37,7 @@ export function ImageView({ core, path, rev = 0, supportsImage, channelLabel, on
   const isSvg = /\.svg$/i.test(path);
 
   useEffect(() => {
-    setInfo(null); setRect(null); setDrag(null); setNote("");
+    setInfo(null); setRect(null); setDrag(null); setNote(""); setCoFail(false);
     setZoom(isSvg ? 2 : "fit");   // svg 可无损放大，默认 200%（设计侧定的）
     void core.get<ReadFileResult>(`file?path=${encodeURIComponent(path)}`).then((r) => { if (r.ok && r.data) setInfo(r.data); });
   }, [core, path, isSvg, rev]);
@@ -168,7 +170,18 @@ export function ImageView({ core, path, rev = 0, supportsImage, channelLabel, on
               ⚠️ 这**不是滚轮缩放引入的** —— 用工具栏的 zoom 按钮放大到
               超过容器宽一样会变形，只是没人往那么大放过。
               `height: auto` 那一半也要解掉，否则显式给的 `height` 会被忽略。 */}
+          {/* ⚠️ **`crossOrigin` 不能省**（2026-10-07 用户报 #108「保存无反应」时连带发现的）：
+              桌面壳加载的是 hub 端口的 `__app/home`，而这张图在**项目服务**那个端口 ——
+              端口不同就是源不同，于是画布被污染、下面那个 `toDataURL` 抛 `SecurityError`。
+              那条 catch 写着「svg / 跨源画不出来就只带坐标」—— **它预言对了，
+              而壳里一直在走那条降级路，没人去看它有没有发生**。
+              服务端对 `http://127.0.0.1:*` 的来源本来就回 `access-control-allow-origin`（实测过）。
+              ⚠️ 万一哪天服务端不回那个头，带了 `crossOrigin` 的图会**整张加载不出来** ——
+              那比「圈选只带坐标」糟得多。所以 `onError` 里退回不带它再试一次：
+              **看得见图比圈得出像素重要。** */}
           <img ref={img} src={src} alt={path} draggable={false}
+            crossOrigin={coFail ? undefined : "anonymous"}
+            onError={() => { if (!coFail) setCoFail(true); }}
             style={{ width: info?.width ? info.width * scale : undefined, height: info?.height ? info.height * scale : undefined, maxWidth: "none", maxHeight: "none", cursor: picking ? "crosshair" : "default", userSelect: "none" }} />
           {(drag ?? rect) && (
             <div className="absolute pointer-events-none" style={{

@@ -91,6 +91,15 @@ body { margin: 0; background: var(--tool-bg); color: var(--tool-text); font-fami
 /* 整列 / 整行：外层收宽收高，`overflow:hidden` 把里层裁掉 */
 .anim-col { transition: width var(--dur-slow) var(--ease), opacity var(--dur-fast) var(--ease); overflow: hidden; }
 .anim-row { transition: height var(--dur-slow) var(--ease), opacity var(--dur-fast) var(--ease); overflow: hidden; }
+/* ── 拖分栏时必须关掉过渡（2026-10-07 用户报的「不跟手，很卡的感觉」）──
+   ⚠️ `.anim-col` 是 `transition: width 240ms` —— 它为的是**收起 / 展开整列**那一下。
+   而拖宽度时每一次 mousemove 都会改 width，于是每一次都**动画 240ms**：
+   那一列永远追在鼠标后面 240ms。
+   **这不是「慢」，是「晚」** —— 实测每步同步耗时中位数 0.1ms、满 60 帧，
+   按「卡不卡」去量**量不出任何问题**（我第一次就量错了这件事）。
+   拖的时候挂 `body.ud-resizing`，过渡让开。 */
+body.ud-resizing .anim-col,
+body.ud-resizing .anim-row { transition: none !important; }
 /* 一整块（编辑栏这种） */
 .anim-block { transition: height var(--dur-mid) var(--ease), opacity var(--dur-fast) var(--ease); overflow: hidden; }
 

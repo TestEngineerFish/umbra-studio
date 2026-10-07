@@ -3947,6 +3947,71 @@ console.log("\n图片的捏合缩放（issue #32）");
   }
 }
 
+/* ═══ 拖分栏要跟手（用户 2026-10-07 报的第四条）═══
+   他的原话：「宽度调节时，不跟手，鼠标拖拽宽度时并没有实时更新每个区域的宽度，
+   而是很卡的感觉」。
+
+   根因**不是慢，是晚**：`.anim-col` 是 `transition: width 240ms`（给「收起 / 展开整列」用的），
+   而拖宽度时每一次 mousemove 都改 width → 每一次都动画 240ms → 那一列永远追在鼠标后面。
+
+   ⚠️ **我第一次量错了东西**：按「卡不卡」量 —— 每步同步耗时中位数 **0.1ms**、满 **60 帧**，
+   读数漂亮得很，**什么问题都看不出来**。用户说的是「不跟手」，那是**延迟**不是**吞吐**。
+   **先问清他说的是哪一件事，再决定量什么。**
+
+   判据：拖 100px，两帧之后看**渲染出来的宽度**跟上了没。
+   实测反向验证（撤掉那条 CSS）：`过渡属性` 回到 `width, opacity`，30ms 时只走到 305/340（差 35px）。 */
+console.log("\n拖分栏要跟手（用户第四条）");
+{
+  const grip = pg.locator(".cursor-col-resize").first();
+  const gb = await grip.boundingBox();
+  if (!gb) ok(false, "找不到分栏把手，这一条测不了");
+  else {
+    const r = await pg.evaluate(async ({ x, y }) => {
+      const g = document.elementFromPoint(x, y);
+      const region = g.parentElement;
+      const w0 = Math.round(region.getBoundingClientRect().width);
+      g.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+      const STEP = 100;
+      document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x + STEP, clientY: y }));
+      /* 等两帧（React 提交 + 排版）再量 —— 240ms 的过渡这时候还没走完两成 */
+      await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+      await new Promise((res) => setTimeout(res, 30));
+      const w1 = Math.round(region.getBoundingClientRect().width);
+      const prop = getComputedStyle(region).transitionProperty;
+      const hasClass = document.body.classList.contains("ud-resizing");
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x + STEP, clientY: y }));
+      await new Promise((res) => setTimeout(res, 420));
+      return { w0, want: w0 + STEP, w1, prop, hasClass, after: Math.round(region.getBoundingClientRect().width),
+               stillClass: document.body.classList.contains("ud-resizing") };
+    }, { x: Math.round(gb.x + gb.width / 2), y: Math.round(gb.y + 200) });
+    ok(r.hasClass === true, "（前提）拖的时候 `body` 上挂了 `ud-resizing`");
+    ok(r.prop === "none", "**拖的时候那一列没有 width 过渡**（有的话它会追在鼠标后面 240ms）", `transition-property = ${r.prop}`);
+    /* ⚠️ 判据钉的是**渲染出来的宽度**，不是 style 里写的值 —— 过渡期间两者正好不一样，
+       而「不跟手」这件事只在渲染出来的那个数上看得见。 */
+    ok(Math.abs(r.want - r.w1) <= 2,
+       "**拖 100px，两帧之后渲染宽度就到位了**（反向验证：撤掉那条 CSS 时只走到 305/340）",
+       `${r.w0} → ${r.w1}（想要 ${r.want}，差 ${r.want - r.w1}）`);
+    ok(r.stillClass === false, "**松手之后那个 class 撤掉了**（不撤的话收起 / 展开整列的动画从此全没了）");
+    ok(Math.abs(r.after - r.want) <= 2, "松手后宽度留在拖到的位置", `${r.after}`);
+    /* ── 收尾：**把宽度还回去**（2026-10-07 实测踩到，今天第四次「判据留下了状态」）──
+       ⚠️ 不还的话详情区一直窄 100px，而窄到 480 以下会触发 `SidePanels` 的
+       **窄模式全屏遮罩**（`fixed inset-0 z-30 bg-black/20`）——
+       于是**后面每一节的点击都被它挡住**，整个脚本挂在
+       「语言高亮」那一节的 `_uitest-hl.yaml` 上，报的是 `locator.click: Timeout`。
+       **症状离原因隔了十几节**，而我第一反应是去查那一节。
+       双击把手回默认值 —— 这既是收尾，也正好把「双击回默认」这个功能钉住。 */
+    await grip.dblclick();
+    await pg.waitForTimeout(600);
+    const back = await pg.evaluate(({ x, y }) => {
+      const g = document.elementFromPoint(x, y);
+      return Math.round((g?.parentElement ?? g).getBoundingClientRect().width);
+    }, { x: Math.round(gb.x + gb.width / 2), y: Math.round(gb.y + 200) });
+    ok(back !== 0 && Math.abs(back - 340) > 2,
+       "**（收尾）双击把手回默认宽度** —— 不还的话详情区一直窄着，窄模式遮罩会挡住后面每一节的点击",
+       `拖到 340 → 双击后 ${back}`);
+  }
+}
+
 /* ═══ 图片编辑：裁剪 / 旋转 / 保存（issue #108，2026-10-07）═══
    用户 2026-10-07 定的两档：**入口在 `✎` 编辑态里**（看 / 改两分）·
    **保存默认另存一份**，另给一档「覆盖原图」。
@@ -4033,6 +4098,48 @@ console.log("\n图片编辑：裁剪 / 旋转 / 保存（issue #108）");
           return { w: Math.round(d.width), h: Math.round(d.height) };
         });
         ok(!!shrunk && shrunk.w === 120 && shrunk.h === 80, "（前提）裁剪框设成了 120×80", shrunk ? `${shrunk.w}×${shrunk.h}` : "拿不到 cropper");
+        /* ── 用户 2026-10-07 报的三条，补判据 ──
+           ① **`crossOrigin` 必须挂上**：桌面壳里页面在 hub 端口、图片在项目服务端口，
+              端口不同就是源不同 → 画布被污染 → `toBlob` 抛 `SecurityError`。
+              ⚠️ **`uitest` 测不到那个条件**（这里 hub 和项目服务是同一个端口）——
+              所以这里只能钉「属性在不在」，跨源那一半是在**真桌面壳**里验的
+              （读数：页面 57197 / 图片 57215，另存成功）。照实记，别当成这条判据证过了。 */
+        const co = await pg.evaluate(() => {
+          const im = document.querySelector('[data-ud="img-crop"] img');
+          return { 源图: im?.crossOrigin ?? "(没有)", cropper克隆的: [...document.querySelectorAll('[data-ud="img-crop"] img')].map((x) => x.crossOrigin ?? "(没有)") };
+        });
+        ok(co.源图 === "anonymous",
+           "**裁剪面那张图带 `crossOrigin`**（不带的话桌面壳里画布跨源被污染 → 保存抛 SecurityError 而界面一个字不说）",
+           JSON.stringify(co));
+        /* ② 右下角的缩放在裁剪态下要真能用（原来它调的是看图那套，而看图那套在裁剪态下没渲染） */
+        const zb = pg.locator('button[title^="缩放"]').first();
+        const readZ = async () => (await zb.innerText().catch(() => "?")).trim().replace(/\s+/g, "");
+        const z0 = await readZ();
+        await zb.click(); await pg.waitForTimeout(400);
+        const plus = pg.locator('button[aria-label="放大"]').first();
+        ok(await plus.count() === 1, "（前提）缩放浮层里有放大钮");
+        if (await plus.count()) { await plus.click(); await pg.waitForTimeout(500); await plus.click(); await pg.waitForTimeout(500); }
+        const z1 = await readZ();
+        ok(z1 !== z0 && /%$/.test(z1), "**裁剪态下点放大，读数真的变**（原来它调看图那套 `setZoom`，而裁剪态下没人读它 → 点了没反应）", `${z0} → ${z1}`);
+        const fitb = pg.locator('button:has-text("适配")').first();
+        if (await fitb.count()) { await fitb.click(); await pg.waitForTimeout(600); }
+        const z2 = await readZ();
+        /* ⚠️ 这一条单独钉：`reset()` **不发 `zoom` 事件** —— 只靠事件上报的话
+           画面变了而读数不动，而**那比两个都不动更糟**（看起来像功能坏了）。 */
+        ok(z2 !== z1, "**点「适配」读数也跟着回去**（`reset()` 不发 `zoom` 事件，所以要主动上报）", `${z1} → ${z2}`);
+        await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+        /* ⚠️ **缩放之后再量一次裁剪框**：「适配」原来走 `c.reset()`，
+           会把裁剪框一起重置掉 —— 后面那条「存下来的真是裁后那一块」就是这么红的。
+           产品已经改成「适配只调显示比例」，这一条**把它钉住**：
+           缩放 / 适配**不许动用户框好的那块**。 */
+        const keep = await pg.evaluate(() => {
+          const c = document.querySelector('[data-ud="img-crop"] img')?.cropper;
+          if (!c) return null; const d = c.getData(true);
+          return { w: Math.round(d.width), h: Math.round(d.height) };
+        });
+        ok(!!keep && keep.w === 120 && keep.h === 80,
+           "**缩放 / 适配之后裁剪框还在原处**（原来「适配」走 `c.reset()`，把用户框好的那块一起重置了）",
+           keep ? `${keep.w}×${keep.h}，应为 120×80` : "拿不到 cropper");
         /* ③ 另存：出来一个新文件，原图一个字节都不动 */
         const before = rfs108(ABS);
         await pg.locator('[data-ud="img-save-open"]').click();
@@ -4391,7 +4498,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
 
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
-const EXPECT_AT_LEAST = 442;
+const EXPECT_AT_LEAST = 454;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

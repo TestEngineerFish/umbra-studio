@@ -33,6 +33,9 @@ interface ImgState {
   /** 裁剪框现在在原图像素里多大 —— 编辑栏上要显示它 */
   cropSize: { w: number; h: number } | null;
   setCropSize: (s: { w: number; h: number } | null) => void;
+  /** 裁剪态下的显示比例（1 = 100%）。右下角那颗钮读它 */
+  cropScale: number;
+  setCropScale: (s: number) => void;
   /** 画布那一侧注册进来的动作出口（旋转 / 翻转 / 复位 / 导出） */
   api: MutableRefObject<EditApi | null>;
   core: Core;
@@ -57,16 +60,17 @@ function Provider({ ctx, children }: { ctx: ViewContext; children: ReactNode }) 
   const [picking, setPicking] = useState(false);
   const [cropping, setCropping] = useState(false);
   const [cropSize, setCropSize] = useState<{ w: number; h: number } | null>(null);
+  const [cropScale, setCropScale] = useState(1);
   const [rev, setRev] = useState(0);
   const api = useRef<EditApi | null>(null);
   const [readout, setReadout] = useState<{ info: ReadFileResult | null; scale: number; isSvg: boolean }>({ info: null, scale: 1, isSvg: false });
   /* 换图片时缩放、圈选、裁剪都归零 —— Provider 按 kind 挂载，换文件不会重建它。
      ⚠️ **裁剪态也要归零**：不归的话换到下一张图还顶着裁剪框，
      而那张图的裁剪框是上一张的尺寸（和「停在某个旧版上」是同一种静默陷阱）。 */
-  useEffect(() => { setZoom("fit"); setPicking(false); setCropping(false); setCropSize(null); }, [ctx.path]);
+  useEffect(() => { setZoom("fit"); setPicking(false); setCropping(false); setCropSize(null); setCropScale(1); }, [ctx.path]);
   return <Ctx.Provider value={{
     zoom, setZoom, picking, setPicking, ...readout, setReadout, supportsImage: ctx.ai.supportsImage,
-    cropping, setCropping, cropSize, setCropSize, api, core: ctx.core, path: ctx.path, rev, bump: () => setRev((n) => n + 1), open: (pp: string) => ctx.open(pp),
+    cropping, setCropping, cropSize, setCropSize, cropScale, setCropScale, api, core: ctx.core, path: ctx.path, rev, bump: () => setRev((n) => n + 1), open: (pp: string) => ctx.open(pp),
   }}>{children}</Ctx.Provider>;
 }
 
@@ -86,7 +90,10 @@ function Toolbar() {
 
   const save = async () => {
     const api = d.api.current;
-    if (!api || busy) return;
+    /* ⚠️ **这里原来是静默 return**（2026-10-07 用户报的「点了没反应」的一半）。
+       `api` 为空就什么都不做、也什么都不说 —— 我自己写了一个 #31。 */
+    if (busy) return;
+    if (!api) { toast("裁剪还没就绪", "再等一下，或者退出裁剪重进一次", "error"); return; }
     setBusy(true);
     try {
       const out = await api.bytes();
@@ -123,6 +130,16 @@ function Toolbar() {
         d.setCropping(false);
         d.open(target);
       }
+    } catch (e) {
+      /* ⚠️ **原来只有 `try/finally`，没有 `catch`** —— 而调用方写的是 `void save()`，
+         于是任何异常都变成一条没人接的 rejection：**界面上一个字都不出现**。
+         用户报的「点击保存按钮无反应」就是这么来的：桌面壳里画布跨源，
+         `toBlob` 抛 `SecurityError`，然后这条路把它整条吞掉。
+         **「吞掉异常」比「报错」糟得多** —— 报错至少告诉人发生了什么。 */
+      const msg = String((e as Error)?.message ?? e);
+      toast("保存没成", /tainted|SecurityError/i.test(msg)
+        ? `画布取不到像素（跨源）—— 这是我们的 bug，请把这句话报给我们：${msg.slice(0, 80)}`
+        : msg.slice(0, 120), "error");
     } finally { setBusy(false); }
   };
 
@@ -174,12 +191,23 @@ function Toolbar() {
 /** 角落：缩放 —— **看图用**的，一直会用，所以常驻 */
 function Corner() {
   const d = useImg();
-  const pct = Math.round(d.scale * 100);
+  /* ── 裁剪态下这颗钮原来整个是死的（2026-10-07 用户报的）──
+     它读 `d.scale`、调 `d.setZoom`，而那两样都只有 `ImageView` 认 ——
+     裁剪态下 `ImageView` **根本没渲染**，于是：
+     「适配」点了没反应 · `+` / `−` 点了没反应 · 百分比还显示着**进裁剪前**那个旧值。
+     **三个症状、一个根**：这颗钮和画布在两个态下接的不是同一套东西。
+     现在裁剪态走 cropper 自己的缩放，读数也从它那儿取。 */
+  const cropping = d.cropping;
+  const pct = Math.round((cropping ? d.cropScale : d.scale) * 100);
   return (
-    <SizeBtn label={d.zoom === "fit" ? `适配 · ${pct}%` : `${pct}%`} title="缩放（⌘− ⌘＋ ⌘0）"
+    <SizeBtn label={cropping ? `${pct}%` : d.zoom === "fit" ? `适配 · ${pct}%` : `${pct}%`}
+      title={cropping ? "缩放（裁剪态）" : "缩放（⌘− ⌘＋ ⌘0）"}
       zoomPct={pct}
-      onZoom={(dir) => d.setZoom(dir > 0 ? (ZOOMS.find((z) => z > d.scale) ?? 4) : (ZOOMS.filter((z) => z < d.scale).pop() ?? 0.25))}
-      onFit={() => d.setZoom("fit")} />
+      onZoom={(dir) => {
+        if (cropping) { d.api.current?.zoomBy(dir); return; }
+        d.setZoom(dir > 0 ? (ZOOMS.find((z) => z > d.scale) ?? 4) : (ZOOMS.filter((z) => z < d.scale).pop() ?? 0.25));
+      }}
+      onFit={() => { if (cropping) d.api.current?.fit(); else d.setZoom("fit"); }} />
   );
 }
 
@@ -189,7 +217,7 @@ function View({ ctx }: { ctx: ViewContext }) {
   const src = `${ctx.core.url}${ctx.path.split("/").map(encodeURIComponent).join("/")}${d.rev ? `?v=${d.rev}` : ""}`;
   /* ⚠️ **裁剪时换掉整个画布**，不和看图那套缩放 / 圈选共存（「看 / 改两分」）。
      共存的代价不是实现难，是**用户分不清自己在拖哪个框**。 */
-  if (d.cropping) return <ImageEdit src={src} path={ctx.path} onApi={(a) => { d.api.current = a; }} onChange={d.setCropSize} />;
+  if (d.cropping) return <ImageEdit src={src} path={ctx.path} onApi={(a) => { d.api.current = a; }} onChange={d.setCropSize} onScale={d.setCropScale} />;
   return (
     <ImageView core={ctx.core} path={ctx.path} rev={d.rev} supportsImage={ctx.ai.supportsImage} channelLabel={ctx.ai.engineLabel}
       onProbed={ctx.ai.reloadCaps} onSelection={(s) => ctx.select("region", s)}
