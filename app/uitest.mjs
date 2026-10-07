@@ -4228,7 +4228,23 @@ console.log("\n首页：同名项目要分得清（issue #12）");
   const { join } = await import("node:path");
   const boot = await pg.evaluate(() => ({ url: window.__UD_APP.url, token: window.__UD_APP.token, dir: window.__UD_APP.dir }));
   const DUPNAME = boot.dir.split("/").filter(Boolean).pop();          // 和当前项目同名
-  const twin = join(tmpdir(), `us-dup-${Date.now()}`);
+  /* ⚠️ **固定名字，不带时间戳**（2026-10-07 实测抓到的泄漏）。
+     原来是 `us-dup-${Date.now()}` —— 每轮一个新目录，而下面那句 `open_project`
+     会让服务端 `serveStart(twin)` **新开一个监听端口**；
+     `serveStart` 按目录去重（issue #20 改的），所以不同目录就是不同服务，
+     而本地 API **没有「只停一个服务」的路由**（`serve_stop` 只在 MCP 面上，
+     HTTP 侧只有归档 / 删除项目时顺带停）—— 于是那个服务**停不掉也没人停**。
+
+     实测后果：我对着同一台 `npm run ui` 跑了几十轮回归，那个进程上攒了
+     **33 个 LISTEN 端口**（13 台残留服务合计 72 个）。
+     目录名固定之后 `serveStart` 命中去重，**整个服务生命周期里最多多一个**。
+
+     ⚠️ 固定名没有副作用：这一节要的只是「**同名、不同目录**」，
+     目录唯不唯一和它要测的事无关；`finally` 里照旧 `rmSync` 掉，下一轮重建。
+     ⚠️ **这条性质没有判据**：要钉住它得查服务端进程的监听端口数，
+     而那要 `lsof`（平台相关）或者一条 HTTP 的 `serve_status`（现在没有）。
+     照实记，别当成测过了。 */
+  const twin = join(tmpdir(), "us-dup-uitest");
   mkdirSync(twin, { recursive: true });
   /* name 故意和当前项目一样、title 也一样 —— 这正是「拷一份」之后的样子 */
   writeFileSync(join(twin, "project.json"), JSON.stringify({ name: DUPNAME, title: DUPNAME }), "utf8");

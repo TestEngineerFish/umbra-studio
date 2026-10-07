@@ -57,6 +57,31 @@ async function main() {
       process.exitCode = 1;
     }
   } finally {
+    /* ── 撤掉步骤 8 往「最近打开」里塞的那一条（2026-10-07）──
+       ⚠️ 步骤 8 是**故意** `touchProject` 一次来验列表的，而它从来没撤过 ——
+       于是**每跑一轮回归，首页的「最近打开」就多一条死记录**
+       （目录在 tmp 下、跑完就删，所以 `exists: false`）。
+       实测在用户机器上攒到 **18 条**，全是 `umbrastudio-lifecycle-*`。
+
+       「最近打开」存在 `STATE_ROOT/.umbrastudio/workspace.json`，**是用户的东西**
+       （首页直接显示它）—— 和 `projects/` 同一条纪律⑥：
+       **留文件是脏，往用户看得见的列表里塞假数据是另一个量级。**
+
+       ⚠️ 删临时目录**删不掉它** —— 列表记的是路径，路径指向哪儿不影响那一行还在。
+       「清掉自己造的文件」和「清掉自己造的状态」是两件事（§163.5 同一条）。 */
+    try {
+      const { removeRecentProject, listRecentProjects } = await import("./workspace.js");
+      await removeRecentProject(TEMP);
+      /* 顺手把**以前几轮**留下的也收掉：目录以 `umbrastudio-lifecycle-` 开头
+         且已经不在了的，一定是回归留下的。只清这一种，不碰别人的记录。 */
+      const all = await listRecentProjects(200);
+      const stale = all.recents.filter((r) => r.exists === false && /umbrastudio-lifecycle-/.test(r.dir));
+      for (const r of stale) await removeRecentProject(r.dir);
+      /* 收尾自检：清完了真的没有了 —— 不自检的话「清理静默失败」和「清干净了」长得一样（§159.3 ④） */
+      const left = (await listRecentProjects(200)).recents.filter((r) => /umbrastudio-lifecycle-/.test(r.dir));
+      if (left.length) console.log(`  ✗ （收尾）「最近打开」里还留着 ${left.length} 条回归的死记录`);
+      else console.log(`  ✓ （收尾）「最近打开」没留下回归的记录${stale.length ? `（顺带清了以前几轮的 ${stale.length} 条）` : ""}`);
+    } catch { /* 清不掉也不该让回归报失败 —— 它不是被测的东西 */ }
     // 清理临时目录（如果 archive 没把它移走的话）
     if (existsSync(TEMP)) {
       await rm(TEMP, { recursive: true, force: true });

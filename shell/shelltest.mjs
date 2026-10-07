@@ -303,3 +303,13 @@ await app.close();
   console.log("--mcp: 客户端断开后壳进程还活着:", alive, "(壳有窗口，stdin 关了不退出是预期；秘书用时窗口可见)");
 }
 console.log("autotest log:", (await readFile(S + "/shell-autotest.log", "utf8")).trim().split("\n").pop());
+
+/* ── 收尾：撤掉「最近打开」里那一条（2026-10-07）──
+   壳打开这个副本是**产品的正常行为**（`open_project` → `touchProject`），
+   但那条记录指向一个**测试用的副本目录** —— 跑完留在首页的「最近打开」上。
+   和 `lifecycletest` 步骤 8 同一个病：**清掉自己造的文件 ≠ 清掉自己造的状态。** */
+try {
+  const { removeRecentProject } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/dist/workspace.js");
+  const r = await removeRecentProject(S);
+  console.log("收尾：最近打开里那条测试记录", r.removed ? "已撤掉" : "本来就没有");
+} catch (e) { console.log("收尾：撤「最近打开」没成（不影响测试结论）:", String(e).slice(0, 60)); }
