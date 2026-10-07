@@ -637,6 +637,103 @@ console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
   await rm(root, { recursive: true, force: true });
 }
 
+/* ── 打桩的那一轮（Q49）──
+   ⚠️ **最该钉的是反方向那条**：「一句普通的话**不会**被当成打桩」。
+   想清楚后果就知道为什么 —— `parseStub` 误判的话，一次**真的 AI 请求**会被
+   静默换成假回复，而用户看到的是一段像回答的文字。
+   那比「打桩不工作」糟得多：打桩不工作会红在 `uitest` 的样本有效性上，
+   而**误判没有任何判据会红**（§161.3「假成功」同一族）。
+
+   ⚠️ 这一节**一条都不调真 AI** —— 这正是打桩存在的理由。 */
+console.log("\n⑨ 打桩的那一轮：该认的认、不该认的一个都不认（Q49）");
+{
+  const { parseStub } = await import("./chat_stub.js");
+  /* ① 不该认的 —— 这一组错一条就等于把真请求静默换成假回复 */
+  const notStub = [
+    "帮我把标题改大一点",
+    "这段代码里 #stub 是什么意思",            // 中间出现，不是开头
+    "## stub",
+    "#stubborn 的拼写对吗",                    // ⚠️ 前缀是另一个词的开头
+    "",
+  ];
+  const wrong = notStub.filter((m) => parseStub(m) !== null);
+  ok(wrong.length === 0, "**普通的话一句都不会被当成打桩**（误判 = 把真请求静默换成假回复）",
+     wrong.length ? `被误判的：${wrong.map((x) => JSON.stringify(x)).join(" · ")}` : `${notStub.length} 句全部照常走 AI`);
+  /* ② 该认的 */
+  ok(parseStub("#stub") !== null, "光一个 `#stub` 也算（缺省值兜着）");
+  ok(parseStub("  #stub ms=10") !== null, "前面有空白也算（真输入框里很常见）");
+  /* ③ 参数与上限 —— 判据写错一个数字不该把回归挂住几分钟 */
+  const big = parseStub("#stub ms=999999 steps=999 tokens=99999999")!;
+  ok(big.ms === 60_000 && big.steps === 10, "**每个数都有上限**（ms ≤ 60000 · steps ≤ 10）", `ms=${big.ms} steps=${big.steps}`);
+  const one = parseStub("#stub steps=2 ms=5 tool=write_draft reply=好 了")!;
+  ok(one.steps === 2 && one.tool === "write_draft" && one.reply === "好 了",
+     "`reply=` 吃到行尾（里面可以有空格）", `steps=${one.steps} tool=${one.tool} reply=${JSON.stringify(one.reply)}`);
+
+  /* ④ 真跑一轮：**不联网、不写盘**。用临时项目，不碰用户的 */
+  const { mkdtemp, rm: rm4, readdir: rd4 } = await import("node:fs/promises");
+  const { join: j4 } = await import("node:path");
+  const { tmpdir: td4 } = await import("node:os");
+  const { writeFile: wf6 } = await import("node:fs/promises");
+  const T4 = await mkdtemp(j4(td4(), "umbrastudio-stub-"));
+  await wf6(j4(T4, "project.json"), JSON.stringify({ name: "stubtest", title: "打桩回归" }), "utf8");
+  const ps = await buildProject(T4);
+  const ss = await serveStart(ps);
+  const us = (route: string) => `${ss.url}__ud/${route}${route.includes("?") ? "&" : "?"}token=${encodeURIComponent(ss.token)}`;
+  const postS = (body: unknown) => fetch(us("chat_send"), {
+    method: "POST", headers: { "content-type": "application/json", origin: ss.url.replace(/\/$/, "") },
+    body: JSON.stringify(body),
+  }).then((x) => x.json() as Promise<{ ok?: boolean; data?: Record<string, unknown> }>);
+
+  const filesBefore = (await rd4(T4)).sort().join(",");
+  const r4 = await postS({ message: "#stub steps=2 ms=10 tokens=5", async: false });
+  const d4 = (r4.data ?? {}) as { stub?: boolean; messages?: Array<{ role: string; content: string; toolName?: string }>; usage?: { totalTokens?: number }; changes?: unknown[]; interrupted?: boolean };
+  ok(r4.ok === true && d4.stub === true, "跑得起来，而且回执自报「我是打桩」", `ok=${r4.ok} stub=${d4.stub}`);
+  const roles = (d4.messages ?? []).map((m) => m.role).join(",");
+  ok(roles === "user,assistant,tool,assistant,tool,assistant",
+     "**工具行逐条落进会话**（界面轮询才看得到它们长出来 —— 和真通道同一条路）", roles);
+  ok((d4.messages ?? []).filter((m) => m.role === "assistant").every((m) => m.content.includes("打桩通道")),
+     "**每一条回复都带标记** —— 一个看起来像 AI 而其实不是的回答，比没有回答糟");
+  ok(d4.usage?.totalTokens === 10 && Array.isArray(d4.changes) && d4.changes.length === 0,
+     "用量按参数报 · `changes` **永远空**（它不真写盘，所以变更卡那一类它解锁不了）",
+     `usage=${d4.usage?.totalTokens} changes=${(d4.changes ?? []).length}`);
+  /* ⚠️ 判据第一版拼的是 `filesBefore + ",.umbrastudio"` —— 而 `.umbrastudio`
+     排在 `project.json` **前面**，于是它红在**我自己的字符串拼接**上。
+     「多了哪些」要用集合差，不要拼顺序。 */
+  const filesAfter = (await rd4(T4)).sort().join(",");
+  const added = filesAfter.split(",").filter((x) => x && !filesBefore.split(",").includes(x));
+  ok(added.length === 0 || (added.length === 1 && added[0] === ".umbrastudio"),
+     "**除了会话文件，项目根一个文件都没多**（打桩不写盘）",
+     added.length ? `多出来：${added.join(" · ")}` : "一个都没多");
+
+  /* ⑤ 中断**当场醒**，不等满这一步。
+     ⚠️ 判据给的步长是 8 秒：要是实现写成「睡满再看信号」，这里会等到 8 秒 ——
+     而「中断生效了」那个读数会把一个**慢**误报成**对**。所以量的是**耗时**。 */
+  {
+    const started = await postS({ message: "#stub steps=3 ms=8000", async: true });
+    const jobId = String((started.data ?? {}).jobId ?? "");
+    ok(!!jobId, "（前提）异步作业起来了", jobId || "没拿到 jobId");
+    if (jobId) {
+      await new Promise((r) => setTimeout(r, 600));
+      const t0 = Date.now();
+      await fetch(us("chat_interrupt"), { method: "POST", headers: { "content-type": "application/json", origin: ss.url.replace(/\/$/, "") }, body: JSON.stringify({ job: jobId }) });
+      let done: { running?: boolean; result?: { data?: { interrupted?: boolean } } } | null = null;
+      /* ⚠️ 带上限（纪律 3.4）：「永远不返回」正是要防的那种症状 */
+      for (let i = 0; i < 40 && !done; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        const st = await fetch(us(`chat_status?job=${encodeURIComponent(jobId)}`))
+          .then((x) => x.json() as Promise<{ data?: { running?: boolean; result?: { data?: { interrupted?: boolean } } } }>)
+          .catch(() => null);
+        if (st?.data && st.data.running === false) done = st.data;
+      }
+      const took = Date.now() - t0;
+      ok(done?.result?.data?.interrupted === true, "中断之后这一轮报 `interrupted: true`", `interrupted=${done?.result?.data?.interrupted}`);
+      ok(took < 4000, "**而且当场就停**（步长 8 秒 —— 等满那一步说明睡死了，那会把「慢」误报成「对」）", `中断到结束 ${took} ms`);
+    }
+  }
+  try { const { serveStop } = await import("./serve.js"); serveStop(ps.dir); } catch { /* 进程结束时一起走 */ }
+  await rm4(T4, { recursive: true, force: true });
+}
+
 /* ── 读 → 改 → 写回：中间别人改过就不许盖（issue #111）──
    「加上地址」那颗钮对每一份稿做的是 ① `GET source` ② `POST draft_write` 整份写回。
    这是**两个独立的请求**，中间 AI（会话里正在跑的那一轮、或外部 MCP 客户端）

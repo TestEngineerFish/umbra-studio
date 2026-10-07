@@ -20,6 +20,7 @@ import { missingRuntime } from "./normalize.js";
 import { getAiConfig, setAiConfig, channelSupportsImage, getChannelA, getChannelB, getOpenAiChannel, looksLikeQuotaProblem, type AiConfig } from "./ai_config.js";
 import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.js";
 import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
+import { parseStub, runStubRound } from "./chat_stub.js";
 import { findBrowser, renderCheck } from "./render.js";
 import { runLocalCli, specOf } from "./local_cli.js";
 import {
@@ -419,6 +420,17 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
   // 用户消息写入会话 —— 要拿回更新后的会话对象：下面的 history 从它取，
   // 否则发给模型的只有 system 一条，用户那句根本不在（智谱直接 400「messages 参数非法」，2026-09-23 实测）
   session = await addMessage(p.dir, session.id, { role: "user", content: message });
+
+  /* ── 打桩的那一轮（Q49，2026-10-07）──
+     一句以 `#stub` 开头的话走打桩，**不联网、不读 key、不落盘**。
+     规则**只住在这一处**，理由与代价全写在 `chat_stub.ts` 的文件头。
+     ⚠️ 放在用户消息落盘**之后** —— 界面是乐观追加那句话的，
+     而第一次轮询会用服务端的消息整份替换掉；服务端没有的话用户那句**当场消失**。 */
+  const stubPlan = parseStub(message);
+  if (stubPlan) {
+    const out = await runStubRound(p.dir, session, stubPlan, abortSignal);
+    return envelope(out, stubPlan.fail ? [err(X.IO, p.rel, { kind: "key", name: "ai" }, stubPlan.fail)] : [], {});
+  }
 
   // ── 选中节点上下文（M2-8） ──
   let nodeContext: string | null = null;

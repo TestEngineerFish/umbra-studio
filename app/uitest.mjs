@@ -1669,6 +1669,176 @@ console.log("\n没有节点地址时要说话（issue #31）");
   }
 }
 
+/* ── 一轮在跑的时候切会话（issue #117 · Q49 的打桩通道第一次派上用场）──
+   #117 的时序是「**一轮正在跑的时候**切会话」：轮询循环每 1.2 秒无条件把 `sid` 那条会话的
+   正文写回消息区，于是用户切走之后下一次轮询又把旧会话的消息盖回来 ——
+   **界面看着还在 A 里，而下一句话发进了另一条会话**。
+
+   ⚠️ 这一条 2026-10-07 修的时候**没有判据**（`doc/00` §163.4 照实记了这个缺口）：
+   要造这个时序得有一轮真的在跑，而当时仓库里没有打桩通道。
+   Q49 做完之后它才测得出来 —— **一句以 `#stub` 开头的话走打桩，不联网、不花钱**，
+   而走的是**真的输入框、真的 `send()`、真的轮询循环**（`chat_stub.ts` 文件头写了为什么不做成第四条通道）。
+
+   两条路都要测，它们的后果不一样：
+   ① 点「新建会话」→ `sessionId` 变 `null`，旧会话的消息被盖回来之后用户看着 A 说话，
+      而服务端**新开一条空会话**，AI 看不到屏幕上那段上下文；
+   ② 切到另一条 B → 下一句**进了 B**。 */
+console.log("\n一轮在跑的时候切会话（issue #117 · 打桩通道）");
+{
+  const MARK = "打桩通道";
+  const ta = pg.locator("#chatInput");
+  const send = async (text) => {
+    await ta.fill(text);
+    await pg.locator('[data-ud="chatrail"] button').filter({ hasText: /^发送$/ }).first().click();
+  };
+  const railText = () => pg.locator('[data-ud="chatrail"]').first().innerText().catch(() => "");
+  const hist = pg.locator('[data-ud="history"]');
+  /* ⚠️ **等到为止，不要定时等一眼**（§113 / `settleTree()` 同一条，而我在新代码里又犯了一次）。
+     实测：第二轮**其实跑完了**（会话文件里 8 条消息齐全），只是界面没在 2.6 秒内刷出来
+     —— 于是「样本有效性」红了，那一节少跑 2 条，还把后面几节一起带坏。
+     **轮询周期是 1.2 秒，而「界面刷出来」要等一个完整周期加一次往返。** */
+  const waitFor = async (pred, ms = 15000, step = 400) => {
+    for (let t = 0; t < ms; t += step) { if (await pred()) return true; await pg.waitForTimeout(step); }
+    return false;
+  };
+  const waitRunning = () => waitFor(async () => (await railText()).includes(MARK));
+  /* 那一轮结束了没：跑的时候输入框旁边是「中断」，结束才换回「发送」 */
+  const waitIdle = () => waitFor(async () =>
+    await pg.locator('[data-ud="chatrail"] button').filter({ hasText: /^发送$/ }).count() > 0);
+
+  /* ── ⚠️ 先把会话隔开，再动手（2026-10-07 实测踩到）──
+     判据是在**真的输入框**里打字，而那句话进的是「当时的当前会话」——
+     用户项目里要是有一条正在用的会话（实测他有一条 **466 条消息**的），
+     `#stub …` 就会**追加进他的对话里**。第一次跑没出事纯属运气：
+     那一刻最近的一条恰好是我 curl 探针建的。
+
+     所以：① 先记下现有的会话 id；② 显式开一条新的再发；
+     ③ 收尾按**差集**把这一节新建的全删掉（不靠「我以为建了哪几条」）。
+     **「不往用户项目里留东西」也包括不往他的对话里插话。** */
+  const listSess = async () => pg.evaluate(async () => {
+    const b = window.__UD_APP;
+    const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/chat_list?token=${encodeURIComponent(b.token)}`).then((x) => x.json()).catch(() => null);
+    return ((r?.data?.sessions) ?? []).map((x) => x.id);
+  });
+  const before117 = await listSess();
+  await hist.click().catch(() => {});
+  await pg.waitForTimeout(900);
+  await pg.locator("button").filter({ hasText: "新建会话" }).first().click().catch(() => {});
+  await pg.waitForTimeout(1000);
+
+  /* ⚠️ **提示要靠收集器，不能等完了再看一眼** —— toast 3.2 秒自己消失，
+     而「那一轮跑完了」发生在我等待的那 6 秒中间某一刻：等完再读十有八九已经没了，
+     于是判据会红在**它自己的时序**上（而读数长得像「产品没提示」）。
+     所以开跑前挂一个 `ud-toast` 收集器，它不会过期。 */
+  await pg.evaluate(() => {
+    window.__udToasts = [];
+    window.addEventListener("ud-toast", (e) => {
+      const d = e.detail ?? {};
+      window.__udToasts.push(`${d.title ?? ""} ${d.body ?? ""}`);
+    });
+  });
+
+  if (!(await ta.count())) ok(false, "找不到聊天输入框，这一组测不了");
+  else {
+    /* ── ① 跑的中途点「新建会话」 ── */
+    await send("#stub steps=3 ms=1500 reply=甲这一轮的回复");
+    await waitRunning();                         // 等到工具行真的长出来（不是定时等一眼）
+    const during = await railText();
+    ok(during.includes(MARK), "（样本有效性）打桩那一轮真的在跑（工具行已经长出来了）",
+       during.includes(MARK) ? "消息区里有打桩的行" : "一条都没有 —— 打桩没跑起来，下面测不到");
+    if (during.includes(MARK)) {
+      await hist.click(); await pg.waitForTimeout(900);
+      await pg.locator("button").filter({ hasText: "新建会话" }).first().click();
+      await pg.waitForTimeout(1200);
+      const justAfter = await railText();
+      ok(!justAfter.includes(MARK), "（前提）点完「新建会话」消息区当场是空的", justAfter.includes(MARK) ? "还有打桩的行" : "空的");
+      /* 等那一轮在**后台**跑完 —— 等「中断」换回「发送」，不猜时长 */
+      await waitIdle();
+      await pg.waitForTimeout(1600);             // 再多等一个轮询周期：要盖回来的话这时候就盖了
+      const after = await railText();
+      ok(!after.includes(MARK),
+         "**那一轮跑完也没把旧会话的消息盖回来**（原来：轮询无条件 `setMessages(sid 的正文)`）",
+         after.includes(MARK) ? "旧会话的消息被盖回来了" : "消息区还是空的");
+      /* 切走了也要说一句它跑完了（§163.3 第 3 点） */
+      const toasts = await pg.evaluate(() => (window.__udToasts ?? []).join(" | "));
+      ok(/那一轮跑完了/.test(toasts),
+         "**切走之后那一轮跑完有提示**（不说的话用户不知道它结束了 —— 他切走前看到的是「正在跑」）",
+         toasts.slice(0, 90) || "（一条提示都没有）");
+    }
+
+    /* ── ② 跑的中途切到另一条会话 ── */
+    const dir = await pg.evaluate(() => window.__UD_APP.dir);
+    const cdir = `${dir}/.umbrastudio/chats`;
+    const OTHER = "chat-1791000000117-ut117b", MARK_B = "乙会话uitest117";
+    try {
+      mkdirSync(cdir, { recursive: true });
+      writeFileSync(`${cdir}/${OTHER}.json`, JSON.stringify({
+        id: OTHER, projectId: dir.split("/").pop(), channel: "a", model: "uitest",
+        createdAt: "2026-10-07T08:00:00.000Z", updatedAt: "2026-10-07T08:00:00.000Z", status: "active",
+        messages: [{ role: "user", content: MARK_B, timestamp: "2026-10-07T08:00:00.000Z" }],
+      }, null, 2), "utf8");
+      await send("#stub steps=3 ms=1500 reply=甲第二轮");
+      await waitRunning();
+      const running2 = await railText();
+      ok(running2.includes(MARK), "（样本有效性）第二轮也跑起来了");
+      if (running2.includes(MARK)) {
+        await hist.click(); await pg.waitForTimeout(1100);
+        const rowB = pg.locator(`[data-ud="sess-row"][data-sid="${OTHER}"]`);
+        if (!(await rowB.count())) ok(false, "历史里找不到乙 —— 这一路测不到");
+        else {
+          await rowB.click(); await pg.waitForTimeout(1500);
+          ok((await railText()).includes(MARK_B), "（前提）已经切到乙了");
+          await waitIdle();                       // 甲那一轮在后台跑完
+          await pg.waitForTimeout(1600);
+          const end = await railText();
+          ok(end.includes(MARK_B) && !end.includes(MARK),
+             "**甲那一轮跑完没把乙的消息区盖掉**（原来：轮询又换回甲的 → 用户看着甲的对话说话，而话进了乙）",
+             end.includes(MARK) ? "甲的消息盖到乙上面了" : "乙的消息区没被动");
+        }
+      }
+    } finally {
+      rmSync(`${cdir}/${OTHER}.json`, { force: true });
+      /* ⚠️ **先等那一轮真的结束再删**：跑的途中删掉会话文件，后面每一次
+         `addMessage` 都会在一个不存在的会话上失败 —— 而实测还见过它被重新写出来，
+         结果「删干净了」这句话是假的（盘上留了一条 8 条消息的打桩会话）。 */
+      await waitIdle();
+      await pg.waitForTimeout(600);
+      /* 收尾：这一节新建的会话**按差集删**（不靠「我以为建了哪几条」）。
+         ⚠️ 再加一道：凡是第一句以 `#stub` 开头的会话一律扫掉 ——
+         差集会漏（竞态下重新写出来的那条不在差集里），而**打桩会话一定是我们造的**。 */
+      const after117 = await listSess();
+      const strays = await pg.evaluate(async () => {
+        const b = window.__UD_APP;
+        const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}${r.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+        const ls = await fetch(u("chat_list")).then((x) => x.json()).catch(() => null);
+        const out = [];
+        for (const row of (ls?.data?.sessions ?? [])) {
+          const g = await fetch(u(`chat_get?session=${encodeURIComponent(row.id)}`)).then((x) => x.json()).catch(() => null);
+          const first = ((g?.data?.messages ?? [])[0]?.content ?? "").trimStart();
+          if (first.startsWith("#stub")) out.push(row.id);
+        }
+        return out;
+      });
+      const mine = [...new Set([...after117.filter((id) => !before117.includes(id)), ...strays])];
+      if (mine.length) await pg.evaluate(async (ids) => {
+        const b = window.__UD_APP;
+        for (const id of ids) {
+          await fetch(`${b.url.replace(/\/$/, "")}/__ud/chat_delete?token=${encodeURIComponent(b.token)}`,
+            { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: id }) }).catch(() => {});
+        }
+      }, mine);
+      ok(true, `（收尾）这一节新建的 ${mine.length} 条会话已删掉 —— **不往用户的对话里插话**`,
+         mine.length ? mine.join(" ") : "一条也没新建");
+      /* 切回一条真会话（§163.5 —— 判据留下的**状态**也要放回去） */
+      await hist.click().catch(() => {});
+      await pg.waitForTimeout(1100);
+      const any = pg.locator('[data-ud="sess-row"]').first();
+      if (await any.count()) { await any.click(); await pg.waitForTimeout(1200); }
+      else { await pg.keyboard.press("Escape"); await pg.waitForTimeout(300); }
+    }
+  }
+}
+
 /* ── 删掉当前会话之后点「新建会话」，不许被带进另一条旧会话（issue #118）──
    历史面板卸载时会把攒下的删除真删掉（那个依赖 `[]` 的清理函数），而它闭包里的 `chat`
    是**挂载那一刻**的 —— 于是「删掉当前会话 A → 点新建会话」走到 `deleteSession` 时
@@ -3868,7 +4038,10 @@ console.log("\n CRLF / LF 原样往返（issue #66）");
     const body = ["const a = 1;", "const b = 2;", "const c = 3;", ""].join(c.eol);
     const abs = join(boot.dir, c.name);
     writeFileSync(abs, body, "utf8");
-    await pg.waitForTimeout(1500);
+    /* ⚠️ **等到为止** —— 这一处是 §113 修 12 处时**漏掉的**（还在「定时等 1500ms 再看一眼」）。
+       2026-10-07 实测：#117 那一节让整轮变长之后它就开始间歇性红在「样本在树里刷出来」上，
+       而样本确实写进去了。**一条教训漏掉一处，等于那一处还在等着发作。** */
+    await settleTree(c.name);
     const row = pg.locator('[role="treeitem"]').filter({ hasText: c.name }).first();
     if (!await row.count()) { ok(false, `${c.label}：样本在树里刷出来`); rmSync(abs, { force: true }); continue; }
     await clearGuard();
@@ -4069,7 +4242,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
 
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
-const EXPECT_AT_LEAST = 425;
+const EXPECT_AT_LEAST = 433;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
