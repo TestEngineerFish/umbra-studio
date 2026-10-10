@@ -56,7 +56,7 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, p
       <header className="h-11 px-4 flex items-center gap-3 border-b border-border bg-panel shrink-0">
         <span className="font-semibold text-sm">Umbra Studio</span><span className="flex-1" />
         <span className="text-[11px] text-muted mr-2">{host.kind === "desktop" ? "桌面" : "浏览器"}</span>
-        <button className="btn ghost sm" onClick={onSettings}>外观</button>
+        <button className="btn ghost sm" onClick={onSettings}>设置</button>
         <button className="btn sm" onClick={onImport} title="选一个目录：已是项目就直接打开；只是一堆 .dc.html 就接管成新项目">导入目录</button>
         <button className="btn sm primary" onClick={onNewProject}>新建项目</button>
       </header>
