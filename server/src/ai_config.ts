@@ -17,6 +17,10 @@ export interface ChannelAConfig {
   baseUrl: string;    // OpenAI 兼容端点
   apiKey: string;     // ⚠️ 密钥
   model: string;      // 用户填的模型名
+  /** 走 **Umbra 服务端 AI**（一·c，2026-10-10）：端点 = 账号那一层连的服务端 + `/v1`，密钥 = 登录令牌（`account.ts`），
+   *  服务端在那边扣积分。为真时 `baseUrl` / `apiKey` 在取配置那一刻被覆盖（`getChannelA`），文件里的值不算数；
+   *  `model` 也不算数（服务端一律用它自己配的那个）。关掉就回到自填端点。 */
+  useAccount?: boolean;
   /** 这个模型吃不吃图（M8-10）。不给时按模型名猜 —— 猜不准就当不支持，
    *  宁可把入口灰掉说清楚，也不要发一条对面读不懂的多模态消息。 */
   supportsImage?: boolean;
@@ -102,6 +106,14 @@ export function channelSupportsImage(c: { model: string; supportsImage?: boolean
 export async function getChannelA(): Promise<ChannelAConfig> {
   const cfg = await getAiConfig();
   if (!cfg.channelA) throw new Error("通道 A 未配置：请先设置 baseUrl、apiKey 和 model");
+  if (cfg.channelA.useAccount) {
+    // 服务端 AI：端点与密钥从账号那一层现取（动态 import —— account.ts 不被这个文件静态依赖，免得绕成环）。
+    const { account } = await import("./account.js");
+    const st = await account.status();
+    const token = await account.bearer();
+    if (!st.signedIn || !token) throw new Error("通道 A 走的是 Umbra 服务端 AI，但还没登录：去设置 → Umbra 账号登录，或关掉「用服务端 AI」");
+    return { ...cfg.channelA, baseUrl: st.serverUrl.replace(/\/+$/, "") + "/v1", apiKey: token, model: cfg.channelA.model || "umbra" };
+  }
   return cfg.channelA;
 }
 
@@ -149,14 +161,15 @@ export interface EngineView {
   /** 界面上显示的引擎名：DeepSeek / Claude Code / 火山方舟 … */
   engine: string;
   /** 谁在付钱 —— 设计侧按这个把选择器分三组 */
-  billing: "本机订阅" | "按量" | "订阅端点";
+  billing: "本机订阅" | "按量" | "订阅端点" | "积分";
   /** 分组标题（选择器用） */
-  group: "本机 · 用你已有的订阅" | "API · 按量计费" | "订阅端点";
+  group: "本机 · 用你已有的订阅" | "API · 按量计费" | "订阅端点" | "服务端 · 扣积分";
 }
 
 export function engineView(cfg: AiConfig, ch: "a" | "b" | "c", cliLabel?: string): EngineView {
   if (ch === "b") return { engine: cliLabel || "本机 CLI", billing: "本机订阅", group: "本机 · 用你已有的订阅" };
   if (ch === "c") return { engine: vendorOf(cfg.channelC?.baseUrl ?? "", cfg.channelC?.model ?? ""), billing: "订阅端点", group: "订阅端点" };
+  if (cfg.channelA?.useAccount) return { engine: "Umbra 服务端 AI", billing: "积分", group: "服务端 · 扣积分" };
   return { engine: vendorOf(cfg.channelA?.baseUrl ?? "", cfg.channelA?.model ?? ""), billing: "按量", group: "API · 按量计费" };
 }
 

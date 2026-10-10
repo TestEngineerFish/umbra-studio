@@ -55,6 +55,21 @@ defineCap({
 });
 
 defineCap({
+  name: "account_server_ai", title: "通道 A 切到 / 切回 Umbra 服务端 AI", scope: "global",
+  summary: "开：通道 A 的端点与密钥换成「账号那一层连的服务端 + 登录令牌」，服务端按积分扣；关：回到自填端点。要先登录。",
+  input: { on: z.boolean().describe("true 开、false 关") },
+  faces: ["http"],
+  http: { route: "account_server_ai", method: "POST" },
+  run: async ({ on }) => {
+    try {
+      return envelope(await account.setServerAi(on));
+    } catch (e) {
+      return envelope(await account.status(), [err("E_ACCOUNT_LOGIN", (e as Error).message)]);
+    }
+  },
+});
+
+defineCap({
   name: "account_server", title: "换 Umbra 服务端地址", scope: "global",
   summary: "改账号那一层连哪台 Umbra 服务端。换了地址等于登出：令牌是上一台的。",
   input: { serverUrl: z.string().describe("http(s)://主机[:端口]，不带路径") },

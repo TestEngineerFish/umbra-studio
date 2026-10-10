@@ -336,6 +336,9 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 「还没开 OIDC」—— 等 PC / iOS / Studio 三端登录路齐了（已齐）由 sam 把 `OIDC_*` 三行写进服务端 `.env` 切换。
 总方案正本在 `Geek/doc/账号与商业化(Casdoor+会员+积分)-设计草案.md`，分期在它的 §八。
 读数：`apitest` **101/101**（+10）· `captest` 269/269 · `uitest` 454/454 · app build 过。
+**同日第二批（M12-4a）**：通道 A 能走 Umbra 服务端 AI —— `channelA.useAccount` 为真时 `getChannelA()` 把端点换成
+账号连的服务端 `/v1`、密钥换成登录令牌（现取，不落文件），服务端那头的 OpenAI 兼容代理按积分扣；设置页账号块一个
+开关「用服务端 AI（扣积分）」。`apitest` **106/106**（⑬ +5，按真实登录状态分两支）· `captest` 271/271。
 
 ---
 

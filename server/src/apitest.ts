@@ -872,5 +872,37 @@ console.log("\n⑫ 账号：OIDC 授权码 + PKCE（一·a，2026-10-10）——
   ok(st2.data.serverUrl !== fakeUrl && st2.data.pending === false, "没登上不记这次给的地址、也没留一场在等");
 }
 
+
+console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网，改完把配置放回去");
+{
+  const ac = await import("./ai_config.js");
+  const before = await ac.getAiConfig();
+  try {
+    await ac.setAiConfig(ac.mergeChannel(before, "a", { useAccount: true, baseUrl: "https://keep.me", apiKey: "keep", model: "m" } as never));
+    const got = await ac.getAiConfig();
+    ok(got.channelA?.useAccount === true && got.channelA?.baseUrl === "https://keep.me", "标记落盘了，原来自填的端点还在（没被覆盖）");
+    ok(ac.engineView(got, "a").billing === "积分", "引擎标签：积分");
+    // 这台机器可能真登着 Umbra 账号（开发机上 sam 登过）：两种状态各验各的，不假设没登录。
+    const { account } = await import("./account.js");
+    const st = await account.status();
+    let msg = ""; let resolved: { baseUrl: string; apiKey: string } | null = null;
+    try { resolved = await ac.getChannelA(); } catch (e) { msg = (e as Error).message; }
+    if (st.signedIn) {
+      ok(!!resolved && /\/v1$/.test(resolved.baseUrl) && resolved.baseUrl.startsWith(st.serverUrl) && resolved.apiKey !== "keep" && resolved.apiKey.length > 20,
+         "登着：端点 = 账号连的服务端 + /v1，密钥 = 登录令牌（不是文件里那串）", resolved?.baseUrl);
+      const r = await (await post("account_server_ai", { on: true })).json() as { ok: boolean; data: { serverAi: boolean } };
+      ok(r.ok && r.data.serverAi === true, "登着：开得了服务端 AI");
+    } else {
+      ok(/登录/.test(msg), "没登录时取通道 A 会说「要先登录」，不拿文件里的端点凑数", msg);
+      const r = await (await post("account_server_ai", { on: true })).json() as { ok: boolean; errors?: { message: string }[] };
+      ok(!r.ok && /登录/.test(r.errors?.[0]?.message || ""), "没登录开不了服务端 AI（照实说）");
+    }
+    const off = await (await post("account_server_ai", { on: false })).json() as { ok: boolean; data: { serverAi: boolean } };
+    ok(off.ok && off.data.serverAi === false, "关掉：serverAi=false");
+  } finally {
+    await ac.setAiConfig(before);
+  }
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

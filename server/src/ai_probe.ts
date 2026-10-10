@@ -63,14 +63,22 @@ export async function probeImageSupport(channel: "a" | "b" | "c" = "a"): Promise
   }
   const cfg = await getAiConfig();
   const a = channel === "c" ? cfg.channelC : cfg.channelA;
-  if (!a?.apiKey) return { supportsImage: false, asked: "", answered: "", saved: false, why: `通道 ${channel.toUpperCase()} 还没配` };
+  if (!a?.apiKey && !a?.useAccount) return { supportsImage: false, asked: "", answered: "", saved: false, why: `通道 ${channel.toUpperCase()} 还没配` };
+  // 服务端 AI 那一档端点 / 密钥要现取（`getOpenAiChannel`）；没登录就把那句原因照实回去。
+  let resolved: { baseUrl: string; apiKey: string; model: string };
+  try {
+    const { getOpenAiChannel } = await import("./ai_config.js");
+    resolved = await getOpenAiChannel(channel);
+  } catch (e) {
+    return { supportsImage: false, asked: "", answered: "", saved: false, why: (e as Error).message };
+  }
 
   const pick = COLORS[Math.floor(Math.random() * COLORS.length)]!;
   const png = solidPng(64, 64, pick.rgb);
   const dataUrl = "data:image/png;base64," + png.toString("base64");
 
   const r = await chat(
-    { baseUrl: a.baseUrl, apiKey: a.apiKey, model: a.model },
+    { baseUrl: resolved.baseUrl, apiKey: resolved.apiKey, model: resolved.model },
     {
       messages: [{
         role: "user",

@@ -329,7 +329,7 @@ function CliPicker({ core }: { core: Core }) {
  *  登录本身在核心进程（`server/src/account.ts`）：这里只拿授权地址去开系统浏览器，然后轮询 `account` 看结果。
  *  **令牌从不经过这里**（`account` 那几件能力不回令牌）。 */
 function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) {
-  type Status = { serverUrl: string; signedIn: boolean; user: { id: number; display_name?: string; email?: string; name?: string; is_owner?: boolean } | null; pending: boolean; lastError: string; provider: string };
+  type Status = { serverUrl: string; signedIn: boolean; user: { id: number; display_name?: string; email?: string; name?: string; is_owner?: boolean } | null; pending: boolean; lastError: string; provider: string; serverAi: boolean };
   const [st, setSt] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState("");
@@ -369,6 +369,12 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     setSt(r.data); setEditServer(false);
   };
   const who = st?.user ? (st.user.display_name || st.user.name || st.user.email || `#${st.user.id}`) : "";
+  const toggleServerAi = async () => {
+    const r = await core.post<Status>("account_server_ai", { on: !st?.serverAi });
+    if (!r.ok || !r.data) { toast(r.errors?.[0]?.message || "没切成"); return; }
+    setSt(r.data);
+    toast(r.data.serverAi ? "通道 A 已切到服务端 AI（按积分扣）" : "通道 A 回到自填端点");
+  };
   return <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
     <div className="flex items-center gap-2">
       <h3 className="text-sm font-semibold shrink-0">Umbra 账号</h3>
@@ -388,6 +394,12 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
       {busy && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
       {!busy && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
     </div>
+    {st?.signedIn && (
+      <div className="flex items-center gap-2 text-xs">
+        <button className={`btn ${st.serverAi ? "primary" : ""}`} onClick={toggleServerAi}>{st.serverAi ? "服务端 AI：开" : "用服务端 AI（扣积分）"}</button>
+        <span className="text-muted">开了之后通道 A 走 Umbra 服务端，模型由服务端定，每次对话按积分扣；本地 CLI（通道 B）不受影响。</span>
+      </div>
+    )}
   </section>;
 }
 

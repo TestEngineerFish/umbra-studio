@@ -70,6 +70,8 @@ export interface AccountStatus {
   lastError: string;
   /** 服务端说它怎么登录（问到过才有）。 */
   provider: "oidc" | "local" | "unknown";
+  /** 通道 A 是不是走 Umbra 服务端 AI（`ai_config.channelA.useAccount`）。 */
+  serverAi: boolean;
 }
 
 interface AuthConfigDTO extends Partial<OidcClientConfig> { provider: string }
@@ -90,8 +92,26 @@ export class AccountService {
 
   async status(): Promise<AccountStatus> {
     const a = await getAccount();
+    const { getAiConfig } = await import("./ai_config.js");
+    const serverAi = !!(await getAiConfig()).channelA?.useAccount;
     return { serverUrl: a.serverUrl, signedIn: !!a.accessToken && !!a.user, user: a.user, signedInAt: a.signedInAt,
-      pending: this.oidc.pending, lastError: this.lastError, provider: this.provider };
+      pending: this.oidc.pending, lastError: this.lastError, provider: this.provider, serverAi };
+  }
+
+  /** 通道 A 切到 / 切回 Umbra 服务端 AI。开：`useAccount: true` 并把缺省通道设为 A（端点 / 密钥取配置那一刻现算，
+   *  文件里不存令牌）；关：只把标记放下，原来自填的端点 / 密钥还在（没覆盖过）。 */
+  async setServerAi(on: boolean): Promise<AccountStatus> {
+    const { getAiConfig, mergeChannel, setAiConfig } = await import("./ai_config.js");
+    const cur = await getAiConfig();
+    if (on) {
+      const st = await this.status();
+      if (!st.signedIn) throw new Error("先登录 Umbra 账号，再开服务端 AI");
+      const next = mergeChannel(cur, "a", { useAccount: true, model: cur.channelA?.model || "umbra" } as never);
+      await setAiConfig({ ...next, defaultChannel: "a" });
+    } else {
+      await setAiConfig(mergeChannel(cur, "a", { useAccount: false } as never));
+    }
+    return this.status();
   }
 
   /** 问 Umbra 服务端怎么登录。连不上 / 老服务端（404）抛，由调用方翻成人话。 */
