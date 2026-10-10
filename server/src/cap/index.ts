@@ -7,6 +7,7 @@
  *  `defineCap` 是 import 时执行的副作用，没 import 到的能力等于不存在。
  *  `captest` 里钉了一条判据防这个。
  */
+import "./account.js";
 import "./files.js";
 import "./chat.js";
 import "./design.js";

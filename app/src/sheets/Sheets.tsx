@@ -325,7 +325,73 @@ function CliPicker({ core }: { core: Core }) {
   );
 }
 
-export function SettingsSheet({ core, projectUrl, layout, setLayout, onClose }: { core: Core | null; projectUrl: string | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
+/** 设置里的「账号」块（一·a，2026-10-10）：登没登 Umbra 账号、是谁、登录 / 登出。
+ *  登录本身在核心进程（`server/src/account.ts`）：这里只拿授权地址去开系统浏览器，然后轮询 `account` 看结果。
+ *  **令牌从不经过这里**（`account` 那几件能力不回令牌）。 */
+function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) {
+  type Status = { serverUrl: string; signedIn: boolean; user: { id: number; display_name?: string; email?: string; name?: string; is_owner?: boolean } | null; pending: boolean; lastError: string; provider: string };
+  const [st, setSt] = useState<Status | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [server, setServer] = useState("");
+  const [editServer, setEditServer] = useState(false);
+  const load = useCallback(async () => {
+    const r = await core.get<Status>("account");
+    if (r.ok && r.data) { setSt(r.data); setServer(r.data.serverUrl); }
+  }, [core]);
+  useEffect(() => { void load(); }, [load]);
+  // 登录进行中：每 1.5 秒看一眼，登上 / 失败 / 5 分钟就停。
+  useEffect(() => {
+    if (!busy) return;
+    const t0 = Date.now();
+    const t = setInterval(async () => {
+      const r = await core.get<Status>("account");
+      if (!r.ok || !r.data) return;
+      const d = r.data;
+      setSt(d);
+      if (d.signedIn || d.lastError || !d.pending || Date.now() - t0 > 5 * 60_000) {
+        setBusy(false);
+        if (d.signedIn) toast("已登录 Umbra 账号");
+        else if (d.lastError) toast(d.lastError);
+      }
+    }, 1500);
+    return () => clearInterval(t);
+  }, [busy, core]);
+  const login = async () => {
+    setBusy(true);
+    const r = await core.post<{ url: string }>("account_login", {});
+    if (!r.ok || !r.data?.url) { setBusy(false); toast(r.errors?.[0]?.message || "登录没开始"); void load(); return; }
+    if (host) await host.openExternal(r.data.url); else window.open(r.data.url, "_blank", "noopener");
+  };
+  const logout = async () => { const r = await core.post<Status>("account_logout", {}); if (r.ok && r.data) setSt(r.data); };
+  const saveServer = async () => {
+    const r = await core.post<Status>("account_server", { serverUrl: server });
+    if (!r.ok || !r.data) { toast(r.errors?.[0]?.message || "地址不对"); return; }
+    setSt(r.data); setEditServer(false);
+  };
+  const who = st?.user ? (st.user.display_name || st.user.name || st.user.email || `#${st.user.id}`) : "";
+  return <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
+    <div className="flex items-center gap-2">
+      <h3 className="text-sm font-semibold shrink-0">Umbra 账号</h3>
+      <span className="text-muted text-xs truncate">{st ? (st.signedIn ? `已登录 · ${who}${st.user?.is_owner ? " · 主人" : ""}` : "未登录（单机使用；同步、服务端 AI、插件市场要登录）") : "…"}</span>
+    </div>
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-muted shrink-0">服务端</span>
+      {editServer
+        ? <><input className="flex-1 min-w-0" value={server} onChange={(e) => setServer(e.target.value)} placeholder="https://umbra.example.com" />
+            <button className="btn" onClick={saveServer}>保存</button><button className="btn" onClick={() => { setEditServer(false); setServer(st?.serverUrl || ""); }}>取消</button></>
+        : <><span className="truncate">{st?.serverUrl || "…"}</span><button className="btn" onClick={() => setEditServer(true)}>改</button></>}
+    </div>
+    <div className="flex items-center gap-2">
+      {st?.signedIn
+        ? <button className="btn" onClick={logout}>登出</button>
+        : <button className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
+      {busy && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
+      {!busy && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
+    </div>
+  </section>;
+}
+
+export function SettingsSheet({ core, host, projectUrl, layout, setLayout, onClose }: { core: Core | null; host: HostAdapter | null; projectUrl: string | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
   const s8 = projectUrl ? `${projectUrl}${encodeURIComponent("S8-项目设置.dc.html")}?embed=1` : null;
   return <Sheet onClose={onClose} wide={!!s8}>
     <Sheet.Head><h2 className="text-base font-semibold">设置</h2></Sheet.Head>
@@ -336,6 +402,7 @@ export function SettingsSheet({ core, projectUrl, layout, setLayout, onClose }: 
             那是每天要点好几次的东西，埋进设置面板不合适。 */}
         <span className="text-muted">外观</span><div className="seg self-start">{(["system", "light", "dark"] as const).map((t) => <button key={t} className={layout.theme === t ? "on" : ""} onClick={() => setLayout({ ...layout, theme: t })}>{{ system: "跟随系统", light: "浅色", dark: "深色" }[t]}</button>)}</div>
       </div>
+      {core && <AccountPanel core={core} host={host} />}
       {core && <CliPicker core={core} />}
       {/* iframe 的高度给固定值，别用 vh —— 它在会滚的内容区里，用 vh 会和外层的滚动打架 */}
       {s8 ? <iframe src={s8} title="项目设置" className="w-full border border-border rounded bg-panel shrink-0" style={{ height: 560 }} />

@@ -813,5 +813,64 @@ console.log("\n⑧ 读 → 改 → 写回，中间别人改过就不许盖（iss
   await rm3(T, { recursive: true, force: true });
 }
 
+
+console.log("\n⑫ 账号：OIDC 授权码 + PKCE（一·a，2026-10-10）—— 一条都不碰真 IdP、不写 account.json");
+{
+  const http = await import("node:http");
+  const { createHash } = await import("node:crypto");
+  const pk = await import("./oidc_pkce.js");
+  const { OidcLogin } = await import("./oidc.js");
+  const S256 = (v: string) => pk.b64url(createHash("sha256").update(v).digest());
+  const { verifier, challenge } = pk.pkcePair();
+  ok(verifier.length >= 43 && challenge === S256(verifier), "challenge = base64url(sha256(verifier))");
+  const CFG = { issuer: "https://idp.test", client_id: "cid", authorization_endpoint: "https://idp.test/login/oauth/authorize",
+    token_endpoint: "https://idp.test/api/login/oauth/access_token" };
+  const body = new URLSearchParams(pk.tokenRequestBody(CFG, { code: "c", redirectUri: "http://127.0.0.1:1/callback", verifier: "v" }));
+  ok(body.get("grant_type") === "authorization_code" && body.get("code_verifier") === "v" && !body.has("client_secret"),
+     "换令牌带 verifier、**不带 client_secret**（公开客户端）");
+  // 一趟：假 IdP（fetch）+ 自己去打回调端口，验 verifier 真的被带到 token 端点
+  let seen = "";
+  const calls: URLSearchParams[] = [];
+  const login = new OidcLogin(async (_u, i) => {
+    const b = new URLSearchParams(i.body || ""); calls.push(b);
+    const good = b.get("code") === "CODE" && S256(b.get("code_verifier") || "") === seen;
+    return { ok: good, status: good ? 200 : 400, json: async () => good
+      ? { access_token: "AT", refresh_token: "RT", expires_in: 1 }
+      : { error: "invalid_grant", error_description: "verifier is invalid" } };
+  });
+  const { url, done } = await login.start(CFG, 5000);
+  const au = new URL(url); seen = au.searchParams.get("code_challenge") || "";
+  ok(au.origin + au.pathname === CFG.authorization_endpoint && au.searchParams.get("code_challenge_method") === "S256"
+     && /^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(au.searchParams.get("redirect_uri") || ""), "授权地址：S256 + 回环回调", url);
+  await (await fetch(`${au.searchParams.get("redirect_uri")}?code=CODE&state=${au.searchParams.get("state")}`)).text();
+  const t = await done;
+  ok(t.accessToken === "AT" && t.refreshToken === "RT", "回调 → 换到令牌");
+  ok(calls[0]?.get("redirect_uri") === au.searchParams.get("redirect_uri"), "redirect_uri 一字不差带到 token 端点");
+  // state 不对的回调不认，且不发换令牌请求
+  const calls2: unknown[] = [];
+  const l2 = new OidcLogin(async () => { calls2.push(1); return { ok: true, status: 200, json: async () => ({ access_token: "X" }) }; });
+  const s2 = await l2.start(CFG, 5000); const u2 = new URL(s2.url);
+  await (await fetch(`${u2.searchParams.get("redirect_uri")}?code=CODE&state=WRONG`)).text();
+  let r2 = ""; try { await s2.done; } catch (e) { r2 = (e as { reason: string }).reason; }
+  ok(r2 === "state" && calls2.length === 0, "state 不对：不认、不换令牌");
+  // 再开一场作废上一场；超时
+  const l3 = new OidcLogin(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  const a = await l3.start(CFG, 5000); const b2 = await l3.start(CFG, 60);
+  let ra = ""; try { await a.done; } catch (e) { ra = (e as { reason: string }).reason; }
+  let rb = ""; try { await b2.done; } catch (e) { rb = (e as { reason: string }).reason; }
+  ok(ra === "cancelled" && rb === "timeout", "再开一场作废上一场（cancelled）；浏览器不回来是 timeout");
+  // 账号那几件：状态不回令牌；服务端是 local 时照实说、不起登录、不记地址
+  const st = (await (await fetch(u("account"))).json()) as { ok: boolean; data: Record<string, unknown> };
+  ok(st.ok && typeof st.data.signedIn === "boolean" && !("accessToken" in st.data) && !("refreshToken" in st.data), "account：状态里没有令牌");
+  const fake = http.createServer((_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ provider: "local" })); });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
+  const fakeUrl = `http://127.0.0.1:${(fake.address() as { port: number }).port}`;
+  const lg = (await (await post("account_login", { serverUrl: fakeUrl })).json()) as { ok: boolean; errors: { code: string; message: string }[] };
+  ok(!lg.ok && lg.errors?.[0]?.code === "E_ACCOUNT_LOGIN" && /OIDC/.test(lg.errors[0]!.message), "服务端是 local → 照实说还没开 OIDC，不起登录", lg.errors?.[0]?.message);
+  fake.close();
+  const st2 = (await (await fetch(u("account"))).json()) as { data: { serverUrl: string; pending: boolean } };
+  ok(st2.data.serverUrl !== fakeUrl && st2.data.pending === false, "没登上不记这次给的地址、也没留一场在等");
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
