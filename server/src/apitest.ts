@@ -899,6 +899,24 @@ console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网�
     }
     const off = await (await post("account_server_ai", { on: false })).json() as { ok: boolean; data: { serverAi: boolean } };
     ok(off.ok && off.data.serverAi === false, "关掉：serverAi=false");
+    // 走服务端 AI 的请求要报「是 Studio 用的」（`X-Umbra-Src: studio`）：Node 的 fetch UA 服务端认不出，积分流水靠这个头分端
+    //（sam 2026-10-10）。自填端点不带 —— 别往第三方厂商送多余的头。桩掉 globalThis.fetch，不出网。
+    const prov = await import("./provider.js");
+    const realFetch = globalThis.fetch;
+    const seen: Record<string, string>[] = [];
+    globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }], usage: null }),
+        { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await prov.chat({ baseUrl: "http://127.0.0.1:9/v1", apiKey: "t", model: "m", useAccount: true } as never, { messages: [{ role: "user", content: "hi" }] });
+      await prov.chat({ baseUrl: "http://127.0.0.1:9/v1", apiKey: "t", model: "m" } as never, { messages: [{ role: "user", content: "hi" }] });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    ok(seen[0]?.["X-Umbra-Src"] === "studio", "走服务端 AI：请求带 X-Umbra-Src: studio", JSON.stringify(seen[0]));
+    ok(!!seen[1] && !("X-Umbra-Src" in seen[1]), "自填端点：不带那个头", JSON.stringify(seen[1]));
   } finally {
     await ac.setAiConfig(before);
   }

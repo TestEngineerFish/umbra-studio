@@ -10,6 +10,8 @@ export interface ProviderConfig {
   baseUrl: string;     // e.g. "https://api.deepseek.com/v1"
   apiKey: string;
   model: string;       // 用户填的，不硬编码
+  /** 走的是 Umbra 服务端 AI（`ChannelAConfig.useAccount`，`getChannelA` 原样带过来）：请求多带 `X-Umbra-Src: studio`。 */
+  useAccount?: boolean;
 }
 
 export interface ToolDef {
@@ -187,6 +189,9 @@ async function singleRequest(
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${cfg.apiKey}`,
+        // 走 Umbra 服务端 AI 时报上「是 Studio 用的」：Node 的 fetch UA 服务端认不出，它靠这个头把积分流水记成 Studio
+        // （sam 2026-10-10：流水要分得出端）。自填端点不带 —— 别往第三方厂商那里送多余的头。
+        ...(cfg.useAccount ? { "X-Umbra-Src": "studio" } : {}),
       },
       body: JSON.stringify(body),
       signal,
