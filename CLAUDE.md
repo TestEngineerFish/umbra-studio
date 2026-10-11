@@ -342,7 +342,7 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 ⚠️ `keys/publisher.pub` 从这天起是**真公钥**（与 ECS 私钥配对）——`plugintest` 原来直接往它写测试钥匙，已改走 `UMBRASTUDIO_PUBKEY` 临时文件（`plugin/pubkey.ts`）。
 读数：`verbtest` **20/20**（新建）· `captest` 279/279 · `apitest` 108/108 · `plugintest` 92/92 · 真起 stdio 用 SDK 客户端 `listTools` 102 件含两件动词。`uitest` 没跑（界面没动）。
 **同日 M13-3 也做完**：`read_file` 分页（`offset` / `limit` → `range`）· `search_in_file` · `list_activity`（全项目时间线，按来源过滤）· `list_capabilities`。`gaptest` **19/19** · `captest` 287/287。
-**下一步**：M13-4 秘书接入（UmbraPC 仓，stdio，Q57）。
+**M13-4 也做完**（UmbraPC 仓 `electron/core/providers/studio/`）：PC 以 MCP 客户端起本核心，核心白名单 + 全部动词上报成技能，`tools/list_changed` 重报。真机联调待 sam。M13 四条全清。
 
 ## 9 之前的状态（2026-10-10）
 
