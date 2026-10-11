@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { writeAtomic } from "./normalize.js";
 import { OidcFail, OidcLogin, type FetchLike, type OidcClientConfig, type OidcTokens } from "./oidc.js";
-import { licenseIsFor, licenseTextOf } from "./plugin/acquire.js";
+import { licenseIsFor, licenseTextOf, discountPctOf } from "./plugin/acquire.js";
 import { loadLicense, saveLicenseText, type Grant, type LicenseCheck } from "./plugin/license.js";
 
 /** Umbra 服务端的缺省地址（与 UmbraPC `config.ts` 同一个缺省）。 */
@@ -123,16 +123,24 @@ export class AccountService {
     return this.status();
   }
 
-  /** 当前会员档随会员赠送的插件 id（服务端 `GET /membership` 的 `gift_plugins`，后台「赠送插件」页配的）。
-   *  没登录 / 没会员 / 连不上 / 老服务端一律回 `[]` —— 市场页标不标「会员赠送」，不该让市场打不开。 */
-  async giftPlugins(): Promise<string[]> {
+  /** 当前会员带来的两样（服务端 `GET /membership`，一次请求）：随会员赠送的插件 id（后台「赠送插件」页配的）
+   *  与买积分计价东西的折扣百分比（`discount_pct`，100 = 不打折）。
+   *  没登录 / 没会员 / 连不上 / 老服务端一律回「没有赠送、不打折」—— 市场页标不标，不该让市场打不开。 */
+  async perks(): Promise<{ gift: string[]; discountPct: number }> {
+    const none = { gift: [], discountPct: 100 };
     const a = await getAccount();
-    if (!a.accessToken) return [];
+    if (!a.accessToken) return none;
     try {
       const r = await this.fetchFn(`${a.serverUrl}/membership`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
-      if (!r.ok) return [];
-      return giftPluginIdsOf(await r.json());
-    } catch { return []; }
+      if (!r.ok) return none;
+      const body = await r.json();
+      return { gift: giftPluginIdsOf(body), discountPct: discountPctOf(body) };
+    } catch { return none; }
+  }
+
+  /** 只要赠送清单的调用方用这个。 */
+  async giftPlugins(): Promise<string[]> {
+    return (await this.perks()).gift;
   }
 
   /** 问 Umbra 服务端怎么登录。连不上 / 老服务端（404）抛，由调用方翻成人话。 */
@@ -282,14 +290,18 @@ export class AccountService {
     return true;
   }
 
-  /** 用积分买一个插件（`POST /plugins/{id}/buy`）。回 `already: true` = 早就买过。失败抛 Error（message 是服务端的人话）。 */
-  async buyPlugin(id: string): Promise<{ ok: boolean; already: boolean }> {
+  /** 用积分买一个插件（`POST /plugins/{id}/buy`）。回 `already: true` = 早就买过；`price / discount / charged`
+   *  是服务端记的「原价 · 折扣 · 实扣」（草案 §3.3，折扣落在扣积分那一刻；老服务端没有就是 0）。失败抛 Error（message 是服务端的人话）。 */
+  async buyPlugin(id: string): Promise<{ ok: boolean; already: boolean; price: number; discount: number; charged: number }> {
     const a = await getAccount();
     if (!a.accessToken) throw new Error("登录 Umbra 账号后才能购买");
     const r = await this.fetchFn(`${a.serverUrl}/plugins/${encodeURIComponent(id)}/buy`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${a.accessToken}` }, body: "{}" });
     let body: Record<string, unknown> = {};
     try { body = (await r.json()) as Record<string, unknown>; } catch { body = {}; }
-    if (r.ok) return { ok: true, already: body.already === true };
+    if (r.ok) {
+      const n = (k: string) => (typeof body[k] === "number" ? (body[k] as number) : 0);
+      return { ok: true, already: body.already === true, price: n("price"), discount: n("discount"), charged: n("charged") };
+    }
     const detail = body.detail as Record<string, unknown> | string | undefined;
     const msg = typeof detail === "string" ? detail
       : typeof detail?.message === "string" ? detail.message

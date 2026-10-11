@@ -141,6 +141,8 @@ function statusOf(r: MarketRow): { text: string; cls: string } {
   if (r.state === "bought") return { text: "已购 · 未装", cls: "text-text2" };
   /* 随会员赠送：不标价（标了用户会以为还要付） */
   if (r.gift) return { text: "随会员", cls: "text-accent font-semibold" };
+  /* 会员价：卡上只写实扣（原价在详情页划线给），省得一格里塞两个数 */
+  if (r.member_price !== undefined && r.member_price < r.price) return { text: `会员价 ${r.member_price} 积分`, cls: "text-accent font-semibold" };
   return { text: `${r.price} 积分`, cls: "text-text font-semibold" };
 }
 

@@ -201,6 +201,9 @@ export interface AcquireResult {
   installed: boolean;
   version: string | null;
   note: string;
+  /** 这次真扣了多少积分 / 会员折掉多少（买的回包里的；没买这步就没有） */
+  charged?: number;
+  discount?: number;
 }
 
 defineCap({
@@ -232,6 +235,7 @@ defineCap({
       try {
         const b = await account.buyPlugin(id);
         out.bought = true; out.already = b.already;
+        if (!b.already) { out.charged = b.charged; out.discount = b.discount; }
       } catch (e) {
         return envelope(out, [pluginErr("E_PLUGIN_BUY", (e as Error).message, id)]);
       }
@@ -245,15 +249,17 @@ defineCap({
         return envelope(out, [pluginErr("E_LICENSE_NO_GRANT", gift ? "许可证里没有这个插件的会员赠送授权 —— 会员可能已到期，或后台把它从赠送清单移走了" : "许可证里没有这个插件的授权（服务端没记上这笔购买？）", id, "联系发布方核对订单")]);
       }
     }
+    /* 会员价扣过的要让人看见（草案 §3.3「账本记原价 · 折扣 · 实扣」，这里是给人看的那一句） */
+    const paid = out.discount && out.discount > 0 ? `已按会员价扣 ${out.charged ?? 0} 积分（省 ${out.discount}）。` : "";
     if (!plan.install) {
-      out.note = found ? "已经装着了，这次只补了授权" : "已授权，但发布方还没放安装包 —— 放上后在市场里点「安装」即可";
+      out.note = paid + (found ? "已经装着了，这次只补了授权" : "已授权，但发布方还没放安装包 —— 放上后在市场里点「安装」即可");
       return envelope(out);
     }
     try {
       const r = await installFromUrl(c.package_url!, packageFetch);
       notify("installed", r.id);
       out.installed = true; out.version = r.version;
-      out.note = r.unsigned ? "装好了（未签名，开发模式放行）" : "装好了，立刻生效";
+      out.note = paid + (r.unsigned ? "装好了（未签名，开发模式放行）" : "装好了，立刻生效");
       return envelope(out);
     } catch (e) {
       return envelope(out, [pluginErr("E_PLUGIN_INSTALL", `已授权，但安装没成功：${(e as Error).message}`, id, "在市场里再点一次「安装」")]);

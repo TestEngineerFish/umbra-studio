@@ -4,7 +4,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { downloadPackage, installFromUrl, isHttpsUrl, licenseGrants, licenseIsFor, licenseTextOf, planAcquire, type PackageFetch } from "./plugin/acquire.js";
+import { discountPctOf, downloadPackage, installFromUrl, isHttpsUrl, licenseGrants, licenseIsFor, licenseTextOf, memberPrice, planAcquire, type PackageFetch } from "./plugin/acquire.js";
 import { validateCatalog } from "./plugin/catalog.js";
 import type { LicenseCheck } from "./plugin/license.js";
 
@@ -28,6 +28,15 @@ const cat = validateCatalog({ plugins: [
 ] })!;
 ok(cat[0]?.package_url === "https://dl.umbra.test/a.umbraplugin" && cat[1]?.package_url === undefined && cat[2]?.package_url === undefined,
   "目录校验：package_url 只留 https 的，http / 非串丢掉");
+
+/* ── ①′ 会员价（草案 §3.3）：折扣百分比的判据 + 实扣算法（与服务端同一条） ── */
+ok(discountPctOf({ discount_pct: 95 }) === 95 && discountPctOf({ discount_pct: 100 }) === 100 && discountPctOf({ discount_pct: 1 }) === 1, "discount_pct 1..100 → 原样");
+ok(discountPctOf({}) === 100 && discountPctOf(null) === 100 && discountPctOf({ discount_pct: "95" }) === 100, "缺 / 不是数 → 100（拿不到折扣就是不打折）");
+ok(discountPctOf({ discount_pct: 0 }) === 100 && discountPctOf({ discount_pct: 101 }) === 100 && discountPctOf({ discount_pct: 95.5 }) === 100 && discountPctOf({ discount_pct: -5 }) === 100,
+  "0 / 101 / 小数 / 负数 → 100（不能把价格算成 0 或算多）");
+ok(memberPrice(100, 95) === 95 && memberPrice(100, 100) === 100 && memberPrice(10, 95) === 10 && memberPrice(11, 95) === 10, "实扣 = (price*pct+50)//100：100→95、10→10（9.5 进位）、11→10（10.45 舍）");
+ok(memberPrice(1, 50) === 1 && memberPrice(1, 1) === 1 && memberPrice(2, 1) === 1, "price > 0 时至少 1");
+ok(memberPrice(0, 95) === 0 && memberPrice(-3, 95) === 0 && memberPrice(100, 120) === 100, "0 / 负 → 0；pct ≥ 100 → 原价");
 
 /* ── ② 许可证归属：sub 要等于当前账号 id ── */
 const lic = (sub: string, okv = true): LicenseCheck => okv ? { ok: true, license: { sub, grants: [] } } : { ok: false, why: "bad" };

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { envelope } from "../envelope.js";
 import { KIND_OF_EXT, readCatalogDetailed, whoHandles } from "../plugin/catalog.js";
 import { account } from "../account.js";
+import { memberPrice } from "../plugin/acquire.js";
 import { listInstalled } from "../plugin/store.js";
 import { pluginVersions } from "../plugin/install.js";
 import { defineCap } from "./registry.js";
@@ -15,7 +16,7 @@ import { defineCap } from "./registry.js";
 defineCap({
   name: "list_market", title: "市场里有什么插件", scope: "global",
   summary: [
-    "目录 + 本机状态一次给全：每个插件带 `state`（`builtin` / `installed` / `bought` / `none`）、`gift`（随会员赠送）；回包带 `source`（server / cache / bundled）。",
+    "目录 + 本机状态一次给全：每个插件带 `state`（`builtin` / `installed` / `bought` / `none`）、`gift`（随会员赠送）、`member_price`（登录且会员档有折扣时的实扣，草案 §3.3）；回包带 `source`（server / cache / bundled）。",
     "⚠️ **权限的权威出处是包里的 manifest**，目录里那份只是装之前给用户看的。",
   ].join("\n"),
   input: {},
@@ -24,7 +25,8 @@ defineCap({
   run: async () => {
     const { entries: catalog, source } = await readCatalogDetailed();
     /* 登录着就问一次「我这档会员送哪些插件」（后台配的）；失败当没有 —— 标不标赠送不该让市场打不开 */
-    const gift = new Set(await account.giftPlugins());
+    const perks = await account.perks();
+    const gift = new Set(perks.gift);
     /* 本机没有许可证、或许可证不是当前账号的 → 静默取一次（换机器 / 重新登录后买过的插件要能找回来） */
     try { await account.syncLicense(); } catch { /* 静默 */ }
     const installed = await listInstalled();
@@ -45,6 +47,9 @@ defineCap({
         unsigned: !!got && got.unsigned,
         /* 随当前会员赠送（服务端 `/membership.gift_plugins`）：前端价格那格画「随会员」 */
         gift: gift.has(c.id),
+        /* 会员价：登录且档位有折扣、且这个插件要花积分买时才有（目录接口不认人，这里按 `/membership.discount_pct` 算；
+           真扣多少以买的回包 `charged` 为准）。赠送 / 内置 / 免费的没有这一格 */
+        member_price: perks.discountPct < 100 && c.price > 0 && !c.builtin && !gift.has(c.id) ? memberPrice(c.price, perks.discountPct) : undefined,
       };
     }));
     /* `source`：目录来自服务端 / 上次的缓存 / 出厂清单 —— 后两种前端提示一句「可能不是最新」 */

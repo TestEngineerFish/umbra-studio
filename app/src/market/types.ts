@@ -29,6 +29,8 @@ export interface MarketRow {
   gift?: boolean;
   /** 安装包地址（https）。没有 = 发布方还没放包：买了 / 领了只拿到授权，装不上 */
   package_url?: string;
+  /** 会员价（积分）：登录且会员档有折扣、且要花积分买时才有。画「会员价 N」+ 划线原价；真扣多少以回包为准 */
+  member_price?: number;
 }
 
 /** `acquire_plugin` 的回包：每一步的结果都在 —— 「买了没装上」和「没买成」是两种下一步 */
@@ -40,6 +42,9 @@ export interface AcquireResult {
   installed: boolean;
   version: string | null;
   note: string;
+  /** 这次真扣了多少 / 会员折掉多少（没走购买这步就没有） */
+  charged?: number;
+  discount?: number;
 }
 
 /** 目录来源：`server` 最新；`cache` 上次联网那份；`bundled` 出厂清单（从没联过网） */

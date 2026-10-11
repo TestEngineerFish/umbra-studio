@@ -15,6 +15,22 @@ export const MAX_PACKAGE_BYTES = 50 * 1024 * 1024;
 /** 下载超时 30 秒。 */
 export const DOWNLOAD_TIMEOUT_MS = 30_000;
 
+/** 会员折扣的百分比（服务端 `GET /membership` 的 `discount_pct`，100 = 不打折）。
+ *  只认 1..100 的整数；缺、不是数、越界一律回 100 —— **拿不到折扣就是不打折**，不能把价格算成 0。 */
+export function discountPctOf(body: unknown): number {
+  const raw = (body as { discount_pct?: unknown } | null)?.discount_pct;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1 || raw > 100) return 100;
+  return raw;
+}
+
+/** 会员实扣：`(price * pct + 50) // 100`，price > 0 时至少 1。**与服务端 `plugin_licenses.buy()` 同一算法** ——
+ *  目录接口不认人，所以端上只能自己算给用户看；真扣多少以服务端回包的 `charged` 为准。 */
+export function memberPrice(price: number, pct: number): number {
+  if (!(price > 0)) return 0;
+  if (pct >= 100) return price;
+  return Math.max(1, Math.floor((price * pct + 50) / 100));
+}
+
 /** 安装包地址合不合规：只认 `https://主机/路径`。http 不认（包会被中间人换掉；验签挡得住内容、挡不住拒绝服务）。 */
 export function isHttpsUrl(url: unknown): url is string {
   if (typeof url !== "string") return false;

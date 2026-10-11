@@ -13,6 +13,7 @@ import { permRows, type AcquireResult, type MarketRow } from "./types";
  *
  *  买和装（2026-10-11 接上）：两颗钮都走 `acquire_plugin` —— 已有授权跳过购买 → 用积分买 → 取许可证 →
  *  有安装包就装。没登录时钮改「登录后购买」跳设置页；回包每一步都有，「买了没装上」照实说。
+ *  会员价（草案 §3.3）：`member_price` 有且比原价低就画「会员价 N」+ 划线原价，确认与按钮都用实扣；买断确认和「已装」页卸载同款「再点一次」。
  */
 export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
   core: Core; row: MarketRow; signedIn: boolean; onBack: () => void; onChanged?: () => void; onSettings?: () => void;
@@ -20,6 +21,10 @@ export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
   const perms = permRows(row.permissions);
   const tools = row.tools ?? [];
   const [busy, setBusy] = useState(false);
+  /* 买断的确认：与「已装」页卸载同一种 —— 第一下把确认行亮出来，第二下才真买（不用 window.confirm，那是另一套对话框） */
+  const [arming, setArming] = useState(false);
+  /* 这一步要扣的积分：有会员价按会员价，没有按原价；真扣多少以回包为准 */
+  const pay = row.member_price !== undefined && row.member_price < row.price ? row.member_price : row.price;
 
   const acquire = async () => {
     if (busy) return;
@@ -144,15 +149,33 @@ export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
               <>
                 <div className="flex items-baseline justify-between mb-2">
                   <span className="text-xs text-muted">一次买断</span>
-                  <span className="text-sm font-semibold tabular-nums">{row.price} 积分</span>
+                  {pay < row.price ? (
+                    <span className="text-sm tabular-nums" data-ud="market-price">
+                      <span className="text-muted line-through mr-1.5">{row.price}</span>
+                      <span className="font-semibold text-accent">会员价 {pay} 积分</span>
+                    </span>
+                  ) : (
+                    <span className="text-sm font-semibold tabular-nums" data-ud="market-price">{row.price} 积分</span>
+                  )}
                 </div>
-                <button className="btn primary w-full" data-ud="market-act" disabled={busy}
-                  onClick={() => {
-                    if (!signedIn) { onSettings?.(); return; }
-                    if (row.price > 0 && !window.confirm(`用 ${row.price} 积分买下「${row.name}」？买断，含后续所有版本更新。`)) return;
-                    void acquire();
-                  }}>
-                  {buyLabel(row.price > 0 ? `购买并安装 · ${row.price} 积分` : "免费安装")}</button>
+                {arming ? (
+                  <div className="text-xs leading-relaxed" data-ud="market-confirm">
+                    用 {pay} 积分买下「{row.name}」？买断，含后续所有版本更新。{pay < row.price && `（会员价，原价 ${row.price}）`}
+                    <div className="mt-1.5 flex gap-2">
+                      <button className="btn sm" onClick={() => setArming(false)}>取消</button>
+                      <button className="btn sm primary" disabled={busy} onClick={() => { setArming(false); void acquire(); }}>
+                        {buyLabel(`确认购买 · ${pay} 积分`)}</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button className="btn primary w-full" data-ud="market-act" disabled={busy}
+                    onClick={() => {
+                      if (!signedIn) { onSettings?.(); return; }
+                      if (pay > 0) { setArming(true); return; }
+                      void acquire();
+                    }}>
+                    {buyLabel(pay > 0 ? `购买并安装 · ${pay} 积分` : "免费安装")}</button>
+                )}
                 <p className="text-[11px] text-muted mt-2 leading-relaxed">
                   {signedIn ? "一次买断，含后续所有版本更新；积分不够时会提示去充值。" : "先在设置里登录 Umbra 账号；积分和会员在 Umbra 账号页。"}
                   {!row.package_url && " 发布方还没放安装包，现在买到的是授权，包放上后再点一次「安装」。"}
