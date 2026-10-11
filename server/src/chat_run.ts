@@ -2,6 +2,7 @@
  *  抽出来是为了让 MCP 工具（index.ts）和本地 API（api.ts，应用前端的会话面板走它）共用同一份 ——
  *  两个入口一套逻辑，落盘仍走唯一写入口（01 H3）。 */
 import { createHash } from "node:crypto";
+import { failHint } from "./ai_fail.js";
 import { readFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
@@ -659,13 +660,19 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
     } catch { /* 忽略，不影响主流程 */ }
 
     const chVal: "a" | "b" | "c" = ch;
-    return envelope<{ sessionId: string; channel: "a" | "b" | "c"; messages: ChatEntry[]; usage: typeof result.usage; interrupted: boolean; changes: typeof changes; fellBack?: string | null }>({
+    /* 服务端 AI 的失败分档（没会员 / 额度用完 / 欠费）随回包给界面：按钮文案与去处都在里面，界面不再抄一份表。
+       只在这一轮真的失败了才给 —— 换通道重跑成功的话 `result.fail` 已经是新那轮的（空）。 */
+    const failOut = result.fail && result.fail.action
+      ? { kind: result.fail.kind, message: result.fail.message, action: result.fail.action, topupUrl: result.fail.topupUrl, hint: failHint(result.fail.kind) }
+      : null;
+    return envelope<{ sessionId: string; channel: "a" | "b" | "c"; messages: ChatEntry[]; usage: typeof result.usage; interrupted: boolean; changes: typeof changes; fellBack?: string | null; fail?: typeof failOut }>({
       sessionId: session.id,
       channel: chVal,
       messages: session.messages.slice(-10),
       usage: result.usage,
       interrupted: result.interrupted,
       changes,
+      ...(failOut ? { fail: failOut } : {}),
     }, diags, {});
   }
 

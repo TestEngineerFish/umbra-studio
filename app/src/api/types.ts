@@ -45,7 +45,13 @@ export interface ChatSessionRow {
   /** channel b 下具体哪个本机 CLI */
   tool?: string;
 }
-export interface ChatNote { kind: "change" | "err"; idx: number; path?: string; from?: string; to?: string; summary?: string; reverted?: boolean; text?: string }
+export interface ChatNote {
+  kind: "change" | "err"; idx: number; path?: string; from?: string; to?: string; summary?: string; reverted?: boolean; text?: string;
+  /** 出错行上的按钮（服务端 AI 的 402 分档：去充值 / 开会员 / 重置卡 / 加量包）。`url` 空 = 点了只提示 `hint`。 */
+  action?: { label: string; url: string; hint: string };
+}
+/** `chat_send` 回包里的失败分档（服务端 `ai_fail.ts` 给的，界面不抄表）。 */
+export interface ChatFail { kind: string; message: string; action: string; topupUrl: string; hint: string }
 export interface ChatUsage { totalTokens?: number; totalCostUSD?: number }
 
 export interface ProjectRow { name: string; title: string; dir: string; drafts?: number; lastOpened?: string | null; missing?: boolean; thumb?: string | null; current?: boolean; generatedAt?: string | null }

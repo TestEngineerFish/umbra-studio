@@ -5,9 +5,10 @@ import type { ChatStore } from "./useChat";
 import { renderMd, renderMdInline } from "../ui/markdown";
 import { Popover, usePopover } from "../ui/Popover";
 import { Stash } from "./Stash";
+import { toast } from "../ui/Toast";
 
 /** 会话栏，形制按 S9：用户句右对齐；一个 AI 回合共用一根左栏，文本与工具行按出现顺序排；变更卡带回退；「已选中」药丸紧挨输入框上方 */
-export function ChatRail({ chat, selections, onDropSelection, onClearSelections, contextLabel, currentFile, stash, onSendStash, onDropStash, onLocateComment }: { chat: ChatStore; selections: Selection[]; onDropSelection: (i: number) => void; onClearSelections: () => void; contextLabel: string | null; currentFile: string | null; stash: Comment[]; onSendStash: () => void | Promise<void>; onDropStash: (id: string) => void; onLocateComment: (c: Comment) => void }) {
+export function ChatRail({ chat, selections, onDropSelection, onClearSelections, contextLabel, currentFile, stash, onSendStash, onDropStash, onLocateComment, onOpenUrl }: { chat: ChatStore; selections: Selection[]; onDropSelection: (i: number) => void; onClearSelections: () => void; contextLabel: string | null; currentFile: string | null; stash: Comment[]; onSendStash: () => void | Promise<void>; onDropStash: (id: string) => void; onLocateComment: (c: Comment) => void; onOpenUrl?: (url: string) => void }) {
   const body = useRef<HTMLDivElement>(null);
   /* ── 别处把话头递过来（M8-31）──
      现在的来路是「这份稿没有节点地址 → 改用 AI」那颗钮：它已经把文件药丸挂上、
@@ -91,7 +92,14 @@ export function ChatRail({ chat, selections, onDropSelection, onClearSelections,
         <Turns messages={chat.messages} />
         {chat.notes.map((n, i) => n.kind === "change" ? (
           <div key={i} className="rounded border border-border bg-panel2 px-3 py-2 text-xs flex items-center gap-2"><span className="flex-1 min-w-0">改了 <b>{n.path}</b> · {n.summary}（{n.from} → {n.to}）</span>{n.reverted ? <span className="text-muted">已回退</span> : <button className="btn sm" onClick={() => void chat.revert(i)}>回退到 {n.from}</button>}</div>
-        ) : <div key={i} className="text-xs text-err px-1">{n.text}</div>)}
+        ) : (
+          /* 服务端 AI 的 402 分档：出错那行带一颗按钮（去充值 / 开会员 / 重置卡 / 加量包）。
+             有 `url` 就开外链（Umbra 商城 / 厂商控制台）；没有就把 `hint` 说出来 —— 商城在 Umbra 的 PC / iOS 账号页里，Studio 没有。 */
+          <div key={i} className="text-xs text-err px-1 flex items-center gap-2">
+            <span className="flex-1 min-w-0">{n.text}</span>
+            {n.action && <button className="btn sm shrink-0" onClick={() => { if (n.action!.url) onOpenUrl?.(n.action!.url); else toast(n.action!.label, n.action!.hint); }}>{n.action.label}</button>}
+          </div>
+        ))}
         {chat.running && <div className="flex gap-2"><span className="mt-1 w-2 h-2 rounded-full border border-accent border-r-transparent animate-spin shrink-0" /><span className="text-xs text-muted">正在读稿、调工具、落盘…</span></div>}
       </div>
       {/* 暂存的评论：**在选区药丸再上面一层**（设计侧第十一轮 §二.5）。

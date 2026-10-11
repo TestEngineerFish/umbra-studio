@@ -26,6 +26,7 @@
     "apitest": "npm run build && node dist/apitest.js",
     "captest": "npm run build && node dist/captest.js",
     "kindtest": "npm run build && node dist/kindtest.js",
+    "aifailtest": "npm run build && node dist/aifailtest.js",
     "plugintest": "npm run build && node dist/plugintest.js",
     "packplugin": "npm run build && node dist/packplugin.js",
     "ziptest": "npm run build && node dist/ziptest.js",

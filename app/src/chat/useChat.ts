@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
-import type { ChatMessage, ChatNote, ChatSessionRow, ChatUsage, Selection } from "../api/types";
+import type { ChatFail, ChatMessage, ChatNote, ChatSessionRow, ChatUsage, Selection } from "../api/types";
 
 interface Cap {
   model: string; supportsImage: boolean; via?: "local" | "endpoint"; cli?: string; cliLabel?: string;
@@ -183,7 +183,7 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
       /* 作业起成功了 —— 这一刻「已经交给 AI」就成立，不必等它跑完。
          起失败会走上面那个 throw，`onStarted` 不会被调用，所以不会错标。 */
       onStarted?.();
-      type Done = { running?: boolean; error?: { message?: string; code?: string }; result?: { data?: { usage?: ChatUsage; interrupted?: boolean; changes?: Array<{ path: string; from: string; to: string; summary: string }> }; errors?: Array<{ message?: string; code?: string }> } };
+      type Done = { running?: boolean; error?: { message?: string; code?: string }; result?: { data?: { usage?: ChatUsage; interrupted?: boolean; changes?: Array<{ path: string; from: string; to: string; summary: string }>; fail?: ChatFail }; errors?: Array<{ message?: string; code?: string }> } };
       let done: Done | null = null;
       for (let i = 0; i < 600 && !done; i++) {
         await new Promise((r) => setTimeout(r, 1200));
@@ -200,7 +200,9 @@ export function useChat(core: Core, dir: string, ctx: { selectedDraft: string | 
       const d = done.result?.data ?? {};
       const add: ChatNote[] = [];
       if (done.error) add.push({ kind: "err", idx: 0, text: "出错：" + (done.error.message ?? done.error.code) });
-      if (done.result?.errors?.length) add.push({ kind: "err", idx: 0, text: "出错：" + (done.result.errors[0]!.message ?? done.result.errors[0]!.code) });
+      /* 服务端 AI 的 402 分档（没会员 / 额度用完 / 欠费）：一句人话 + 一颗按钮，不再摆 `HTTP 402: {...}` 原文。 */
+      if (d.fail) add.push({ kind: "err", idx: 0, text: d.fail.message, action: { label: d.fail.action, url: d.fail.topupUrl, hint: d.fail.hint } });
+      else if (done.result?.errors?.length) add.push({ kind: "err", idx: 0, text: "出错：" + (done.result.errors[0]!.message ?? done.result.errors[0]!.code) });
       if (d.interrupted) add.push({ kind: "err", idx: 0, text: "已中断（这一步之前落盘的改动照常可审可回退）" });
       for (const ch of d.changes ?? []) add.push({ kind: "change", idx: 0, path: ch.path, from: ch.from, to: ch.to, summary: ch.summary, reverted: false });
       const g2 = await core.get<{ messages: ChatMessage[] }>("chat_get?session=" + encodeURIComponent(sid)).catch(() => null);

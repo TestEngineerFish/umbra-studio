@@ -476,7 +476,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     });
   }, [store, chat, core, file, expandChat]);
 
-  const rail = <ChatRail chat={chat} selections={selections} onDropSelection={(i) => setSelections((xs) => xs.filter((_, j) => j !== i))} onClearSelections={() => setSelections([])} contextLabel={dirMode ? (dirRel || "这个目录") : (file ? draftTitle(file) : null)}
+  const rail = <ChatRail chat={chat} onOpenUrl={(u) => void host.openExternal(u)} selections={selections} onDropSelection={(i) => setSelections((xs) => xs.filter((_, j) => j !== i))} onClearSelections={() => setSelections([])} contextLabel={dirMode ? (dirRel || "这个目录") : (file ? draftTitle(file) : null)}
     currentFile={dirMode ? null : file}
     stash={store.stash}
     onSendStash={sendStash}

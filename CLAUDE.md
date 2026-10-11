@@ -267,6 +267,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run apitest` | **HTTP 路由层回归**（2026-09-28 新建）：住在路由层、别处测不到的行为。第一条是「同一会话并发发两条」（issue #35）。⚠️ **一条都不调真 AI** —— 用 `jobs.start` 塞慢作业造出「正忙」，要测的那条路照样走到 |
 | `npm --prefix server run captest` | 能力注册表回归（M11-1）：测的不是功能，是**散不散** —— 声明了就两面都有、名字不打架 |
 | `npm --prefix server run kindtest` | 类型表回归（M11-2）：一个路径算什么类型 + 插件注册的三道闸 |
+| `npm --prefix server run aifailtest` | **服务端 AI 失败分档回归**（2026-10-11 新建）：Umbra 的 402 按 `error.code` 分成厂商欠费 / 没会员 / 额度用完，按钮文案与 PC / iOS 同一张表（`ai_fail.ts`）。一条都不碰网络 |
 | `npm --prefix server run plugintest` | 插件机制回归（M11-4）：**重点不是「能跑」是「关不关得住」** —— 演示插件同时是攻击样本 |
 | `npm --prefix server run rendertest` | 渲染回归（要浏览器） |
 | `npm --prefix server run ui -- <项目名>` | 起界面给人用 |

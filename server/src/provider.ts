@@ -6,6 +6,8 @@
  * 出参是统一的对话结果，上层（agent 循环 / MCP 工具）不关心具体是哪家 provider。
  */
 
+import { failErrorText, parseAiFailure, type AiFailure } from "./ai_fail.js";
+
 export interface ProviderConfig {
   baseUrl: string;     // e.g. "https://api.deepseek.com/v1"
   apiKey: string;
@@ -54,6 +56,8 @@ export interface ProviderResult {
   usage: UsageInfo | null;
   error: string | null;
   interrupted: boolean;
+  /** 服务端 AI 的失败分档（`ai_fail.ts`）：Umbra 回的 402 认得出类别时有；厂商的裸 4xx / 网络错没有。 */
+  fail?: AiFailure | null;
 }
 
 export interface ProviderOpts {
@@ -95,7 +99,7 @@ export async function chat(
     }
     if (!res.ok) {
       if (opts.abortSignal?.aborted) return { ok: true, messages: allMessages, usage: totalUsage, error: null, interrupted: true };
-      return { ok: false, messages: allMessages, usage: totalUsage, error: res.error, interrupted: false };
+      return { ok: false, messages: allMessages, usage: totalUsage, error: res.error, interrupted: false, fail: res.fail ?? null };
     }
 
     // 累加用量
@@ -154,6 +158,8 @@ interface SingleResult {
   message: ChatMessage;
   usage: UsageInfo | null;
   error: string | null;
+  /** 4xx 体解析出的分档（见 `ProviderResult.fail`）。 */
+  fail?: AiFailure | null;
 }
 
 async function singleRequest(
@@ -202,7 +208,10 @@ async function singleRequest(
 
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    return { ok: false, message: { role: "assistant", content: null }, usage: null, error: `HTTP ${resp.status}: ${text.slice(0, 200)}` };
+    /* Umbra 服务端的 4xx 是 OpenAI 形状的错误体（`error.code` 分档，402 带 `topup_url`）：翻成人话 + 按钮；
+       自填端点的 4xx 认不出形状，照旧 `HTTP n: 原文`。 */
+    const fail = parseAiFailure(resp.status, text);
+    return { ok: false, message: { role: "assistant", content: null }, usage: null, error: failErrorText(resp.status, text, fail), fail };
   }
 
   const json = await resp.json() as Record<string, unknown>;
