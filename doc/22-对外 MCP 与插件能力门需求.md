@@ -30,7 +30,7 @@
 | 通用文件层 | `list_files` / `read_file`（带 encoding）/ `write_file`（utf8 / base64）/ `move_file` / `trash_file` / `restore_trashed` / `global_search` / `list_file_versions` / `read_file_version` / `compare_file_versions` / `revert_file` / `list_file_refs` |
 | 设计稿专有 | `read_draft` / `write_draft` / `patch_draft` / `validate_draft` / `set_prop` / `locate_node` / 组件 / 图标 / token / 评论 / 变更 / 快照 … |
 | 记录 | `list_versions` / `list_changes` / `list_project_changes` / `list_comments` / `list_chats` / `get_chat` / `index_status` |
-| 插件 B 面 | 清单可声明 `surfaces: ["tools"]` + `tools` 入口，沙箱会加载它（`UD_PLUGIN_ENTRY`），**但这些工具不进会话工具表（`chat_run.ts` 没有 plugin 一词）、不进 MCP（`index.ts` 同）**。唯一有 B 面的是内置 `com.umbra.markdown` |
+| 插件 B 面 | 清单可声明 `surfaces: ["tools"]` + `tools` 入口，沙箱会加载它（`UD_PLUGIN_ENTRY`），**但这些工具不进会话工具表（`chat_run.ts` 没有 plugin 一词）、不进 MCP（`index.ts` 同）**。唯一有 B 面的是内置 `com.umbra.markdown`。→ **2026-10-11 已接**（M13-1 / M13-2，`plugin/verbs.ts`，读数 `00` §一六八） |
 | 授权 | `plugin_entitlement` 六种态只在界面（✎ 的过期 / 未授权标签）和 `list_plugins` 回包里；**调用插件能力的路上没有授权门** |
 | Umbra 侧 | UmbraPC 没有 MCP 客户端；它有「检测本机 MCP / Skill 并归类上报」（服务端 `capabilities.py`），归的是编码 CLI 的 MCP 配置 |
 
@@ -72,6 +72,7 @@
                            调用时再验一次 entitlementOf ──► 过不了 → E_PLUGIN_UNLICENSED { plugin, state, market_url }
 ```
 
+- **对外名字**（Q54 落地）：`<插件短名>__<动词>`，如 `markdown__replace_section`。用两个下划线不用点 —— OpenAI 函数名与 MCP 工具名只认 `[A-Za-z0-9_-]`；短名 = 插件 id 最后一段，两个插件撞了短名的退回整个 id（点换下划线），不让后装的那个静默消失。
 - **「免费动词」由插件自己声明**（`free: true`），宿主不猜。剪辑视频插件：`video.play` 免费、`video.cut` 要授权。
   没装那个插件时连 `video.play` 都没有 —— 「播放」也是插件给的能力，不是宿主内置的。
 - **过期 ≠ 卸载**：过期的插件仍装着，免费动词照常；买断 / 续费后 `fetch_license` 落盘那一刻 `tools/list_changed`，不用重启（同 M11-10「装后即生效」）。

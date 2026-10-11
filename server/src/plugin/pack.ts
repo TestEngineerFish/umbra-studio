@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { join, relative, sep } from "node:path";
-import { TOOL_ROOT } from "../project.js";
 import { checkManifest, type PluginManifest } from "./manifest.js";
+import { publisherKeyPath } from "./pubkey.js";
 
 /** 插件包的格式与验签（M11-6）。
  *
@@ -69,7 +69,8 @@ export function decodePackage(buf: Buffer): PluginPackage {
 }
 
 /** 发布方公钥。**不在仓库里** —— 发布时随产物一起放进 `TOOL_ROOT/keys/`。 */
-const PUBKEY = join(TOOL_ROOT, "keys", "publisher.pub");
+/** 公钥路径现取（测试可用 `UMBRASTUDIO_PUBKEY` 指到临时钥匙，见 `pubkey.ts`）。 */
+const PUBKEY = (): string => publisherKeyPath();
 
 export interface VerifyResult { ok: boolean; why?: string; dev?: boolean }
 
@@ -82,7 +83,7 @@ export interface VerifyResult { ok: boolean; why?: string; dev?: boolean }
  */
 export function verifyPackage(pkg: PluginPackage): VerifyResult {
   const dev = process.env.UMBRASTUDIO_PLUGIN_DEV === "1";
-  if (!existsSync(PUBKEY)) {
+  if (!existsSync(PUBKEY())) {
     return dev
       ? { ok: true, dev: true, why: "本机没有发布方公钥，按开发模式放行 —— 这个插件是未签名的" }
       : { ok: false, why: "本机没有发布方公钥（keys/publisher.pub），装不了插件。这通常说明安装包不完整" };
@@ -93,7 +94,7 @@ export function verifyPackage(pkg: PluginPackage): VerifyResult {
       : { ok: false, why: "这个包没有签名，拒绝安装" };
   }
   try {
-    const key = createPublicKey(readFileSync(PUBKEY));
+    const key = createPublicKey(readFileSync(PUBKEY()));
     /* Ed25519 用 `crypto.verify(null, …)` —— 它不走摘要算法那一套，
        传 "sha256" 之类会直接抛。这一点和 RSA/ECDSA 不同，容易写错。 */
     const ok = edVerify(null, canonical(pkg), key, Buffer.from(pkg.signature, "base64"));
@@ -116,7 +117,7 @@ export function verifyPackage(pkg: PluginPackage): VerifyResult {
 export async function verifyInstalled(dir: string): Promise<VerifyResult> {
   const sigPath = join(dir, ".sig");
   if (!existsSync(sigPath)) return { ok: false, why: "没有签名" };
-  if (!existsSync(PUBKEY)) return { ok: false, why: "本机没有发布方公钥，验不了" };
+  if (!existsSync(PUBKEY())) return { ok: false, why: "本机没有发布方公钥，验不了" };
   try {
     const files: Record<string, string> = {};
     const walk = async (d: string, base: string): Promise<void> => {
@@ -133,7 +134,7 @@ export async function verifyInstalled(dir: string): Promise<VerifyResult> {
     if (!raw) return { ok: false, why: "目录里没有 manifest.json" };
     const manifest = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as PluginManifest;
     const sig = (await readFile(sigPath, "utf8")).trim();
-    const key = createPublicKey(readFileSync(PUBKEY));
+    const key = createPublicKey(readFileSync(PUBKEY()));
     return edVerify(null, canonical({ format: 1, manifest, files }), key, Buffer.from(sig, "base64"))
       ? { ok: true }
       : { ok: false, why: "签名验不过 —— 装上之后被改过，或者不是我们签的" };

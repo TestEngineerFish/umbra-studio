@@ -11765,3 +11765,48 @@ HTTP 侧只有归档 / 删除项目时顺带停）—— 那个服务**停不掉
 读数：`uitest` **454/454**（+12，两轮稳定）· 壳内探针 6/6 · 服务端全套不变
 （`apitest` 91/91 · `captest` 259/259 · `kindtest` 51/51 · `filetest` / `lifecycletest` 全通 ·
 `difftest` 9/9 · `plugintest` 92/92 · `bridgetest` 7/7 · `selftest` 零 error）。
+
+## 一六八、插件动词进模型视野：挂出 / 收回按授权态（2026-10-11，M13-1 / M13-2）
+
+用户提「让 Studio 对外提供 MCP 给 Umbra 或其他 Agent；插件可买可到期，装了剪辑插件对外就多一件剪辑能力，否则只有播放」。
+需求稿 `doc/22`，五条待拍板（Q54–Q58）用户当天拍「按建议」。
+
+### 168.1 现状读数（动手前）
+
+| 项 | 实测 |
+| --- | --- |
+| MCP | stdio，`cap/` 72 件 + `index.ts` 早期直注册的十几件 |
+| 插件 B 面 | 清单能声明 `tools`、沙箱会加载 —— **但 `chat_run.ts` 没有 plugin 一词、`index.ts` 也没有**：B 面工具哪儿都不在。唯一有 B 面的内置 markdown 插件写了「改一节」，从来没人调过 |
+| 授权 | `entitlementOf` 六种态只在界面（✎ 的标签）和 `list_plugins` 回包里；**调用的路上没有门** |
+| 沙箱实例 | `plugin_call` 是「插件调宿主」那半边；**生产代码里没有一处 `new PluginSandbox`** —— 沙箱只在 `plugintest` 里起过 |
+
+### 168.2 做法
+
+`plugin/verbs.ts` 一张表（`allVerbs` / `listVerbs` / `invokeVerb`），三处取用，**不各自扫插件**：
+
+| 面 | 接法 |
+| --- | --- |
+| 会话工具表 | `chat_run.ts` 的 `tools` 末尾 `...(await listVerbs()).map(verbToolDef)`；分发 `default` 分支里名字带 `__` 的先 `isVerb` |
+| MCP | `index.ts` 的 `syncVerbTools`：按表 `registerTool` / `remove`；订阅 `plugin` 事件重挂。SDK 1.30 动态注册自带 `tools/list_changed` |
+| HTTP | 能力 `plugin_verbs`（全表 + `exposed` + 起不来的沙箱 `failures`） |
+
+授权门两道：**列表按态过滤**（builtin / active 全挂；否则只挂插件标 `free: true` 的）+ **调用进门重算**（列表是快照）。
+过不了回 `E_PLUGIN_UNLICENSED { plugin, state, note, market_url }`。
+许可证变动要让表知道：`set_license` / `fetch_license` 成功后发 `plugin` 事件（装 / 卸 / 切版本本来就发）。
+
+对外名 `<短名>__<动词>`：OpenAI 函数名与 MCP 工具名只认 `[A-Za-z0-9_-]`，插件自己的能力名带点（`com.umbra.markdown.outline`）直接用不了。短名撞了退回整个 id。
+
+### 168.3 顺带抓到的一条：回归在往真公钥上写
+
+`keys/publisher.pub` 当天刚放进来（与 ECS 私钥配对），而 `plugintest` 一直是**生成一对测试钥匙直接写到那个路径**。
+之前没出事只因为那个文件以前不是真钥匙。改：`plugin/pubkey.ts` 现读 `UMBRASTUDIO_PUBKEY`，测试写临时文件。
+**一个「反正它不是真的」的假设，在它变真的那天不会自己提醒你。**
+
+### 168.4 读数
+
+`verbtest` **20/20**（新建）· `captest` 279/279 · `apitest` 108/108 · `plugintest` 92/92 · `git status keys/` 干净。
+真起一次 stdio、用 SDK 客户端 `listTools`：102 件，含 `markdown__outline` / `markdown__replace_section`。
+`uitest` 没跑（界面一行没动）。
+
+⚠️ 回归第一版栽在 `/var` → `/private/var`：沙箱按真路径放行、runner 按原路径读，症状「import 不到 tools.mjs」。
+`mkdtemp` 之后 `realpath` 一次。正式环境 STATE_ROOT 是 userData，没有这层链接。

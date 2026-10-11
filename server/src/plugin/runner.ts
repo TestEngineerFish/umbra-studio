@@ -57,7 +57,9 @@ const MEM_LIMIT = 128 * 1024 * 1024;
 let seq = 0;
 /** 还在等宿主回话的 `host.call`：id → 那个 QuickJS 侧的 deferred */
 const pending = new Map<number, { resolve: (v: unknown) => void }>();
-type CapMeta = { name: string; title: string; summary: string; input: Record<string, unknown> };
+/** 插件声明的一件能力的元信息。`free: true` = 没授权（过期 / 没买）也能用的动词（`doc/22` §3.3：剪辑插件的「播放」），
+ *  由插件自己标，宿主不猜；不标就是要授权。 */
+type CapMeta = { name: string; title: string; summary: string; input: Record<string, unknown>; free?: boolean };
 /** 插件声明的能力：名字 → { 元信息, 它那个 `run` 函数的句柄 } */
 const caps = new Map<string, { meta: CapMeta; run: QuickJSHandle }>();
 

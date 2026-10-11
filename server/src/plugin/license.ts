@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createPublicKey, verify as edVerify } from "node:crypto";
 import { join } from "node:path";
-import { STATE_ROOT, TOOL_ROOT } from "../project.js";
+import { STATE_ROOT } from "../project.js";
+import { publisherKeyPath } from "./pubkey.js";
 
 /** 授权：**装了 ≠ 能用**（M11-12 · 需求 `doc/20` §四）。
  *
@@ -43,7 +44,8 @@ export interface License {
  *  ⚠️ 两个 root 混了在开发模式下测不出来（`00` §63.1 栽过）。 */
 const LICENSE_FILE = join(STATE_ROOT, ".umbrastudio", "license.json");
 const WATERMARK_FILE = join(STATE_ROOT, ".umbrastudio", "clock.json");
-const PUBKEY = join(TOOL_ROOT, "keys", "publisher.pub");
+/** 公钥路径现取（测试可用 `UMBRASTUDIO_PUBKEY` 指到临时钥匙，见 `pubkey.ts`）。 */
+const PUBKEY = (): string => publisherKeyPath();
 
 /** 许可证的验签结果。`license` 只在 `ok` 时有值 —— **验不过的许可证一个字都不要用**。 */
 export interface LicenseCheck { ok: boolean; why?: string; license?: License }
@@ -54,7 +56,7 @@ export interface LicenseCheck { ok: boolean; why?: string; license?: License }
  *  对象重新序列化出来的字节和原文未必一样（键序、空格、数字格式），
  *  那样签名永远验不过，而症状是「明明是我们签的却说验不过」。 */
 export function verifyLicenseText(raw: string): LicenseCheck {
-  if (!existsSync(PUBKEY)) return { ok: false, why: "本机没有发布方公钥，验不了许可证" };
+  if (!existsSync(PUBKEY())) return { ok: false, why: "本机没有发布方公钥，验不了许可证" };
   let wrap: { payload?: unknown; signature?: unknown };
   try { wrap = JSON.parse(raw) as typeof wrap; }
   catch { return { ok: false, why: "许可证不是合法 JSON" }; }
@@ -62,7 +64,7 @@ export function verifyLicenseText(raw: string): LicenseCheck {
     return { ok: false, why: "许可证缺 payload 或 signature" };
   }
   try {
-    const key = createPublicKey(readFileSync(PUBKEY));
+    const key = createPublicKey(readFileSync(PUBKEY()));
     /* Ed25519 用 `verify(null, …)` —— 不走摘要那一套，传 "sha256" 会直接抛（同 pack.ts） */
     const ok = edVerify(null, Buffer.from(wrap.payload, "utf8"), key, Buffer.from(wrap.signature, "base64"));
     if (!ok) return { ok: false, why: "许可证签名验不过 —— 被改过，或者不是我们签的" };

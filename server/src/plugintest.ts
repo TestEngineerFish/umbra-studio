@@ -288,11 +288,14 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   const { PLUGINS_DIR } = await import("./plugin/store.js");
   const { writeFile: wf, mkdir: md, rm: rmp } = await import("node:fs/promises");
 
-  const KEYS = join(process.cwd(), "..", "keys");
+  /* ⚠️ 测试钥匙写到**临时目录**并用 `UMBRASTUDIO_PUBKEY` 指过去（`plugin/pubkey.ts`）——
+     仓库里的 `keys/publisher.pub` 自 2026-10-11 起是与 ECS 私钥配对的真公钥，覆盖它等于把线上签的许可证全弄成验不过。 */
+  const KEYS = await (await import("node:fs/promises")).mkdtemp(join(tmpdir(), "umbra-keys-"));
   const pub = join(KEYS, "publisher.pub");
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   await md(KEYS, { recursive: true });
   await wf(pub, publicKey.export({ type: "spki", format: "pem" }));
+  process.env.UMBRASTUDIO_PUBKEY = pub;
 
   const pkg = await packDir(DIR);
   ok(Object.keys(pkg.files).length >= 4, "打包读到了插件的文件", `${Object.keys(pkg.files).length} 个`);

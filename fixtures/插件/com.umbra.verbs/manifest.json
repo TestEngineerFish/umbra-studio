@@ -1,0 +1,9 @@
+{
+  "id": "com.umbra.verbs",
+  "name": "动词样本 · 视频",
+  "version": "0.1.0",
+  "hostApi": "^1",
+  "surfaces": ["tools"],
+  "permissions": { "files": ["read"], "scope": "project", "net": [] },
+  "tools": "tools.mjs"
+}

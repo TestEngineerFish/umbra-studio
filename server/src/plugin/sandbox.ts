@@ -52,8 +52,8 @@ export class PluginSandbox {
   private child: ChildProcess | null = null;
   private seq = 0;
   private pending = new Map<number, Pending>();
-  /** 插件声明的能力（`name` → summary/input）。沙箱起来后由它报上来 */
-  caps: Array<{ name: string; title: string; summary: string; input: Record<string, unknown> }> = [];
+  /** 插件声明的能力（`name` → summary/input；`free` 见 `runner.ts` 的 `CapMeta`）。沙箱起来后由它报上来 */
+  caps: Array<{ name: string; title: string; summary: string; input: Record<string, unknown>; free?: boolean }> = [];
 
   constructor(private manifest: PluginManifest, private dir: string) {}
 

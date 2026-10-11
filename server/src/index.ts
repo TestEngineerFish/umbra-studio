@@ -7,7 +7,7 @@
 import { readFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { envelope, toContent, ToolError, err, type Envelope } from "./envelope.js";
@@ -27,6 +27,7 @@ import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.
 import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
 import { findBrowser, renderCheck } from "./render.js";
 import { runChatSend } from "./chat_run.js";
+import { invokeVerb, listVerbs, onVerbsChanged, zodShapeOf } from "./plugin/verbs.js";
 import { listComments } from "./comments.js";
 import {
   changesSince, diffDrafts, listVersions, projectChangesSince, readSnapshot,
@@ -481,6 +482,31 @@ for (const cap of capsFor("mcp")) {
       return cap.run(rest as never, ctx);
     }));
 }
+
+/* ═══════════════════ 插件动词 → MCP 面（M13-2，`doc/22` §3.3）═══════════════════
+   装了什么插件、授权到哪，这张表就长什么样。没授权的只挂插件标了 `free` 的那几件 —— **不列、不标灰**（Q56）。
+   装 / 卸 / 切版本 / 许可证变了 → 重挂一遍并发 `tools/list_changed`，客户端不用重连。 */
+const verbTools = new Map<string, RegisteredTool>();
+async function syncVerbTools(): Promise<void> {
+  const verbs = await listVerbs().catch(() => []);
+  const want = new Set(verbs.map((v) => v.tool));
+  for (const [name, t] of verbTools) if (!want.has(name)) { t.remove(); verbTools.delete(name); }
+  for (const v of verbs) {
+    if (verbTools.has(v.tool)) continue;
+    verbTools.set(v.tool, server.registerTool(v.tool,
+      { title: `${v.pluginName} · ${v.title}`, description: v.summary,
+        inputSchema: { project: z.string().describe("项目名，或项目目录名"), ...zodShapeOf(v.input) } },
+      async (args: Record<string, unknown>) => run(async () => {
+        const { project, ...rest } = args as { project?: string };
+        const r = await invokeVerb(v.tool, rest, await loadProject(project!));
+        if (r.ok) return envelope(r.data);
+        return envelope(null, [err(X.BAD_INPUT, "(plugin)", { kind: "key", name: v.plugin }, r.message,
+          r.market_url ? { fix: `去插件市场购买或续费：${r.market_url}` } : undefined)]);
+      })));
+  }
+}
+await syncVerbTools();
+onVerbsChanged(() => { void syncVerbTools(); });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

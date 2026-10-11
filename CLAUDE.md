@@ -270,6 +270,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run aifailtest` | **服务端 AI 失败分档回归**（2026-10-11 新建）：Umbra 的 402 按 `error.code` 分成厂商欠费 / 没会员 / 额度用完，按钮文案与 PC / iOS 同一张表（`ai_fail.ts`）。一条都不碰网络 |
 | `npm --prefix server run acquiretest` | **拿到插件那条路的回归**（2026-10-11 新建）：买 → 取许可证 → 从 URL 装（`plugin/acquire.ts`）；安装包地址只认 https、许可证归属、步骤决策、下载上限 / 超时、失败不落一个字节。网络用注入的 fetch |
 | `npm --prefix server run catalogtest` | **插件目录三级回落回归**（2026-10-11 新建）：服务端 `GET /plugins/catalog` > 本地缓存 > 出厂清单（`plugin/catalog.ts`）；形状校验、超时回落、`gift_plugins` 解析。网络用注入的 fetch，一条都不碰真网 |
+| `npm --prefix server run verbtest` | **插件动词挂出 / 收回回归**（2026-10-11 新建，M13-1/2）：没授权只挂 `free` 的、签许可证当场长出来、过期收回、调用进门再验。全程临时状态目录 + 临时钥匙（`UMBRASTUDIO_STATE_DIR` / `UMBRASTUDIO_PUBKEY`，**要在 import 核心模块之前设**）。⚠️ 临时目录要 `realpath`：macOS `/var` 是链接，沙箱按真路径放行会「import 不到 tools.mjs」 |
 | `npm --prefix server run plugintest` | 插件机制回归（M11-4）：**重点不是「能跑」是「关不关得住」** —— 演示插件同时是攻击样本 |
 | `npm --prefix server run rendertest` | 渲染回归（要浏览器） |
 | `npm --prefix server run ui -- <项目名>` | 起界面给人用 |
@@ -331,7 +332,17 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 
 ---
 
-## 9. 当前状态一句话（2026-10-10）
+## 9. 当前状态一句话（2026-10-11）
+
+**M13-1 / M13-2 做完了**（`doc/22` 需求、`doc/12` M13）：插件 B 面动词（`tools.mjs` 里 `defineCap` 的）第一次真进了模型的视野 ——
+`plugin/verbs.ts` 一张表，三处取用：应用内会话工具表、对外 MCP（动态 `registerTool`，装 / 卸 / 许可证变了重挂并 `tools/list_changed`）、HTTP `plugin_verbs`。
+授权门：builtin / active 全挂；否则只挂插件标了 `free: true` 的，**不列不标灰**（Q56）；调用进门再验，过不了回 `E_PLUGIN_UNLICENSED` + `market_url`。
+对外名 `<短名>__<动词>`（Q54）。内置 markdown 的 `outline` / `replace_section` 是第一批。
+⚠️ `keys/publisher.pub` 从这天起是**真公钥**（与 ECS 私钥配对）——`plugintest` 原来直接往它写测试钥匙，已改走 `UMBRASTUDIO_PUBKEY` 临时文件（`plugin/pubkey.ts`）。
+读数：`verbtest` **20/20**（新建）· `captest` 279/279 · `apitest` 108/108 · `plugintest` 92/92 · 真起 stdio 用 SDK 客户端 `listTools` 102 件含两件动词。`uitest` 没跑（界面没动）。
+**下一步**：M13-3 通用缺口（分页读 / 变更按来源过滤 / `capabilities`）→ M13-4 秘书接入（UmbraPC 仓，stdio，Q57）。
+
+## 9 之前的状态（2026-10-10）
 
 **M12-3 身份接入的客户端半边做完了**（`doc/12` M12 那一节）：Umbra 账号登录 = Casdoor 授权码 + PKCE，
 核心进程起回环端口收回调、换令牌，令牌只住在 `.umbrastudio/account.json`（与本地 API 令牌两层，Q42），

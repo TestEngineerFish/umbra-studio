@@ -39,6 +39,7 @@ import { globalSearch } from "./search.js";
 import { setTokenValue } from "./token_edit.js";
 import { listTemplates, saveAsTemplate, deleteTemplate } from "./templates.js";
 import { exportProject, importProject } from "./export.js";
+import { invokeVerb, isVerb, listVerbs, verbToolDef } from "./plugin/verbs.js";
 
 /* 与 index.ts 的 GUIDES 同一张表（写稿规则文档索引）。不从 index.ts 引 —— 那会形成循环导入。 */
 const GUIDES: Record<string, { file: string; note: string }> = {
@@ -292,8 +293,16 @@ export async function executeToolCall(p: Project, tc: ToolCall): Promise<string>
         return JSON.stringify({ ok: true, file: r.file ?? null, imports: r.imports, importedBy: r.importedBy, overview: r.overview?.slice(0, 30) });
       }
 
-      default:
+      default: {
+        /* 插件动词（`plugin/verbs.ts`，M13-1）：名字带 `__` 的先问动词表。授权在 `invokeVerb` 里再验一次 ——
+           工具表是这一轮开始时的快照，许可证可能中途过期。 */
+        if (tc.function.name.includes("__") && await isVerb(tc.function.name)) {
+          const r = await invokeVerb(tc.function.name, args, p);
+          return JSON.stringify(r.ok ? { ok: true, ...(typeof r.data === "object" && r.data !== null ? r.data as object : { result: r.data }) }
+            : { ok: false, error: r.message, code: r.code, ...(r.market_url ? { market_url: r.market_url } : {}) });
+        }
         return JSON.stringify({ ok: false, error: `未实现的工具: ${tc.function.name}` });
+      }
     }
   } catch (e) {
     const m = (e as Error)?.message ?? String(e);
@@ -540,6 +549,9 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
       { type: "function", function: { name: "revert_to", description: "把稿退回某一版（历史只增不改）", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" }, version: { type: "string" } }, required: ["project", "file", "version"] } } },
       { type: "function", function: { name: "list_references", description: "查询稿件的引用关系（谁引用了我/我引用了谁）", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" } }, required: ["project"] } } },
       { type: "function", function: { name: "get_changes_since", description: "跨版本净变更，回答「我实现的是 vX，现在最新 vY，我要改什么」", parameters: { type: "object", properties: { project: { type: "string" }, since: { type: "string" }, path: { type: "string" } }, required: ["project", "since"] } } },
+      /* 插件动词（M13-1）：装了什么、授权到哪，表就长什么样 —— 没授权的只剩插件标了 free 的那几件（`doc/22` §3.3）。
+         扫不到（沙箱起不来）就当没有，不让一个坏插件把整轮会话拖死。 */
+      ...(await listVerbs().catch(() => [])).map(verbToolDef),
     ];
 
     // 系统提示：设计助手角色 + 选中节点上下文

@@ -11,6 +11,7 @@ import { readCatalogDetailed } from "../plugin/catalog.js";
 import { account } from "../account.js";
 import { emit } from "../events.js";
 import { defineCap } from "./registry.js";
+import { allVerbs, sandboxFailures } from "../plugin/verbs.js";
 
 /** 插件管理的能力（M11-4）。
  *
@@ -143,6 +144,8 @@ defineCap({
   http: { route: "license_set", method: "POST" },
   run: async ({ text }) => {
     const r = await saveLicenseText(text);
+    /* 许可证变了 = 动词表变了（`plugin/verbs.ts` 订阅这条事件）：买完 / 续完不用重启，模型的工具表当场长出来 */
+    if (r.ok) notify("license", "*");
     if (!r.ok) {
       return envelope({ ok: false }, [{ level: "error", code: "E_LICENSE_BAD",
         message: `许可证验不过：${r.why ?? "未知原因"}`, where: "(license)", at: { kind: "key", name: "license" },
@@ -160,6 +163,7 @@ defineCap({
   http: { route: "license_fetch", method: "POST" },
   run: async () => {
     const r = await account.fetchLicense();
+    if (r.ok) notify("license", "*");
     return r.ok ? envelope({ ok: true, grants: r.grants.length })
       : envelope({ ok: false, grants: 0 }, [{ level: "error", code: "E_LICENSE_FETCH", message: r.why, where: "(license)", at: { kind: "key", name: "license" } } as never]);
   },
@@ -302,5 +306,20 @@ defineCap({
     const r = await switchVersion(id, version);
     notify("switched", r.id);
     return envelope(r);
+  },
+});
+
+defineCap({
+  name: "plugin_verbs", title: "插件现在能给模型哪些动词", scope: "global",
+  summary: [
+    "列出装着的插件声明的全部动词（B 面 `tools.mjs` 里 `defineCap` 的那些），每件带对外工具名、插件、授权态、是否免费、此刻挂没挂出去。",
+    "`exposed: false` 的是**没授权且不免费**的 —— 模型的工具表里看不到它（`doc/22` §3.3）。沙箱起不来的插件列在 `failures`。",
+  ].join("\n"),
+  input: {},
+  faces: ["mcp", "http"],
+  http: { route: "plugin_verbs", method: "GET" },
+  run: async () => {
+    const verbs = await allVerbs();
+    return envelope({ verbs, failures: sandboxFailures() }, [], { count: verbs.length, exposed: verbs.filter((v) => v.exposed).length });
   },
 });
