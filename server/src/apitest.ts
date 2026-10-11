@@ -881,7 +881,7 @@ console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网�
     await ac.setAiConfig(ac.mergeChannel(before, "a", { useAccount: true, baseUrl: "https://keep.me", apiKey: "keep", model: "m" } as never));
     const got = await ac.getAiConfig();
     ok(got.channelA?.useAccount === true && got.channelA?.baseUrl === "https://keep.me", "标记落盘了，原来自填的端点还在（没被覆盖）");
-    ok(ac.engineView(got, "a").billing === "积分", "引擎标签：积分");
+    ok(ac.engineView(got, "a").billing === "会员额度", "引擎标签：会员额度（第二期：AI 走会员额度，不扣积分）");
     // 这台机器可能真登着 Umbra 账号（开发机上 sam 登过）：两种状态各验各的，不假设没登录。
     const { account } = await import("./account.js");
     const st = await account.status();

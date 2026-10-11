@@ -25,7 +25,12 @@ export interface MarketRow {
   installedVersion: string | null;
   hasUpdate: boolean;
   unsigned: boolean;
+  /** 随当前会员赠送（后台配、服务端 `/membership.gift_plugins`）：价格那格画「随会员」，不标价 */
+  gift?: boolean;
 }
+
+/** 目录来源：`server` 最新；`cache` 上次联网那份；`bundled` 出厂清单（从没联过网） */
+export type CatalogSource = "server" | "cache" | "bundled";
 
 export interface InstalledRow {
   id: string; name: string; version: string;

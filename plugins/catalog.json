@@ -1,5 +1,5 @@
 {
-  "_note": "插件市场的目录（M11-6）。现在是本地固定清单，以后换成服务端接口。⚠️ 这里的 permissions 只是给用户装之前看一眼的，权威出处是包里的 manifest —— 两者不一致时以包里的为准。",
+  "_note": "出厂清单 / 离线兜底（2026-10-11 起）。市场目录现在先问 Umbra 服务端 GET /plugins/catalog（后台管上下架），连不上回落上次的缓存 plugins/catalog-cache.json，再没有才用这份。⚠️ 这里的 permissions 只是给用户装之前看一眼的，权威出处是包里的 manifest —— 两者不一致时以包里的为准。",
   "plugins": [
     {
       "id": "com.umbra.markdown",

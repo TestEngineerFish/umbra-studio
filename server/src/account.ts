@@ -77,6 +77,13 @@ export interface AccountStatus {
 interface AuthConfigDTO extends Partial<OidcClientConfig> { provider: string }
 
 /** `/auth/config` 回的形状 → 能不能走 oidc。缺字段按 local，不猜。 */
+/** `GET /membership` 回包 → 赠送插件 id 列表（纯判据）。只认字符串、去空、去重；不是数组就是 `[]`。 */
+export function giftPluginIdsOf(body: unknown): string[] {
+  const raw = (body as { gift_plugins?: unknown } | null)?.gift_plugins;
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean))];
+}
+
 export function oidcConfigOf(d: AuthConfigDTO | null): OidcClientConfig | null {
   if (!d || d.provider !== "oidc" || !d.client_id || !d.authorization_endpoint || !d.token_endpoint || !d.issuer) return null;
   return { issuer: d.issuer, client_id: d.client_id, authorization_endpoint: d.authorization_endpoint,
@@ -112,6 +119,18 @@ export class AccountService {
       await setAiConfig(mergeChannel(cur, "a", { useAccount: false } as never));
     }
     return this.status();
+  }
+
+  /** 当前会员档随会员赠送的插件 id（服务端 `GET /membership` 的 `gift_plugins`，后台「赠送插件」页配的）。
+   *  没登录 / 没会员 / 连不上 / 老服务端一律回 `[]` —— 市场页标不标「会员赠送」，不该让市场打不开。 */
+  async giftPlugins(): Promise<string[]> {
+    const a = await getAccount();
+    if (!a.accessToken) return [];
+    try {
+      const r = await this.fetchFn(`${a.serverUrl}/membership`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
+      if (!r.ok) return [];
+      return giftPluginIdsOf(await r.json());
+    } catch { return []; }
   }
 
   /** 问 Umbra 服务端怎么登录。连不上 / 老服务端（404）抛，由调用方翻成人话。 */

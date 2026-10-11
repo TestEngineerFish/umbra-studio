@@ -91,3 +91,6 @@ app/dist/
 # 桌面壳（Electron，M9-2）
 shell/node_modules/
 shell/out/
+
+# 插件市场目录的服务端缓存（server/src/plugin/catalog.ts）：开发时 STATE_ROOT = 仓库根，别把它提交进来
+plugins/catalog-cache.json

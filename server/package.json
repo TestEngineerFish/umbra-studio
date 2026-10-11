@@ -33,7 +33,8 @@
     "jsonpostest": "npm run build && node dist/jsonpostest.js",
     "csvpostest": "npm run build && node dist/csvpostest.js",
     "difftest": "npm run build && node dist/difftest.js",
-    "bridgetest": "npm run build && node dist/bridgetest.js"
+    "bridgetest": "npm run build && node dist/bridgetest.js",
+    "catalogtest": "npm run build && node dist/catalogtest.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",

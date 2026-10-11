@@ -4,7 +4,7 @@ import { Glyph } from "../ui/Glyph";
 import { Detail } from "./Detail";
 import { Installed } from "./Installed";
 import { Credits } from "./Credits";
-import type { InstalledRow, MarketRow } from "./types";
+import type { CatalogSource, InstalledRow, MarketRow } from "./types";
 
 /** 插件市场（M11-6 接线，形制 `ui/S17-插件市场.dc.html`）。
  *
@@ -18,6 +18,7 @@ import type { InstalledRow, MarketRow } from "./types";
 export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
   const [tab, setTab] = useState<"market" | "installed" | "credits">("market");
   const [rows, setRows] = useState<MarketRow[] | null>(null);
+  const [source, setSource] = useState<CatalogSource>("server");
   const [installed, setInstalled] = useState<InstalledRow[] | null>(null);
   /** 系统时间被调回去过（后端的单调高水位发现的，M11-12）。
    *  ⚠️ **必须说出来**：不说的话「为什么我的插件突然过期了」没人答得上，
@@ -28,7 +29,8 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
   const [q, setQ] = useState("");
 
   const reload = () => {
-    void core.get<{ plugins: MarketRow[] }>("market").then((r) => setRows(r.data?.plugins ?? []));
+    void core.get<{ plugins: MarketRow[]; source?: CatalogSource }>("market")
+      .then((r) => { setRows(r.data?.plugins ?? []); setSource(r.data?.source ?? "server"); });
     void core.get<{ plugins: InstalledRow[]; clockRolledBack?: boolean }>("plugins")
       .then((r) => { setInstalled(r.data?.plugins ?? []); setClockBack(!!r.data?.clockRolledBack); });
   };
@@ -99,6 +101,12 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
                 </div>
               </div>
 
+              {/* 目录不是服务端最新的那份时说一句 —— 「为什么市场里没有新插件」要有答案 */}
+              {rows !== null && source !== "server" && (
+                <div className="mt-3 text-[11px] text-muted" data-ud="market-source">
+                  {source === "cache" ? "没连上 Umbra 服务端，这是上次联网时的目录，可能不是最新。" : "没连上 Umbra 服务端，这是随 Umbra 一起的出厂目录，联网后会更新。"}
+                </div>
+              )}
               {rows === null ? <div className="mt-8 text-muted text-xs">读取中…</div>
                 : shown.length === 0 ? <Empty hasAny={(rows ?? []).length > 0} q={q} kind={kind}
                     onClear={() => { setQ(""); setKind(null); }} onInstalled={() => setTab("installed")} />
@@ -128,6 +136,8 @@ function statusOf(r: MarketRow): { text: string; cls: string } {
   if (r.state === "builtin") return { text: "内置", cls: "text-muted" };
   if (r.state === "installed") return { text: `已装 ${r.installedVersion ?? r.version}`, cls: "text-ok font-semibold" };
   if (r.state === "bought") return { text: "已购 · 未装", cls: "text-text2" };
+  /* 随会员赠送：不标价（标了用户会以为还要付） */
+  if (r.gift) return { text: "随会员", cls: "text-accent font-semibold" };
   return { text: `${r.price} 积分`, cls: "text-text font-semibold" };
 }
 

@@ -100,6 +100,17 @@ export function Detail({ row, onBack }: { row: MarketRow; onBack: () => void }) 
                 <button disabled className="btn w-full" data-ud="market-act">已安装 {row.installedVersion}</button>
                 <p className="text-[11px] text-muted mt-2">切版本、更新、卸载都在「已装」里。</p>
               </>
+            ) : row.gift ? (
+              <>
+                <div className="flex items-baseline justify-between mb-2">
+                  <span className="text-xs text-muted">会员赠送</span>
+                  <span className="text-sm font-semibold text-accent">随会员</span>
+                </div>
+                {/* 赠送的也要「装」：许可证随会员到期（草案 §3.5），装那一步等收单 / 许可证签发接上 */}
+                <button disabled className="btn primary w-full opacity-60 cursor-not-allowed" data-ud="market-act"
+                  title="安装还没接：许可证签发未做">安装 · 随会员免费</button>
+                <p className="text-[11px] text-muted mt-2 leading-relaxed">你的会员档随会员赠送这个插件，有效期到会员到期日。</p>
+              </>
             ) : (
               <>
                 <div className="flex items-baseline justify-between mb-2">

@@ -18,7 +18,7 @@ export interface ChannelAConfig {
   apiKey: string;     // ⚠️ 密钥
   model: string;      // 用户填的模型名
   /** 走 **Umbra 服务端 AI**（一·c，2026-10-10）：端点 = 账号那一层连的服务端 + `/v1`，密钥 = 登录令牌（`account.ts`），
-   *  服务端在那边扣积分。为真时 `baseUrl` / `apiKey` 在取配置那一刻被覆盖（`getChannelA`），文件里的值不算数；
+   *  服务端在那边扣**会员额度**（5 小时 + 周两桶；积分只买插件 / 商品，2026-10-10 第二期定的）。为真时 `baseUrl` / `apiKey` 在取配置那一刻被覆盖（`getChannelA`），文件里的值不算数；
    *  `model` 也不算数（服务端一律用它自己配的那个）。关掉就回到自填端点。 */
   useAccount?: boolean;
   /** 这个模型吃不吃图（M8-10）。不给时按模型名猜 —— 猜不准就当不支持，
@@ -161,15 +161,15 @@ export interface EngineView {
   /** 界面上显示的引擎名：DeepSeek / Claude Code / 火山方舟 … */
   engine: string;
   /** 谁在付钱 —— 设计侧按这个把选择器分三组 */
-  billing: "本机订阅" | "按量" | "订阅端点" | "积分";
+  billing: "本机订阅" | "按量" | "订阅端点" | "会员额度";
   /** 分组标题（选择器用） */
-  group: "本机 · 用你已有的订阅" | "API · 按量计费" | "订阅端点" | "服务端 · 扣积分";
+  group: "本机 · 用你已有的订阅" | "API · 按量计费" | "订阅端点" | "服务端 · 会员额度";
 }
 
 export function engineView(cfg: AiConfig, ch: "a" | "b" | "c", cliLabel?: string): EngineView {
   if (ch === "b") return { engine: cliLabel || "本机 CLI", billing: "本机订阅", group: "本机 · 用你已有的订阅" };
   if (ch === "c") return { engine: vendorOf(cfg.channelC?.baseUrl ?? "", cfg.channelC?.model ?? ""), billing: "订阅端点", group: "订阅端点" };
-  if (cfg.channelA?.useAccount) return { engine: "Umbra 服务端 AI", billing: "积分", group: "服务端 · 扣积分" };
+  if (cfg.channelA?.useAccount) return { engine: "Umbra 服务端 AI", billing: "会员额度", group: "服务端 · 会员额度" };
   return { engine: vendorOf(cfg.channelA?.baseUrl ?? "", cfg.channelA?.model ?? ""), billing: "按量", group: "API · 按量计费" };
 }
 

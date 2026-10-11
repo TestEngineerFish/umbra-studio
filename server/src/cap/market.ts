@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { envelope } from "../envelope.js";
-import { KIND_OF_EXT, readCatalog, whoHandles } from "../plugin/catalog.js";
+import { KIND_OF_EXT, readCatalogDetailed, whoHandles } from "../plugin/catalog.js";
+import { account } from "../account.js";
 import { listInstalled } from "../plugin/store.js";
 import { pluginVersions } from "../plugin/install.js";
 import { defineCap } from "./registry.js";
@@ -14,14 +15,16 @@ import { defineCap } from "./registry.js";
 defineCap({
   name: "list_market", title: "市场里有什么插件", scope: "global",
   summary: [
-    "目录 + 本机状态一次给全：每个插件带 `state`（`builtin` / `installed` / `bought` / `none`）。",
+    "目录 + 本机状态一次给全：每个插件带 `state`（`builtin` / `installed` / `bought` / `none`）、`gift`（随会员赠送）；回包带 `source`（server / cache / bundled）。",
     "⚠️ **权限的权威出处是包里的 manifest**，目录里那份只是装之前给用户看的。",
   ].join("\n"),
   input: {},
   faces: ["mcp", "http"],
   http: { route: "market", method: "GET" },
   run: async () => {
-    const catalog = await readCatalog();
+    const { entries: catalog, source } = await readCatalogDetailed();
+    /* 登录着就问一次「我这档会员送哪些插件」（后台配的）；失败当没有 —— 标不标赠送不该让市场打不开 */
+    const gift = new Set(await account.giftPlugins());
     const installed = await listInstalled();
     const byId = new Map(installed.map((x) => [x.manifest.id, x]));
     const rows = await Promise.all(catalog.map(async (c) => {
@@ -38,9 +41,12 @@ defineCap({
         /* 装着的版本比目录里的旧 = 有新版本 */
         hasUpdate: !!got && !got.bundled && !!vs.current && vs.current !== c.version,
         unsigned: !!got && got.unsigned,
+        /* 随当前会员赠送（服务端 `/membership.gift_plugins`）：前端价格那格画「随会员」 */
+        gift: gift.has(c.id),
       };
     }));
-    return envelope({ plugins: rows, kinds: [...new Set(rows.flatMap((r) => r.kinds))] }, [], { count: rows.length });
+    /* `source`：目录来自服务端 / 上次的缓存 / 出厂清单 —— 后两种前端提示一句「可能不是最新」 */
+    return envelope({ plugins: rows, kinds: [...new Set(rows.flatMap((r) => r.kinds))], source }, [], { count: rows.length });
   },
 });
 
