@@ -55,9 +55,56 @@ defineCap({
   input: {
     path: z.string().describe("相对项目根的文件路径"),
     encoding: z.string().optional().describe("按哪种编码读；不给就是 utf-8。能用的：gbk / gb18030 / big5 / shift_jis / utf-16le / windows-1252"),
+    /* 分页（M13-3）：大文件整读会把模型上下文撑爆。按**行**切，1 起算。
+       ⚠️ 切过的 `content` 不能原样 `write_file` 回去（那会把文件写成一页）—— `range` 字段在就说明是一页，回包里也写明。 */
+    offset: z.number().int().min(1).optional().describe("从第几行起（1 起算）。给了就按行分页"),
+    limit: z.number().int().min(1).max(5000).optional().describe("最多给几行。只给 limit 不给 offset = 从第 1 行起"),
   },
   http: { route: "file", method: "GET" },
-  run: async ({ path, encoding }, c) => envelope(await readAnyFile(p(c), path, encoding)),
+  run: async ({ path, encoding, offset, limit }, c) => {
+    const r = await readAnyFile(p(c), path, encoding);
+    if ((offset === undefined && limit === undefined) || r.content === null) return envelope(r);
+    const lines = r.content.split("\n");
+    const from = offset ?? 1;
+    const to = Math.min(lines.length, from - 1 + (limit ?? lines.length));
+    return envelope({
+      ...r, content: from > lines.length ? "" : lines.slice(from - 1, to).join("\n"),
+      /** 这是一页：`from`–`to` 行，共 `total` 行。**整份写回要先把整份读下来**（不带 offset / limit）。 */
+      range: { from, to: Math.max(from - 1, to), total: lines.length, more: to < lines.length },
+    });
+  },
+});
+
+defineCap({
+  name: "search_in_file", title: "在一个文件里找", scope: "project",
+  summary: "按子串（可忽略大小写）在一个文本文件里找，回每处的行号与整行。要「这个词在这份文档哪几行」时用它，别把整份读进来翻。全项目找用 global_search。",
+  input: {
+    path: z.string(), query: z.string().min(1),
+    ignoreCase: z.boolean().optional().describe("默认区分大小写"),
+    limit: z.number().int().min(1).max(500).optional().describe("最多回几处，默认 50"),
+    encoding: z.string().optional().describe("同 read_file"),
+  },
+  http: { route: "file_search", method: "GET" },
+  run: async ({ path, query, ignoreCase, limit, encoding }, c) => {
+    const r = await readAnyFile(p(c), path, encoding);
+    if (r.content === null) {
+      return envelope({ path, hits: [], total: 0 }, [err(X.BAD_INPUT, "(input)", { kind: "key", name: "path" }, `这个文件没有可搜的文本：${r.why ?? r.kind}`)]);
+    }
+    const q = ignoreCase ? query.toLowerCase() : query;
+    const hits: Array<{ line: number; col: number; text: string }> = [];
+    let total = 0;
+    const max = limit ?? 50;
+    r.content.split("\n").forEach((text, i) => {
+      const hay = ignoreCase ? text.toLowerCase() : text;
+      let at = hay.indexOf(q);
+      while (at >= 0) {
+        total++;
+        if (hits.length < max) hits.push({ line: i + 1, col: at + 1, text: text.length > 300 ? text.slice(0, 300) + "…" : text });
+        at = hay.indexOf(q, at + q.length);
+      }
+    });
+    return envelope({ path, query, hits, total, more: total > hits.length }, [], { total });
+  },
 });
 
 defineCap({

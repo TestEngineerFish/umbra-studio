@@ -11,6 +11,7 @@ import {
 } from "../history.js";
 import { addComment, deleteComment, listComments, markCommentsSent, updateComment } from "../comments.js";
 import { listReferences } from "../refs.js";
+import { listSnapshotMeta, walkProjectFiles } from "../files.js";
 import { buildIndex, collectIndex, indexStatus, isToolPage } from "../indexpage.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
@@ -238,4 +239,44 @@ defineCap({
   input: { id: z.string() },
   http: { route: "comment_delete", method: "POST" },
   run: async ({ id }, c) => envelope(await deleteComment(p(c).dir, id)),
+});
+
+defineCap({
+  name: "list_activity", title: "最近谁改了什么", scope: "project",
+  summary: [
+    "全项目按时间倒序列最近落盘的版本：文件、版本号、来源（AI / 人手改 / 插件 / 外部改动 / 新建）、时间、摘要。",
+    "回答「今天 AI 改了什么」「上次我手改的是哪些」这类问题；`origin` 过滤来源，`since` 过滤时间。",
+    "⚠️ 经 MCP 改的记作 `AI`（`originOf`：外部模型客户端和应用内 AI 同一档）。设计稿与别的文件两套快照都看。",
+  ].join("\n"),
+  input: {
+    since: z.string().optional().describe("只看这个时刻之后的（ISO 时间）。不给 = 最近 24 小时"),
+    origin: z.string().optional().describe("只看这种来源：AI / 人手改 / 插件 / 外部改动 / 新建"),
+    limit: z.number().int().min(1).max(1000).optional().describe("最多回几条，默认 100"),
+  },
+  http: { route: "activity", method: "GET" },
+  run: async ({ since, origin, limit }, c) => {
+    const proj = p(c);
+    const sinceMs = since ? Date.parse(since) : Date.now() - 86400e3;
+    if (!Number.isFinite(sinceMs)) return envelope({ rows: [] }, [{ level: "error", code: "E_BAD_INPUT", message: `since 不是时间：${since}`, where: "(input)", at: { kind: "key", name: "since" } } as never]);
+    const { files, truncated } = await walkProjectFiles(proj);
+    const rows: Array<{ path: string; version: string; origin: string; at: string; summary: string }> = [];
+    for (const f of files) {
+      if (isToolPage(f)) continue;
+      if (f.endsWith(".dc.html")) {
+        for (const [v, m] of Object.entries(await readVersionMeta(proj, f))) {
+          rows.push({ path: f, version: v, origin: m.origin, at: m.capturedAt, summary: m.summary });
+        }
+      } else {
+        for (const m of await listSnapshotMeta(proj, f, false)) {
+          rows.push({ path: f, version: m.version, origin: m.src, at: m.at, summary: m.note ?? "" });
+        }
+      }
+    }
+    const picked = rows
+      .filter((r) => Date.parse(r.at) >= sinceMs && (!origin || r.origin === origin))
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const max = limit ?? 100;
+    return envelope({ since: new Date(sinceMs).toISOString(), rows: picked.slice(0, max), total: picked.length, scanned: files.length, truncated },
+      [], { total: picked.length, returned: Math.min(max, picked.length) });
+  },
 });

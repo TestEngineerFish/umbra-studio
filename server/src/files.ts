@@ -792,3 +792,25 @@ async function imageSize(abs: string): Promise<{ width?: number; height?: number
     return {};
   } catch { return {}; }
 }
+
+/** 递归列项目里的文件（相对路径，`/` 分隔），给「全项目扫一遍」这类事用（M13-3 的 `list_activity`）。
+ *  跳过 `.umbrastudio` / `.git` / `node_modules` 和所有以 `.` 开头的目录 —— 那些不是用户的稿。
+ *  `max` 到了就停：一个几万文件的目录不该让一次问话扫完。 */
+export async function walkProjectFiles(p: Project, max = 5000): Promise<{ files: string[]; truncated: boolean }> {
+  const out: string[] = [];
+  const skip = new Set([".umbrastudio", ".git", "node_modules"]);
+  const stack: string[] = [""];
+  while (stack.length && out.length < max) {
+    const rel = stack.pop()!;
+    let names: string[] = [];
+    try { names = (await readdir(join(p.dir, rel))).sort(); } catch { continue; }
+    for (const n of names) {
+      if (out.length >= max) break;
+      const r = rel ? `${rel}/${n}` : n;
+      let st; try { st = statSync(join(p.dir, r)); } catch { continue; }
+      if (st.isDirectory()) { if (!skip.has(n) && !n.startsWith(".")) stack.push(r); continue; }
+      if (st.isFile()) out.push(r);
+    }
+  }
+  return { files: out, truncated: out.length >= max };
+}

@@ -10,7 +10,7 @@ import { installFromUrl, licenseGrants, planAcquire, type PackageFetch } from ".
 import { readCatalogDetailed } from "../plugin/catalog.js";
 import { account } from "../account.js";
 import { emit } from "../events.js";
-import { defineCap } from "./registry.js";
+import { allCaps, defineCap } from "./registry.js";
 import { allVerbs, sandboxFailures } from "../plugin/verbs.js";
 
 /** 插件管理的能力（M11-4）。
@@ -321,5 +321,21 @@ defineCap({
   run: async () => {
     const verbs = await allVerbs();
     return envelope({ verbs, failures: sandboxFailures() }, [], { count: verbs.length, exposed: verbs.filter((v) => v.exposed).length });
+  },
+});
+
+defineCap({
+  name: "list_capabilities", title: "现在能调的全部能力", scope: "global",
+  summary: [
+    "一件回全表：核心能力（名字、标题、作用域、暴露到哪些面）+ 插件动词（带插件、授权态、此刻挂没挂出）+ 起不来的沙箱。",
+    "秘书上报能力目录用它；人查「为什么这件能力没了」也看它。核心能力固定，动词随装了什么与授权变。",
+  ].join("\n"),
+  input: {},
+  faces: ["mcp", "http"],
+  http: { route: "capabilities", method: "GET" },
+  run: async () => {
+    const verbs = await allVerbs();
+    const core = allCaps().map((c) => ({ name: c.name, title: c.title, scope: c.scope, faces: c.faces ?? ["mcp", "http"], source: "core" as const }));
+    return envelope({ core, verbs, failures: sandboxFailures() }, [], { core: core.length, verbs: verbs.length, exposed: verbs.filter((v) => v.exposed).length });
   },
 });

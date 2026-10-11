@@ -11810,3 +11810,21 @@ HTTP 侧只有归档 / 删除项目时顺带停）—— 那个服务**停不掉
 
 ⚠️ 回归第一版栽在 `/var` → `/private/var`：沙箱按真路径放行、runner 按原路径读，症状「import 不到 tools.mjs」。
 `mkdtemp` 之后 `realpath` 一次。正式环境 STATE_ROOT 是 userData，没有这层链接。
+
+## 一六九、通用缺口四件（2026-10-11，M13-3）
+
+`doc/22` §四列的缺口，做了四件、两件发现本来就有：
+
+| 件 | 做法 | 一句 |
+| --- | --- | --- |
+| `read_file` 分页 | `offset` / `limit` 按**行**切，回 `range { from, to, total, more }`；`sha256` 仍是整份的 | 切过的 `content` 不能原样 `write_file` 回去 —— `range` 在就是一页，summary 里写明 |
+| `search_in_file` | 子串、可忽略大小写、`limit`，回行号 + 列 + 整行（超 300 字截） | 「这个词在这份文档哪几行」不该把整份读进上下文 |
+| `list_activity` | 递归走项目文件（跳 `.umbrastudio` / `.git` / `node_modules`，上限 5000），设计稿读 `meta.json`、别的读 `s<N>.json`，合成一条时间线，按 `since` / `origin` 过滤 | 需求稿写的是「`list_changes` 加过滤」—— 那件是单稿两版对比，问「今天 AI 改了什么」要的是跨文件的时间线，**另起一件比往旧件上加参数对** |
+| `list_capabilities` | 核心能力（名 / 标题 / 作用域 / 面）+ 动词表（§一六八）+ 起不来的沙箱 | 秘书上报能力目录用它 |
+| ~~`list_comments` 未处理~~ | `unresolvedOnly` 早就有 | 写需求时没查到，照实记 |
+| ~~`list_projects` 最近 + 当前~~ | `list_projects` / `list_recent_projects` 早就有 | 同上 |
+
+⚠️ 经 MCP 改的在时间线上记作 `AI`（`originOf("mcp")`）—— 外部模型客户端和应用内 AI 同一档，分不开。
+要分就得给 `VersionOrigin` 加一档，牵动版本弹层的文案，这次没动。
+
+读数：`gaptest` **19/19**（新建）· `captest` 287/287 · `apitest` 108/108 · `filetest` 全通 · `verbtest` 20/20。

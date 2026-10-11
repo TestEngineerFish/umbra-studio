@@ -97,6 +97,8 @@
 | `capabilities`（一件：回当前能挂出的全部动词 + 每件的来源与授权态） | 秘书上报用；也给人看「为什么这件没了」 |
 | `tools/list_changed` 通知 | 插件装卸 / 授权变化 |
 
+→ **2026-10-11 落地**（M13-3）：`read_file` 加 `offset` / `limit`（回 `range`）· `search_in_file` · `list_activity`（替代「`list_changes` 加过滤」：那件是单稿两版对比，问「今天 AI 改了什么」要的是跨文件的时间线，另起一件更对）· `list_capabilities`。`list_comments` 的 `unresolvedOnly` 本来就有；`list_projects` + `list_recent_projects` 本来就有。
+
 ## 五、安全边界（不新增，但要钉住）
 
 - 项目根闸（`pathguard`）、写入口唯一、`isInside` —— 对 MCP 调用一视同仁，已有判据。

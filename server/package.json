@@ -36,7 +36,8 @@
     "bridgetest": "npm run build && node dist/bridgetest.js",
     "catalogtest": "npm run build && node dist/catalogtest.js",
     "acquiretest": "npm run build && node dist/acquiretest.js",
-    "verbtest": "npm run build && node dist/verbtest.js"
+    "verbtest": "npm run build && node dist/verbtest.js",
+    "gaptest": "npm run build && node dist/gaptest.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
