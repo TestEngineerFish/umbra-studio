@@ -83,6 +83,10 @@
       {
         "from": "../app/dist",
         "to": "core/app/dist"
+      },
+      {
+        "from": "../keys",
+        "to": "core/keys"
       }
     ],
     "mac": {

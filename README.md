@@ -71,6 +71,22 @@ npm --prefix server run ui -- <项目名> --port 4173 --no-open
 
 要模型参与的是另一件事：让它按需求写稿、改逻辑类、解释变更 —— 那走下面的 MCP。
 
+### 4.5 桌面版一键启动（Electron 壳）
+
+```bash
+./start.sh                 # 缺依赖就装 → 编译 server 与 app → 起壳
+./start.sh --no-build      # 刚编过、只想再开一次
+```
+
+手工等价于：`npm --prefix server install && npm --prefix server run build`、
+`npm --prefix app install && npm --prefix app run build`、`npm --prefix shell install && npm --prefix shell start`。
+
+**插件市场在哪**：先打开一个项目（首页点项目卡），顶栏点**项目名** → 菜单里「插件市场…」，它在详情区当一个页签打开；
+首页没有入口。看目录、会员价不用登录；买、装、同步许可证要先在「项目设置 → Umbra 账号」登录。
+
+**插件许可证的公钥**在 `keys/publisher.pub`（Ed25519，随程序发、进仓库；私钥只在服务端 ECS）。
+换了服务端私钥就要同步换这份，否则所有许可证验不过。
+
 ### 5. 注册进大模型客户端
 
 服务走 **stdio**，入口是 `server/dist/index.js`，**不依赖工作目录** ——
