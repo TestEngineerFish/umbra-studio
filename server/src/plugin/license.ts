@@ -74,6 +74,18 @@ export function verifyLicenseText(raw: string): LicenseCheck {
   } catch { return { ok: false, why: "许可证的 payload 不是合法 JSON" }; }
 }
 
+/** 把一份许可证文本落盘：**先验签，验不过不落盘** —— 一份存着但验不过的许可证只会让
+ *  「为什么我买了却不能用」更难查。`set_license` 能力与 `account.fetchLicense` 共用这一条，别各写一份。 */
+export async function saveLicenseText(raw: string): Promise<LicenseCheck> {
+  const r = verifyLicenseText(raw);
+  if (!r.ok) return r;
+  await mkdir(join(STATE_ROOT, ".umbrastudio"), { recursive: true });
+  const tmp = `${LICENSE_FILE}.${process.pid}.tmp`;
+  await writeFile(tmp, raw, "utf8");
+  await rename(tmp, LICENSE_FILE);            // 原子替换，同 clock.json
+  return r;
+}
+
 /** 读本机的许可证。没有就是 `null`（**没有许可证不是错误** —— 只装内置插件的用户就没有）。 */
 export async function loadLicense(): Promise<LicenseCheck | null> {
   if (!existsSync(LICENSE_FILE)) return null;

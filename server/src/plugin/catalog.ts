@@ -29,6 +29,9 @@ export interface CatalogEntry {
   permissions: { files?: string[]; net?: string[] };
   size?: string;
   updated?: string;
+  /** `.umbraplugin` 安装包的下载地址（**只认 https**，`validateCatalog` 不合的丢掉）。内置的没有；
+   *  没有它的插件买了 / 领了也装不上 —— `acquire_plugin` 会如实说「发布方还没放安装包」 */
+  package_url?: string;
   /** B 面：给大模型的能力。`sample` 用来算那道「读写账」 */
   tools?: Array<{
     name: string; id: string; desc: string;
@@ -85,6 +88,8 @@ export function validateCatalog(raw: unknown): CatalogEntry[] | null {
       price: typeof c.price === "number" && Number.isFinite(c.price) && c.price >= 0 ? c.price : 0,
       brief: typeof c.brief === "string" ? c.brief : "",
       permissions: c.permissions && typeof c.permissions === "object" ? c.permissions : {},
+      /* 安装包地址只认 https（`acquire.ts isHttpsUrl`）：http 的目录条目等于没有安装包 */
+      package_url: typeof c.package_url === "string" && /^https:\/\/[^\s/]+\/\S+$/.test(c.package_url.trim()) ? c.package_url.trim() : undefined,
     });
   }
   return out;

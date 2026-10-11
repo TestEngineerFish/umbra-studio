@@ -697,7 +697,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               </div>
             )}
             <div className="flex-1 min-h-0 flex relative">
-              {market ? <Market core={core} onClose={() => setMarket(false)} />
+              {market ? <Market core={core} onClose={() => setMarket(false)} onSettings={onSettings} />
                 : !dirMode && !file ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted text-xs text-center px-6 leading-relaxed bg-canvas">
                   <Glyph icon="file" size={28} className="opacity-25" />

@@ -25,6 +25,8 @@ defineCap({
     const { entries: catalog, source } = await readCatalogDetailed();
     /* 登录着就问一次「我这档会员送哪些插件」（后台配的）；失败当没有 —— 标不标赠送不该让市场打不开 */
     const gift = new Set(await account.giftPlugins());
+    /* 本机没有许可证、或许可证不是当前账号的 → 静默取一次（换机器 / 重新登录后买过的插件要能找回来） */
+    try { await account.syncLicense(); } catch { /* 静默 */ }
     const installed = await listInstalled();
     const byId = new Map(installed.map((x) => [x.manifest.id, x]));
     const rows = await Promise.all(catalog.map(async (c) => {

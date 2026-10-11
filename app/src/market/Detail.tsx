@@ -1,5 +1,8 @@
+import { useState } from "react";
+import type { Core } from "../api/client";
 import { Glyph } from "../ui/Glyph";
-import { permRows, type MarketRow } from "./types";
+import { toast } from "../ui/Toast";
+import { permRows, type AcquireResult, type MarketRow } from "./types";
 
 /** 插件详情（形制 `ui/S17` 演示态 4–7）。
  *
@@ -8,12 +11,36 @@ import { permRows, type MarketRow } from "./types";
  *  **② 不允许的也要列出来** —— 「让人敢装的是它**做不了什么**」。
  *     `⊘` 用 muted 不用红：**不允许不是危险，是被关住了**。
  *
- *  ⚠️ 买和付**没接**（账号 / 支付 / 积分都还没做）。按钮接成明确的未启用态，
- *  不做成看起来能用但点了没反应 —— 那比没有按钮更糟。
+ *  买和装（2026-10-11 接上）：两颗钮都走 `acquire_plugin` —— 已有授权跳过购买 → 用积分买 → 取许可证 →
+ *  有安装包就装。没登录时钮改「登录后购买」跳设置页；回包每一步都有，「买了没装上」照实说。
  */
-export function Detail({ row, onBack }: { row: MarketRow; onBack: () => void }) {
+export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
+  core: Core; row: MarketRow; signedIn: boolean; onBack: () => void; onChanged?: () => void; onSettings?: () => void;
+}) {
   const perms = permRows(row.permissions);
   const tools = row.tools ?? [];
+  const [busy, setBusy] = useState(false);
+
+  const acquire = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const out = await core.post<AcquireResult>("plugin_acquire", { id: row.id });
+      const d = out.data;
+      if (!out.ok) {
+        const e = out.errors?.[0];
+        /* 买成了但后面某一步没过：标题要说「已购买」，不然用户会再买一次 */
+        toast(d?.bought ? "已购买，但没装上" : d?.licensed ? "已授权，但没装上" : "没拿到", e?.message, "error");
+      } else if (d?.installed) {
+        toast(`${row.name} 已安装${d.version ? " " + d.version : ""}`, d.note || "立刻生效，不用重启", "ok");
+      } else {
+        toast(`${row.name} 已授权`, d?.note || "发布方还没放安装包", "warn");
+      }
+      onChanged?.();
+    } finally { setBusy(false); }
+  };
+  const buyLabel = (text: string) => !signedIn ? "登录后购买" : busy ? "处理中…" : text;
+  const onBuy = () => { if (!signedIn) { onSettings?.(); return; } void acquire(); };
   return (
     <div data-ud="market-detail" className="max-w-[1100px] mx-auto px-8 py-6">
       <button className="text-xs text-muted hover:text-text flex items-center gap-1" onClick={onBack}>
@@ -106,10 +133,12 @@ export function Detail({ row, onBack }: { row: MarketRow; onBack: () => void }) 
                   <span className="text-xs text-muted">会员赠送</span>
                   <span className="text-sm font-semibold text-accent">随会员</span>
                 </div>
-                {/* 赠送的也要「装」：许可证随会员到期（草案 §3.5），装那一步等收单 / 许可证签发接上 */}
-                <button disabled className="btn primary w-full opacity-60 cursor-not-allowed" data-ud="market-act"
-                  title="安装还没接：许可证签发未做">安装 · 随会员免费</button>
-                <p className="text-[11px] text-muted mt-2 leading-relaxed">你的会员档随会员赠送这个插件，有效期到会员到期日。</p>
+                {/* 赠送的也要「装」：许可证随会员到期（草案 §3.5）。走 acquire：不买，取许可证，有包就装 */}
+                <button className="btn primary w-full" data-ud="market-act" disabled={busy} onClick={onBuy}>
+                  {buyLabel("安装 · 随会员免费")}</button>
+                <p className="text-[11px] text-muted mt-2 leading-relaxed">
+                  你的会员档随会员赠送这个插件，有效期到会员到期日。{!row.package_url && "发布方还没放安装包，现在只能先领授权。"}
+                </p>
               </>
             ) : (
               <>
@@ -117,13 +146,16 @@ export function Detail({ row, onBack }: { row: MarketRow; onBack: () => void }) 
                   <span className="text-xs text-muted">一次买断</span>
                   <span className="text-sm font-semibold tabular-nums">{row.price} 积分</span>
                 </div>
-                {/* ⚠️ **明确的未启用态**：账号和支付都没做。
-                    做成能点但点了没反应，比做成灰的更糟 —— 用户会以为是坏了。 */}
-                <button disabled className="btn primary w-full opacity-60 cursor-not-allowed" data-ud="market-act"
-                  title="购买还没接：账号与支付未做">购买并安装 · {row.price} 积分</button>
-                <p className="text-[11px] text-warn mt-2 leading-relaxed">
-                  <b>购买还没接通</b> —— 账号（微信 / Apple / Umbra）和支付还在做。
-                  现在能用的是内置插件；本地装包可以走命令行。
+                <button className="btn primary w-full" data-ud="market-act" disabled={busy}
+                  onClick={() => {
+                    if (!signedIn) { onSettings?.(); return; }
+                    if (row.price > 0 && !window.confirm(`用 ${row.price} 积分买下「${row.name}」？买断，含后续所有版本更新。`)) return;
+                    void acquire();
+                  }}>
+                  {buyLabel(row.price > 0 ? `购买并安装 · ${row.price} 积分` : "免费安装")}</button>
+                <p className="text-[11px] text-muted mt-2 leading-relaxed">
+                  {signedIn ? "一次买断，含后续所有版本更新；积分不够时会提示去充值。" : "先在设置里登录 Umbra 账号；积分和会员在 Umbra 账号页。"}
+                  {!row.package_url && " 发布方还没放安装包，现在买到的是授权，包放上后再点一次「安装」。"}
                 </p>
               </>
             )}

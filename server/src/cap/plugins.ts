@@ -4,8 +4,11 @@ import { allowedCapNames } from "../plugin/host.js";
 import { HOST_API_MAJOR } from "../plugin/manifest.js";
 import { hostCall } from "../plugin/host.js";
 import { listInstalled, registerPluginKinds, uninstall } from "../plugin/store.js";
-import { entitlementOf, verifyLicenseText, type Entitlement } from "../plugin/license.js";
+import { entitlementOf, loadLicense, saveLicenseText, type Entitlement } from "../plugin/license.js";
 import { installFromFile, pluginVersions, switchVersion } from "../plugin/install.js";
+import { installFromUrl, licenseGrants, planAcquire, type PackageFetch } from "../plugin/acquire.js";
+import { readCatalogDetailed } from "../plugin/catalog.js";
+import { account } from "../account.js";
 import { emit } from "../events.js";
 import { defineCap } from "./registry.js";
 
@@ -139,18 +142,122 @@ defineCap({
   faces: ["mcp", "http"],
   http: { route: "license_set", method: "POST" },
   run: async ({ text }) => {
-    const r = verifyLicenseText(text);
+    const r = await saveLicenseText(text);
     if (!r.ok) {
       return envelope({ ok: false }, [{ level: "error", code: "E_LICENSE_BAD",
         message: `许可证验不过：${r.why ?? "未知原因"}`, where: "(license)", at: { kind: "key", name: "license" },
         fix: "重新登录账号取一份新的许可证" } as never]);
     }
-    const { writeFile, mkdir } = await import("node:fs/promises");
-    const { join } = await import("node:path");
-    const { STATE_ROOT } = await import("../project.js");
-    await mkdir(join(STATE_ROOT, ".umbrastudio"), { recursive: true });
-    await writeFile(join(STATE_ROOT, ".umbrastudio", "license.json"), text, "utf8");
     return envelope({ ok: true, sub: r.license!.sub, grants: r.license!.grants.length });
+  },
+});
+
+defineCap({
+  name: "fetch_license", title: "向服务端取回这个账号的许可证", scope: "global",
+  summary: "登录着就 `GET /plugins/license`，验签过了落盘（同 set_license 那条）。买过 / 会员赠送的授权都在这一份里；重新登录或换机器后用它取回。",
+  input: {},
+  faces: ["http"],
+  http: { route: "license_fetch", method: "POST" },
+  run: async () => {
+    const r = await account.fetchLicense();
+    return r.ok ? envelope({ ok: true, grants: r.grants.length })
+      : envelope({ ok: false, grants: 0 }, [{ level: "error", code: "E_LICENSE_FETCH", message: r.why, where: "(license)", at: { kind: "key", name: "license" } } as never]);
+  },
+});
+
+/** 注入点：测试里换成假 fetch。正式跑用全局 fetch。 */
+export let packageFetch: PackageFetch = (u, i) => fetch(u, i) as unknown as ReturnType<PackageFetch>;
+export function setPackageFetch(f: PackageFetch): void { packageFetch = f; }
+
+const pluginErr = (code: string, message: string, id: string, fix?: string) =>
+  ({ level: "error", code, message, where: "(plugin)", at: { kind: "key", name: id }, fix }) as never;
+
+defineCap({
+  name: "install_plugin_from_url", title: "从网址装一个插件", scope: "global",
+  summary: [
+    "下载 `.umbraplugin`（**只认 https**，上限 50 MB、30 秒超时）到临时文件 → 走 install_plugin 同一条路（解包 → 验签 → 校验 → 落盘）→ 删临时文件。",
+    "任何一步失败都不落一个字节。",
+  ].join("\n"),
+  input: { url: z.string().describe("https 的 .umbraplugin 下载地址") },
+  faces: ["http"],
+  http: { route: "plugin_install_url", method: "POST" },
+  run: async ({ url }) => {
+    try {
+      const r = await installFromUrl(url, packageFetch);
+      notify("installed", r.id);
+      return envelope(r, r.unsigned ? [{ level: "warning", code: "W_PLUGIN_UNSIGNED", message: `${r.id} 是**未签名**的插件（开发模式放行）`, where: "(plugin)", at: { kind: "key", name: r.id } } as never] : []);
+    } catch (e) {
+      return envelope(null, [pluginErr("E_PLUGIN_INSTALL", (e as Error).message, url)]);
+    }
+  },
+});
+
+/** 一场 acquire 每一步的结果，**全部回给前端** —— 「买了但没装上」和「没买成」是两种完全不同的下一步。 */
+export interface AcquireResult {
+  id: string;
+  bought: boolean | null;      // null = 这一步没走（已有授权 / 赠送 / 免费）
+  already: boolean;
+  licensed: boolean;
+  installed: boolean;
+  version: string | null;
+  note: string;
+}
+
+defineCap({
+  name: "acquire_plugin", title: "买下 / 领取并装上一个插件", scope: "global",
+  summary: [
+    "市场里那颗「购买并安装 / 安装 · 随会员免费」按钮背后的整条路：已有授权就跳过购买 → 否则用积分买（`POST /plugins/{id}/buy`）",
+    "→ 取许可证（`GET /plugins/license`）→ 目录里有 `package_url` 就装，没有就回 `{licensed: true, installed: false}` 并说明「发布方还没放安装包」。",
+    "每一步的结果都回：买了没装上和没买成是两种下一步。",
+  ].join("\n"),
+  input: { id: z.string().describe("插件 id，如 com.umbra.video") },
+  faces: ["http"],
+  http: { route: "plugin_acquire", method: "POST" },
+  run: async ({ id }) => {
+    const { entries } = await readCatalogDetailed();
+    const c = entries.find((x) => x.id === id);
+    if (!c) return envelope(null, [pluginErr("E_PLUGIN_NOT_FOUND", `市场里没有 ${id}`, id)]);
+    const found = (await listInstalled()).find((x) => x.manifest.id === id);
+    const st = await account.status();
+    const gift = (await account.giftPlugins()).includes(id);
+    const ent = await entitlementOf(id, { bundled: found?.bundled });
+    const plan = planAcquire({ signedIn: st.signedIn, builtin: !!c.builtin || !!found?.bundled, installed: !!found, entitled: ent.state === "active",
+      gift, price: c.price, packageUrl: c.package_url });
+    const out: AcquireResult = { id, bought: null, already: false, licensed: ent.state === "active", installed: !!found, version: found ? (found.manifest.version ?? null) : null, note: "" };
+    if (plan.refuse) {
+      const code = st.signedIn ? "E_PLUGIN_ACQUIRE" : "E_ACCOUNT_LOGIN";
+      return envelope(out, [pluginErr(code, plan.refuse, id, st.signedIn ? undefined : "在设置里登录 Umbra 账号")]);
+    }
+    if (plan.buy) {
+      try {
+        const b = await account.buyPlugin(id);
+        out.bought = true; out.already = b.already;
+      } catch (e) {
+        return envelope(out, [pluginErr("E_PLUGIN_BUY", (e as Error).message, id)]);
+      }
+    }
+    if (plan.license) {
+      const r = await account.fetchLicense();
+      if (!r.ok) return envelope(out, [pluginErr("E_LICENSE_FETCH", out.bought ? `已购买，但许可证没取到：${r.why}` : r.why, id, "稍后在市场里再点一次「安装」，或重新登录")]);
+      const lic = await loadLicense();
+      out.licensed = licenseGrants(lic?.license, id);
+      if (!out.licensed) {
+        return envelope(out, [pluginErr("E_LICENSE_NO_GRANT", gift ? "许可证里没有这个插件的会员赠送授权 —— 会员可能已到期，或后台把它从赠送清单移走了" : "许可证里没有这个插件的授权（服务端没记上这笔购买？）", id, "联系发布方核对订单")]);
+      }
+    }
+    if (!plan.install) {
+      out.note = found ? "已经装着了，这次只补了授权" : "已授权，但发布方还没放安装包 —— 放上后在市场里点「安装」即可";
+      return envelope(out);
+    }
+    try {
+      const r = await installFromUrl(c.package_url!, packageFetch);
+      notify("installed", r.id);
+      out.installed = true; out.version = r.version;
+      out.note = r.unsigned ? "装好了（未签名，开发模式放行）" : "装好了，立刻生效";
+      return envelope(out);
+    } catch (e) {
+      return envelope(out, [pluginErr("E_PLUGIN_INSTALL", `已授权，但安装没成功：${(e as Error).message}`, id, "在市场里再点一次「安装」")]);
+    }
   },
 });
 

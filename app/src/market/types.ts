@@ -27,6 +27,19 @@ export interface MarketRow {
   unsigned: boolean;
   /** 随当前会员赠送（后台配、服务端 `/membership.gift_plugins`）：价格那格画「随会员」，不标价 */
   gift?: boolean;
+  /** 安装包地址（https）。没有 = 发布方还没放包：买了 / 领了只拿到授权，装不上 */
+  package_url?: string;
+}
+
+/** `acquire_plugin` 的回包：每一步的结果都在 —— 「买了没装上」和「没买成」是两种下一步 */
+export interface AcquireResult {
+  id: string;
+  bought: boolean | null;
+  already: boolean;
+  licensed: boolean;
+  installed: boolean;
+  version: string | null;
+  note: string;
 }
 
 /** 目录来源：`server` 最新；`cache` 上次联网那份；`bundled` 出厂清单（从没联过网） */

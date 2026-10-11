@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { writeAtomic } from "./normalize.js";
 import { OidcFail, OidcLogin, type FetchLike, type OidcClientConfig, type OidcTokens } from "./oidc.js";
+import { licenseIsFor, licenseTextOf } from "./plugin/acquire.js";
+import { loadLicense, saveLicenseText, type Grant, type LicenseCheck } from "./plugin/license.js";
 
 /** Umbra 服务端的缺省地址（与 UmbraPC `config.ts` 同一个缺省）。 */
 export const DEFAULT_UMBRA_URL = "https://umbra.tingyusha.xyz";
@@ -174,6 +176,8 @@ export class AccountService {
       await setAccount({ serverUrl, accessToken: t.accessToken, refreshToken: t.refreshToken, user, signedInAt: new Date().toISOString() });
       this.lastError = "";
       this.log(`[account] 已登录：user ${user.id}`);
+      /* 登上就把许可证取回来（失败不报错：市场打开时还会再试一次） */
+      void this.syncLicense();
     } catch (e) {
       this.lastError = `换到了令牌，但服务端不认：${(e as Error).message}`;
       this.log(`[account] /auth/me 失败：${(e as Error).message}`);
@@ -241,6 +245,57 @@ export class AccountService {
     await setAccount({ serverUrl: base });
     this.provider = "unknown";
     return this.status();
+  }
+
+  /** 向服务端要这个账号的许可证（`GET /plugins/license`），验签过了就落盘（`saveLicenseText`，与 `set_license` 同一条）。
+   *  回 `{ok, why, grants}`：`why` 是给人看的一句。没登录 / 服务端没配私钥（503）/ 验不过都在 `why` 里说清。 */
+  async fetchLicense(): Promise<{ ok: boolean; why: string; grants: Grant[] }> {
+    const a = await getAccount();
+    if (!a.accessToken) return { ok: false, why: "没登录 Umbra 账号，取不了许可证", grants: [] };
+    let body: unknown;
+    try {
+      const r = await this.fetchFn(`${a.serverUrl}/plugins/license`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
+      if (r.status === 503) return { ok: false, why: "服务端还没配许可证签名密钥，暂时发不了许可证", grants: [] };
+      if (r.status === 401) return { ok: false, why: "登录已失效，重新登录一次再取许可证", grants: [] };
+      if (!r.ok) return { ok: false, why: `取许可证失败：HTTP ${r.status}`, grants: [] };
+      body = await r.json();
+    } catch (e) {
+      return { ok: false, why: `连不上服务端：${(e as Error).message}`, grants: [] };
+    }
+    const text = licenseTextOf(body);
+    if (!text) return { ok: false, why: "服务端回的许可证缺 payload 或 signature", grants: [] };
+    const r = await saveLicenseText(text);
+    if (!r.ok) return { ok: false, why: r.why ?? "许可证验不过", grants: [] };
+    this.log(`[account] 许可证已更新：${r.license!.grants.length} 条授权`);
+    return { ok: true, why: "", grants: r.license!.grants };
+  }
+
+  /** 本机没有许可证、或许可证不是当前账号的 → 静默取一次。**失败不抛**（市场打不打得开不该取决于它）。
+   *  回 `true` = 这次取过了。 */
+  async syncLicense(): Promise<boolean> {
+    const a = await getAccount();
+    if (!a.accessToken || !a.user) return false;
+    let lic: LicenseCheck | null = null;
+    try { lic = await loadLicense(); } catch { lic = null; }
+    if (licenseIsFor(lic, a.user.id)) return false;
+    try { await this.fetchLicense(); } catch { /* 静默 */ }
+    return true;
+  }
+
+  /** 用积分买一个插件（`POST /plugins/{id}/buy`）。回 `already: true` = 早就买过。失败抛 Error（message 是服务端的人话）。 */
+  async buyPlugin(id: string): Promise<{ ok: boolean; already: boolean }> {
+    const a = await getAccount();
+    if (!a.accessToken) throw new Error("登录 Umbra 账号后才能购买");
+    const r = await this.fetchFn(`${a.serverUrl}/plugins/${encodeURIComponent(id)}/buy`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${a.accessToken}` }, body: "{}" });
+    let body: Record<string, unknown> = {};
+    try { body = (await r.json()) as Record<string, unknown>; } catch { body = {}; }
+    if (r.ok) return { ok: true, already: body.already === true };
+    const detail = body.detail as Record<string, unknown> | string | undefined;
+    const msg = typeof detail === "string" ? detail
+      : typeof detail?.message === "string" ? detail.message
+      : typeof body.message === "string" ? body.message : "";
+    if (r.status === 401) throw new Error("登录已失效，重新登录一次");
+    throw new Error(msg || `购买失败：HTTP ${r.status}`);
   }
 
   /** 给别的能力用：当前访问令牌（空 = 没登录）。**只在核心进程内用**，不回前端。 */

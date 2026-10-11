@@ -15,7 +15,7 @@ import type { CatalogSource, InstalledRow, MarketRow } from "./types";
  *  账号（微信 / Apple / Umbra）和支付都还没做，积分余额是假的。
  *  哪些是真的：已装列表、版本切换、卸载、未签名、权限展示 —— 那几条技术侧跑通了。
  */
-export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
+export function Market({ core, onClose, onSettings }: { core: Core; onClose: () => void; onSettings?: () => void }) {
   const [tab, setTab] = useState<"market" | "installed" | "credits">("market");
   const [rows, setRows] = useState<MarketRow[] | null>(null);
   const [source, setSource] = useState<CatalogSource>("server");
@@ -25,6 +25,8 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
    *  而真正的原因是「你的系统时间被调回去了」。 */
   const [clockBack, setClockBack] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  /** 登没登 Umbra 账号：详情页的购买钮按它换字（没登录 → 「登录后购买」） */
+  const [signedIn, setSignedIn] = useState(false);
   const [kind, setKind] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
@@ -33,6 +35,7 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
       .then((r) => { setRows(r.data?.plugins ?? []); setSource(r.data?.source ?? "server"); });
     void core.get<{ plugins: InstalledRow[]; clockRolledBack?: boolean }>("plugins")
       .then((r) => { setInstalled(r.data?.plugins ?? []); setClockBack(!!r.data?.clockRolledBack); });
+    void core.get<{ signedIn: boolean }>("account").then((r) => setSignedIn(!!r.data?.signedIn)).catch(() => setSignedIn(false));
   };
   useEffect(reload, [core]);
   /* 装 / 切版本 / 卸完服务端会发 `plugin` 事件，列表要跟着变 */
@@ -79,7 +82,7 @@ export function Market({ core, onClose }: { core: Core; onClose: () => void }) {
       <div className="flex-1 min-h-0 overflow-auto">
         {tab === "installed" ? <Installed core={core} rows={installed} onChanged={reload} clockBack={clockBack} />
           : tab === "credits" ? <Credits />
-          : open ? <Detail row={open} onBack={() => setOpenId(null)} />
+          : open ? <Detail core={core} row={open} signedIn={signedIn} onBack={() => setOpenId(null)} onChanged={reload} onSettings={onSettings} />
           : (
             <div className="max-w-[1100px] mx-auto px-8 py-6">
               <h1 className="text-lg font-semibold">插件市场</h1>
