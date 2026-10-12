@@ -86,6 +86,29 @@ export function giftPluginIdsOf(body: unknown): string[] {
   return [...new Set(raw.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean))];
 }
 
+/** 存储容量（Umbra 草案 §十一）：`GET /membership` 回包里的 `storage` → 账号块那一行要的几个数（纯判据）。
+ *  Studio 自己不往服务端传任何东西，所以只**看**：用量、上限、百分比、档位；管理页在 PC / iOS 的账号页。
+ *  缺、不是对象、数不是有限非负数 → null（老服务端没这一段，账号块不画这一行）。 */
+export interface StorageBrief { used: number; limit: number; pct: number; warn: "ok" | "warn" | "critical" | "full"; tier: string | null }
+export function storageOf(body: unknown): StorageBrief | null {
+  const s = (body as { storage?: unknown } | null)?.storage as Record<string, unknown> | null | undefined;
+  if (!s || typeof s !== "object") return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+  const used = n(s.used), limit = n(s.limit), pct = n(s.pct);
+  if (used === null || limit === null || pct === null) return null;
+  const warn = s.warn === "warn" || s.warn === "critical" || s.warn === "full" ? s.warn : "ok";
+  return { used, limit, pct: Math.min(100, Math.round(pct)), warn, tier: typeof s.tier === "string" && s.tier ? s.tier : null };
+}
+
+/** 字节 → 给人看：<1 MB 写 KB，≥1 GB 写 GB（两位小数去尾零），<100 MB 留一位小数。与 PC / iOS 同一条规矩（设计侧 234 §四）。 */
+export function fmtBytes(b: number): string {
+  if (!(b > 0)) return "0";
+  const mb = b / 1048576;
+  if (mb < 1) return `${Math.round(b / 1024)} KB`;
+  if (mb >= 1024) return `${String(Math.round(mb / 1024 * 100) / 100)} GB`;
+  return `${mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
+}
+
 export function oidcConfigOf(d: AuthConfigDTO | null): OidcClientConfig | null {
   if (!d || d.provider !== "oidc" || !d.client_id || !d.authorization_endpoint || !d.token_endpoint || !d.issuer) return null;
   return { issuer: d.issuer, client_id: d.client_id, authorization_endpoint: d.authorization_endpoint,
@@ -136,6 +159,17 @@ export class AccountService {
       const body = await r.json();
       return { gift: giftPluginIdsOf(body), discountPct: discountPctOf(body) };
     } catch { return none; }
+  }
+
+  /** 账号块那一行「存储」：没登录 / 连不上 / 老服务端 → null，那一行就不画。 */
+  async storage(): Promise<StorageBrief | null> {
+    const a = await getAccount();
+    if (!a.accessToken) return null;
+    try {
+      const r = await this.fetchFn(`${a.serverUrl}/membership`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
+      if (!r.ok) return null;
+      return storageOf(await r.json());
+    } catch { return null; }
   }
 
   /** 只要赠送清单的调用方用这个。 */

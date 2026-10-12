@@ -46,6 +46,15 @@ defineCap({
 });
 
 defineCap({
+  name: "account_storage", title: "存储容量（只看）", scope: "global",
+  summary: "这个账号在 Umbra 服务端上存了多少、上限多少、到哪一档（草案 §十一）。Studio 不往服务端传东西，只给账号块画一行；清理与管理在 PC / iOS 的账号页。没登录 / 老服务端回 null。",
+  input: {},
+  faces: ["http"],
+  http: { route: "account_storage", method: "GET" },
+  run: async () => envelope({ storage: await account.storage() }),
+});
+
+defineCap({
   name: "account_logout", title: "登出", scope: "global",
   summary: "告诉服务端吊销这一条会话并清掉本机的令牌；服务端叫不动也清本机。",
   input: {},

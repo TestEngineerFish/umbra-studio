@@ -328,15 +328,29 @@ function CliPicker({ core }: { core: Core }) {
 /** 设置里的「账号」块（一·a，2026-10-10）：登没登 Umbra 账号、是谁、登录 / 登出。
  *  登录本身在核心进程（`server/src/account.ts`）：这里只拿授权地址去开系统浏览器，然后轮询 `account` 看结果。
  *  **令牌从不经过这里**（`account` 那几件能力不回令牌）。 */
+/** 字节 → 给人看（与 server/account.ts 的 fmtBytes 同一条规矩；两边不共享源码所以各一份）。 */
+function fmtBytes(b: number): string {
+  if (!(b > 0)) return "0";
+  const mb = b / 1048576;
+  if (mb < 1) return `${Math.round(b / 1024)} KB`;
+  if (mb >= 1024) return `${String(Math.round(mb / 1024 * 100) / 100)} GB`;
+  return `${mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
+}
+
 function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) {
   type Status = { serverUrl: string; signedIn: boolean; user: { id: number; display_name?: string; email?: string; name?: string; is_owner?: boolean } | null; pending: boolean; lastError: string; provider: string; serverAi: boolean };
   const [st, setSt] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState("");
   const [editServer, setEditServer] = useState(false);
+  // 存储容量那一行（Umbra 草案 §十一）：只看不管。null = 没登录 / 老服务端，整行不画。
+  type Storage = { used: number; limit: number; pct: number; warn: "ok" | "warn" | "critical" | "full"; tier: string | null };
+  const [storage, setStorage] = useState<Storage | null>(null);
   const load = useCallback(async () => {
     const r = await core.get<Status>("account");
     if (r.ok && r.data) { setSt(r.data); setServer(r.data.serverUrl); }
+    const sr = await core.get<{ storage: Storage | null }>("account_storage");
+    setStorage(sr.ok && sr.data ? sr.data.storage : null);
   }, [core]);
   useEffect(() => { void load(); }, [load]);
   // 登录进行中：每 1.5 秒看一眼，登上 / 失败 / 5 分钟就停。
@@ -394,6 +408,16 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
       {busy && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
       {!busy && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
     </div>
+    {st?.signedIn && storage && (
+      <div className="flex items-center gap-2 text-xs">
+        <span className="text-muted shrink-0">存储</span>
+        <span className="h-1.5 w-28 rounded-full bg-panel2 overflow-hidden shrink-0" aria-label={`已用 ${storage.pct}%`}>
+          <span className="block h-full rounded-full" style={{ width: `${Math.max(storage.used > 0 ? 1 : 0, storage.pct)}%`, background: storage.warn === "full" ? "var(--tool-danger, #d33)" : storage.warn === "critical" ? "var(--tool-warn)" : "var(--accent, #e8873a)" }} />
+        </span>
+        <span>{fmtBytes(storage.used)} / {fmtBytes(storage.limit)} · {storage.pct}%</span>
+        <span className="text-muted">{storage.tier ? "会员" : "免费档"} · 清理与管理在 Umbra PC / iOS 的账号页</span>
+      </div>
+    )}
     {st?.signedIn && (
       <div className="flex items-center gap-2 text-xs">
         <button className={`btn ${st.serverAi ? "primary" : ""}`} onClick={toggleServerAi}>{st.serverAi ? "服务端 AI：开" : "用服务端 AI（会员额度）"}</button>

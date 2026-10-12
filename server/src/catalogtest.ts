@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { catalogUrl, fetchServerCatalog, pickCatalog, readCatalogDetailed, validateCatalog, type CatalogEntry } from "./plugin/catalog.js";
-import { giftPluginIdsOf } from "./account.js";
+import { fmtBytes, giftPluginIdsOf, storageOf } from "./account.js";
 
 let pass = 0, fail = 0;
 const ok = (c: boolean, what: string, detail = "") => {
@@ -79,6 +79,16 @@ rmSync(dir, { recursive: true, force: true });
 /* ── ⑥ 赠送插件解析 ── */
 ok(giftPluginIdsOf({ gift_plugins: ["com.umbra.markdown", " com.umbra.code ", "", 3, "com.umbra.markdown"] }).join(",") === "com.umbra.markdown,com.umbra.code", "只认字符串、去空、去重");
 ok(giftPluginIdsOf({ gift_plugins: "x" }).length === 0 && giftPluginIdsOf(null).length === 0 && giftPluginIdsOf({}).length === 0, "不是数组 / 没有 → []");
+
+/* ── 存储容量那一行（草案 §十一）：`/membership.storage` 的判据 ── */
+{
+  const s = storageOf({ storage: { used: 52428800, limit: 1073741824, pct: 5, warn: "ok", tier: "basic" } });
+  ok(!!s && s.used === 52428800 && s.limit === 1073741824 && s.pct === 5 && s.warn === "ok" && s.tier === "basic", "storage 完整 → 原样");
+  ok(storageOf({ storage: { used: 1, limit: 2, pct: 150, warn: "weird", tier: null } })?.pct === 100 && storageOf({ storage: { used: 1, limit: 2, pct: 150, warn: "weird" } })?.warn === "ok", "pct 封 100、warn 不认的当 ok、tier 空 → null");
+  ok(storageOf({}) === null && storageOf(null) === null && storageOf({ storage: { used: "1", limit: 2, pct: 0 } }) === null && storageOf({ storage: { used: -1, limit: 2, pct: 0 } }) === null, "缺 / 不是数 / 负数 → null（老服务端不画这一行）");
+  ok(fmtBytes(0) === "0" && fmtBytes(512 * 1024) === "512 KB" && fmtBytes(5.26 * 1048576) === "5.3 MB" && fmtBytes(186 * 1048576) === "186 MB" && fmtBytes(1073741824) === "1 GB" && fmtBytes(1.5 * 1073741824) === "1.5 GB",
+    "字节格式：<1 MB 写 KB、<100 MB 一位小数、≥1 GB 两位小数去尾零");
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
