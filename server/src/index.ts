@@ -27,7 +27,7 @@ import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.
 import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
 import { findBrowser, renderCheck } from "./render.js";
 import { runChatSend } from "./chat_run.js";
-import { invokeVerb, listVerbs, onVerbsChanged, zodShapeOf } from "./plugin/verbs.js";
+import { invokeVerb, listVerbs, onVerbsChanged, watchVerbState, zodShapeOf } from "./plugin/verbs.js";
 import { listComments } from "./comments.js";
 import {
   changesSince, diffDrafts, listVersions, projectChangesSince, readSnapshot,
@@ -486,14 +486,26 @@ for (const cap of capsFor("mcp")) {
 /* ═══════════════════ 插件动词 → MCP 面（M13-2，`doc/22` §3.3）═══════════════════
    装了什么插件、授权到哪，这张表就长什么样。没授权的只挂插件标了 `free` 的那几件 —— **不列、不标灰**（Q56）。
    装 / 卸 / 切版本 / 许可证变了 → 重挂一遍并发 `tools/list_changed`，客户端不用重连。 */
-const verbTools = new Map<string, RegisteredTool>();
-async function syncVerbTools(): Promise<void> {
+/* ⚠️ 「挂过没有」按**名字 + 内容指纹**判，不只按名字（issue #146）。
+   对外名只由「插件短名 + 能力名」决定、不含版本 —— 插件升级 / 切版本后同名动词的入参、描述都可能变了，
+   只按名字判的话 MCP 上挂着的还是旧 inputSchema：新参数被 zod 剥掉、删掉的参数仍是必填、描述是旧的。 */
+const verbTools = new Map<string, { reg: RegisteredTool; sig: string }>();
+let verbSync: Promise<void> = Promise.resolve();
+/** 串行跑：两次同步并发的话会对同一个名字 `registerTool` 两次（SDK 直接抛）。 */
+function syncVerbTools(): Promise<void> {
+  verbSync = verbSync.then(syncVerbToolsOnce, syncVerbToolsOnce);
+  return verbSync;
+}
+async function syncVerbToolsOnce(): Promise<void> {
   const verbs = await listVerbs().catch(() => []);
   const want = new Set(verbs.map((v) => v.tool));
-  for (const [name, t] of verbTools) if (!want.has(name)) { t.remove(); verbTools.delete(name); }
+  for (const [name, t] of verbTools) if (!want.has(name)) { t.reg.remove(); verbTools.delete(name); }
   for (const v of verbs) {
-    if (verbTools.has(v.tool)) continue;
-    verbTools.set(v.tool, server.registerTool(v.tool,
+    const sig = JSON.stringify([v.title, v.summary, v.input, v.pluginName, v.cap]);
+    const have = verbTools.get(v.tool);
+    if (have && have.sig === sig) continue;
+    if (have) { have.reg.remove(); verbTools.delete(v.tool); }
+    verbTools.set(v.tool, { sig, reg: server.registerTool(v.tool,
       { title: `${v.pluginName} · ${v.title}`, description: v.summary,
         inputSchema: { project: z.string().describe("项目名，或项目目录名"), ...zodShapeOf(v.input) } },
       async (args: Record<string, unknown>) => run(async () => {
@@ -502,11 +514,14 @@ async function syncVerbTools(): Promise<void> {
         if (r.ok) return envelope(r.data);
         return envelope(null, [err(X.BAD_INPUT, "(plugin)", { kind: "key", name: v.plugin }, r.message,
           r.market_url ? { fix: `去插件市场购买或续费：${r.market_url}` } : undefined)]);
-      })));
+      })) });
   }
 }
 await syncVerbTools();
 onVerbsChanged(() => { void syncVerbTools(); });
+/* ⚠️ 这个 stdio 进程和 Studio 窗口的核心不是同一个进程（秘书 / 编码 CLI 各自 spawn 一个），
+   在窗口里买 / 装 / 卸插件只改了磁盘、事件传不过来（issue #144）。定时比盘上指纹，变了就重扫 → 上面那条重挂并发 list_changed。 */
+watchVerbState();
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

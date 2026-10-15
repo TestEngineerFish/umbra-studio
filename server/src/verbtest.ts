@@ -118,6 +118,72 @@ await rm(join(PLUGINS_DIR, "com.umbra.verbs"), { recursive: true, force: true })
 emit("plugin", null, { what: "uninstall", id: "com.umbra.verbs" });
 ok(mine(await allVerbs()).length === 0, "卸载后它的动词全没（孤儿沙箱一起停）");
 
+/* ── 跨进程：另一个进程（Studio 窗口）改了磁盘，这个 stdio 核心自己发现（issue #144 / #146）──
+   秘书和编码 CLI 连的是各自 spawn 的 stdio 核心，和 Studio 窗口不是同一个进程，`plugin` 事件传不过去。
+   这里在**父进程**里只改磁盘、**不发任何事件**，断言子进程发来 `tools/list_changed` 且工具表跟着变：
+   ① 落一份新许可证 → cut 挂出来；② 切到新版（同名动词多一个参数）→ MCP 上的 inputSchema 换成新的、带新参数调用插件收得到（#146）；
+   ③ 删插件目录 → 动词收回、再调就不认。 */
+{
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { ToolListChangedNotificationSchema } = await import("@modelcontextprotocol/sdk/types.js");
+  const { readFile } = await import("node:fs/promises");
+  const vdir = join(PLUGINS_DIR, "com.umbra.verbs");
+  await mkdir(vdir, { recursive: true });
+  await cp(FIX, join(vdir, "0.1.0"), { recursive: true });
+  /* 先回到「没授权」：上面那段最后留的是过期的许可证 */
+  await rm(licFile, { force: true });
+  const tr = new StdioClientTransport({ command: process.execPath, args: [join(process.cwd(), "dist", "index.js")],
+    env: { ...process.env } as Record<string, string>, stderr: "pipe" });
+  const c = new Client({ name: "verbtest-x", version: "0" });
+  let notified = 0;
+  c.setNotificationHandler(ToolListChangedNotificationSchema, async () => { notified++; });
+  await c.connect(tr);
+  type T = { name: string; inputSchema: { properties?: Record<string, unknown> } };
+  const tools = async () => ((await c.listTools()).tools as T[]).filter((t) => t.name.startsWith("verbs__"));
+  const names = async () => (await tools()).map((t) => t.name).sort().join(",");
+  const waitFor = async (pred: () => Promise<boolean>, ms = 12000) => {
+    for (const t0 = Date.now(); Date.now() - t0 < ms;) { if (await pred()) return true; await new Promise((r) => setTimeout(r, 300)); }
+    return false;
+  };
+  const text = (r: unknown) => ((r as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? "");
+  ok((await names()) === "verbs__play", "（前提）子进程起来时没授权，只挂 play", await names());
+
+  const n0 = notified;
+  await writeFile(licFile, sign({ sub: "u1", grants: [{ plugin: "com.umbra.verbs", from: day(-1), until: day(7), src: "purchase" }] }));
+  const got1 = await waitFor(async () => notified > n0 && (await names()) === "verbs__cut,verbs__play");
+  ok(got1, "**父进程只落许可证、不发事件 → 子进程发 list_changed，cut 挂出来**（#144）", `${await names()} · 通知 ${notified - n0} 次`);
+  const rc = await c.callTool({ name: "verbs__cut", arguments: { project: projDir, path: "a.mp4", from: 1, to: 2 } });
+  ok(/"to":\s*2/.test(text(rc)), "子进程里 cut 真能调", text(rc).slice(0, 80));
+
+  /* ② 切版本：0.2.0 的 play 多一个 speed 参数、描述也变了 */
+  const v2 = join(vdir, "0.2.0");
+  await cp(FIX, v2, { recursive: true });
+  const man = JSON.parse(await readFile(join(v2, "manifest.json"), "utf8")) as Record<string, unknown>;
+  await writeFile(join(v2, "manifest.json"), JSON.stringify({ ...man, version: "0.2.0" }));
+  const src = await readFile(join(v2, "tools.mjs"), "utf8");
+  await writeFile(join(v2, "tools.mjs"), src
+    .replace('input: { path: "string" },', 'input: { path: "string", speed: "number" },')
+    .replace('summary: "免费动词：没买也能用。",', 'summary: "免费动词 v2：能调速。",')
+    .replace("async run({ path }) { return { played: path }; },", "async run({ path, speed }) { return { played: path, speed }; },"));
+  await writeFile(join(vdir, "current"), "0.2.0");
+  const n1 = notified;
+  const got2 = await waitFor(async () => notified > n1 && !!(await tools()).find((t) => t.name === "verbs__play")?.inputSchema.properties?.speed);
+  ok(got2, "**切到新版后 MCP 上同名动词的 inputSchema 换成新的**（多了 speed，#146）",
+     JSON.stringify(Object.keys((await tools()).find((t) => t.name === "verbs__play")?.inputSchema.properties ?? {})));
+  const rp = await c.callTool({ name: "verbs__play", arguments: { project: projDir, path: "b.mp4", speed: 2 } });
+  ok(/"speed":\s*2/.test(text(rp)), "**带新参数调用，插件收到了**（原来被旧 schema 剥掉）", text(rp).slice(0, 80));
+
+  /* ③ 卸载：删目录 */
+  const n2 = notified;
+  await rm(vdir, { recursive: true, force: true });
+  const got3 = await waitFor(async () => notified > n2 && (await names()) === "");
+  ok(got3, "**父进程删插件目录 → 子进程的动词全部收回**", (await names()) || "(空)");
+  const rg = await c.callTool({ name: "verbs__play", arguments: { project: projDir, path: "a.mp4" } }).catch((e: Error) => ({ isError: true, content: [{ text: e.message }] }));
+  ok((rg as { isError?: boolean }).isError === true, "卸掉的动词再调：不认（不再跑旧代码）", text(rg).slice(0, 80));
+  await c.close();
+}
+
 off();
 stopAllVerbSandboxes();
 await rm(STATE, { recursive: true, force: true });

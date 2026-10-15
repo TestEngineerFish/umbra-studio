@@ -17,13 +17,16 @@
  *  沙箱按插件各起一个、起了就留着（第一次列动词时起，装 / 卸 / 切版本时按目录重开）。
  *  插件的 `caps` 只有起过沙箱才知道，所以「列动词」这件事本身会起进程 —— 开销在第一次，之后走缓存。
  */
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { subscribe } from "../events.js";
 import type { Project } from "../project.js";
-import { entitlementOf, type EntitlementState } from "./license.js";
+import { entitlementOf, licenseFilePath, type EntitlementState } from "./license.js";
 import type { PluginManifest } from "./manifest.js";
 import { PluginSandbox } from "./sandbox.js";
-import { listInstalled } from "./store.js";
+import { BUNDLED_DIR, PLUGINS_DIR, listInstalled } from "./store.js";
 
 /** 一件动词在表里的样子。`exposed` = 此刻该不该出现在模型的工具表里。 */
 export interface Verb {
@@ -53,6 +56,8 @@ const USABLE = new Set<EntitlementState>(["builtin", "active"]);
 interface Slot { dir: string; sandbox: PluginSandbox; error: string }
 const pool = new Map<string, Slot>();
 let cache: Verb[] | null = null;
+/** 算 `cache` 那一刻的盘上指纹（见 `stateStamp`）。 */
+let cacheStamp = "";
 let listing: Promise<Verb[]> | null = null;
 const listeners = new Set<() => void>();
 
@@ -69,6 +74,51 @@ function invalidate(): void {
 
 /* 装 / 卸 / 切版本 / 许可证变动都从 `cap/plugins.ts` 发 `plugin` 事件 —— 这里订阅它，不另开一条通知路。 */
 subscribe((e) => { if (e.type === "plugin") invalidate(); });
+
+/** 插件 / 授权的**盘上指纹**（issue #144）。
+ *
+ *  ⚠️ 上面那条事件只在**本进程**里传。而买 / 装 / 卸 / 切版本 / 取许可证是用户在 Studio 窗口里做的，
+ *  跑在 Studio 应用自己的核心进程里；秘书（UmbraPC）和编码 CLI 连的是**另一个进程**
+ *  （各自 spawn 的 stdio 核心）。两边共享的只有磁盘 —— 于是那个进程的 `cache` 永不失效、
+ *  不发 `tools/list_changed`，卸掉的插件经 MCP 还能调，直到重启。
+ *  所以失效源改成「盘上状态变没变」：任何进程都能自己发现。
+ *
+ *  指纹 = 许可证文件内容的摘要（文件小；只比 mtime + 大小的话，同一毫秒内写一份等长的新许可证会漏）
+ *  + 两个插件根下每个插件的「版本目录列表 + current 指针 + 当前版清单的 mtime / 大小」。
+ *  全是同步的小读，几个插件的量级下一次不到一毫秒。 */
+export function stateStamp(): string {
+  const parts: string[] = [];
+  try { parts.push("lic:" + createHash("sha1").update(readFileSync(licenseFilePath())).digest("hex")); }
+  catch { parts.push("lic:-"); }
+  for (const root of [BUNDLED_DIR, PLUGINS_DIR]) {
+    let ids: string[] = [];
+    try { ids = readdirSync(root).sort(); } catch { parts.push(`${root}:-`); continue; }
+    for (const id of ids) {
+      const idDir = join(root, id);
+      let versions: string[] = [];
+      try { versions = readdirSync(idDir).filter((x) => x !== "current").sort(); } catch { continue; }
+      let cur = "";
+      try { cur = readFileSync(join(idDir, "current"), "utf8").trim(); } catch { /* 没指针 */ }
+      const v = cur && versions.includes(cur) ? cur : versions[versions.length - 1] ?? "";
+      let man = "-";
+      try { const st = statSync(join(idDir, v, "manifest.json")); man = `${st.mtimeMs}:${st.size}`; } catch { /* 清单缺了，照样算进指纹 */ }
+      parts.push(`${root}|${id}|${versions.join(",")}|${cur}|${man}`);
+    }
+  }
+  return parts.join("\n");
+}
+
+/** 定时比一次盘上指纹，变了就重扫（→ `onVerbsChanged` → MCP 那边发 `tools/list_changed`）。
+ *  只在**已经列过**（有缓存）时才比 —— 没人列过的话没什么可失效的。返回停表的函数。
+ *  不用 `fs.watch`：它在不同平台上对「目录被整个删掉 / 原子 rename」的报法不一致，而轮询一次的开销只是几次 stat。 */
+export function watchVerbState(ms = 2000): () => void {
+  const t = setInterval(() => {
+    if (!cache || listing) return;
+    if (stateStamp() !== cacheStamp) void allVerbs().catch(() => { /* 下一轮再试 */ });
+  }, ms);
+  t.unref?.();
+  return () => clearInterval(t);
+}
 
 const sanitize = (s: string): string => s.replace(/[^A-Za-z0-9_-]/g, "_");
 
@@ -134,8 +184,14 @@ export function sandboxFailures(): Record<string, string> {
 
 /** 全表（含没挂出的）。`exposed` 字段说此刻该不该给模型看。并发调用共用同一次扫描。 */
 export async function allVerbs(): Promise<Verb[]> {
-  if (cache) return cache;
+  /* 进门比一次盘上指纹（#144）：别的进程装 / 卸 / 改了授权，这里自己发现，不等事件。 */
+  const stamp = stateStamp();
+  if (cache && stamp === cacheStamp) return cache;
   if (listing) return listing;
+  /* 有缓存但盘变了 = 表可能变了：扫完之后要告诉订阅者（MCP 面靠它重挂工具、发 list_changed）。
+     **扫完再通知**，不在扫之前 —— 订阅者收到就会再 `listVerbs()`，先通知会并发起第二次扫描、重复起沙箱。 */
+  const stale = cache !== null;
+  cache = null;
   listing = (async () => {
     const installed = (await listInstalled()).filter((p) =>
       p.problems.length === 0 && p.manifest.surfaces?.includes("tools") && typeof p.manifest.tools === "string");
@@ -162,9 +218,14 @@ export async function allVerbs(): Promise<Verb[]> {
       }
     }
     cache = out;
+    cacheStamp = stamp;
     return out;
   })();
-  try { return await listing; } finally { listing = null; }
+  try { return await listing; }
+  finally {
+    listing = null;
+    if (stale) for (const cb of listeners) { try { cb(); } catch { /* 一个订阅者坏了不影响别人 */ } }
+  }
 }
 
 /** 此刻该挂出去的动词（模型工具表用这个）。 */

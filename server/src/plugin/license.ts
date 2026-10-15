@@ -43,6 +43,8 @@ export interface License {
 /** 许可证放在**可写**的 `STATE_ROOT`（它随账号变），公钥放在**只读**的 `TOOL_ROOT`（它随程序发）。
  *  ⚠️ 两个 root 混了在开发模式下测不出来（`00` §63.1 栽过）。 */
 const LICENSE_FILE = join(STATE_ROOT, ".umbrastudio", "license.json");
+/** 许可证文件在哪（动词表按它的指纹判「别的进程是不是改过授权」，issue #144）。 */
+export const licenseFilePath = (): string => LICENSE_FILE;
 const WATERMARK_FILE = join(STATE_ROOT, ".umbrastudio", "clock.json");
 /** 公钥路径现取（测试可用 `UMBRASTUDIO_PUBKEY` 指到临时钥匙，见 `pubkey.ts`）。 */
 const PUBKEY = (): string => publisherKeyPath();
