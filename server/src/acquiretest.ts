@@ -4,7 +4,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discountPctOf, downloadPackage, installFromUrl, isHttpsUrl, licenseGrants, licenseIsFor, licenseTextOf, memberPrice, planAcquire, type PackageFetch } from "./plugin/acquire.js";
+import { buyStep, discountPctOf, downloadPackage, installFromUrl, isHttpsUrl, licenseGrants, licenseIsFor, licenseTextOf, memberPrice, planAcquire, type PackageFetch } from "./plugin/acquire.js";
 import { validateCatalog } from "./plugin/catalog.js";
 import type { LicenseCheck } from "./plugin/license.js";
 
@@ -15,6 +15,13 @@ const ok = (c: boolean, what: string, detail = "") => {
 };
 
 console.log("拿到插件（plugin/acquire）");
+
+/* ── ⓪ 买这一步走不走（issue #145）：会员信息没问到时不许按价买（会误扣赠送插件的积分） ── */
+ok(buyStep({ planBuy: true, perksOk: false, grantedNow: false }) === "refuse", "**会员信息没问到 + 许可证里没有 → 拒绝，不买**（原来当「不是赠送」按价扣积分）");
+ok(buyStep({ planBuy: true, perksOk: false, grantedNow: true }) === "skip", "会员信息没问到，但先取的许可证里已有赠送授权 → 跳过购买");
+ok(buyStep({ planBuy: true, perksOk: true, grantedNow: true }) === "skip", "许可证里已有授权（赠送 / 以前买过）→ 不买");
+ok(buyStep({ planBuy: true, perksOk: true, grantedNow: false }) === "buy", "问到了、确实不是赠送、也没授权 → 才买");
+ok(buyStep({ planBuy: false, perksOk: false, grantedNow: false }) === "skip", "计划里本来不买（赠送 / 免费）→ 不买");
 
 /* ── ① 安装包地址：只认 https://主机/路径 ── */
 ok(isHttpsUrl("https://dl.umbra.test/p/x.umbraplugin"), "https + 路径 → 认");

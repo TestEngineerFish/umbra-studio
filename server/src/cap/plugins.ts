@@ -6,7 +6,7 @@ import { hostCall } from "../plugin/host.js";
 import { listInstalled, registerPluginKinds, uninstall } from "../plugin/store.js";
 import { entitlementOf, loadLicense, saveLicenseText, type Entitlement } from "../plugin/license.js";
 import { installFromFile, pluginVersions, switchVersion } from "../plugin/install.js";
-import { installFromUrl, licenseGrants, planAcquire, type PackageFetch } from "../plugin/acquire.js";
+import { buyStep, installFromUrl, licenseGrants, planAcquire, type PackageFetch } from "../plugin/acquire.js";
 import { readCatalogDetailed } from "../plugin/catalog.js";
 import { account } from "../account.js";
 import { emit } from "../events.js";
@@ -226,7 +226,8 @@ defineCap({
     if (!c) return envelope(null, [pluginErr("E_PLUGIN_NOT_FOUND", `市场里没有 ${id}`, id)]);
     const found = (await listInstalled()).find((x) => x.manifest.id === id);
     const st = await account.status();
-    const gift = (await account.giftPlugins()).includes(id);
+    const perks = await account.perks();
+    const gift = perks.gift.includes(id);
     const ent = await entitlementOf(id, { bundled: found?.bundled });
     const plan = planAcquire({ signedIn: st.signedIn, builtin: !!c.builtin || !!found?.bundled, installed: !!found, entitled: ent.state === "active",
       gift, price: c.price, packageUrl: c.package_url });
@@ -235,7 +236,19 @@ defineCap({
       const code = st.signedIn ? "E_PLUGIN_ACQUIRE" : "E_ACCOUNT_LOGIN";
       return envelope(out, [pluginErr(code, plan.refuse, id, st.signedIn ? undefined : "在设置里登录 Umbra 账号")]);
     }
+    /* ⚠️ 买之前先取一次许可证（issue #145）：会员赠送的插件服务端会并进许可证，已有授权就不该买。
+       会员信息这次没问到的话分不清是不是赠送 —— 宁可这次不买，也不按价扣积分。 */
+    let step: "buy" | "skip" | "refuse" = "skip";
     if (plan.buy) {
+      const pre = await account.fetchLicense();
+      const grantedNow = pre.ok && licenseGrants((await loadLicense())?.license, id);
+      step = buyStep({ planBuy: true, perksOk: perks.ok, grantedNow });
+      if (grantedNow) out.licensed = true;
+    }
+    if (step === "refuse") {
+      return envelope(out, [pluginErr("E_PLUGIN_ACQUIRE", "没问到会员信息，为免误扣积分这次不买", id, "稍后在市场里再点一次")]);
+    }
+    if (step === "buy") {
       try {
         const b = await account.buyPlugin(id);
         out.bought = true; out.already = b.already;

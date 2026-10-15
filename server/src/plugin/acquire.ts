@@ -126,3 +126,14 @@ export async function installFromUrl(url: string, fetchFn: PackageFetch, opts: {
     await rm(join(file, ".."), { recursive: true, force: true });
   }
 }
+
+/** 「买」这一步到底走不走（issue #145，纯判据）：
+ *  · 计划里本来就不买 → skip；
+ *  · 先取了一次许可证、里面**已经有**这个插件的有效授权（会员赠送 / 以前买过）→ skip —— 赠送的不该走「买」；
+ *  · 会员信息**这次没问到**（`/membership` 超时 / 5xx）→ refuse：分不清它是不是赠送，按价买就可能误扣积分；
+ *  · 其余 → buy。 */
+export function buyStep(p: { planBuy: boolean; perksOk: boolean; grantedNow: boolean }): "buy" | "skip" | "refuse" {
+  if (!p.planBuy || p.grantedNow) return "skip";
+  if (!p.perksOk) return "refuse";
+  return "buy";
+}

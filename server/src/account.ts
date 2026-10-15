@@ -155,16 +155,18 @@ export class AccountService {
 
   /** 当前会员带来的两样（服务端 `GET /membership`，一次请求）：随会员赠送的插件 id（后台「赠送插件」页配的）
    *  与买积分计价东西的折扣百分比（`discount_pct`，100 = 不打折）。
-   *  没登录 / 没会员 / 连不上 / 老服务端一律回「没有赠送、不打折」—— 市场页标不标，不该让市场打不开。 */
-  async perks(): Promise<{ gift: string[]; discountPct: number }> {
-    const none = { gift: [], discountPct: 100 };
+   *  没登录 / 没会员 / 连不上 / 老服务端一律回「没有赠送、不打折」—— 市场页标不标，不该让市场打不开。
+   *  ⚠️ 但 `ok` 要分清「问到了、确实没送」和「这次没问到」（issue #145）：`acquire_plugin` 原来把后者
+   *  当成「不是赠送」去按价买，会员的积分会被误扣。市场页只看 gift，照旧。 */
+  async perks(): Promise<{ ok: boolean; gift: string[]; discountPct: number }> {
+    const none = { ok: false, gift: [], discountPct: 100 };
     const a = await getAccount();
     if (!a.accessToken) return none;
     try {
       const r = await this.fetchFn(`${a.serverUrl}/membership`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
       if (!r.ok) return none;
       const body = await r.json();
-      return { gift: giftPluginIdsOf(body), discountPct: discountPctOf(body) };
+      return { ok: true, gift: giftPluginIdsOf(body), discountPct: discountPctOf(body) };
     } catch { return none; }
   }
 
