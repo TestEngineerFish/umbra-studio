@@ -17,10 +17,12 @@ import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, posix, relative, sep } from "node:path";
-import { gzipSync, gunzip as gunzipCb } from "node:zlib";
+import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
 /** 异步解压（issue #48）—— 同步版会把整个服务进程停住 */
 const gunzip = promisify(gunzipCb);
+/* 写路径也走异步（issue #133）：图片比文本大一两个数量级，`gzipSync` 每存一次都在主线程上同步压一遍。 */
+const gzip = promisify(gzipCb);
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
@@ -397,6 +399,12 @@ export async function listSnapshotMeta(p: Project, rel: string, withDelta = true
      （json 里没有 `delta` 字段）才现算，算完**回写**，下次就不用再算。 */
   const need = out.filter((m) => m.delta === undefined);
   if (!need.length) return out;
+  /* 二进制的旧快照不补算行差（#133，同 `saveSnapshot`）：直接记「没算」 */
+  if (!isTextual(rel)) {
+    for (const m of need) m.delta = null;
+    for (const m of need) { try { await writeFile(join(dir, `${m.version}.json`), JSON.stringify(m, null, 1)); } catch { /* 同下 */ } }
+    return out;
+  }
 
   /* ⚠️ 补算要有**总量上限**：一个存了几百版的旧文件第一次打开时，
      不加上限就又回到 10 秒那条路上了。超出的给 `null`（「没算」），
@@ -448,15 +456,20 @@ async function saveSnapshot(p: Project, rel: string, buf: Buffer, src: string, n
      **不留 `undefined`** —— 那会让读的时候以为「还没算过」又去补算一遍。 */
   let delta: { plus: number; minus: number } | null = null;
   const prevVer = have.length ? have[have.length - 1]! : null;
-  const curText = buf.toString("utf8");
-  if (prevVer === null) delta = { plus: curText.split("\n").length, minus: 0 };
+  /* ⚠️ **二进制不算行差**（issue #133）：把 PNG 字节按 `\n` 切行算出来的「+N −M 行」是假读数，
+     而一张 1 MB 的图约有 4000 个 `\n` 字节，正好落在 LCS 上限之内 —— 约 1600 万次比较的同步循环跑在主线程上。
+     记 `null`（「没算」），版本列表本来就认这一态。 */
+  const textual = isTextual(rel);
+  const curText = textual ? buf.toString("utf8") : "";
+  if (!textual) delta = null;
+  else if (prevVer === null) delta = { plus: curText.split("\n").length, minus: 0 };
   else {
     try { delta = lineDelta(await readSnapshotContent(p, rel, prevVer), curText); }
     catch { delta = null; }
   }
   const meta: FileSnapshotMeta = { version, src, at: new Date().toISOString(), bytes: buf.length, delta, ...(note ? { note } : {}) };
   await writeFile(join(dir, `${version}.json`), JSON.stringify(meta, null, 1));
-  await writeFile(join(dir, `${version}.src.gz`), gzipSync(buf));
+  await writeFile(join(dir, `${version}.src.gz`), await gzip(buf));
   return version;
 }
 

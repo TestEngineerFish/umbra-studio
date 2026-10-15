@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
-import { countTypes, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { countTypes, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { gitFallbackOf } from "../gitkeep.js";
 import { clearStagedDraft, getStagedDraft, listStagedDrafts, stageDraft } from "../staged.js";
 import { defineCap } from "./registry.js";
@@ -176,6 +176,14 @@ defineCap({
   input: { path: z.string(), version: z.string().describe("快照号，`list_file_versions` 给的那个，形如 s3") },
   http: { route: "file_version", method: "GET" },
   run: async ({ path, version }, c) => {
+    /* ⚠️ **二进制按字节回**（issue #133）：原来一律 utf8 往返 —— 图片读回乱码，`sha256` / `bytes` 也按那段乱码算，
+       和 `list_file_versions` 的 `bytes` 对不上。现在和 `read_file` 对二进制一样不给正文（`content: null`），
+       另给 `base64` 原样字节，`sha256` / `bytes` 按真实字节算。 */
+    if (!isTextual(path)) {
+      const buf = await readSnapshotBytes(p(c), path, version);
+      return envelope({ path, version, content: null, why: "不是文本文件", encoding: "base64", base64: buf.toString("base64"),
+        sha256: sha256(buf), bytes: buf.length });
+    }
     const content = await readSnapshotContent(p(c), path, version);
     return envelope({ path, version, content, sha256: sha256(content), bytes: Buffer.byteLength(content, "utf8"),
       lines: content.split("\n").length });
@@ -199,6 +207,12 @@ defineCap({
   http: { route: "file_compare", method: "GET" },
   run: async ({ path, from, to }, c) => {
     const proj = p(c);
+    /* 二进制不按行比（#133）：那个数没有意义。先读一次 from 让版本号不对时照常报错 */
+    if (!isTextual(path)) {
+      await readSnapshotBytes(proj, path, from);
+      if (to) await readSnapshotBytes(proj, path, to);
+      return envelope({ path, from, to: to ?? null, delta: null, note: "不是文本文件，没法按行比" });
+    }
     const a = await readSnapshotContent(proj, path, from);
     const b = to ? await readSnapshotContent(proj, path, to) : (await readAnyFile(proj, path)).content;
     if (b === null) {

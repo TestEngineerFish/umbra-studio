@@ -1162,6 +1162,23 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   const snaps = await listSnapshots(projB, F);
   ok("**没因为「按 utf8 比」而多存一串重复快照**", snaps.length <= 4, { 快照: snaps.join(" ") });
 
+  /* ── 图片的快照不报「+N −M 行」、读历史版本按字节回（issue #133）── */
+  const metaB = await listSnapshotMeta(projB, F);
+  ok("**图片每一版的 delta 都是 null（没算）**，不是把字节按行切出来的假读数", metaB.length > 0 && metaB.every((m) => m.delta === null),
+     metaB.map((m) => `${m.version}:${JSON.stringify(m.delta)}`).join(" "));
+  await import("./cap/index.js");
+  const { allCaps } = await import("./cap/registry.js");
+  const capOf = (n: string) => allCaps().find((c) => c.name === n)!;
+  const ctxB = { project: projB, via: "http" as const };
+  const rv1 = (await capOf("read_file_version").run({ path: F, version: w1.snapshot! } as never, ctxB)).data as { content: string | null; base64?: string; sha256: string; bytes: number };
+  const sA = createHash("sha256").update(A).digest("hex");
+  ok("**read_file_version 对图片：sha256 / bytes 按真实字节算，base64 还原得回原图**",
+     rv1.content === null && rv1.sha256 === sA && rv1.bytes === A.length && Buffer.from(rv1.base64 ?? "", "base64").equals(A),
+     { sha一致: rv1.sha256 === sA, bytes: rv1.bytes, 应为: A.length });
+  ok("而且和 list_file_versions 的 bytes 对得上", metaB.find((m) => m.version === w1.snapshot)?.bytes === rv1.bytes);
+  const cmpB = (await capOf("compare_file_versions").run({ path: F, from: w1.snapshot! } as never, ctxB)).data as { delta: unknown };
+  ok("compare_file_versions 对图片回 delta: null（不按行比字节）", cmpB.delta === null);
+
   await rm(DB, { recursive: true, force: true });
 }
 
