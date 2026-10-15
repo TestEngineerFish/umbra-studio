@@ -31,24 +31,42 @@ let src = null, tree = null;
 /** 这一次点中的元素在源码里的位置：`{ from, to, line, endLine, self }`。
  *  `null` = 对不上（脚本生成的、或隐式补出来的节点）。 */
 let loc = null;
+/** 源码读取的代次（issue #128）：每发一次 `read_file` 加一，回来时不是最新那一次就丢掉。
+ *  快速切文件时两次读取同时在路上，小文件先回、大文件后回的话，原来留在 `src` / `tree` 里的是**上一个文件**的源码，
+ *  而预览和 `curPath` 指着的是这一个 —— 点选给 AI 的就是别的文件的原文配这个文件的行号。 */
+let srcGen = 0;
 
 /** 按下标路径在 parse5 的树上走下去。
  *  ⚠️ 只数**元素**子节点 —— 桥那边数的是 `parentElement.children`（元素），
- *  而 parse5 的 `childNodes` 里有文本和注释。少过滤一步就整条错位。 */
-function nodeAt(idx) {
+ *  而 parse5 的 `childNodes` 里有文本和注释。少过滤一步就整条错位。
+ *  ⚠️ **每走一步都核标签名**（issue #127）：下标来自脚本跑过之后的活 DOM，
+ *  脚本在前面插 / 删过兄弟元素时两棵树整体错开一位，只按位置取的话几乎总能取到**另一个**真实元素 ——
+ *  那就是在猜，而且猜错了看着像确切答案。任意一层标签对不上就回 `null`（走「源码里没有它」那条退路）。
+ *  同标签的兄弟错开一位时标签核不出来，所以**每一层再核 id**：源码那个元素写了 id 的，必须和活 DOM 那一层的 id 一致。
+ *  （class 不核：脚本切换 class 很常见，核它会把大量对得上的点选也打成「找不到」。
+ *   剩下核不出来的只有「同标签、都没 id、结构一样的兄弟被脚本挤开一位」这一种。） */
+function nodeAt(idx, tags, ids) {
   if (!tree || !Array.isArray(idx)) return null;
+  const checkTags = Array.isArray(tags) && tags.length === idx.length;
+  const checkIds = Array.isArray(ids) && ids.length === idx.length;
   let n = (tree.childNodes ?? []).find((c) => c.tagName === "html");
-  for (const i of idx) {
+  for (let k = 0; k < idx.length; k++) {
     if (!n) return null;
     const kids = (n.childNodes ?? []).filter((c) => !!c.tagName);
-    n = kids[i];
+    n = kids[idx[k]];
+    if (!n) return null;
+    if (checkTags && String(n.tagName).toLowerCase() !== tags[k]) return null;
+    if (checkIds) {
+      const srcId = (n.attrs ?? []).find((a) => a.name === "id");
+      if (srcId && srcId.value !== ids[k]) return null;
+    }
   }
   return n ?? null;
 }
 
 /** 把点中的元素对回源码。对不上就回 `null` —— **不猜**。 */
-function locate(idx) {
-  const n = nodeAt(idx);
+function locate(m) {
+  const n = nodeAt(m?.idx, m?.tags, m?.ids);
   if (!n) return null;
   const L = n.sourceCodeLocation;
   /* ⚠️ **隐式节点没有源码位置**（`<table><tr>` 里 parse5 补出来的 `tbody` 就是这样）。
@@ -120,7 +138,7 @@ window.addEventListener("message", (e) => {
   const m = e.data;
   if (!m || m.t !== "ud-pick") return;
   picked = m;
-  loc = locate(m.idx);
+  loc = locate(m);
   paint();
 });
 
@@ -150,13 +168,20 @@ function load(path, theme) {
   /* 读一份源码并解析（issue #46）。⚠️ **读不到 / 解析不了不该挡住预览** ——
      那时点选照旧能用，只是给 AI 的退回活 DOM 并明说一句。 */
   src = null; tree = null; loc = null;
+  const gen = ++srcGen;
   void (async () => {
     try {
       const r = await umbra.call("read_file", { path });
+      /* 过期的回包一个字都不写（#128）：这期间用户可能已经切到别的文件 */
+      if (gen !== srcGen || path !== curPath) return;
       if (!r || !r.ok) return;
-      src = String(r.data.content ?? "");
-      tree = parseHtml(src, { sourceCodeLocationInfo: true });
-    } catch { src = null; tree = null; }
+      const s2 = String(r.data.content ?? "");
+      const t2 = parseHtml(s2, { sourceCodeLocationInfo: true });
+      if (gen !== srcGen || path !== curPath) return;
+      src = s2; tree = t2;
+      /* 源码回来之前用户已经点了元素：那时 `loc` 只能是 null，现在补算一次 */
+      if (picked) { loc = locate(picked); paint(); }
+    } catch { if (gen === srcGen) { src = null; tree = null; } }
   })();
   el("page").src = `/__preview/${path.split("/").map(encodeURIComponent).join("/")}`;
   el("err").hidden = true; el("host").hidden = false;
@@ -169,12 +194,16 @@ umbra.onChanged((p) => {
   /* ⚠️ **源码也要重读**（issue #46）：只刷 iframe 的话 `src`/`tree` 还是旧的，
      于是行号指向**改之前**那一版 —— 而那种错比没有行号糟：
      它看着像个确切答案。 */
+  const gen = ++srcGen;
   void (async () => {
     try {
       const r = await umbra.call("read_file", { path: p });
+      /* 回来时已经切走了 / 又来了更新的一次：什么都不写，也不重算 `loc`（#128） */
+      if (gen !== srcGen || p !== curPath) return;
       if (r && r.ok) { src = String(r.data.content ?? ""); tree = parseHtml(src, { sourceCodeLocationInfo: true }); }
     } catch { /* 读不到就保持原样，下面照旧刷预览 */ }
-    loc = picked ? locate(picked.idx) : null;
+    if (gen !== srcGen || p !== curPath) return;
+    loc = picked ? locate(picked) : null;
     paint();
   })();
   const u = el("page").src; el("page").src = "about:blank"; setTimeout(() => { el("page").src = u; }, 30);

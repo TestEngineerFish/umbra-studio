@@ -3794,6 +3794,87 @@ console.log("\n插件 UI 的边界（M11-4）");
               } else ok(false, "建不出 .html 样本");
             }
 
+            /* ═══ 点选对源码：脚本挤开兄弟元素时不许对到别的元素（issue #127）· 快速切文件不串源码（issue #128）═══ */
+            {
+              const api = async (route, body) => pg.evaluate(async ({ route, body }) => {
+                const b = window.__UD_APP;
+                const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}${r.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
+                const r = await fetch(u(route), body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : undefined);
+                return r.json();
+              }, { route, body });
+              const purge = async (name) => {
+                await api("file_trash", { path: name });
+                const t = await api("trash").catch(() => null);
+                for (const it of t?.data?.items ?? []) if (it.originalName === name) await api("trash_purge", { trashPath: it.trashPath });
+              };
+              const H2 = "插件回归样本-错位.html", BIG = "插件回归样本-大.html", SMALL = "插件回归样本-小.html";
+              /* 脚本往 main 开头插一个 aside：活 DOM 里 main 的子元素整体后移一位。
+                 两个 section 同标签 —— 只核标签的话照样错位，所以样本故意让它们带不同的 id。 */
+              const H2SRC = ["<!DOCTYPE html>", "<html>", "<head><meta charset=\"utf-8\"></head>", "<body>", "  <main>",
+                "    <section id=\"sa\"><p>甲段</p></section>", "    <section id=\"sb\"><p>乙段</p></section>", "  </main>",
+                "  <script>document.querySelector(\"main\").prepend(document.createElement(\"aside\"));<\/script>", "</body>", "</html>", ""].join("\n");
+              const lineIn = (src, needle) => src.split("\n").findIndex((l) => l.includes(needle)) + 1;
+              const SMALLSRC = ["<!DOCTYPE html>", "<html>", "<head><meta charset=\"utf-8\"></head>", "<body>", "", "", "  <h2 id=\"only\">小文件的标题</h2>", "</body>", "</html>", ""].join("\n");
+              /* 大文件：1.6 MB 左右的注释垫在前面（读文本上限 2 MB），让它的 read_file 比小文件慢回来 */
+              const BIGSRC = ["<!DOCTYPE html>", "<html>", "<head><meta charset=\"utf-8\"></head>", "<body>", `<!-- ${"垫".repeat(550_000)} -->`,
+                "  <h2 id=\"big\">大文件的标题</h2>", "</body>", "</html>", ""].join("\n");
+              const okMade = (await api("file_write", { path: H2, content: H2SRC, expectSha256: "0" })).ok
+                && (await api("file_write", { path: BIG, content: BIGSRC, expectSha256: "0" })).ok
+                && (await api("file_write", { path: SMALL, content: SMALLSRC, expectSha256: "0" })).ok;
+              try {
+                if (!okMade) ok(false, "建不出错位 / 快切样本");
+                else {
+                  await settleTree(SMALL);
+                  const openRow = async (name) => {
+                    const row = pg.locator('[role="treeitem"]').filter({ hasText: name }).first();
+                    if (!(await row.count())) return false;
+                    await row.click(); await pg.waitForTimeout(300); await clearGuard();
+                    return true;
+                  };
+                  const plug = pg.frameLocator('iframe[data-role="body"]');
+                  const page = plug.frameLocator("#page");
+                  /* ── #127 ── */
+                  if (await openRow(H2)) {
+                    await pg.waitForTimeout(3000);
+                    const pa = page.locator("#sa p").first();
+                    if (await pa.count()) {
+                      await pa.click({ force: true }); await pg.waitForTimeout(700);
+                      const pill = (await plug.locator("#pill").innerText().catch(() => "")).trim();
+                      const tip = await plug.locator("#pill").getAttribute("title").catch(() => "");
+                      const right = pill.includes(`L${lineIn(H2SRC, "甲段")}`);
+                      const fallback = /源码里找不到它/.test(tip ?? "");
+                      ok((right || fallback) && !pill.includes(`L${lineIn(H2SRC, "乙段")}`),
+                         "**脚本挤开兄弟元素后点选：要么对到正确行号、要么明说找不到，不许给别的元素的行号**（原来对到「乙段」那一行）",
+                         `${pill} · ${right ? "对上" : fallback ? "退回活 DOM" : "错位"}`);
+                    } else ok(false, "错位样本里的 #sa p 选不到");
+                  } else ok(false, "错位样本没在树里刷出来");
+                  /* ── #128：先开大文件、马上切小文件，切完在小文件里点选 ── */
+                  if (await openRow(BIG) && await openRow(SMALL)) {
+                    await pg.waitForTimeout(4000);
+                    const h = page.locator("#only");
+                    if (await h.count()) {
+                      await h.click({ force: true }); await pg.waitForTimeout(700);
+                      const pill = (await plug.locator("#pill").innerText().catch(() => "")).trim();
+                      await plug.locator('#scope button[data-scope="all"]').click().catch(() => {});
+                      await pg.waitForTimeout(250);
+                      await plug.locator("#send").click(); await pg.waitForTimeout(1100);
+                      const body = await pg.evaluate(() => {
+                        for (const n of document.querySelectorAll("*")) { const t = n.getAttribute("title") || ""; if (/小文件的标题|大文件的标题/.test(t)) return t; }
+                        return "";
+                      });
+                      ok(pill.includes(`L${lineIn(SMALLSRC, "小文件的标题")}`) && /小文件的标题/.test(body) && !/大文件的标题/.test(body),
+                         "**快速从大文件切到小文件后，点选给 AI 的是小文件的原文和行号**（原来大文件后回会盖掉）",
+                         `${pill} · 正文${/小文件/.test(body) ? "是小文件的" : /大文件/.test(body) ? "是大文件的！" : "读不到"}`);
+                    } else ok(false, "小文件预览里的 #only 选不到");
+                  } else ok(false, "快切样本没在树里刷出来");
+                }
+              } finally {
+                await openByName(".dc.html").catch(() => {});
+                await pg.waitForTimeout(600);
+                for (const n of [H2, BIG, SMALL]) await purge(n).catch(() => {});
+              }
+            }
+
 
           /* 收尾：和 csv 样本同一套 —— 扔回收站再彻底清掉，不给用户留东西 */
             await pg.evaluate(async ({ name }) => {

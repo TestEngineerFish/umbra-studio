@@ -139,6 +139,28 @@ const PREVIEW_BRIDGE = `<script>(function(){
     }
     return out;
   }
+  /* 每一层的标签名（小写），和 idxPath 一一对应（issue #127）：插件拿下标在盘上原文的树里走时
+     每一步都核一次标签 —— 脚本在前面插 / 删过兄弟元素时两棵树会整体错开一位，
+     只按位置走的话几乎总能落在**另一个**真实元素上，给 AI 的就是别人的原文和行号。 */
+  function idxTags(el){
+    var out=[];
+    while(el&&el.nodeType===1&&el!==document.documentElement){
+      if(!el.parentElement) break;
+      out.unshift(String(el.localName||el.tagName||'').toLowerCase());
+      el=el.parentElement;
+    }
+    return out;
+  }
+  /* 每一层的 id（没有就是空串）：同标签的兄弟错开一位时标签核不出来，id 核得出来 */
+  function idxIds(el){
+    var out=[];
+    while(el&&el.nodeType===1&&el!==document.documentElement){
+      if(!el.parentElement) break;
+      out.unshift(el.id||'');
+      el=el.parentElement;
+    }
+    return out;
+  }
   addEventListener('mousemove',function(e){
     var el=e.target; if(!el||el.nodeType!==1||el===box||el===tag) return;
     var r=el.getBoundingClientRect();
@@ -159,7 +181,7 @@ const PREVIEW_BRIDGE = `<script>(function(){
     var el=e.target; if(!el||el.nodeType!==1) return;
     e.preventDefault(); e.stopPropagation();
     last=el;
-    parent.postMessage({t:'ud-pick',label:label(el),path:path(el),idx:idxPath(el),
+    parent.postMessage({t:'ud-pick',label:label(el),path:path(el),idx:idxPath(el),tags:idxTags(el),ids:idxIds(el),
       self:el.cloneNode(false).outerHTML,
       all:el.outerHTML,
       kids:el.children.length},'*');
