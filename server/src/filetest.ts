@@ -75,6 +75,38 @@ ok("回到 s1：内容回来，历史不删（s1、s2 都还在）",
 const meta = await listSnapshotMeta(p, "需求.md");
 ok("快照元数据：version / src / at 齐", meta.length === 3 && meta[0]!.version === "s1" && !!meta[0]!.at && meta[2]!.note === "回到 s1");
 
+/* ── 版本号是外部输入：带 `..` 的版本号不许读到别的项目、也不许写进本项目（issue #156）──
+   原来 `readSnapshotBytes` 直接 `join(snapDir, version + ".src.gz")`，`..` 被 join 归一化掉，
+   能读到另一个项目的快照原文；`revert_file` 还会把它写进当前项目。
+   判据要问的是**没读到 / 没写入**，不只是「抛了」。 */
+{
+  const { relative: relPath } = await import("node:path");
+  const O = join(tmpdir(), `umbrastudio-filetest-other-${Date.now()}`);
+  await rm(O, { recursive: true, force: true });
+  await mkdir(O, { recursive: true });
+  await writeFile(join(O, "project.json"), JSON.stringify({ name: "other", title: "别的项目" }));
+  await writeFile(join(O, "秘.md"), "别的项目的机密原文\n");
+  const po = await buildProject(O);
+  const ro = await readAnyFile(po, "秘.md");
+  await writeAnyFile(po, "秘.md", "改过\n", { expectSha256: ro.sha256 });
+  ok("（前提）另一个项目确实有 s1 快照", existsSync(join(snapDir(po, "秘.md"), "s1.src.gz")));
+  const evil = relPath(snapDir(p, "需求.md"), join(snapDir(po, "秘.md"), "s1"));
+  const before = await readFile(join(DIR, "需求.md"), "utf8");
+  const beforeVers = (await listSnapshots(p, "需求.md")).join(" ");
+  for (const v of [evil, "../s1", "s1/../s1", "S1", ""]) {
+    let code = "", leaked = false;
+    try { leaked = (await readSnapshotContent(p, "需求.md", v)).includes("机密"); }
+    catch (e) { code = (e as ToolError)?.diagnostic?.code ?? String(e); }
+    ok(`读 version=${JSON.stringify(v.slice(0, 30))} → 抛 E_SNAPSHOT_MISSING 且没读到`, !leaked && /SNAPSHOT_MISSING/.test(code), code);
+  }
+  let revThrew = false;
+  try { await revertFile(p, "需求.md", evil); } catch { revThrew = true; }
+  ok("**revert_file 用越界版本号：抛错、本项目文件和版本列表都没变**",
+     revThrew && (await readFile(join(DIR, "需求.md"), "utf8")) === before
+     && (await listSnapshots(p, "需求.md")).join(" ") === beforeVers);
+  await rm(O, { recursive: true, force: true });
+}
+
 ok("referencesOf 找到引用的文件与行号", (await referencesOf(p, "图.png")).some((r) => r.file === "稿.dc.html" && r.line > 0));
 const t = await countTypes(p);
 ok("countTypes 全项目分布", t.dc === 1 && t.md === 2 && t.image === 2 && t.other === 2, t);

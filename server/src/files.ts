@@ -25,6 +25,7 @@ import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
 import { isToolPage } from "./indexpage.js";
+import { isInside } from "./pathguard.js";
 import { writeAtomic } from "./normalize.js";
 import { listDrafts, type Project } from "./project.js";
 
@@ -468,7 +469,20 @@ async function saveSnapshot(p: Project, rel: string, buf: Buffer, src: string, n
  *  这条路在 #108 之前就存在（被「外部改动」兜底存下来的图片也退不回来），
  *  **只是没人退过图片，所以没人发现。** */
 export async function readSnapshotBytes(p: Project, rel: string, version: string): Promise<Buffer> {
-  const f = join(snapDir(p, rel), `${version}.src.gz`);
+  /* ⚠️ **版本号是外部输入，先过形状再进 join**（issue #156）。
+     `read_file_version` / `compare_file_versions` / `revert_file` 都把调用方给的版本号原样传到这里，
+     而 `path.join` 会把 `..` 归一化掉 —— `version: "../../../../别的项目/.umbrastudio/snapshots/<key>/s3"`
+     原来能读到**别的项目**某一版的原文，`revert_file` 还会把它写进本项目。
+     这里是三个能力唯一的读口，一处守住全覆盖。稿那一侧（`history.ts` `resolveSnapshot` 的 `/^v\d+$/`）早就这么守了。
+     两道闸：形状（`s<N>`）+ 结果（拼出来的路径必须还在这个文件的快照目录里），和 `chat.ts` `sessionFile` 同一套。 */
+  const dir = snapDir(p, rel);
+  const f = join(dir, `${version}.src.gz`);
+  if (!/^s\d+$/.test(version) || !isInside(dir, f)) {
+    const shown = String(version).slice(0, 40);
+    throw new ToolError(err(X.SNAPSHOT_MISSING, rel, { kind: "key", name: shown },
+      `版本号形状不对：${JSON.stringify(shown)}`,
+      { fix: "版本号形如 s3，用 list_file_versions 给的那个" }));
+  }
   if (!existsSync(f)) {
     const have = await listSnapshots(p, rel);
     throw new ToolError(err(X.SNAPSHOT_MISSING, rel, { kind: "key", name: version },
