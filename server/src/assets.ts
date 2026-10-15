@@ -3,7 +3,7 @@
  * 为什么没有 list_tokens：umbra-tokens.json 是 810 KB / 1,236 个叶子，
  * 全量返回会直接吃掉调用模型的上下文。按需检索是这一层的核心价值。
  */
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
@@ -20,7 +20,14 @@ export interface TokenLeaf {
   preview?: string;
 }
 
-const cache = new Map<string, TokenLeaf[]>();
+/* ⚠️ 缓存项带**读的那一刻的 mtime / 大小**（issue #154）。原来只按路径缓存、永不失效：
+   `set_token_value` 改完、用户在编辑器里改完、AI 经 write_file 改完，`search_tokens` 和颜色候选的
+   token 反查（`cssvars.ts`）都还是旧值，直到重启核心进程 —— 而 `get_token` 每次读盘是新值，两边对不上。
+   一次 `stat` 远比重新解析 1,200 多个叶子便宜。 */
+const cache = new Map<string, { mtimeMs: number; size: number; leaves: TokenLeaf[] }>();
+
+/** 写入口改完 tokens 文件后调一次：同一毫秒内的两次写入 mtime 可能不变，光靠 stat 会漏。 */
+export function invalidateTokens(path: string): void { cache.delete(path); }
 
 function kindOf(path: string, v: unknown): TokenKind {
   if (Array.isArray(v)) return "list";
@@ -38,8 +45,9 @@ function kindOf(path: string, v: unknown): TokenKind {
 
 export async function tokenLeaves(p: Project): Promise<TokenLeaf[]> {
   if (!p.tokensPath) return [];
+  const st = await stat(p.tokensPath).catch(() => null);
   const hit = cache.get(p.tokensPath);
-  if (hit) return hit;
+  if (hit && st && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.leaves;
   let json: unknown;
   try {
     json = JSON.parse(await readFile(p.tokensPath, "utf8"));
@@ -63,7 +71,7 @@ export async function tokenLeaves(p: Project): Promise<TokenLeaf[]> {
     out.push(leaf);
   };
   walk(json, "");
-  cache.set(p.tokensPath, out);
+  if (st) cache.set(p.tokensPath, { mtimeMs: st.mtimeMs, size: st.size, leaves: out });
   return out;
 }
 

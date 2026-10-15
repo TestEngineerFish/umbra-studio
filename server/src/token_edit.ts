@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { Project } from "./project.js";
 import { globalSearch } from "./search.js";
 import { writeAtomic } from "./normalize.js";
+import { invalidateTokens } from "./assets.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 
@@ -121,6 +122,8 @@ export async function setTokenValue(
      末尾补一个换行 —— 和 `normalize` 的「末尾单换行」约定一致，
      不补的话每次改 token 都会让 git diff 多出一行「\ No newline at end of file」。 */
   await writeAtomic(p.tokensPath, JSON.stringify(tokens, null, 2) + "\n");
+  /* 检索缓存按 mtime 失效，但同一毫秒内连改两次 mtime 可能不变 —— 写入口自己清一次（#154） */
+  invalidateTokens(p.tokensPath);
 
   return {
     path: tokenPath,

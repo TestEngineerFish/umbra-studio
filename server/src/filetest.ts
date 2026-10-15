@@ -1165,6 +1165,30 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await rm(DB, { recursive: true, force: true });
 }
 
+/* ── 改了 token 取值之后，search_tokens 要看到新值（issue #154）──
+   `tokenLeaves` 原来按路径缓存、永不失效：`set_token_value` 改完 `get_token` 是新值，
+   `search_tokens`（以及颜色候选的 token 反查）还是旧值，直到重启核心进程。
+   两条路都要验：走写入口（`setTokenValue`）和**绕过写入口直接改文件**（编辑器 / write_file）。 */
+{
+  const { searchTokens, getToken } = await import("./assets.js");
+  const { setTokenValue } = await import("./token_edit.js");
+  const TK = join(DIR, "tokcache");
+  await mkdir(TK, { recursive: true });
+  await writeFile(join(TK, "project.json"), JSON.stringify({ name: "tokcache", title: "token 缓存", tokens: "t.json" }));
+  await writeFile(join(TK, "t.json"), JSON.stringify({ color: { light: { danger: "#E8590C" } } }, null, 2));
+  const pt = await buildProject(TK);
+  const val = async () => (await searchTokens(pt, "danger")).hits.find((h) => h.path === "color.light.danger")?.value;
+  ok("（前提）第一次检索读到原值并进了缓存", (await val()) === "#E8590C");
+  await setTokenValue(pt, "color.light.danger", "#D9480F");
+  ok("**set_token_value 之后 search_tokens 是新值**（原来还是旧值，直到重启）", (await val()) === "#D9480F", await val());
+  ok("按新值也搜得到", (await searchTokens(pt, "#d9480f")).hits.some((h) => h.path === "color.light.danger"));
+  ok("get_token 与 search_tokens 一致", JSON.stringify(await getToken(pt, "color.light.danger")).includes("#D9480F"));
+  /* 绕过写入口：直接改文件（值长度不同 → 大小变了；再等一下让 mtime 也变） */
+  await new Promise((r) => setTimeout(r, 20));
+  await writeFile(join(TK, "t.json"), JSON.stringify({ color: { light: { danger: "#C92A2A80" } } }, null, 2));
+  ok("**直接改 tokens 文件（不走 set_token_value）之后也拿到新值**", (await val()) === "#C92A2A80", await val());
+}
+
 await rm(DIR, { recursive: true, force: true });
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;
