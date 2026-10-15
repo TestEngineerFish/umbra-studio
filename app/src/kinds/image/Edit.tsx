@@ -48,6 +48,15 @@ export interface EditApi {
   bytes(): Promise<{ base64: string; w: number; h: number } | null>;
 }
 
+/** 这个扩展名能不能按原格式存回去（issue #132）。
+ *  浏览器画布的 `toBlob` 只真能编码 png / jpeg / webp；gif / bmp / ico / avif 导出来是 PNG 字节，
+ *  写回原扩展名就是「扩展名说 GIF、内容是 PNG」，动图还只剩第一帧 —— 在本软件里看着正常（浏览器按内容嗅探），
+ *  拿到别的工具里才坏。所以这几种不给裁剪。 */
+export function canEncode(path: string): boolean {
+  const ext = (path.split(".").pop() ?? "").toLowerCase();
+  return ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "webp";
+}
+
 /** 扩展名 → 导出用的 MIME。**按原扩展名导**，不要一律 PNG ——
  *  一张 2 MB 的 jpg 裁一刀之后变成 12 MB 的 png，用户只会以为我们把图弄坏了。 */
 export function mimeOf(path: string): string {

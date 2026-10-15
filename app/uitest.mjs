@@ -4048,7 +4048,8 @@ console.log("\n图片编辑：裁剪 / 旋转 / 保存（issue #108）");
   };
   const NM = "_uitest108.png", ABS = join(boot108.dir, NM);
   const SVG = "_uitest108.svg", SVGABS = join(boot108.dir, SVG);
-  const made = [NM, SVG];
+  const GIF = "_uitest108.gif", GIFABS = join(boot108.dir, GIF);
+  const made = [NM, SVG, GIF];
   try {
     writeFileSync(ABS, mkPng(240, 160, 3));
     writeFileSync(SVGABS, '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="#38f"/></svg>', "utf8");
@@ -4178,6 +4179,20 @@ console.log("\n图片编辑：裁剪 / 旋转 / 保存（issue #108）");
          "**矢量图的裁剪钮禁用，而且说出了原因**（禁用不解释 = 「点了没反应」，#31 同病）",
          `disabled=${dis} · title=${(tip ?? "").slice(0, 28)}`);
     } else ok(false, "svg 样本没打开，反面这一条测不到");
+    /* ⑥ GIF：存不回原格式（画布只导得出 PNG 字节、动图只剩一帧）→ 裁剪钮禁用并说原因（issue #132） */
+    writeFileSync(GIFABS, Buffer.from("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64"));
+    await settleTree(GIF);
+    if (await openByName(GIF)) {
+      await pg.waitForTimeout(1500);
+      await openEdit();
+      await pg.waitForTimeout(600);
+      const t3 = pg.locator('[data-ud="img-crop-toggle"]');
+      const dis3 = await t3.isDisabled().catch(() => null);
+      const tip3 = await t3.getAttribute("title").catch(() => "");
+      ok(dis3 === true && /存不回原格式/.test(tip3 ?? ""),
+         "**GIF 的裁剪钮禁用，而且说出了原因**（原来能裁，存出来扩展名 .gif、内容是 PNG）",
+         `disabled=${dis3} · title=${(tip3 ?? "").slice(0, 28)}`);
+    } else ok(false, "gif 样本没打开，这一条测不到");
   } finally {
     /* 收尾：切走再删（§159.5），三份样本一律删 */
     await openByName(".dc.html").catch(() => {});

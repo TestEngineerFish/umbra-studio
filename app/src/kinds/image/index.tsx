@@ -6,7 +6,7 @@ import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
 import { SizeBtn } from "../toolbar";
 import { ImageView } from "./View";
-import { ImageEdit, type EditApi } from "./Edit";
+import { canEncode, ImageEdit, type EditApi } from "./Edit";
 import { askSave, freeName } from "./Save";
 import { toast } from "../../ui/Toast";
 import type { Core } from "../../api/client";
@@ -94,6 +94,8 @@ function Toolbar() {
        `api` 为空就什么都不做、也什么都不说 —— 我自己写了一个 #31。 */
     if (busy) return;
     if (!api) { toast("裁剪还没就绪", "再等一下，或者退出裁剪重进一次", "error"); return; }
+    /* 钮已经禁用了，这里再挡一次（#132）：存出去的字节和扩展名对不上是静默损坏 */
+    if (!canEncode(d.path)) { toast("这种格式存不回去", "GIF / BMP / ICO / AVIF 只能导出 PNG 字节", "error"); return; }
     setBusy(true);
     try {
       const out = await api.bytes();
@@ -158,8 +160,10 @@ function Toolbar() {
           禁用而不解释和「点了没反应」是同一个病（#31）。 */}
       <span className="w-px h-4 bg-border shrink-0" />
       <button onClick={() => { d.setCropping(!d.cropping); if (!d.cropping) d.setPicking(false); }}
-        disabled={d.isSvg} aria-pressed={d.cropping} data-ud="img-crop-toggle"
-        title={d.isSvg ? "矢量图没法裁剪 —— 画布取不到它的像素" : "裁剪 / 旋转 / 翻转"}
+        disabled={d.isSvg || !canEncode(d.path)} aria-pressed={d.cropping} data-ud="img-crop-toggle"
+        title={d.isSvg ? "矢量图没法裁剪 —— 画布取不到它的像素"
+          : !canEncode(d.path) ? "GIF / BMP / ICO / AVIF 存不回原格式（只能导出 PNG 字节，动图会只剩一帧），这几种不给裁剪"
+          : "裁剪 / 旋转 / 翻转"}
         className={`inline-flex items-center gap-1.5 h-[22px] px-2 rounded-sm border shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
           d.cropping ? "bg-accentSoft text-accent font-semibold border-accent" : "bg-panel2 text-text2 border-border hover:text-text"}`}>
         ⬚ 裁剪{d.cropping ? "中" : ""}
