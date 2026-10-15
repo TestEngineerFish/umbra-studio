@@ -97,7 +97,14 @@ export function storageOf(body: unknown): StorageBrief | null {
   const used = n(s.used), limit = n(s.limit), pct = n(s.pct);
   if (used === null || limit === null || pct === null) return null;
   const warn = s.warn === "warn" || s.warn === "critical" || s.warn === "full" ? s.warn : "ok";
-  return { used, limit, pct: Math.min(100, Math.round(pct)), warn, tier: typeof s.tier === "string" && s.tier ? s.tier : null };
+  /* ⚠️ 档位取回包**顶层的 `member.tier`**（issue #149）。服务端 `/membership` 顺带的 `storage` 子对象
+     只有 used / limit / pct / warn 四个键（`tier` 只在完整的 `GET /storage` 里有），
+     原来只看 `storage.tier` → 永远 null → 付费会员也显示「免费档」。
+     `member` 没会员时是 null；`storage.tier` 留作兜底（将来服务端补上这个键也照样认）。 */
+  const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+  const member = (body as { member?: unknown } | null)?.member as { tier?: unknown } | null | undefined;
+  const tier = (member && typeof member === "object" ? str(member.tier) : null) ?? str(s.tier);
+  return { used, limit, pct: Math.min(100, Math.round(pct)), warn, tier };
 }
 
 /** 字节 → 给人看：<1 MB 写 KB，≥1 GB 写 GB（两位小数去尾零），<100 MB 留一位小数。与 PC / iOS 同一条规矩（设计侧 234 §四）。 */

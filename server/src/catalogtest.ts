@@ -85,6 +85,12 @@ ok(giftPluginIdsOf({ gift_plugins: "x" }).length === 0 && giftPluginIdsOf(null).
   const s = storageOf({ storage: { used: 52428800, limit: 1073741824, pct: 5, warn: "ok", tier: "basic" } });
   ok(!!s && s.used === 52428800 && s.limit === 1073741824 && s.pct === 5 && s.warn === "ok" && s.tier === "basic", "storage 完整 → 原样");
   ok(storageOf({ storage: { used: 1, limit: 2, pct: 150, warn: "weird", tier: null } })?.pct === 100 && storageOf({ storage: { used: 1, limit: 2, pct: 150, warn: "weird" } })?.warn === "ok", "pct 封 100、warn 不认的当 ok、tier 空 → null");
+  /* 真实回包形状（issue #149）：服务端的 `storage` 里**没有 tier**，档位在顶层 `member` 上。
+     原来上面那条手造夹具带 `storage.tier`，于是「会员显示免费档」没被测出来。 */
+  const real = { used: 52428800, limit: 1073741824, pct: 5, warn: "ok" };
+  ok(storageOf({ member: { tier: "basic", tier_name: "基础会员" }, storage: real })?.tier === "basic", "真实形状：member.tier = basic → tier basic（不是免费档）");
+  ok(storageOf({ member: null, storage: real })?.tier === null, "真实形状：member = null → tier null（免费档）");
+  ok(storageOf({ member: { tier: "" }, storage: real })?.tier === null && storageOf({ member: "x", storage: real })?.tier === null, "member.tier 空 / member 不是对象 → null");
   ok(storageOf({}) === null && storageOf(null) === null && storageOf({ storage: { used: "1", limit: 2, pct: 0 } }) === null && storageOf({ storage: { used: -1, limit: 2, pct: 0 } }) === null, "缺 / 不是数 / 负数 → null（老服务端不画这一行）");
   ok(fmtBytes(0) === "0" && fmtBytes(512 * 1024) === "512 KB" && fmtBytes(5.26 * 1048576) === "5.3 MB" && fmtBytes(186 * 1048576) === "186 MB" && fmtBytes(1073741824) === "1 GB" && fmtBytes(1.5 * 1073741824) === "1.5 GB",
     "字节格式：<1 MB 写 KB、<100 MB 一位小数、≥1 GB 两位小数去尾零");
