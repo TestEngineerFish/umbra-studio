@@ -888,6 +888,31 @@ console.log("\n⑫ 账号：OIDC 授权码 + PKCE（一·a，2026-10-10）——
   fake.close();
   const st2 = (await (await fetch(u("account"))).json()) as { data: { serverUrl: string; pending: boolean } };
   ok(st2.data.serverUrl !== fakeUrl && st2.data.pending === false, "没登上不记这次给的地址、也没留一场在等");
+
+  /* ── 回调已到、收尾还没做完的那段窗口里，状态不许是「没在登、也没登上、也没错」（issue #137）──
+     原来 `pending` 借的是 `oidc.pending`：回调一到就 false，而换令牌 + `/auth/me` + 落盘还在路上，
+     前端轮询落在这里就停下、显示「未登录」，之后写的失败原因也被吞。
+     这里让 `/auth/me` 故意慢 600ms 并回 500 —— 走失败那一支，**不写 account.json**。 */
+  {
+    const { AccountService } = await import("./account.js");
+    const base = "http://umbra.apitest.invalid";
+    const svc = new AccountService(
+      new OidcLogin(async () => ({ ok: true, status: 200, json: async () => ({ access_token: "AT", refresh_token: "RT", expires_in: 60 }) })),
+      async (url: string) => {
+        if (url.endsWith("/auth/config")) return { ok: true, status: 200, json: async () => ({ provider: "oidc", ...CFG }) };
+        if (url.endsWith("/auth/me")) { await new Promise((r) => setTimeout(r, 600)); return { ok: false, status: 500, json: async () => ({}) }; }
+        return { ok: false, status: 404, json: async () => ({}) };
+      });
+    const { url: lu } = await svc.loginStart(base);
+    const lau = new URL(lu);
+    await (await fetch(`${lau.searchParams.get("redirect_uri")}?code=CODE&state=${lau.searchParams.get("state")}`)).text();
+    await new Promise((r) => setTimeout(r, 100));
+    const mid = await svc.status();
+    ok(mid.pending === true && mid.lastError === "", "**回调已到、/auth/me 还在路上：pending 仍是 true**（原来已经是 false，前端就此停下）", `pending=${mid.pending}`);
+    await new Promise((r) => setTimeout(r, 900));
+    const end = await svc.status();
+    ok(end.pending === false && /服务端不认/.test(end.lastError), "收尾做完：pending 放下、失败原因写上了（轮询这时才停，原因不会被吞）", end.lastError.slice(0, 40));
+  }
 }
 
 

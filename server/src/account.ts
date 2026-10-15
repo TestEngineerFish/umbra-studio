@@ -125,6 +125,12 @@ export function oidcConfigOf(d: AuthConfigDTO | null): OidcClientConfig | null {
 export class AccountService {
   private lastError = "";
   private provider: AccountStatus["provider"] = "unknown";
+  /** 正在进行的那一场登录的代号（0 = 没有）。⚠️ 「这场登录做完没」是这里自己的状态，不借 `oidc.pending`（issue #137）：
+   *  回调一到 `oidc.pending` 就是 false，而换令牌、核 `/auth/me`、落盘还没做 —— 前端轮询落在这段窗口里
+   *  会看到 `pending:false, signedIn:false, lastError:""`，当成「没登上」停下来，之后写的失败原因也被吞。
+   *  用代号不用布尔：再开一场会作废上一场，上一场的收尾不该把新一场的标记放下。 */
+  private inFlight = 0;
+  private loginGen = 0;
 
   constructor(private oidc = new OidcLogin(), private fetchFn: FetchLike = (u, i) => fetch(u, i) as unknown as ReturnType<FetchLike>,
               private log: (line: string) => void = () => {}) {}
@@ -134,7 +140,7 @@ export class AccountService {
     const { getAiConfig } = await import("./ai_config.js");
     const serverAi = !!(await getAiConfig()).channelA?.useAccount;
     return { serverUrl: a.serverUrl, signedIn: !!a.accessToken && !!a.user, user: a.user, signedInAt: a.signedInAt,
-      pending: this.oidc.pending, lastError: this.lastError, provider: this.provider, serverAi };
+      pending: this.oidc.pending || this.inFlight !== 0, lastError: this.lastError, provider: this.provider, serverAi };
   }
 
   /** 通道 A 切到 / 切回 Umbra 服务端 AI。开：`useAccount: true`（端点 / 密钥取配置那一刻现算，文件里不存令牌）；
@@ -212,6 +218,8 @@ export class AccountService {
     }
     if (!cfg) throw new Error("这台服务器还没开 OIDC 登录（/auth/config 说是 local）。要等服务端切到 Casdoor 之后才能从这里登录。");
     const { url, done } = await this.oidc.start(cfg);
+    const gen = ++this.loginGen;
+    this.inFlight = gen;
     void done.then(
       async (t) => { await this.finish(base, cfg!, t); },
       (e) => {
@@ -220,7 +228,7 @@ export class AccountService {
           : reason === "state" ? "回来的不是这一次登录的回调，已经丢掉；再按一次重新开始" : `IdP 没有通过：${(e as Error).message}`;
         this.log(`[account] 登录没完成：${reason}`);
       },
-    );
+    ).finally(() => { if (this.inFlight === gen) this.inFlight = 0; });   // 落盘 / 写完 lastError 之后才放下
     return { url };
   }
 

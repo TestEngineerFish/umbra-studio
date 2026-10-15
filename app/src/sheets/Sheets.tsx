@@ -366,10 +366,12 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
         setBusy(false);
         if (d.signedIn) toast("已登录 Umbra 账号");
         else if (d.lastError) toast(d.lastError);
+        /* 停了之后再读一次（#137 的保险）：万一停在「收尾还没写完」的那一刻，之后落盘的登录态 / 失败原因也能显示出来 */
+        setTimeout(() => { void load(); }, 1500);
       }
     }, 1500);
     return () => clearInterval(t);
-  }, [busy, core]);
+  }, [busy, core, load]);
   const login = async () => {
     setBusy(true);
     const r = await core.post<{ url: string }>("account_login", {});
