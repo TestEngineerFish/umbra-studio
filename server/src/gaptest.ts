@@ -1,5 +1,6 @@
 /** M13-3 通用缺口的回归（`doc/22` §四）：`read_file` 分页 · `search_in_file` · `list_activity` · `list_capabilities`。
  *  全在临时项目里跑（`UMBRASTUDIO_STATE_DIR` 也是临时的），直接调能力表里的 `run`，不起 HTTP。 */
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,10 +37,14 @@ const w2 = await cap("write_file").run({ path: "notes/长文.md", content: text 
 ok(w2.ok, "write_file 经 http 写第二版");
 
 /* ① 分页 */
+/* ⚠️ 比对用的是**第二版**整份读出的 sha（issue #150）。原来拿第一版的 `sha1` 比、再 `|| length === 64`，
+   前半必假、后半恒真 —— 任何一个 sha256 都能过，分页分支哪天改成按切片现算也测不出来。 */
+const full = (await cap("read_file").run({ path: "notes/长文.md" } as never, asHuman)).data as { sha256: string };
 const page = (await cap("read_file").run({ path: "notes/长文.md", offset: 11, limit: 5 } as never, asHuman)).data as { content: string; range: { from: number; to: number; total: number; more: boolean }; sha256: string };
 ok(page.content.split("\n").length === 5 && page.content.startsWith("第 11 行"), "read_file offset/limit 按行切", page.content.split("\n")[0]);
 ok(page.range.from === 11 && page.range.to === 15 && page.range.total === 121 && page.range.more === true, "range 说清 from / to / total / more", JSON.stringify(page.range));
-ok(page.sha256 === sha1.sha256 || page.sha256.length === 64, "分页读的 sha256 仍是整份文件的");
+ok(page.sha256 === full.sha256, "分页读的 sha256 仍是整份文件的（与整份读严格相等）");
+ok(page.sha256 !== createHash("sha256").update(page.content).digest("hex"), "而且不是那一页切片的 sha（否则拿它去 write_file 会被无故拒）");
 const tail = (await cap("read_file").run({ path: "notes/长文.md", offset: 120 } as never, asHuman)).data as { content: string; range: { more: boolean } };
 ok(tail.content.split("\n").length === 2 && tail.range.more === false, "只给 offset = 读到末尾");
 const beyond = (await cap("read_file").run({ path: "notes/长文.md", offset: 999, limit: 5 } as never, asHuman)).data as { content: string; range: { to: number } };
