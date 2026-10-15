@@ -7,6 +7,7 @@ import { app, BrowserWindow, Menu, dialog, shell, ipcMain, Notification, nativeT
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { externalAllowed, sameOrigin } from "./urlguard.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 核心根：开发时是仓库根（shell/..），打包后是 resources/core（electron-builder extraResources） */
@@ -75,10 +76,19 @@ async function buildMenu() {
     { label: "编辑", role: "editMenu" },
     { label: "视图", submenu: [{ role: "reload", label: "重新加载" }, { role: "toggleDevTools", label: "开发者工具" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
     { label: "窗口", role: "windowMenu" },
-    { label: "帮助", submenu: [{ label: "在浏览器里打开当前页", click: () => { if (mainWin) void shell.openExternal(mainWin.webContents.getURL()); } }] },
+    { label: "帮助", submenu: [{ label: "在浏览器里打开当前页", click: () => { if (mainWin) void safeExternal(mainWin.webContents.getURL()); } }] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(tpl));
 }
+
+/** 外开走一道协议闸（issue #131，判据在 `urlguard.mjs`）：
+ *  setWindowOpenHandler、`host:openExternal`、菜单「在浏览器里打开」全经这里。 */
+function safeExternal(url) {
+  if (!externalAllowed(url)) { console.warn(`[shell] 拒绝外开（协议不在白名单）：${String(url).slice(0, 120)}`); return Promise.resolve(); }
+  return shell.openExternal(String(url));
+}
+/** 这个 frame 当前是不是 hub 源（令牌只给 hub 源，issue #131）。 */
+function isHubOrigin(url) { return !!hub && sameOrigin(url, hub.url); }
 
 async function pickDirectory(opts = {}) {
   const r = await dialog.showOpenDialog(mainWin ?? undefined, { title: opts.title ?? "选择目录", properties: ["openDirectory", "createDirectory"] });
@@ -92,12 +102,16 @@ function wireIpc() {
      preload，所以今天拿不到 `ipcRenderer`）。这一道闸是**按不变量写的，不是按
      今天的配置写的**：哪天子 frame 有了 preload，这里不用跟着改。 */
   ipcMain.on("host:boot", (e) => {
-    const okSender = !!mainWin && e.sender === mainWin.webContents && e.senderFrame === e.sender.mainFrame;
+    /* ⚠️ 再核一条**来源**（issue #131）：只按 frame 身份判的话，主窗口被稿里的
+       `top.location = "http://外部"` 导走以后，外部页跑在同一个主 frame 里、preload 照常执行，
+       令牌就交给它了。不变量是「令牌只给 hub 源」。 */
+    const okSender = !!mainWin && e.sender === mainWin.webContents && e.senderFrame === e.sender.mainFrame
+      && isHubOrigin(e.senderFrame?.url);
     e.returnValue = okSender ? bootData() : null;
   });
   ipcMain.handle("host:pickDirectory", (_e, opts) => pickDirectory(opts));
   ipcMain.handle("host:revealInFinder", (_e, p) => { shell.showItemInFolder(p); });
-  ipcMain.handle("host:openExternal", (_e, url) => shell.openExternal(String(url)));
+  ipcMain.handle("host:openExternal", (_e, url) => safeExternal(url));   // 协议闸收口在这里（#131；OIDC 登录地址也走这条）
   ipcMain.handle("host:notify", (_e, n) => { if (Notification.isSupported()) new Notification({ title: n?.title ?? "Umbra Studio", body: n?.body ?? "" }).show(); });
   /* 窗口标题**只写项目名**（M8-16，用户实测第 1 条）。
      拼上应用名是 VS Code 那类的惯例，但这里已经有两处在报应用名了：
@@ -144,7 +158,16 @@ async function createMainWindow() {
   });
   mainWin.once("ready-to-show", () => mainWin.show());
   mainWin.webContents.on("did-finish-load", () => { while (pending.length) mainWin.webContents.send("host:event", pending.shift()); void buildMenu(); });
-  mainWin.webContents.setWindowOpenHandler(({ url }) => { void shell.openExternal(url); return { action: "deny" }; });
+  mainWin.webContents.setWindowOpenHandler(({ url }) => { void safeExternal(url); return { action: "deny" }; });
+  /* ⚠️ **主窗口不许被导出 hub 源**（issue #131）。演示态 iframe、或稿里一句 `top.location=…`
+     能把主 frame 换成外部页；换过去之后 preload 照样跑。离开 hub 源的导航一律取消，
+     http(s) 的交给系统浏览器（经同一道协议闸），别的丢掉。
+     `will-navigate` 在 Electron 25+ 只对主 frame 触发 —— 稿件 iframe 走项目服务（别的端口），不受影响。 */
+  mainWin.webContents.on("will-navigate", (e, url) => {
+    if (isHubOrigin(url)) return;
+    e.preventDefault();
+    void safeExternal(url);
+  });
   /* 地址里**不带 token** —— 壳靠 preload 的 `sendSync("host:boot")` 拿（issue #39）。
      带在地址里的话它会进历史记录、也会被 `webContents.getURL()` 之类读到。 */
   await mainWin.loadURL(hub.url + "__app/home");

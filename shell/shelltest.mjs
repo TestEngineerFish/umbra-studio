@@ -101,6 +101,33 @@ console.log("workbench:", await win.evaluate(() => document.querySelector("heade
   console.log("token usable:", works === 200 ? "✓ 真调一次能力回 200" : `✗ ${works}`);
 }
 
+/* ⚠️ **稿里的链接不许让壳外开任意协议、也不许把主窗口导出 hub 源**（issue #131）。
+   原来 `setWindowOpenHandler` / `host:openExternal` 原样交给 `shell.openExternal`，
+   `file:///Applications/X.app` 在 macOS 上会直接启动程序；主窗口被 `top.location=` 导走后
+   preload 照跑，令牌也交出去。
+   判据：在主进程里把 `shell.openExternal` 换成**记录桩**（不真开任何东西），
+   从前端走三条入口（`umbraHost.openExternal` / `window.open` / 顶层导航），
+   断言 file: / smb: 一次都没到 openExternal、https 照常到。
+   顶层导航那一条放在脚本最后那个实例里验（被取消的导航会让 Playwright 一直「等导航结束」，
+   放在这里会卡住后面所有 locator）。 */
+{
+  await app.evaluate(({ shell }) => { globalThis.__extCalls = []; globalThis.__extOrig = shell.openExternal; shell.openExternal = async (u) => { globalThis.__extCalls.push(String(u)); }; });
+  const hubOrigin = await win.evaluate(() => location.origin);
+  await win.evaluate(async () => {
+    await window.umbraHost.openExternal("file:///Applications/Calculator.app");
+    await window.umbraHost.openExternal("https://example.com/ok-1");
+    window.open("smb://evil/share", "_blank");
+    window.open("https://example.com/ok-2", "_blank");
+  });
+  await win.waitForTimeout(500);
+  const calls = await app.evaluate(() => globalThis.__extCalls);
+  const badProto = calls.filter((u) => !/^(https?|mailto):/i.test(u));
+  console.log("外开协议闸:", badProto.length === 0 && calls.includes("https://example.com/ok-1") && calls.includes("https://example.com/ok-2")
+    ? `✓ file: / smb: 没到 openExternal，https 照常（${calls.length} 次）` : `✗ ${JSON.stringify(calls)}`);
+  await app.evaluate(({ shell }) => { shell.openExternal = globalThis.__extOrig; });
+  void hubOrigin;
+}
+
 /* ⚠️ **有未落盘时关窗要有人问一句**（issue #44，2026-10-02）。
    前端在有 dirty 时取消 `beforeunload`，而 **Electron 不弹浏览器那种确认** ——
    没人听 `will-prevent-unload` 的话窗口**静默关不掉、界面上什么都不显示**，
@@ -291,6 +318,18 @@ await app.close();
 // 正常退出后再开：不该有提示
 app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app); await win.waitForTimeout(2500);
 console.log("clean restart toast:", await win.evaluate(() => /上次没有正常退出/.test(document.body.innerText)) ? "有（错）" : "无（对）");
+/* 主窗口导航闸（issue #131）：顶层导航到 hub 以外要被取消、交给系统浏览器（这里是记录桩），主窗口仍在 hub 源。
+   放在这个实例的最后：被取消的导航会让 Playwright 之后的操作一直「等导航结束」。 */
+{
+  await app.evaluate(({ shell }) => { globalThis.__extCalls = []; shell.openExternal = async (u) => { globalThis.__extCalls.push(String(u)); }; });
+  const hubOrigin = await win.evaluate(() => location.origin);
+  await win.evaluate(() => { location.href = "http://127.0.0.1:1/attacker"; }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 1000));
+  const calls = await app.evaluate(() => globalThis.__extCalls);
+  const nowUrl = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => x.isVisible())?.webContents.getURL() ?? "");
+  console.log("主窗口导航闸:", nowUrl.startsWith(hubOrigin) && calls.includes("http://127.0.0.1:1/attacker")
+    ? "✓ 导出 hub 源被取消（交给系统浏览器），主窗口仍在 hub" : `✗ 主窗口在 ${nowUrl.slice(0, 60)} · 外开 ${JSON.stringify(calls)}`);
+}
 await app.close();
 // --mcp：壳当 MCP server 起，stdio 归 MCP
 {
@@ -310,6 +349,6 @@ console.log("autotest log:", (await readFile(S + "/shell-autotest.log", "utf8"))
    和 `lifecycletest` 步骤 8 同一个病：**清掉自己造的文件 ≠ 清掉自己造的状态。** */
 try {
   const { removeRecentProject } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/dist/workspace.js");
-  const r = await removeRecentProject(S);
+  const r = await removeRecentProject(S + "/umbra_copy");   // 记的是副本目录本身，不是 S（原来传 S，永远「本来就没有」）
   console.log("收尾：最近打开里那条测试记录", r.removed ? "已撤掉" : "本来就没有");
 } catch (e) { console.log("收尾：撤「最近打开」没成（不影响测试结论）:", String(e).slice(0, 60)); }

@@ -13,6 +13,7 @@
     "dist:dir": "electron-builder --mac --arm64 --dir",
     "packtest": "node packtest.mjs",
     "shelltest": "node shelltest.mjs",
+    "urlguardtest": "node urlguard.mjs",
     "dist:signed": "node dist-signed.mjs",
     "signcheck": "node signcheck.mjs"
   },
@@ -28,6 +29,7 @@
     },
     "files": [
       "main.mjs",
+      "urlguard.mjs",
       "preload.cjs",
       "package.json"
     ],

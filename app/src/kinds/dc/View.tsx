@@ -158,7 +158,9 @@ function Present({ src, onStop }: { src: string; onStop: () => void }) {
      （编辑态那份带 `embed=1`，演示时会把壳的 chrome 也放大出来） */
   return (
     <div id="present" className="fixed inset-0 z-50 bg-black">
-      <iframe src={src} title="演示" className="w-full h-full border-0 bg-white" />
+      {/* ⚠️ 和编辑态同一套 sandbox（issue #131）：原来演示态这份没有 sandbox，
+          稿里一句 `top.location = "http://外部"` 就能把壳的主窗口导走。不给 allow-top-navigation。 */}
+      <iframe src={src} title="演示" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" className="w-full h-full border-0 bg-white" />
       <button className="btn sm absolute top-3 right-3 opacity-70 hover:opacity-100" onClick={onStop}>退出演示 Esc</button>
     </div>
   );
