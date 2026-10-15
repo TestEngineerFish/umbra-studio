@@ -15,6 +15,7 @@
 import { serveStart } from "./serve.js";
 import { buildProject, listProjectDirs } from "./project.js";
 import { start as startJob } from "./jobs.js";
+import { projectJobKey } from "./api.js";
 
 let pass = 0, fail = 0;
 const ok = (c: boolean, what: string, detail = "") => {
@@ -42,13 +43,30 @@ console.log(`\nHTTP 路由层 · ${p.title}`);
    ② `chatAborts.set(j.id, ctl)` 用一个**没接到任何东西上的**新 controller 盖掉了
       旧作业真正在用的那个 —— 之后点「中断」回「已发中断」，而那一轮照跑到底、照落盘。
       **中断给假回执，比中断没做还糟。** */
+console.log("\n⓪ 作业锁键按目录不按项目名（issue #153）");
+{
+  /* 两个同名（project.json name 一样）、不同目录的项目，对同一相对路径各起一个作业：
+     必须是**两个不同的作业**，各自的 run 都执行了。原来键是 `${p.name}::${rel}`，后一个拿到前一个的 jobId。 */
+  const a = { dir: "/tmp/umbra-apitest-a/Demo" }, b = { dir: "/tmp/umbra-apitest-b/Demo" };
+  ok(projectJobKey(a, "Demo.dc.html") !== projectJobKey(b, "Demo.dc.html"), "同名不同目录 → 锁键不同");
+  ok(projectJobKey({ dir: "/tmp/x/../x/Demo" }, "k") === projectJobKey({ dir: "/tmp/x/Demo" }, "k"), "目录先规范化（与 serve.ts keyOf 一致）");
+  let ranA = false, ranB = false;
+  let rel = () => {};
+  const gate = new Promise<void>((r) => { rel = r; });
+  const ja = startJob("render_check", projectJobKey(a, "Demo.dc.html"), async () => { ranA = true; await gate; });
+  const jb = startJob("render_check", projectJobKey(b, "Demo.dc.html"), async () => { ranB = true; await gate; });
+  await new Promise((r) => setTimeout(r, 20));
+  ok(ja.id !== jb.id && ranA && ranB, "**两个项目各自的作业都跑了**（不是后一个复用前一个的 jobId）", `${ja.id} / ${jb.id}`);
+  rel();
+}
+
 console.log("\n① 同一会话还有一轮在跑时说出来（issue #35）");
 {
   const sessionId = "apitest-busy-session";
   /* 塞一个 8 秒不结束的作业，键和路由里拼的那个一模一样 —— 键不同就测不到这条路 */
   let release = () => {};
   const slow = new Promise<void>((r) => { release = r; });
-  const held = startJob("chat", `${p.name}::chat::${sessionId}`, () => slow);
+  const held = startJob("chat", projectJobKey(p, `chat::${sessionId}`), () => slow);   // 键必须和路由拼的一模一样（#153 起按目录）
   const r = await post("chat_send", { message: "这条不该被执行", sessionId, async: true });
   const j = await r.json() as { ok?: boolean; errors?: Array<{ code?: string; message?: string }>; data?: { jobId?: string; sessionId?: string } };
   ok(r.status === 409, "这个会话正忙时回 409（原来静默复用旧作业回 200）", `HTTP ${r.status}`);

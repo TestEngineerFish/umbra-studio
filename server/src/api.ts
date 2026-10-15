@@ -37,7 +37,7 @@ import { get as getJob, start as startJob, view as jobView, running as runningJo
 import { changesSince, diffDrafts, humanTime, listVersions, projectChangesSince, readVersionMeta, snapDir, toMarkdown, workspaceState } from "./history.js";
 import { gunzipSync } from "node:zlib";
 import { existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { draftPath, listDrafts, type Project } from "./project.js";
 import { resolveDraft } from "./locate.js";
 import { readFile } from "node:fs/promises";
@@ -55,6 +55,16 @@ import { listChats, loadChat, createChat } from "./chat.js";
 import { listComments, addComment, updateComment, deleteComment } from "./comments.js";
 import { getAiConfig } from "./ai_config.js";
 import { readCheck, sha256 } from "./check.js";
+
+
+/** 进程级作业表（`jobs.ts`）的锁键：**按项目目录，不按项目名**（issue #153）。
+ *  `project.json` 的 name 不唯一（#20 实测过，`serve.ts` 的 `running` 表也因此改成按目录）；
+ *  而桌面壳里多个项目的服务跑在同一个核心进程里、共用这张表 —— 两个都叫 `Demo` 的项目
+ *  同时体检各自的 `Demo.dc.html`，后一个原来拿到的是前一个的 jobId 和读数，自己的稿根本没体检。
+ *  规范化与 `serve.ts` `keyOf` 一致（`resolve(dir)`）。 */
+export function projectJobKey(p: Pick<Project, "dir">, tail: string): string {
+  return `${resolve(p.dir)}::${tail}`;
+}
 
 export const API_PREFIX = "/__ud/";
 export const newToken = () => randomBytes(16).toString("hex");
@@ -191,7 +201,7 @@ export async function handleApi(
       }
       const b = await readBody(req);
       const rel = await resolveDraft(p, str(b.file, "file"));
-      const j = startJob("render_check", `${p.name}::${rel}`,
+      const j = startJob("render_check", projectJobKey(p, rel),
         async () => {
           const { result, diags } = await renderCheck(p, rel, {
             width: typeof b.width === "number" ? b.width : undefined,
@@ -283,7 +293,7 @@ export async function handleApi(
 
          回 409 而不是静默复用：**带上 `jobId`**，前端接着轮询那一轮就行，
          用户的消息也还在输入框里，不会凭空消失。 */
-      const key = `${p.name}::chat::${args.sessionId}`;
+      const key = projectJobKey(p, `chat::${args.sessionId}`);
       const busy = runningJob(key);
       if (busy) {
         json(reply, 409, { ok: false, errors: [{ code: "E_CHAT_BUSY", message: "这个会话还有一轮在跑 —— 等它结束，或者先中断它" }],
