@@ -65,7 +65,7 @@ export async function probeImageSupport(channel: "a" | "b" | "c" = "a"): Promise
   const a = channel === "c" ? cfg.channelC : cfg.channelA;
   if (!a?.apiKey && !a?.useAccount) return { supportsImage: false, asked: "", answered: "", saved: false, why: `通道 ${channel.toUpperCase()} 还没配` };
   // 服务端 AI 那一档端点 / 密钥要现取（`getOpenAiChannel`）；没登录就把那句原因照实回去。
-  let resolved: { baseUrl: string; apiKey: string; model: string };
+  let resolved: ChannelAConfig;
   try {
     const { getOpenAiChannel } = await import("./ai_config.js");
     resolved = await getOpenAiChannel(channel);
@@ -77,8 +77,10 @@ export async function probeImageSupport(channel: "a" | "b" | "c" = "a"): Promise
   const png = solidPng(64, 64, pick.rgb);
   const dataUrl = "data:image/png;base64," + png.toString("base64");
 
+  /* 整条 `resolved` 传进去（issue #142）：原来只挑了三个字段，`useAccount` 丢了 ——
+     开着服务端 AI 时探测照样扣积分，却不带 `X-Umbra-Src: studio`，流水里分不出是 Studio。 */
   const r = await chat(
-    { baseUrl: resolved.baseUrl, apiKey: resolved.apiKey, model: resolved.model },
+    resolved,
     {
       messages: [{
         role: "user",
@@ -110,6 +112,10 @@ export async function probeImageSupport(channel: "a" | "b" | "c" = "a"): Promise
   }
   const hit = pick.names.some((n) => answered.toLowerCase().includes(n.toLowerCase()));
   const saved = await save(channel, a, hit);
+  if (a.useAccount) {
+    return { supportsImage: hit, asked: pick.names[0]!, answered, saved: false,
+      why: `发了一张纯${pick.names[0]}的图，它答「${answered}」—— ${hit ? "答对了" : "没答对"}。服务端 AI 的模型由服务端定，这次结果不记（不然会记到你自填的那个模型上）` };
+  }
   return {
     supportsImage: hit, asked: pick.names[0]!, answered, saved,
     why: hit ? `发了一张纯${pick.names[0]}的图，它答「${answered}」—— 答对了` : `发了一张纯${pick.names[0]}的图，它答「${answered}」—— 没答对，按不支持算`,
@@ -136,6 +142,9 @@ async function save(channel: "a" | "c", probed: ChannelAConfig, supportsImage: b
   const cur = await getAiConfig();
   const now = channel === "c" ? cur.channelC : cur.channelA;
   if (!now || now.baseUrl !== probed.baseUrl || now.model !== probed.model) return false;
+  /* ⚠️ 开着服务端 AI 时**不记**（issue #142）：`supportsImage` 只有一个字段，探的是服务端的模型，
+     记下来关掉开关后会套到自填的模型上（反之亦然）。探到一半切了开关也不记。 */
+  if (probed.useAccount || now.useAccount) return false;
   await setAiConfig(mergeChannel(cur, channel, { supportsImage }));
   return true;
 }

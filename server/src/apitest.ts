@@ -895,6 +895,7 @@ console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网�
 {
   const ac = await import("./ai_config.js");
   const before = await ac.getAiConfig();
+  const realFetch = globalThis.fetch;
   try {
     await ac.setAiConfig(ac.mergeChannel(before, "a", { useAccount: true, baseUrl: "https://keep.me", apiKey: "keep", model: "m" } as never));
     const got = await ac.getAiConfig();
@@ -920,7 +921,6 @@ console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网�
     // 走服务端 AI 的请求要报「是 Studio 用的」（`X-Umbra-Src: studio`）：Node 的 fetch UA 服务端认不出，积分流水靠这个头分端
     //（sam 2026-10-10）。自填端点不带 —— 别往第三方厂商送多余的头。桩掉 globalThis.fetch，不出网。
     const prov = await import("./provider.js");
-    const realFetch = globalThis.fetch;
     const seen: Record<string, string>[] = [];
     globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
       seen.push({ ...(init?.headers as Record<string, string>) });
@@ -935,7 +935,40 @@ console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网�
     }
     ok(seen[0]?.["X-Umbra-Src"] === "studio", "走服务端 AI：请求带 X-Umbra-Src: studio", JSON.stringify(seen[0]));
     ok(!!seen[1] && !("X-Umbra-Src" in seen[1]), "自填端点：不带那个头", JSON.stringify(seen[1]));
+
+    /* ── 开 / 关服务端 AI 不许改缺省通道（issue #141）── 原来开的时候把 defaultChannel 设成 A、关掉不还原 */
+    await ac.setAiConfig({ ...(await ac.getAiConfig()), defaultChannel: "b" });
+    const onR = await (await post("account_server_ai", { on: true })).json() as { ok: boolean };
+    const afterOn = (await ac.getAiConfig()).defaultChannel;
+    await post("account_server_ai", { on: false });
+    const afterOff = (await ac.getAiConfig()).defaultChannel;
+    ok(afterOn === "b" && afterOff === "b", `**开${onR.ok ? "" : "（没登录开不了）"} → 关之后缺省通道仍是 b**（原来开了就切成 a、关掉不还原）`, `${afterOn} / ${afterOff}`);
+    /* 关掉后从没自填过的空配置：照实说「未配置」，不让空地址打出去 */
+    await ac.setAiConfig(ac.mergeChannel(await ac.getAiConfig(), "a", { useAccount: false, baseUrl: "", apiKey: "", model: "umbra" } as never));
+    let emptyMsg = ""; try { await ac.getChannelA(); } catch (e) { emptyMsg = (e as Error).message; }
+    ok(/未配置/.test(emptyMsg), "通道 A 空 baseUrl → 「通道 A 未配置」，不拿空地址去请求", emptyMsg.slice(0, 40));
+
+    /* ── 开着服务端 AI 探图（issue #142）：请求带 X-Umbra-Src，结论不记到 channelA.supportsImage ── */
+    if (st.signedIn) {
+      await ac.setAiConfig(ac.mergeChannel(await ac.getAiConfig(), "a", { useAccount: true, baseUrl: "https://keep.me", apiKey: "keep", model: "m", supportsImage: false } as never));
+      const probe = await import("./ai_probe.js");
+      const seen2: Record<string, string>[] = [];
+      globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
+        seen2.push({ ...(init?.headers as Record<string, string>) });
+        /* 什么颜色都答一遍 —— 让它「答对」，看结论会不会被记下 */
+        return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "红 red 绿 green 蓝 blue 黄 yellow 黑 black 白 white 紫 purple 橙 orange" } }], usage: null }),
+          { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+      let pr: { saved: boolean; supportsImage: boolean; why: string } | null = null;
+      try { pr = await probe.probeImageSupport("a"); } finally { globalThis.fetch = realFetch; }
+      ok(seen2[0]?.["X-Umbra-Src"] === "studio", "**服务端 AI 下探图：请求带 X-Umbra-Src: studio**（原来只传了三个字段，头丢了）", String(seen2[0]?.["X-Umbra-Src"] ?? "(没有)"));   // 只打这个头 —— 别把登录令牌打进日志
+      ok(!!pr && pr.saved === false && (await ac.getAiConfig()).channelA?.supportsImage === false,
+         "**探完 channelA.supportsImage 没变**（那是服务端模型的结论，不记到自填模型上）", pr?.why.slice(0, 60));
+    } else {
+      console.log("  · 没登录，服务端 AI 下探图那两条跳过");
+    }
   } finally {
+    globalThis.fetch = realFetch;
     await ac.setAiConfig(before);
   }
 }

@@ -137,8 +137,12 @@ export class AccountService {
       pending: this.oidc.pending, lastError: this.lastError, provider: this.provider, serverAi };
   }
 
-  /** 通道 A 切到 / 切回 Umbra 服务端 AI。开：`useAccount: true` 并把缺省通道设为 A（端点 / 密钥取配置那一刻现算，
-   *  文件里不存令牌）；关：只把标记放下，原来自填的端点 / 密钥还在（没覆盖过）。 */
+  /** 通道 A 切到 / 切回 Umbra 服务端 AI。开：`useAccount: true`（端点 / 密钥取配置那一刻现算，文件里不存令牌）；
+   *  关：只把标记放下，原来自填的端点 / 密钥还在（没覆盖过）。
+   *  ⚠️ **不碰 `defaultChannel`**（issue #141）：原来开的时候顺手把缺省通道设成 A、关掉也不还原 ——
+   *  缺省走通道 B（本机 CLI 订阅）/ C 的人点一下，没手动选过通道的对话和 MCP 调用就悄悄改走扣积分，
+   *  和界面那句「本地 CLI（通道 B）不受影响」正好相反；关掉后缺省通道还可能指向一条空端点。
+   *  要用服务端 AI，在引擎选择器里选通道 A。 */
   async setServerAi(on: boolean): Promise<AccountStatus> {
     const { getAiConfig, mergeChannel, setAiConfig } = await import("./ai_config.js");
     const cur = await getAiConfig();
@@ -146,7 +150,7 @@ export class AccountService {
       const st = await this.status();
       if (!st.signedIn) throw new Error("先登录 Umbra 账号，再开服务端 AI");
       const next = mergeChannel(cur, "a", { useAccount: true, model: cur.channelA?.model || "umbra" } as never);
-      await setAiConfig({ ...next, defaultChannel: "a" });
+      await setAiConfig(next);
     } else {
       await setAiConfig(mergeChannel(cur, "a", { useAccount: false } as never));
     }

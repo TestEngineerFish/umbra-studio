@@ -114,6 +114,9 @@ export async function getChannelA(): Promise<ChannelAConfig> {
     if (!st.signedIn || !token) throw new Error("通道 A 走的是 Umbra 服务端 AI，但还没登录：去设置 → Umbra 账号登录，或关掉「用服务端 AI」");
     return { ...cfg.channelA, baseUrl: st.serverUrl.replace(/\/+$/, "") + "/v1", apiKey: token, model: cfg.channelA.model || "umbra" };
   }
+  /* 开过服务端 AI 又关掉、但从没自填过的人，文件里会留一条 `baseUrl: ""` 的空配置（#141）——
+     别让空地址打出去报一句底层的请求错误，照实说「没配」。 */
+  if (!cfg.channelA.baseUrl) throw new Error("通道 A 未配置：请先设置 baseUrl、apiKey 和 model（或在设置 → Umbra 账号里打开「用服务端 AI」）");
   return cfg.channelA;
 }
 

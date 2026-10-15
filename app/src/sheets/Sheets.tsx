@@ -421,7 +421,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     {st?.signedIn && (
       <div className="flex items-center gap-2 text-xs">
         <button className={`btn ${st.serverAi ? "primary" : ""}`} onClick={toggleServerAi}>{st.serverAi ? "服务端 AI：开" : "用服务端 AI（会员额度）"}</button>
-        <span className="text-muted">开了之后通道 A 走 Umbra 服务端，模型由服务端定，每次对话按积分扣；本地 CLI（通道 B）不受影响。</span>
+        <span className="text-muted">开了之后通道 A 走 Umbra 服务端，模型由服务端定，每次对话按积分扣；当前用哪条通道不变（要用就在引擎选择器里选通道 A），本地 CLI（通道 B）不受影响。</span>
       </div>
     )}
   </section>;
