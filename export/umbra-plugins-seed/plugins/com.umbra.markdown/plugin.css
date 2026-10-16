@@ -1,0 +1,34 @@
+/* Markdown 插件自己的样式。token（`--text` / `--panel2` / `--warn-*` 一族）来自 sdk/theme.css，
+   打包时两份拼成 theme.css —— 这里**只写这个插件的组件**，不定义颜色。 */
+* { box-sizing: border-box; }
+body { display: flex; flex-direction: column; font: 12px system-ui, -apple-system, "PingFang SC", sans-serif; }
+.bar { height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 8px; flex: none;
+       background: var(--warn-soft); border-bottom: 1px solid var(--warn-border); color: var(--warn); }
+.btn { height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text2); font: inherit; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.ghost { background: transparent; }
+.btn:disabled { opacity: .5; cursor: default; }
+#wrap { flex: 1; min-height: 0; overflow: auto; }
+.doc { max-width: 760px; margin: 0 auto; padding: 24px 32px; }
+.fm { margin-bottom: 20px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel2); font-size: 11px; }
+.fmHead { width: 100%; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.fmHead .k { font-family: ui-monospace, monospace; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+#fmSum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fmRaw { margin: 0; padding: 0 12px 12px; font-family: ui-monospace, monospace; white-space: pre-wrap; color: var(--text2); }
+/* 源码档：行号 + 可编辑文本框。行号从文件第一行数起，frontmatter 计入 ——
+   和大纲、会话药丸同一个坐标系（设计侧问过的第一件，口径不能变） */
+.src { display: flex; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 24px; min-height: 100%; }
+.gutter { user-select: none; text-align: right; color: var(--muted); padding: 12px; background: var(--panel); border-right: 1px solid var(--border); flex: none; }
+.gutter div.on { color: var(--accent); font-weight: 600; }
+#area { flex: 1; min-width: 0; padding: 12px; background: var(--bg); color: var(--text); border: 0; outline: none; resize: none; font: inherit; line-height: 24px; min-height: 100%; }
+/* .md-body：渲染结果的样式。宿主那份在 index.css，这是插件自己的一份 */
+.md-body { line-height: 1.7; }
+.md-body h1, .md-body h2, .md-body h3 { margin: 1.4em 0 .6em; line-height: 1.35; }
+.md-body h1 { font-size: 22px; } .md-body h2 { font-size: 17px; } .md-body h3 { font-size: 14px; }
+.md-body p, .md-body ul, .md-body ol, .md-body blockquote { margin: .7em 0; }
+.md-body code { font-family: ui-monospace, monospace; font-size: .92em; background: var(--panel2); padding: 1px 4px; border-radius: 3px; }
+.md-body pre { background: var(--panel2); padding: 10px 12px; border-radius: 4px; overflow: auto; }
+.md-body pre code { background: none; padding: 0; }
+.md-body blockquote { padding-left: 12px; border-left: 2px solid var(--border); color: var(--text2); }
+.md-body table { border-collapse: collapse; } .md-body th, .md-body td { border: 1px solid var(--border); padding: 4px 8px; }
+.md-body a { color: var(--accent); }

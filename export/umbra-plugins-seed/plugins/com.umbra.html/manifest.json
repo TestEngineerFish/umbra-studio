@@ -1,0 +1,12 @@
+{
+  "id": "com.umbra.html",
+  "name": "网页预览",
+  "version": "1.0.0",
+  "hostApi": "^1",
+  "surfaces": ["ui"],
+  "kinds": [
+    { "id": "html", "label": "网页", "icon": "◻", "ext": [], "textual": true, "priority": 60 }
+  ],
+  "permissions": { "files": ["read"], "scope": "project", "net": [] },
+  "ui": "index.html"
+}

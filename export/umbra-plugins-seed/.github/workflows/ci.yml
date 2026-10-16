@@ -1,0 +1,67 @@
+# PR / push：校验 + 打包全部插件 + 核对测试向量；打 v* tag：把 dist/*.umbraplugin 挂到 Release。
+# 零依赖，所以没有 npm install。包**不签名**（doc/23 D3：签名在服务端上传时做，私钥只在 ECS）。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: validate --all
+        run: node scripts/validate.mjs --all
+      - name: pack --all
+        run: node scripts/pack.mjs --all
+      - name: test vectors + validator self-test
+        run: |
+          node scripts/verify-test-vectors.mjs
+          node scripts/test-validate.mjs
+      - name: 打包产物不能带 plugin.css / 私钥
+        run: |
+          set -e
+          for f in dist/*.umbraplugin; do
+            node -e "const z=require('zlib');const p=JSON.parse(z.gunzipSync(require('fs').readFileSync('$f')));if(p.files['plugin.css'])process.exit(1);if(p.signature)process.exit(2)"
+          done
+          ! git ls-files | grep -E '\.(pem|key)$'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: umbraplugin-packages
+          path: |
+            dist/*.umbraplugin
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/pack.mjs --all
+      - name: 挂到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.umbraplugin dist/*.sha256 --clobber
+          else
+            gh release create "$TAG" dist/*.umbraplugin dist/*.sha256 --title "$TAG" --generate-notes
+          fi

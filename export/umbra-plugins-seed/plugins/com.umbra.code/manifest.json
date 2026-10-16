@@ -1,0 +1,47 @@
+{
+  "id": "com.umbra.code",
+  "name": "代码与结构化文本",
+  "version": "1.0.0",
+  "hostApi": "^1",
+  "surfaces": [
+    "ui"
+  ],
+  "kinds": [
+    {
+      "id": "code",
+      "label": "代码",
+      "icon": "⟨⟩",
+      "ext": [],
+      "textual": true,
+      "priority": 10
+    },
+    {
+      "id": "json",
+      "label": "JSON",
+      "icon": "{}",
+      "ext": [],
+      "textual": true,
+      "priority": 10
+    },
+    {
+      "id": "csv",
+      "label": "CSV",
+      "icon": "▦",
+      "ext": [
+        ".csv",
+        ".tsv"
+      ],
+      "textual": true,
+      "priority": 10
+    }
+  ],
+  "permissions": {
+    "files": [
+      "read",
+      "write"
+    ],
+    "scope": "project",
+    "net": []
+  },
+  "ui": "index.html"
+}

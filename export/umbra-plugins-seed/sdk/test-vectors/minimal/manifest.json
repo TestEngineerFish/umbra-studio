@@ -1,0 +1,12 @@
+{
+  "id": "com.example.minimal",
+  "name": "最小插件（测试向量）",
+  "version": "0.1.0",
+  "hostApi": "^1",
+  "surfaces": ["ui"],
+  "kinds": [
+    { "id": "minimal", "label": "Minimal", "icon": "•", "ext": [".minimal"], "textual": true }
+  ],
+  "permissions": { "files": ["read"], "scope": "project", "net": [] },
+  "ui": "index.html"
+}
