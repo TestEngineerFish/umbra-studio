@@ -1,0 +1,150 @@
+/* 代码插件自己的样式。token（`--fg` / `--line` / `--gutter-bg` / `--warn-*` 一族）来自 sdk/theme.css，
+   打包时两份拼成 theme.css —— 这里**只写这个插件的组件**，不定义颜色。
+   （原来这里自己定义过警示四档，因为插件拿不到宿主的 `--tool-warn`；现在那份定义在 SDK 里。） */
+body { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+#host { height: 100%; }
+.err { padding: 14px 16px; font: 12px system-ui, sans-serif; color: var(--muted); line-height: 1.7; }
+.err b { color: var(--fg); }
+
+/* CodeMirror 的外观。**只调颜色和间距，不动它的布局** ——
+   CM 的行高、gutter 宽度是它自己算的，硬改会让光标和字错位。 */
+.cm-editor { height: 100%; background: var(--bg); color: var(--fg); }
+.cm-editor.cm-focused { outline: none; }
+.cm-scroller { font-family: inherit; line-height: 1.6; }
+.cm-gutters { background: var(--gutter-bg); border-right: 1px solid var(--line); color: var(--muted); }
+.cm-activeLine { background: var(--active); }
+.cm-activeLineGutter { background: var(--active); color: var(--fg); }
+.cm-selectionBackground, ::selection { background: var(--sel) !important; }
+.cm-cursor { border-left-color: var(--fg); }
+
+/* 未落盘横条。**留在正文里，不进编辑栏** —— 和 md 插件同一条理由：
+   它是一条状态提示，而编辑栏那一行装的是开关；混在一起的话横条一出现编辑栏就会跳。 */
+/* `[hidden] { display:none !important }` 在 sdk/theme.css 里（那段教训也挪过去了） */
+
+.bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--line); background: var(--active);
+  font: 12px system-ui, sans-serif; }
+.bar .sp { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+  border-radius: 5px; padding: 3px 9px; font: 12px system-ui, sans-serif; cursor: pointer; }
+.btn:hover { background: var(--active); }
+.btn.primary { background: #3a6df0; border-color: #3a6df0; color: #fff; }
+.btn.primary:disabled { opacity: .55; cursor: default; }
+.btn.ghost { background: transparent; }
+/* 有横条时正文要让出高度 —— 不减的话 CM 会被挤出可视区底部 */
+body.dirty #host { height: calc(100% - 33px); }
+/* 可改时光标要是文本插入符（只读时 CM 自己会设成 default） */
+.cm-editor.cm-focused { outline: none; }
+
+
+/* 只读那一条（S18 §一.4）。**和未落盘横条用同一个 .bar 骨架**，
+   但底色是中性的 —— 只读不是警告，是「这份改了也没用」。 */
+.bar.ro { background: var(--gutter-bg); }
+.tag { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px 0 6px;
+  border-radius: 5px; border: 1px solid var(--line); background: var(--bg); color: var(--muted); white-space: nowrap; }
+/* 按了字键：标签变 warn 并横向抖一下（360ms，和第十一轮「没有地址」那一下同一个时长） */
+.tag.nudge { border-color: #c8821e; color: #c8821e; background: rgba(210,140,40,.10); animation: roNudge 360ms ease; }
+@keyframes roNudge { 0%,100% { transform: translateX(0);} 20% { transform: translateX(-3px);} 40% { transform: translateX(3px);} 60% { transform: translateX(-2px);} 80% { transform: translateX(2px);} }
+.hint { position: absolute; left: 62px; z-index: 3; display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 8px 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg);
+  box-shadow: 0 4px 16px rgba(0,0,0,.18); font: 12px system-ui, sans-serif; color: var(--muted); white-space: nowrap; }
+.btn.sm { height: 22px; padding: 0 8px; font-size: 11px; }
+body { position: relative; }
+/* 有只读条时正文也要让出高度 —— 和 .dirty 同一条理由 */
+body.ro #host { height: calc(100% - 33px); }
+body.ro.dirty #host { height: calc(100% - 66px); }
+
+/* ── 草稿暂存的横条（M10-2c，S18 演示态 11/12）──
+   两态只差配色：`fresh` 走中性（panel-2 / border / text），
+   `stale` 走 warn（warn-soft / warn-border / warn）—— 稿里的真值。
+   ⚠️ 配色**不是随便选的**：`stale` 是「你得先看一眼再决定」，
+   而 `fresh` 只是「有东西等着你」，用同一个颜色会让前者被当成后者随手点过去。 */
+.bar.draft { background: var(--gutter-bg); }
+.bar.draft .dot { width: 7px; height: 7px; border-radius: 999px; background: #c8821e; flex: none; }
+.bar.draft.stale { background: rgba(210,140,40,.10); border-bottom-color: #c8821e; color: #c8821e; }
+.bar.draft .mono { font: 11px ui-monospace, monospace; color: var(--muted); white-space: nowrap; }
+/* 有草稿横条时正文也要让出高度 —— 和 `body.dirty` 同一条，
+   不减的话 CodeMirror 会被挤出可视区底部（注意两条横条可能同时在） */
+body.hasdraft #host { height: calc(100% - 33px); }
+body.hasdraft.dirty #host { height: calc(100% - 66px); }
+
+/* ── JSON 树档（M10-4，S19 演示态 2/3）── */
+#tree { position: absolute; inset: 0; overflow: auto; font: 12px/24px ui-monospace, SFMono-Regular, Menlo, monospace; }
+body.hasdraft #tree, body.dirty #tree { top: 33px; }
+body.hasdraft.dirty #tree { top: 66px; }
+.jrow { position: relative; display: flex; align-items: center; height: 24px; white-space: pre; cursor: default; padding-right: 200px; }
+.jrow:hover { background: var(--active); }
+.jrow.on { background: rgba(58,109,240,.10); box-shadow: inset 2px 0 0 #3a6df0; }
+.jtw { flex: none; width: 18px; height: 18px; display: grid; place-items: center; }
+.jtw button { width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); cursor: pointer; }
+.jtw button:hover { background: var(--gutter-bg); color: var(--fg); }
+.jtw svg { transition: transform .12s ease; }
+.jkey { color: var(--fg); }
+.jkey.obj { font-weight: 600; }
+.jcolon { color: var(--muted); }
+.jstr { color: #14795c; } .jnum { color: #c8821e; } .jbool { color: #3a6df0; } .jnull { color: var(--muted); }
+.jsum { margin-left: 8px; font: 11px system-ui, sans-serif; color: var(--muted); }
+/* 选中行右侧那两颗钮 —— 只在选中的行上出现（稿里就是这样，不是每行都挂） */
+.jact { position: absolute; right: 16px; top: 1px; display: flex; align-items: center; gap: 4px; }
+.jact .jjump { height: 22px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent;
+  font: 11px system-ui, sans-serif; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.jact .jjump:hover { background: var(--gutter-bg); color: var(--fg); }
+.jact .jjump em { font-family: ui-monospace, monospace; font-size: 10px; font-style: normal; opacity: .75; }
+.jact .jai { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid rgba(58,109,240,.35);
+  border-radius: 4px; background: var(--bg); color: #3a6df0; font: 560 11px system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.jact .jai:hover { background: rgba(58,109,240,.10); }
+.jrow.jmore { cursor: default; }
+.jrow.jmore:hover { background: transparent; }
+.jrow.jmore .jjump { margin-left: 10px; border: 1px solid var(--line); }
+
+/* ── CSV 表档（M10-5，S20）── */
+#table { position: absolute; inset: 0; overflow: auto; font: 12px/24px ui-monospace, SFMono-Regular, Menlo, monospace; }
+body.hasdraft #table, body.dirty #table, body.ro #table { top: 33px; }
+body.hasdraft.dirty #table, body.ro.dirty #table { top: 66px; }
+.cgrid { display: grid; width: max-content; min-width: 100%; }
+/* 行号列：吸左，因为横向滚动时它得一直在 */
+.cnum { position: sticky; left: 0; z-index: 2; padding: 0 8px; text-align: right;
+  color: var(--muted); background: var(--gutter-bg); user-select: none; cursor: pointer;
+  font-variant-numeric: tabular-nums; }
+.chead .cnum { z-index: 3; }
+/* 表头：吸顶 —— grid 子项上比 <th> 上好使（这也是换 grid 顺带得到的） */
+.chead > * { position: sticky; top: 0; z-index: 1; background: var(--active);
+  border-bottom: 1px solid var(--line); font-weight: 600; cursor: pointer; }
+.chead > .cnum { z-index: 3; }
+/* ⚠️ **每个单元格正好一行高**（issue #116，2026-10-06）——
+   虚拟滚动的垫片是按「一行 24px」算的（`app.mjs` 的 `lineAt`），
+   而 `white-space: pre` 会把**引号里的换行**画成真换行：
+   `parseCsv` 把那种换行留在单元格里（一条记录 `line 2 / endLine 4`），
+   于是那一行实际 3 × 24 = 72px，而模型里算 24px → **滚动位置每过一条就差一截**。
+   `overflow: hidden` 只裁宽不封高，所以得显式钉住高度。
+   表档本来就是「一条记录一行」的看法，多行内容在源码档里看得到全貌，
+   而行号那一列已经写着 `2–4` 告诉用户这是跨行的。 */
+.ccell { padding: 0 10px; white-space: pre; overflow: hidden; text-overflow: ellipsis;
+  height: 24px; line-height: 24px; }
+.crow:hover .ccell { background: var(--active); }
+/* 选中的行 / 列 */
+.crow.on .ccell, .crow.on .cnum { background: rgba(58,109,240,.10); }
+.ccell.colon { background: rgba(58,109,240,.07); }
+/* 坏行：行号边一道 warn 竖线 + 行尾一句原因（S20 演示态 5） */
+.crow.bad .cnum { box-shadow: inset -2px 0 0 #c8821e; color: #c8821e; }
+/* ⚠️ `line-height` 要**显式写**（issue #116）：下面那句 `font:` 简写
+   会把 `line-height` 重置成 `normal`（11px 字体约 13–15px），
+   把从 `#table` 继承来的 24px 覆盖掉 —— 而垫片按「坏行占 2 行 = 48px」算，
+   实际是 24 + 14px。**一个简写属性悄悄重置了另一个属性**，这是 CSS 里最容易漏的一类。 */
+.cwhy { grid-column: 1 / -1; padding: 0 10px 0 56px; color: #c8821e;
+  font: 11px system-ui, sans-serif; background: rgba(210,140,40,.07);   height: 24px; line-height: 24px; }
+/* 编码没确定时那一条 */
+/* 编码横条（S20 态 7 / 态 8，形制真值取自稿）。
+   ⚠️ **底色 / 边色 / 点色不写在这里** —— 它们按档位走，由 JS 逐条 set
+   （`encBarBg` / `encBarBd` / `encDot` 三个键）。写死在 CSS 里的话
+   两档就只能靠加 class，而真值是稿里那三个表达式，抄过来一次比维护两份对。
+   文字色一律 `--tool-text`：**警示靠那颗点，不靠把整行字染成橙色** ——
+   染字会让「现在按 GBK 读」这句中性的话看起来也像出错。 */
+.encbar { flex: none; min-height: 32px; display: flex; align-items: center;
+  flex-wrap: wrap; gap: 6px 12px; padding: 4px 12px 4px 16px;
+  border-bottom: 1px solid var(--line);
+  font: 12px system-ui, sans-serif; color: var(--fg); }
+.encbar .encdot { flex: none; width: 6px; height: 6px; border-radius: 999px; }
+.encbar .encmsg { flex: 1 1 280px; min-width: 0; text-wrap: pretty; }
+.encbar .encacts { flex: none; display: flex; gap: 6px; }

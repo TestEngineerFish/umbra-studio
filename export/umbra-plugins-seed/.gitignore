@@ -1,0 +1,10 @@
+# 打包产物
+dist/
+# 插件目录里由 scripts/pack.mjs 从 sdk/ 拷入的两份（各插件目录下也各有一份 .gitignore）
+plugins/*/umbra.js
+plugins/*/theme.css
+# 任何私钥：测试向量用临时钥匙签，签完就删
+*.pem
+*.key
+node_modules/
+.DS_Store
