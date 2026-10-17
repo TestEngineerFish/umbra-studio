@@ -5,7 +5,10 @@
  *
  *  跑：`npm --prefix server run csvpostest`
  */
-const MOD = new URL("../../plugins/com.umbra.code/1.0.0/csvpos.mjs", import.meta.url).href;
+/* 内置插件是构建产物（S4）：按同步下来的那一版找，不写死版本目录 */
+const { builtinDirOf } = await import("./sync_plugins.js");
+const { pathToFileURL } = await import("node:url");
+const MOD = pathToFileURL(builtinDirOf("com.umbra.code") + "/csvpos.mjs").href;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { parseCsv, sniffDelimiter, sniffEncoding, decodeAs, rowAt, colAt, widthOf } = (await import(MOD)) as any;
 

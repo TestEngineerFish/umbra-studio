@@ -12,7 +12,7 @@
  */
 import { _electron as electron } from "../server/node_modules/playwright-core/index.mjs";
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync, rmSync, cpSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, statSync, rmSync, cpSync, mkdtempSync, realpathSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,19 @@ console.log(`\n打包产物验收 · ${TARGET.replace(REPO + "/", "")}\n`);
 /* ── 一关：结构 ─────────────────────────────────────────
    「打出来了」和「东西齐」是两件事。全部离线，不开进程。 */
 console.log("一 · 结构");
+/** 三个内置插件在包里那一版的关键文件（版本目录取包里实际有的；一个都没有就给一条必红的路径）。 */
+function builtinFiles() {
+  const want = { "com.umbra.markdown": ["manifest.json", "index.html", "markdown-it.mjs"], "com.umbra.code": ["manifest.json"], "com.umbra.html": ["manifest.json"] };
+  const out = [];
+  for (const [id, files] of Object.entries(want)) {
+    const idDir = join(RES, "core", "plugins", id);
+    let vs = [];
+    try { vs = readdirSync(idDir).filter((v) => v !== "current"); } catch { /* 没进包 */ }
+    const v = vs.sort().pop() ?? "（缺）";
+    for (const f of files) out.push(`core/plugins/${id}/${v}/${f}`);
+  }
+  return out;
+}
 const RES = IS_MAC ? join(TARGET, "Contents", "Resources") : join(TARGET, "resources");
 const EXE = IS_MAC ? join(TARGET, "Contents", "MacOS", "Umbra Studio") : join(TARGET, "Umbra Studio.exe");
 ok(existsSync(EXE) && (IS_MAC ? (statSync(EXE).mode & 0o111) !== 0 : true), "可执行文件在" + (IS_MAC ? "且可执行" : ""));
@@ -44,9 +57,8 @@ for (const f of [
   "core/ui/S1-稿件索引.dc.html", "core/ui/_ds-tool/tokens.css",
   /* 内置插件必须进包：不进的话打包版**打开 .md 只有通用文件卡**，
      而这在开发模式下测不出来（开发时 TOOL_ROOT 就是仓库根，插件天然在）。 */
-  "core/plugins/com.umbra.markdown/1.0.0/manifest.json",
-  "core/plugins/com.umbra.markdown/1.0.0/index.html",
-  "core/plugins/com.umbra.markdown/1.0.0/markdown-it.mjs",
+  /* S4 起内置插件是 sync-plugins 拉进来的构建产物，版本目录不再固定是 1.0.0 —— 按包里实际那一版找 */
+  ...builtinFiles(),
   "core/doc/06-写稿规则.md", "core/doc/03-渲染与交互逻辑.md",   // get_syntax_guide 真读这两份
   "core/server/node_modules/playwright-core/index.mjs",         // 体检经 CDP 也要它
   "core/server/node_modules/@modelcontextprotocol/sdk/package.json",

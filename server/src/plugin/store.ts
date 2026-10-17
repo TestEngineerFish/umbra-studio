@@ -6,6 +6,8 @@ import { checkManifest, type PluginManifest } from "./manifest.js";
 import { verifyInstalled } from "./pack.js";
 import { PLUGIN_DEFAULT_PRIORITY, isBuiltinKind, registerKind, unregisterKindsFrom } from "../shared/kinds.js";
 import { PLUGIN_ID_RE, pluginIdDir } from "./paths.js";
+import { compareVersion } from "./version.js";
+import { pickBuiltin } from "./builtin_upgrade.js";
 
 /** 插件在盘上住哪、怎么列（M11-4）。
  *
@@ -43,13 +45,45 @@ export interface InstalledPlugin {
   /** 清单有毛病时装不上，但要**列得出来**并说清为什么 —— 
    *  静静不显示的话，用户只会看到「我装的插件不见了」 */
   problems: Array<{ field: string; why: string }>;
+  /** 内置插件**正在用 STATE_ROOT 里升级装的那一版**（S4 §3）。`bundled` 仍为 true（免费、能认领内置类型）；
+   *  「卸载」它 = 删掉升级那份、退回出厂版本 */
+  upgraded?: boolean;
+  /** 内置插件出厂（TOOL_ROOT）那一版的版本号 —— 只有内置插件有 */
+  factoryVersion?: string;
 }
 
+/** 内置 id → 正在用的升级版目录（STATE_ROOT 里）。**由 `listInstalled` 算、`pluginDirOf` 读** ——
+ *  后者是同步的、在 http 静态路径上，验签是异步的，不能每个文件请求都验一次；
+ *  两处必须用同一个结论，否则会出现「列表里是升级版，加载的是出厂版」这种最难查的错。
+ *  启动时 `registerPluginKinds` 会先跑一次 `listInstalled`；装 / 切 / 卸之后也都会再跑。 */
+const upgradedDirs = new Map<string, string>();
+
 /** 扫一遍装了什么。坏的也列出来，带上毛病。
- *  **内置的排在前面**，用户装的在后 —— 同 id 时以用户装的为准（他可能装了更新的一版）。 */
+ *  **内置的排在前面**，用户装的在后。同 id 时：
+ *  - 第三方 id —— 不会和内置撞（撞了就是下面这一条）；
+ *  - **内置 id**（S4 §3）—— STATE_ROOT 里有**更高版本、签名验得过（或 dev 模式）、没多认领内置类型**的那一份才用它，
+ *    否则用出厂那份（`builtin_upgrade.ts pickBuiltin`；装的时候查过一遍，这里再查一遍 —— 手动拷进来的目录不经安装流程）。 */
 export async function listInstalled(): Promise<InstalledPlugin[]> {
-  const out: InstalledPlugin[] = [];
-  for (const root of [BUNDLED_DIR, PLUGINS_DIR]) await scanRoot(root, root === BUNDLED_DIR, out);
+  const factory: InstalledPlugin[] = [];
+  const user: InstalledPlugin[] = [];
+  await scanRoot(BUNDLED_DIR, true, factory);
+  await scanRoot(PLUGINS_DIR, false, user);
+  const out: InstalledPlugin[] = factory.map((f) => ({ ...f, factoryVersion: f.manifest.version }));
+  const nextUpgraded = new Map<string, string>();
+  for (const row of user) {
+    const at = out.findIndex((x) => x.bundled && x.manifest.id === row.manifest.id);
+    if (at < 0) { out.push(row); continue; }
+    const f = out[at]!;
+    const pick = pickBuiltin({
+      factory: f.manifest, upgrade: row.manifest, upgradeProblems: row.problems.length + f.problems.length,
+      upgradeSigned: !row.unsigned, dev: process.env.UMBRASTUDIO_PLUGIN_DEV === "1", isBuiltin: isBuiltinKind,
+    });
+    if (pick.use !== "upgrade") continue;   // 出厂那份照用；升级那份留在盘上，「退回出厂版本」能把它删掉
+    out[at] = { ...row, bundled: true, upgraded: true, factoryVersion: f.manifest.version };
+    nextUpgraded.set(row.manifest.id, row.dir);
+  }
+  upgradedDirs.clear();
+  for (const [k, v] of nextUpgraded) upgradedDirs.set(k, v);
   return out;
 }
 
@@ -75,7 +109,7 @@ async function scanRoot(root: string, bundled: boolean, out: InstalledPlugin[]):
       unsigned: !bundled && !(await verifyInstalled(dir)).ok,
       problems: [...r.problems, ...idMismatch],
     };
-    /* 同 id 覆盖：用户装的那一份压过内置 —— 他可能装了更新的一版 */
+    /* 同一个 root 里同 id 只会有一个目录；跨 root（内置 vs 升级）由 `listInstalled` 决定 */
     const at = out.findIndex((x) => x.manifest.id === row.manifest.id);
     if (at >= 0) out[at] = row; else out.push(row);
   }
@@ -101,7 +135,7 @@ export async function uninstall(id: string): Promise<boolean> {
  *  指针是 M11-6 加的 —— 切版本 / 回退靠改它，所以读的地方必须认它，
  *  不认的话「切回上一版」点了没反应（列表显示切了，加载的还是新版）。 */
 async function pickVersion(idDir: string): Promise<string | null> {
-  const versions = (await readdir(idDir)).filter((x) => x !== "current").sort();
+  const versions = (await readdir(idDir)).filter((x) => x !== "current").sort(compareVersion);
   try {
     const cur = (await readFile(join(idDir, "current"), "utf8")).trim();
     if (cur && versions.includes(cur)) return cur;
@@ -110,28 +144,35 @@ async function pickVersion(idDir: string): Promise<string | null> {
 }
 
 export function pluginDirOf(id: string): string | null {
-  /* 用户装的优先 —— 和 `listInstalled` 的覆盖顺序保持一致。
+  /* 和 `listInstalled` 用**同一个结论**（内置 id 走 `upgradedDirs`）。
      不一致的话会出现「列表里显示新版，实际加载的是内置旧版」这种最难查的错。 */
   /* 形状不对直接说找不到 —— 这个函数的语义是「找得到吗」，它在 http 静态路径上，
      不抛异常。⚠️ 但**不能只靠 `existsSync` 偶然拦住** ——
      原来 `pluginDirOf("../../etc")` 返回 null 是因为那个目录正好不存在，
      换成一个存在的目录（`../../projects`）就能列出它下面的文件名。 */
   if (!PLUGIN_ID_RE.test(id)) return null;
-  for (const root of [PLUGINS_DIR, BUNDLED_DIR]) {
-    const idDir = join(root, id);
-    if (!existsSync(idDir)) continue;
-    try {
-      const versions = readdirSync(idDir).filter((x) => x !== "current").sort();
-      let v = versions[versions.length - 1];
-      /* 同步读指针 —— 这个函数在 http 请求路径上，异步会给每个静态文件多一次往返 */
-      try {
-        const cur = readFileSync(join(idDir, "current"), "utf8").trim();
-        if (cur && versions.includes(cur)) v = cur;
-      } catch { /* 没指针 */ }
-      if (v) return join(idDir, v);
-    } catch { /* 下一个 root */ }
+  /* 内置 id：用 `listInstalled` 算好的结论（升级版 or 出厂版），**不在这里自己再挑一次** */
+  if (existsSync(join(BUNDLED_DIR, id))) {
+    const up = upgradedDirs.get(id);
+    if (up && existsSync(up)) return up;
+    return pickDirSync(join(BUNDLED_DIR, id));
   }
-  return null;
+  return pickDirSync(join(PLUGINS_DIR, id));
+}
+
+/** 同步版的「用哪一版」：current 指针 > 最高版本。找不到给 null。 */
+function pickDirSync(idDir: string): string | null {
+  if (!existsSync(idDir)) return null;
+  try {
+    const versions = readdirSync(idDir).filter((x) => x !== "current").sort(compareVersion);
+    let v = versions[versions.length - 1];
+    /* 同步读指针 —— 这个函数在 http 请求路径上，异步会给每个静态文件多一次往返 */
+    try {
+      const cur = readFileSync(join(idDir, "current"), "utf8").trim();
+      if (cur && versions.includes(cur)) v = cur;
+    } catch { /* 没指针 */ }
+    return v ? join(idDir, v) : null;
+  } catch { return null; }
 }
 
 /** 把装好的插件加的文件类型注册进**服务端**的类型表（M11-5）。

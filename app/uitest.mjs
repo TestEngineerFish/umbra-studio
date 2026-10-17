@@ -125,7 +125,8 @@ console.log("\n会话历史与引擎名（M8-11 下 / M8-13 · 设计侧第六�
 /* 引擎名：钮上和状态行都不该再出现「通道 A/B/C」 */
 const railText = await pg.locator("aside").first().innerText();
 ok(!/通道\s*[ABC]\b/.test(railText), "会话栏里没有「通道 A/B/C」字样了");
-ok(/DeepSeek|Claude Code|火山方舟|Codex|Cursor/.test(railText), "显示的是引擎名", (railText.match(/DeepSeek|Claude Code|火山方舟|Codex|Cursor/g) ?? []).slice(0,3).join(" / "));
+/* 「Umbra 服务端 AI」是 M12-4a（2026-10-10）加的那一档（通道 A 开了「用服务端 AI」）—— 原来的名单里没有它，本机开着那一档时这条无故红 */
+ok(/DeepSeek|Claude Code|火山方舟|Codex|Cursor|Umbra 服务端 AI/.test(railText), "显示的是引擎名", (railText.match(/DeepSeek|Claude Code|火山方舟|Codex|Cursor|Umbra 服务端 AI/g) ?? []).slice(0,3).join(" / "));
 /* 会话栏头在第八轮只剩两样：引擎 ▾ 和历史钮。
    「标题被挤扁」那条判据随标题一起作废了 —— 标题搬进了历史列表。 */
 ok(await pg.locator('aside button[data-ud="engine"]').count() === 1, "会话栏头有引擎选择器");

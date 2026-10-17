@@ -94,9 +94,10 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
   const cur = vs?.current ?? r.version;
 
   const doUninstall = async () => {
-    const out = await core.post<{ removed: boolean }>("plugin_uninstall", { id: r.id });
-    if (!out.ok) { toast("卸不掉", out.errors?.[0]?.message, "error"); setArming(false); return; }
-    toast(`${r.name} 已卸载`, "买过的记录还在，之后随时可以免费再装", "ok");
+    const out = await core.post<{ removed: boolean; reverted?: boolean; version?: string | null }>("plugin_uninstall", { id: r.id });
+    if (!out.ok) { toast(r.upgraded ? "退不回去" : "卸不掉", out.errors?.[0]?.message, "error"); setArming(false); return; }
+    if (out.data?.reverted) toast(`${r.name} 已退回出厂版本 ${out.data.version ?? r.factoryVersion ?? ""}`, "升级装的那一版删掉了，市场里随时可以再更新", "ok");
+    else toast(`${r.name} 已卸载`, "买过的记录还在，之后随时可以免费再装", "ok");
     setArming(false); onChanged();
   };
   const doSwitch = async (v: string) => {
@@ -152,7 +153,7 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
           )}
         </div>
         <div className="text-[11px] text-muted mt-0.5">
-          {r.bundled ? "Umbra 自带" : `认领 ${r.kinds.join(" / ") || "—"}`}
+          {r.bundled ? (r.upgraded ? `Umbra 自带 · 已升级（出厂 ${r.factoryVersion ?? "—"}）` : "Umbra 自带") : `认领 ${r.kinds.join(" / ") || "—"}`}
           {r.problems.length > 0 && <span className="text-err"> · 清单有毛病：{r.problems[0]!.field}</span>}
         </div>
         {/* 每一种不能用的态都要**给出路** —— 只说「不可用」等于什么都没说（`doc/20` §4.4）。
@@ -162,12 +163,15 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
         )}
         {arming && (
           <div className="mt-2 text-xs leading-relaxed" style={{ color: "var(--tool-err)" }}>
-            {/* 卸载最让人犹豫的是「钱是不是白花了」—— 这句先答掉（设计侧 §三.2） */}
-            卸载 {r.name}？本机的 {vs?.versions.length ?? 1} 个版本一起删掉。买过的记录还在，之后在市场里随时可以免费再装。
+            {/* 卸载最让人犹豫的是「钱是不是白花了」—— 这句先答掉（设计侧 §三.2）。
+                升过级的内置插件不是卸载，是退回出厂版本（S4 §3）：那种格式照样能打开 */}
+            {r.upgraded
+              ? <>退回出厂版本 {r.factoryVersion ?? ""}？升级装的 {r.version} 删掉，回到随 Umbra 一起的那一版；市场里随时可以再更新。</>
+              : <>卸载 {r.name}？本机的 {vs?.versions.length ?? 1} 个版本一起删掉。买过的记录还在，之后在市场里随时可以免费再装。</>}
             <div className="mt-1.5 flex gap-2">
               <button className="btn sm" onClick={() => setArming(false)}>取消</button>
               <button className="btn sm" style={{ background: "var(--tool-err)", borderColor: "var(--tool-err)", color: "#fff" }}
-                onClick={() => void doUninstall()}>确认卸载</button>
+                onClick={() => void doUninstall()} data-ud={r.upgraded ? "revert-confirm" : undefined}>{r.upgraded ? "确认退回" : "确认卸载"}</button>
             </div>
           </div>
         )}
@@ -202,7 +206,9 @@ function Row({ core, r, onChanged }: { core: Core; r: InstalledRow; onChanged: (
             <PopSep />
             {/* 内置的这一位置是**置灰的原因**，不是没有这一项 ——
                 用户会去找「卸载」，找到的是原因（设计侧 §三.2） */}
-            {r.bundled
+            {r.bundled && r.upgraded
+              ? <PopItem label={`退回出厂版本 ${r.factoryVersion ?? ""}`} onPick={() => { more.close("pick"); setArming(true); }} />
+              : r.bundled
               ? <PopItem label="内置插件不能卸载" disabled />
               : <PopItem label="卸载" danger onPick={() => { more.close("pick"); setArming(true); }} />}
           </div>

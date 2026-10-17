@@ -6,6 +6,7 @@ import { hostCall } from "../plugin/host.js";
 import { listInstalled, registerPluginKinds, uninstall } from "../plugin/store.js";
 import { entitlementOf, loadLicense, saveLicenseText, type Entitlement } from "../plugin/license.js";
 import { installFromFile, pluginVersions, switchVersion } from "../plugin/install.js";
+import { compareVersion } from "../plugin/version.js";
 import { buyStep, installFromUrl, licenseGrants, planAcquire, type PackageFetch } from "../plugin/acquire.js";
 import { readCatalogDetailed } from "../plugin/catalog.js";
 import { account } from "../account.js";
@@ -41,6 +42,8 @@ defineCap({
       plugins: list.map((p) => ({
         id: p.manifest.id, name: p.manifest.name, version: p.manifest.version,
         surfaces: p.manifest.surfaces, kinds: (p.manifest.kinds ?? []).map((k) => k.id), bundled: p.bundled,
+        /* 内置插件升过级（S4 §3）：界面把「卸载」换成「退回出厂版本 factoryVersion」 */
+        upgraded: !!p.upgraded, factoryVersion: p.factoryVersion ?? null,
         permissions: p.manifest.permissions, unsigned: p.unsigned, ok: p.problems.length === 0, problems: p.problems,
         /* 授权态四样：能不能用 · 到什么时候 · 一句给人看的话 */
         entitlement: entOf(p.manifest.id)?.state ?? "unlicensed",
@@ -53,7 +56,7 @@ defineCap({
 
 defineCap({
   name: "uninstall_plugin", title: "卸载一个插件", scope: "global",
-  summary: "删掉插件自己的目录。**插件改过的文件不动** —— 那是用户的东西。卸载后那种格式退回通用文件卡，不是打不开。",
+  summary: "删掉插件自己的目录。**插件改过的文件不动** —— 那是用户的东西。卸载后那种格式退回通用文件卡，不是打不开。内置插件卸不掉；**升过级的内置插件**「卸载」= 退回出厂版本（回包 `reverted: true`）。",
   input: { id: z.string() },
   faces: ["mcp", "http"],
   http: { route: "plugin_uninstall", method: "POST" },
@@ -61,6 +64,13 @@ defineCap({
     /* 内置插件卸不掉。**在这里挡，不在删的时候挡** —— 到了删那一步再报错，
        用户已经点过「确定卸载」了，体验上是「点了没反应」。 */
     const found = (await listInstalled()).find((x) => x.manifest.id === id);
+    /* 内置插件升过级（S4 §3）：「卸载」= 删掉 STATE_ROOT 里升级装的那份、**退回出厂版本**。
+       出厂那份永远在 TOOL_ROOT，退回不会让这种格式变得打不开。 */
+    if (found?.bundled && found.upgraded) {
+      const gone = await uninstall(id);
+      if (gone) { await registerPluginKinds(); notify("reverted", id); }
+      return envelope({ id, removed: gone, reverted: gone, version: found.factoryVersion ?? null }, [], {});
+    }
     if (found?.bundled) {
       return envelope({ id, removed: false }, [{ level: "error", code: "E_PLUGIN_BUNDLED",
         message: `${id} 是内置插件，跟主程序一起发的，卸不掉`,
@@ -229,7 +239,10 @@ defineCap({
     const perks = await account.perks();
     const gift = perks.gift.includes(id);
     const ent = await entitlementOf(id, { bundled: found?.bundled });
-    const plan = planAcquire({ signedIn: st.signedIn, builtin: !!c.builtin || !!found?.bundled, installed: !!found, entitled: ent.state === "active",
+    /* 内置插件：目录里的版本比本机正在用的高 = 可更新（S4 §3），走「从 URL 装」那一步，不买不取许可证 */
+    const builtin = !!c.builtin || !!found?.bundled;
+    const update = builtin && !!found && compareVersion(c.version, found.manifest.version) > 0;
+    const plan = planAcquire({ signedIn: st.signedIn, builtin, update, installed: !!found, entitled: ent.state === "active",
       gift, price: c.price, packageUrl: c.package_url });
     const out: AcquireResult = { id, bought: null, already: false, licensed: ent.state === "active", installed: !!found, version: found ? (found.manifest.version ?? null) : null, note: "" };
     if (plan.refuse) {
@@ -276,7 +289,7 @@ defineCap({
       const r = await installFromUrl(c.package_url!, packageFetch);
       notify("installed", r.id);
       out.installed = true; out.version = r.version;
-      out.note = paid + (r.unsigned ? "装好了（未签名，开发模式放行）" : "装好了，立刻生效");
+      out.note = paid + (update ? `内置插件已升级到 ${r.version}${r.unsigned ? "（未签名，开发模式放行）" : ""}，立刻生效；不想要了可以在「已装」里退回出厂版本` : r.unsigned ? "装好了（未签名，开发模式放行）" : "装好了，立刻生效");
       return envelope(out);
     } catch (e) {
       return envelope(out, [pluginErr("E_PLUGIN_INSTALL", `已授权，但安装没成功：${(e as Error).message}`, id, "在市场里再点一次「安装」")]);

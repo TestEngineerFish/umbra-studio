@@ -29,6 +29,7 @@
     "aifailtest": "npm run build && node dist/aifailtest.js",
     "plugintest": "npm run build && node dist/plugintest.js",
     "packplugin": "npm run build && node dist/packplugin.js",
+    "sync-plugins": "npm run build && node dist/sync_plugins.js",
     "ziptest": "npm run build && node dist/ziptest.js",
     "jsonpostest": "npm run build && node dist/jsonpostest.js",
     "csvpostest": "npm run build && node dist/csvpostest.js",
@@ -37,6 +38,7 @@
     "catalogtest": "npm run build && node dist/catalogtest.js",
     "acquiretest": "npm run build && node dist/acquiretest.js",
     "verbtest": "npm run build && node dist/verbtest.js",
+    "upgradetest": "npm run build && node dist/upgradetest.js",
     "gaptest": "npm run build && node dist/gaptest.js"
   },
   "dependencies": {

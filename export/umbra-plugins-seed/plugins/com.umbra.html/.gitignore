@@ -1,3 +1,0 @@
-# 由 scripts/pack.mjs 打包时从 sdk/ 拷入（theme.css = sdk/theme.css + 本目录 plugin.css），不提交
-umbra.js
-theme.css

@@ -135,6 +135,7 @@
     },
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "compression": "normal",
+    "beforePack": "./beforePack.cjs",
     "afterPack": "./afterPack.cjs"
   }
 }
