@@ -37,6 +37,8 @@ export type { FileKind };
 
 /** 文本文件的上限：超过就只给元数据，不把整份塞进响应 */
 export const TEXT_MAX = 2 * 1024 * 1024;
+/** 二进制按字节给（base64）的上限：100 MB。base64 再 +33%，还要整串经 HTTP / postMessage 传进插件，再大就该换流式了。 */
+export const BINARY_MAX = 100 * 1024 * 1024;
 
 /** 文件类型认定走 `shared/kinds.ts` 那一份唯一出处（M8-14）。
  *  以前这里有一份扩展名映射、前端 `layout.ts` 里还有一份，两份今天一致纯属运气 ——
@@ -166,9 +168,11 @@ export interface ReadFileResult {
   snapshot?: string;
   /** 图片：原始尺寸 */
   width?: number; height?: number;
-  /** 按哪种编码读出来的（只在不是 utf-8 时给）。
+  /** 按哪种编码读出来的（只在不是 utf-8 时给）。二进制按字节给时是 `"base64"`。
    *  ⚠️ 它是**读法**不是文件属性 —— 盘上那份一个字节都没动。 */
   encoding?: string;
+  /** 二进制文件的原始字节（base64）。**只在 `binary: true` 时给**（插件读 PDF / xlsx / zip 用，`read_file` 按 `via === "plugin"` 打开） */
+  base64?: string;
 }
 
 /** 允许按哪些编码读。**白名单，不是「随便传什么都试」** ——
@@ -176,7 +180,10 @@ export interface ReadFileResult {
  *  实测过这几种在 Node 和浏览器里都在（M10-5）。 */
 const READ_ENCODINGS = new Set(["utf-8", "gbk", "gb18030", "big5", "shift_jis", "utf-16le", "windows-1252"]);
 
-export async function readAnyFile(p: Project, rel: string, encoding?: string): Promise<ReadFileResult> {
+/** `opts.binary`：二进制文件也把原始字节按 base64 给（插件的约定：`content: null` + `encoding: "base64"` + `base64`，
+ *  umbra-plugins `sdk/PLUGIN-SPEC.md` / pdf · xlsx · zip 三个插件都按它写）。**缺省不给** —— 模型 / MCP 调 `read_file`
+ *  拿到一份 PDF 的 base64 只会把上下文撑爆，它们照旧拿「不是文本文件」。 */
+export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean } = {}): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
   const buf = await readFile(abs);
@@ -187,7 +194,14 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string): P
   const snaps = await listSnapshots(p, rel);
   if (snaps.length) out.snapshot = snaps[snaps.length - 1];
   if (out.kind === "image") Object.assign(out, await imageSize(abs));
-  if (!isTextual(rel)) { out.why = "不是文本文件"; return out; }
+  if (!isTextual(rel)) {
+    out.why = "不是文本文件";
+    if (opts.binary) {
+      if (st.size > BINARY_MAX) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过二进制读取上限 ${BINARY_MAX / 1048576} MB`;
+      else { out.encoding = "base64"; out.base64 = buf.toString("base64"); }
+    }
+    return out;
+  }
   if (st.size > TEXT_MAX) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${TEXT_MAX / 1024 / 1024} MB 上限`; return out; }
   /* ⚠️ **`sha256` 算的是原始字节，不随编码变**（上面 `sha256(buf)`）——
      所以按 GBK 读出来的文本，拿这个 sha 回去做写前校验仍然是对的。

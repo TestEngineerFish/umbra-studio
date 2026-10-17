@@ -72,6 +72,26 @@ const bad = await cap("list_activity").run({ since: "昨天" } as never, asHuman
 ok(!bad.ok, "since 不是时间 → 报错不猜");
 
 /* ④ 能力总表 */
+/* ── 二进制文件：插件读要按字节给（2026-10-17 用户报 PDF 插件「宿主回的内容里既没有 base64 也没有 content」）── */
+{
+  const { hostCall } = await import("./plugin/host.js");
+  const { createHash } = await import("node:crypto");
+  /* 带非 UTF-8 字节的「PDF」：按文本往返一定会坏，按字节才对得上 */
+  const bin = Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.from([0x00, 0xff, 0xfe, 0x80, 0x9c, 0xe2]), Buffer.from("\n%%EOF\n")]);
+  await writeFile(join(projDir, "纪要.pdf"), bin);
+  const man = { id: "com.umbra.pdftest", name: "t", version: "1.0.0", hostApi: "^1", surfaces: ["ui"], permissions: { files: ["read"], scope: "project" } } as never;
+  const viaPlugin = await hostCall({ manifest: man, project }, "read_file", { path: "纪要.pdf" });
+  const d = viaPlugin.data as { content: null; encoding?: string; base64?: string; size: number; sha256: string };
+  const back = d.base64 ? Buffer.from(d.base64, "base64") : Buffer.alloc(0);
+  ok(viaPlugin.ok && d.content === null && d.encoding === "base64" && back.equals(bin),
+    "**插件（经 hostCall）读二进制：content null + encoding base64 + 原样字节**", `${back.length}/${bin.length} 字节`);
+  ok(d.size === bin.length && d.sha256 === createHash("sha256").update(bin).digest("hex"), "size / sha256 按原始字节算（插件拿它核「是不是只给了一半」）");
+  const viaAi = (await cap("read_file").run({ path: "纪要.pdf" } as never, asAi)).data as { content: null; base64?: string; why?: string };
+  ok(viaAi.content === null && viaAi.base64 === undefined && /不是文本文件/.test(viaAi.why ?? ""), "**模型 / MCP 读同一份：不给 base64**（一份 PDF 的 base64 会撑爆上下文）", viaAi.why);
+  const viaHttp = (await cap("read_file").run({ path: "纪要.pdf" } as never, asHuman)).data as { base64?: string };
+  ok(viaHttp.base64 === undefined, "前端自己（http）读也不给 —— 只有插件要");
+}
+
 const caps = (await cap("list_capabilities").run({} as never, { project: null, via: "http" })).data as { core: Array<{ name: string; source: string }>; verbs: Array<{ tool: string; exposed: boolean }>; failures: Record<string, string> };
 ok(caps.core.length >= 70 && caps.core.every((c) => c.source === "core"), "核心能力全在", `${caps.core.length} 件`);
 ok(caps.verbs.some((v) => v.tool === "markdown__replace_section" && v.exposed), "动词表里有内置 markdown 的（builtin 挂出）");

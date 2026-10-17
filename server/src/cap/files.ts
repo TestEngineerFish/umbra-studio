@@ -49,6 +49,7 @@ defineCap({
   name: "read_file", title: "读一个文件（非设计稿）", scope: "project",
   summary: [
     "读文本文件，返回内容与 sha256。**写回去要把这个 sha256 原样带上** —— 盘上被别人改过就会被拒绝，不会把改动盖掉。",
+    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限 100 MB）。",
     "`encoding` 给别的编码时**只换读法，盘上那份一个字节都没动**（M10-5，中文 CSV 常被当成 UTF-8 读成乱码）。",
     "⚠️ `sha256` 永远是**原始字节**的，不随编码变 —— 所以按 GBK 读出来的文本，拿这个 sha 回去校验仍然对得上。",
   ].join("\n"),
@@ -62,7 +63,10 @@ defineCap({
   },
   http: { route: "file", method: "GET" },
   run: async ({ path, encoding, offset, limit }, c) => {
-    const r = await readAnyFile(p(c), path, encoding);
+    /* ⚠️ **插件调用时二进制按字节给**（2026-10-17 用户报：PDF 插件「宿主回的内容里既没有 base64 也没有 content」）。
+       插件 SDK 的约定是二进制回 `encoding: "base64"` + `base64`，pdf / xlsx / zip 三个插件都按它写，而这里从来没给过。
+       只对 `via === "plugin"` 打开：模型 / MCP 拿到一份 PDF 的 base64 只会撑爆上下文。 */
+    const r = await readAnyFile(p(c), path, encoding, { binary: c.via === "plugin" });
     if ((offset === undefined && limit === undefined) || r.content === null) return envelope(r);
     const lines = r.content.split("\n");
     const from = offset ?? 1;
