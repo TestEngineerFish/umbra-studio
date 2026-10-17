@@ -122,8 +122,24 @@ export function oidcConfigOf(d: AuthConfigDTO | null): OidcClientConfig | null {
     token_endpoint: d.token_endpoint, end_session_endpoint: d.end_session_endpoint, scope: d.scope };
 }
 
+/** 访问令牌（Casdoor 签的 JWT）的过期时刻，毫秒；不是 JWT / 没有 `exp` → null（那就不预判，只靠 401 兜底）。**纯函数**。 */
+export function tokenExpMs(token: string): number | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const p = JSON.parse(Buffer.from(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { exp?: unknown };
+    return typeof p.exp === "number" && Number.isFinite(p.exp) ? p.exp * 1000 : null;
+  } catch { return null; }
+}
+
+/** 提前多久就当它快过期、先刷新（毫秒）。请求在路上也要时间，卡着点用会在服务端那头刚好过期。 */
+export const TOKEN_RENEW_SKEW_MS = 60_000;
+
 export class AccountService {
   private lastError = "";
+  /** 正在进行的那一次刷新（合并并发）：市场一打开 `perks` 和 `fetchLicense` 是同时发的，
+   *  各刷各的话，刷新令牌一次一换的 IdP 会让后到的那一次拿着已作废的刷新令牌失败、把登录清掉。 */
+  private renewing: Promise<boolean> | null = null;
   private provider: AccountStatus["provider"] = "unknown";
   /** 正在进行的那一场登录的代号（0 = 没有）。⚠️ 「这场登录做完没」是这里自己的状态，不借 `oidc.pending`（issue #137）：
    *  回调一到 `oidc.pending` 就是 false，而换令牌、核 `/auth/me`、落盘还没做 —— 前端轮询落在这段窗口里
@@ -163,6 +179,62 @@ export class AccountService {
     return this.status();
   }
 
+  /** 用刷新令牌换一枚新的访问令牌（2026-10-17：令牌 7 天整点过期，原来只有 `check()` 会刷新，
+   *  取许可证 / 查会员 / 购买 / 服务端 AI 都拿着过期令牌直接 401，界面却还显示「已登录」）。
+   *  - 并发合并成一次（`renewing`）；
+   *  - 服务端 `/auth/config` 都问不到（断网）→ 回 false，**不清登录**（网好了还能刷）；
+   *  - IdP 拒了刷新令牌（过期 / 吊销）或新令牌服务端不认 → 清掉本机登录、写 `lastError`，回 false —— 界面这时才如实显示「没登录」。 */
+  async renew(): Promise<boolean> {
+    if (this.renewing) return this.renewing;
+    this.renewing = (async () => {
+      const a = await getAccount();
+      if (!a.refreshToken) return false;
+      let cfg: OidcClientConfig | null;
+      try { cfg = oidcConfigOf(await this.authConfig(a.serverUrl)); } catch { return false; }
+      if (!cfg) return false;
+      try {
+        const t = await this.oidc.refresh(cfg, a.refreshToken);
+        const user = await this.me(a.serverUrl, t.accessToken);
+        await setAccount({ accessToken: t.accessToken, refreshToken: t.refreshToken || a.refreshToken, user });
+        this.lastError = "";
+        this.log("[account] 访问令牌已刷新");
+        return true;
+      } catch (e) {
+        if ((e as OidcFail)?.reason === "network" || /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test((e as Error).message)) return false;
+        await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
+        this.lastError = "登录已经失效，重新登录一次";
+        return false;
+      }
+    })();
+    try { return await this.renewing; } finally { this.renewing = null; }
+  }
+
+  /** 一枚现在能用的访问令牌：快过期（`exp` 前 `TOKEN_RENEW_SKEW_MS`）就先刷新。没登录回 null。
+   *  刷新失败但旧令牌还没真过期 → 照用旧的（让服务端说了算）。 */
+  async usableToken(now = Date.now()): Promise<{ serverUrl: string; token: string } | null> {
+    let a = await getAccount();
+    if (!a.accessToken) return null;
+    const exp = tokenExpMs(a.accessToken);
+    if (exp !== null && exp - now < TOKEN_RENEW_SKEW_MS && a.refreshToken) {
+      if (await this.renew()) a = await getAccount();
+      else if (exp <= now) { a = await getAccount(); if (!a.accessToken) return null; }
+    }
+    return { serverUrl: a.serverUrl, token: a.accessToken };
+  }
+
+  /** 带登录令牌请求服务端：先拿可用令牌，**回 401 就刷新一次再试**（令牌在路上过期 / 服务端提前吊销）。
+   *  没登录回 null（调用方按「没登录」说）。 */
+  private async authedFetch(path: string, init: { method: string; headers?: Record<string, string>; body?: string }): Promise<Awaited<ReturnType<FetchLike>> | null> {
+    const tk = await this.usableToken();
+    if (!tk) return null;
+    const go = (token: string) => this.fetchFn(`${tk.serverUrl}${path}`, { ...init, headers: { Accept: "application/json", ...(init.headers ?? {}), Authorization: `Bearer ${token}` } } as never);
+    const r = await go(tk.token);
+    if (r.status !== 401) return r;
+    if (!(await this.renew())) return r;
+    const again = await getAccount();
+    return again.accessToken ? go(again.accessToken) : r;
+  }
+
   /** 当前会员带来的两样（服务端 `GET /membership`，一次请求）：随会员赠送的插件 id（后台「赠送插件」页配的）
    *  与买积分计价东西的折扣百分比（`discount_pct`，100 = 不打折）。
    *  没登录 / 没会员 / 连不上 / 老服务端一律回「没有赠送、不打折」—— 市场页标不标，不该让市场打不开。
@@ -170,11 +242,9 @@ export class AccountService {
    *  当成「不是赠送」去按价买，会员的积分会被误扣。市场页只看 gift，照旧。 */
   async perks(): Promise<{ ok: boolean; gift: string[]; discountPct: number }> {
     const none = { ok: false, gift: [], discountPct: 100 };
-    const a = await getAccount();
-    if (!a.accessToken) return none;
     try {
-      const r = await this.fetchFn(`${a.serverUrl}/membership`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
-      if (!r.ok) return none;
+      const r = await this.authedFetch("/membership", { method: "GET" });
+      if (!r || !r.ok) return none;
       const body = await r.json();
       return { ok: true, gift: giftPluginIdsOf(body), discountPct: discountPctOf(body) };
     } catch { return none; }
@@ -182,11 +252,9 @@ export class AccountService {
 
   /** 账号块那一行「存储」：没登录 / 连不上 / 老服务端 → null，那一行就不画。 */
   async storage(): Promise<StorageBrief | null> {
-    const a = await getAccount();
-    if (!a.accessToken) return null;
     try {
-      const r = await this.fetchFn(`${a.serverUrl}/membership`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
-      if (!r.ok) return null;
+      const r = await this.authedFetch("/membership", { method: "GET" });
+      if (!r || !r.ok) return null;
       return storageOf(await r.json());
     } catch { return null; }
   }
@@ -313,12 +381,13 @@ export class AccountService {
   /** 向服务端要这个账号的许可证（`GET /plugins/license`），验签过了就落盘（`saveLicenseText`，与 `set_license` 同一条）。
    *  回 `{ok, why, grants}`：`why` 是给人看的一句。没登录 / 服务端没配私钥（503）/ 验不过都在 `why` 里说清。 */
   async fetchLicense(): Promise<{ ok: boolean; why: string; grants: Grant[] }> {
-    const a = await getAccount();
-    if (!a.accessToken) return { ok: false, why: "没登录 Umbra 账号，取不了许可证", grants: [] };
     let body: unknown;
     try {
-      const r = await this.fetchFn(`${a.serverUrl}/plugins/license`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${a.accessToken}` } });
+      const r = await this.authedFetch("/plugins/license", { method: "GET" });
+      /* 刚因为令牌失效被清掉的，要说「失效」而不是「没登录」—— 他明明登过 */
+      if (!r) return { ok: false, why: this.lastError ? "登录已失效，重新登录一次再取许可证" : "没登录 Umbra 账号，取不了许可证", grants: [] };
       if (r.status === 503) return { ok: false, why: "服务端还没配许可证签名密钥，暂时发不了许可证", grants: [] };
+      /* 走到这里 = 刷新过还是 401（或刷新令牌也过期了）：才真是「登录失效」 */
       if (r.status === 401) return { ok: false, why: "登录已失效，重新登录一次再取许可证", grants: [] };
       if (!r.ok) return { ok: false, why: `取许可证失败：HTTP ${r.status}`, grants: [] };
       body = await r.json();
@@ -348,9 +417,8 @@ export class AccountService {
   /** 用积分买一个插件（`POST /plugins/{id}/buy`）。回 `already: true` = 早就买过；`price / discount / charged`
    *  是服务端记的「原价 · 折扣 · 实扣」（草案 §3.3，折扣落在扣积分那一刻；老服务端没有就是 0）。失败抛 Error（message 是服务端的人话）。 */
   async buyPlugin(id: string): Promise<{ ok: boolean; already: boolean; price: number; discount: number; charged: number }> {
-    const a = await getAccount();
-    if (!a.accessToken) throw new Error("登录 Umbra 账号后才能购买");
-    const r = await this.fetchFn(`${a.serverUrl}/plugins/${encodeURIComponent(id)}/buy`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${a.accessToken}` }, body: "{}" });
+    const r = await this.authedFetch(`/plugins/${encodeURIComponent(id)}/buy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (!r) throw new Error(this.lastError ? "登录已失效，重新登录一次" : "登录 Umbra 账号后才能购买");
     let body: Record<string, unknown> = {};
     try { body = (await r.json()) as Record<string, unknown>; } catch { body = {}; }
     if (r.ok) {
@@ -367,7 +435,8 @@ export class AccountService {
 
   /** 给别的能力用：当前访问令牌（空 = 没登录）。**只在核心进程内用**，不回前端。 */
   async bearer(): Promise<string> {
-    return (await getAccount()).accessToken;
+    /* 快过期就先刷新（通道 A 走服务端 AI 用它：原来令牌一过期，AI 请求全是 401） */
+    return (await this.usableToken())?.token ?? "";
   }
 }
 

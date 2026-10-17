@@ -109,8 +109,9 @@ export async function getChannelA(): Promise<ChannelAConfig> {
   if (cfg.channelA.useAccount) {
     // 服务端 AI：端点与密钥从账号那一层现取（动态 import —— account.ts 不被这个文件静态依赖，免得绕成环）。
     const { account } = await import("./account.js");
-    const st = await account.status();
+    /* 先取令牌（快过期会先刷新，刷不动会清掉登录），再读状态 —— 反过来的话状态是刷新前那一刻的 */
     const token = await account.bearer();
+    const st = await account.status();
     if (!st.signedIn || !token) throw new Error("通道 A 走的是 Umbra 服务端 AI，但还没登录：去设置 → Umbra 账号登录，或关掉「用服务端 AI」");
     return { ...cfg.channelA, baseUrl: st.serverUrl.replace(/\/+$/, "") + "/v1", apiKey: token, model: cfg.channelA.model || "umbra" };
   }

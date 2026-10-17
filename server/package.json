@@ -39,6 +39,7 @@
     "acquiretest": "npm run build && node dist/acquiretest.js",
     "verbtest": "npm run build && node dist/verbtest.js",
     "upgradetest": "npm run build && node dist/upgradetest.js",
+    "tokentest": "npm run build && node dist/tokentest.js",
     "gaptest": "npm run build && node dist/gaptest.js"
   },
   "dependencies": {
