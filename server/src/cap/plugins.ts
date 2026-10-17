@@ -255,7 +255,7 @@ defineCap({
     if (plan.buy) {
       const pre = await account.fetchLicense();
       const grantedNow = pre.ok && licenseGrants((await loadLicense())?.license, id);
-      step = buyStep({ planBuy: true, perksOk: perks.ok, grantedNow });
+      step = buyStep({ planBuy: true, perksOk: perks.ok, grantedNow, free: c.price === 0 });
       if (grantedNow) out.licensed = true;
     }
     if (step === "refuse") {

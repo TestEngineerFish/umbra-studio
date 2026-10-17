@@ -21,7 +21,9 @@ ok(buyStep({ planBuy: true, perksOk: false, grantedNow: false }) === "refuse", "
 ok(buyStep({ planBuy: true, perksOk: false, grantedNow: true }) === "skip", "会员信息没问到，但先取的许可证里已有赠送授权 → 跳过购买");
 ok(buyStep({ planBuy: true, perksOk: true, grantedNow: true }) === "skip", "许可证里已有授权（赠送 / 以前买过）→ 不买");
 ok(buyStep({ planBuy: true, perksOk: true, grantedNow: false }) === "buy", "问到了、确实不是赠送、也没授权 → 才买");
-ok(buyStep({ planBuy: false, perksOk: false, grantedNow: false }) === "skip", "计划里本来不买（赠送 / 免费）→ 不买");
+ok(buyStep({ planBuy: false, perksOk: false, grantedNow: false }) === "skip", "计划里本来不买（赠送）→ 不买");
+ok(buyStep({ planBuy: true, perksOk: false, grantedNow: false, free: true }) === "buy", "**免费的：会员信息没问到也照领**（扣 0，没有误扣可防）");
+ok(buyStep({ planBuy: true, perksOk: true, grantedNow: true, free: true }) === "skip", "免费的但许可证里已有 → 不用再领");
 
 /* ── ① 安装包地址：只认 https://主机/路径 ── */
 ok(isHttpsUrl("https://dl.umbra.test/p/x.umbraplugin"), "https + 路径 → 认");
@@ -78,7 +80,9 @@ ok(p.buy && p.license && p.install && !p.refuse, "没授权的付费插件：买
 p = planAcquire({ ...base, gift: true });
 ok(!p.buy && p.license && p.install, "会员赠送：不买，取许可证，装");
 p = planAcquire({ ...base, price: 0 });
-ok(!p.buy && p.license && p.install, "免费（0 积分）：不买，取许可证，装");
+/* ⚠️ 原来这条写的是「免费：不买」—— 判据把缺陷钉成了正确行为：服务端只给「买过（扣 0 也算）」的发授权，
+   不买的话许可证里永远没有它（2026-10-17 用户报「许可证里没有这个插件的授权」） */
+ok(p.buy && p.license && p.install, "**免费（0 积分）：也要「买」一次（服务端扣 0、落永久授权）**，再取许可证、装");
 p = planAcquire({ ...base, entitled: true });
 ok(!p.buy && !p.license && p.install, "已有授权没装（换机器）：只装");
 p = planAcquire({ ...base, packageUrl: undefined });

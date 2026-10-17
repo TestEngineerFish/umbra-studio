@@ -81,7 +81,10 @@ export function planAcquire(p: { signedIn: boolean; builtin: boolean; update?: b
   if (!p.signedIn) return { ...none, refuse: "登录 Umbra 账号后才能购买 / 领取插件" };
   const install = isHttpsUrl(p.packageUrl) && !p.installed;
   if (p.entitled) return { buy: false, license: false, install, refuse: "" };
-  return { buy: !p.gift && p.price > 0, license: true, install, refuse: "" };
+  /* ⚠️ **免费（0 积分）的也要走「买」**（2026-10-17 用户报「许可证里没有这个插件的授权」）：服务端 `buy()` 对 0 积分的
+     扣 0、落一条永久授权，许可证里才有它。原来写成 `price > 0` 才买 → 免费插件从没记过授权，取完许可证必然没有它。
+     会员赠送的不买（服务端签许可证时按会员到期日合进去）。 */
+  return { buy: !p.gift, license: true, install, refuse: "" };
 }
 
 /** 许可证里有没有这个插件**现在有效**的授权（给 acquire 取完许可证后当场核；完整的六态在 `entitlementOf`）。 */
@@ -135,10 +138,11 @@ export async function installFromUrl(url: string, fetchFn: PackageFetch, opts: {
 /** 「买」这一步到底走不走（issue #145，纯判据）：
  *  · 计划里本来就不买 → skip；
  *  · 先取了一次许可证、里面**已经有**这个插件的有效授权（会员赠送 / 以前买过）→ skip —— 赠送的不该走「买」；
- *  · 会员信息**这次没问到**（`/membership` 超时 / 5xx）→ refuse：分不清它是不是赠送，按价买就可能误扣积分；
+ *  · 会员信息**这次没问到**（`/membership` 超时 / 5xx）→ refuse：分不清它是不是赠送，按价买就可能误扣积分（`free` 的不拦：扣 0）；
  *  · 其余 → buy。 */
-export function buyStep(p: { planBuy: boolean; perksOk: boolean; grantedNow: boolean }): "buy" | "skip" | "refuse" {
+export function buyStep(p: { planBuy: boolean; perksOk: boolean; grantedNow: boolean; free?: boolean }): "buy" | "skip" | "refuse" {
   if (!p.planBuy || p.grantedNow) return "skip";
-  if (!p.perksOk) return "refuse";
+  /* 「没问到会员信息就不买」防的是**按价误扣积分**；免费的扣 0，没什么可防的（服务端遇到赠送的也只回「已有」） */
+  if (!p.perksOk && !p.free) return "refuse";
   return "buy";
 }
