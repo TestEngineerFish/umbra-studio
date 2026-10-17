@@ -123,10 +123,24 @@ export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
 
           <div className="border-t border-border p-4">
             {row.state === "builtin" ? (
-              <>
-                <button disabled className="btn w-full" data-ud="market-act">内置 · 已安装</button>
-                <p className="text-[11px] text-muted mt-2">Umbra 自带，免费且卸不掉。</p>
-              </>
+              /* 内置插件也能被市场升级（S4 §3）：目录里有更高版本且有安装包 → 「更新到 X」，走 acquire（不买、不要登录）。
+                 升过级的要说出厂是哪一版、怎么退回 —— 不说的话「内置的为什么版本号变了」没人答得上 */
+              row.hasUpdate ? (
+                <>
+                  <button className="btn primary w-full" data-ud="market-act" disabled={busy} onClick={() => void acquire()}>
+                    {busy ? "处理中…" : `更新到 ${row.version}`}</button>
+                  <p className="text-[11px] text-muted mt-2 leading-relaxed">
+                    Umbra 自带，免费。本机现在是 {row.installedVersion}；更新后不想要了，可以在「已装」里退回出厂版本。
+                  </p>
+                </>
+              ) : (
+                <>
+                  <button disabled className="btn w-full" data-ud="market-act">内置 · 已安装{row.installedVersion ? ` ${row.installedVersion}` : ""}</button>
+                  <p className="text-[11px] text-muted mt-2">
+                    {row.upgraded ? `Umbra 自带，免费。已升级（出厂 ${row.factoryVersion ?? "—"}），在「已装」里可以退回出厂版本。` : "Umbra 自带，免费且卸不掉。"}
+                  </p>
+                </>
+              )
             ) : row.state === "installed" ? (
               <>
                 <button disabled className="btn w-full" data-ud="market-act">已安装 {row.installedVersion}</button>

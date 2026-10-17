@@ -69,8 +69,13 @@ export interface AcquirePlan {
   refuse: string;
 }
 
-export function planAcquire(p: { signedIn: boolean; builtin: boolean; installed: boolean; entitled: boolean; gift: boolean; price: number; packageUrl?: string }): AcquirePlan {
+/** `update`（S4 §3）：内置插件、且目录里的版本比本机正在用的高 —— 不买、不取许可证（内置的免费），有 https 安装包就直接装；
+ *  不用登录（内置插件的升级和账号无关）。没有安装包就照实说。 */
+export function planAcquire(p: { signedIn: boolean; builtin: boolean; update?: boolean; installed: boolean; entitled: boolean; gift: boolean; price: number; packageUrl?: string }): AcquirePlan {
   const none: AcquirePlan = { buy: false, license: false, install: false, refuse: "" };
+  if (p.builtin && p.update) {
+    return isHttpsUrl(p.packageUrl) ? { ...none, install: true } : { ...none, refuse: "内置插件有新版本，但发布方还没放安装包" };
+  }
   if (p.builtin) return { ...none, refuse: "内置插件随 Umbra 一起，不用买也不用装" };
   if (p.installed && p.entitled) return { ...none, refuse: "已经装好并且有授权了" };
   if (!p.signedIn) return { ...none, refuse: "登录 Umbra 账号后才能购买 / 领取插件" };

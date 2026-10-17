@@ -54,7 +54,7 @@ export default function App() {
       if (e.type !== "plugin") return;
       const { what, id } = (e.payload ?? {}) as { what?: string; id?: string };
       wirePlugins();
-      toast(`插件 ${id ?? ""} ${what === "uninstalled" ? "已卸载" : what === "switched" ? "已切换版本" : "已装好"}`, undefined, "ok");
+      toast(`插件 ${id ?? ""} ${what === "uninstalled" ? "已卸载" : what === "reverted" ? "已退回出厂版本" : what === "switched" ? "已切换版本" : "已装好"}`, undefined, "ok");
     });
   }, [hub, wirePlugins]);
   const open = useCallback(async (dir: string) => {

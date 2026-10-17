@@ -38,6 +38,7 @@
     "catalogtest": "npm run build && node dist/catalogtest.js",
     "acquiretest": "npm run build && node dist/acquiretest.js",
     "verbtest": "npm run build && node dist/verbtest.js",
+    "upgradetest": "npm run build && node dist/upgradetest.js",
     "gaptest": "npm run build && node dist/gaptest.js"
   },
   "dependencies": {

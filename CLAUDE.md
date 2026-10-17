@@ -272,6 +272,8 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run catalogtest` | **插件目录三级回落回归**（2026-10-11 新建）：服务端 `GET /plugins/catalog` > 本地缓存 > 出厂清单（`plugin/catalog.ts`）；形状校验、超时回落、`gift_plugins` 解析。网络用注入的 fetch，一条都不碰真网 |
 | `npm --prefix server run gaptest` | **通用缺口回归**（2026-10-11 新建，M13-3）：`read_file` 分页 · `search_in_file` · `list_activity` · `list_capabilities`。临时项目 + 临时状态目录，直接调能力表的 `run` |
 | `npm --prefix server run verbtest` | **插件动词挂出 / 收回回归**（2026-10-11 新建，M13-1/2）：没授权只挂 `free` 的、签许可证当场长出来、过期收回、调用进门再验。全程临时状态目录 + 临时钥匙（`UMBRASTUDIO_STATE_DIR` / `UMBRASTUDIO_PUBKEY`，**要在 import 核心模块之前设**）。⚠️ 临时目录要 `realpath`：macOS `/var` 是链接，沙箱按真路径放行会「import 不到 tools.mjs」 |
+| `npm --prefix server run sync-plugins` | **拉内置插件**（S4，2026-10-17）：`plugins/<id>/` 是构建产物，从 umbra-plugins 来 —— 本地 `../umbra-plugins`（`UMBRA_PLUGINS_DIR`）优先，否则 GitHub Release（`UMBRA_PLUGINS_RELEASE`，缺省 latest；私有仓库，令牌 `GH_TOKEN` → `../.secrets/gh-token` → `gh auth token` 依次真问）。顺带用 SDK 覆盖 `runtime/umbra-plugin.js` 与演示插件的桥。`--check`（`node server/dist/sync_plugins.js --check`）只查三个在不在。**新 clone 之后第一件事** |
+| `npm --prefix server run upgradetest` | **内置插件被市场升级回归**（S4 §3）：准入三条（验签 · 版本严格更高 · 不多认领内置类型）· 加载再判一遍 · 退回出厂版本 · B 面跟着换。临时状态目录 + 临时钥匙，出厂那份读真的 markdown（要先 sync） |
 | `npm --prefix server run plugintest` | 插件机制回归（M11-4）：**重点不是「能跑」是「关不关得住」** —— 演示插件同时是攻击样本 |
 | `npm --prefix server run rendertest` | 渲染回归（要浏览器） |
 | `npm --prefix server run ui -- <项目名>` | 起界面给人用 |
@@ -333,7 +335,17 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 
 ---
 
-## 9. 当前状态一句话（2026-10-16）
+## 9. 当前状态一句话（2026-10-17）
+
+**S4 做完：Studio 切到外部插件仓库**（`doc/23` §四，任务书 `doc/S4-Studio切到外部插件仓库.md`，分支 `s4-external-plugins` → PR）。
+① `plugins/<id>/` 不再进仓库，`npm --prefix server run sync-plugins` 从 umbra-plugins 拉（本地检出优先，否则私有 Release）；`start.sh` 和 `shell` 的 `beforePack` 先同步，缺一个内置就拒绝打包。
+② `export/umbra-plugins-seed/` 删了（正本在 umbra-plugins）；桥 `umbra.js` 只剩 `runtime/` 与演示插件两份，都由 sync 从 SDK 覆盖。
+③ **内置插件能被市场升级了**（`plugin/builtin_upgrade.ts`）：验签 + 版本严格高于出厂 + 认领的内置类型不多于出厂，三条全满足才装到 STATE_ROOT；加载时同一套规则再判一遍（手动拷进来的未签名升级目录顶替不了出厂版）；「卸载」升级过的内置插件 = 退回出厂版本。
+⚠️ 新 clone 之后**先跑 `sync-plugins`**，不然 `.md` 打不开、`csvpostest` / `jsonpostest` / `upgradetest` 会说「先跑 sync-plugins」。
+⚠️ 版本比较一律用 `plugin/version.ts compareVersion` —— 原来各处 `.sort()` 是字典序，`1.10.0` 会排在 `1.9.0` 前面。
+读数：`upgradetest` **37/37**（新建）· `plugintest` 93/93 · `captest` 289/289 · `apitest` 117/117 · `uitest` 456/456 · 其余回归全绿。线上那半（后台上传 → 非 dev 验签装）留给人跑：`doc/23` §7.2。
+
+## 9 之前的状态（2026-10-16）
 
 **插件仓库的种子导出完了**（`doc/23` S1，决策 §〇 D1–D6）。⚠️ **已迁出，正本在 umbra-plugins**（https://github.com/TestEngineerFish/umbra-plugins）——
 2026-10-17 S4 删掉了 Studio 里的 `export/umbra-plugins-seed/`。下面是当时的记录：`export/umbra-plugins-seed/` 是将来 `umbra-plugins` 仓库的全部骨架 ——

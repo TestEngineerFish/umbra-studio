@@ -2,8 +2,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
 import { decodePackage, verifyPackage, type PluginPackage } from "./pack.js";
-import { checkManifest } from "./manifest.js";
-import { BUNDLED_DIR, PLUGINS_DIR, registerPluginKinds } from "./store.js";
+import { checkManifest, type PluginManifest } from "./manifest.js";
+import { BUNDLED_DIR, PLUGINS_DIR, listInstalled, registerPluginKinds } from "./store.js";
+import { builtinUpgradeRefusal } from "./builtin_upgrade.js";
+import { compareVersion } from "./version.js";
+import { isBuiltinKind } from "../shared/kinds.js";
 import { isInside, pluginIdDir, pluginVersionDir } from "./paths.js";
 
 /** 装 / 更新 / 切版本 / 卸（M11-6）。
@@ -50,8 +53,18 @@ export async function installPackage(pkg: PluginPackage): Promise<InstallResult>
   if (!m.ok) throw new Error("清单不合法：" + m.problems.map((x) => `${x.field} ${x.why}`).join("；"));
   const man = m.manifest!;
 
+  /* ⚠️ **内置 id 的准入**（S4 §3）。原来一律拒（M11-6「覆盖内置」那一道）；现在内置插件也要能走市场升级，
+     但不能借内置的身份拿特权，所以三条全满足才放行（规则与理由全文在 `builtin_upgrade.ts` 文件头）：
+     ① 验签过了（上面 `verifyPackage`；dev 放行的照常标 unsigned）② 版本严格高于出厂那份 ③ 认领的内置类型不多于出厂那份。
+     出厂那份以**正在扫到的 TOOL_ROOT 那一版**为准（不是正在用的那一版：升过级再装更高的一版，比的仍是出厂版）。 */
   if (existsSync(join(BUNDLED_DIR, man.id))) {
-    throw new Error(`${man.id} 是内置插件，不能用装包的方式覆盖它`);
+    const factory = (await listInstalled()).find((x) => x.bundled && x.manifest.id === man.id);
+    const fv = factory?.factoryVersion;
+    if (!factory || !fv) throw new Error(`${man.id} 是内置插件，但出厂那份读不出版本 —— 不能确认升级是不是更高版本，拒装`);
+    const factoryMan = factory.upgraded ? await readFactoryManifest(man.id) : factory.manifest;
+    if (!factoryMan) throw new Error(`${man.id} 是内置插件，但出厂那份清单读不出来，拒装`);
+    const why = builtinUpgradeRefusal(man, factoryMan, isBuiltinKind);
+    if (why) throw new Error(why);
   }
 
   /* ⚠️ id 和 version **都**兼做目录名，两段都要过闸（issue #23）：
@@ -96,7 +109,7 @@ export async function installPackage(pkg: PluginPackage): Promise<InstallResult>
      判据从「装的时候有没有人写过标记」变成「**现在有没有签名可验**」。 */
   if (pkg.signature) await writeFile(join(target, ".sig"), pkg.signature, "utf8");
 
-  const versions = (await readdir(idDir)).filter((x) => x !== "current").sort();
+  const versions = (await readdir(idDir)).filter((x) => x !== "current").sort(compareVersion);
   const previous = versions.filter((x) => x !== man.version).slice(-1)[0] ?? null;
   await writeFile(join(idDir, "current"), man.version, "utf8");
 
@@ -122,7 +135,7 @@ export async function pluginVersions(id: string): Promise<{ versions: string[]; 
      任意目录的文件名（`list_plugin_versions` 在 MCP 面上，issue #23 的同族一处）。 */
   const idDir = pluginIdDir(PLUGINS_DIR, id);
   if (!existsSync(idDir)) return { versions: [], current: null };
-  const versions = (await readdir(idDir)).filter((x) => x !== "current").sort();
+  const versions = (await readdir(idDir)).filter((x) => x !== "current").sort(compareVersion);
   let current: string | null = null;
   try { current = (await readFile(join(idDir, "current"), "utf8")).trim() || null; } catch { /* 没指针 */ }
   return { versions, current: current && versions.includes(current) ? current : versions[versions.length - 1] ?? null };
@@ -137,4 +150,17 @@ export async function switchVersion(id: string, version: string): Promise<{ id: 
   await writeFile(join(pluginIdDir(PLUGINS_DIR, id), "current"), version, "utf8");
   const registered = await registerPluginKinds();
   return { id, version, kinds: registered.find((x) => x.id === id)?.kinds ?? [] };
+}
+
+/** 内置插件出厂（TOOL_ROOT）那一版的清单（升级过的插件 `listInstalled` 给的是升级版，比版本要拿出厂这份）。
+ *  读不出来给 null。 */
+async function readFactoryManifest(id: string): Promise<PluginManifest | null> {
+  try {
+    const idDir = pluginIdDir(BUNDLED_DIR, id);
+    const vs = (await readdir(idDir)).filter((x) => x !== "current").sort(compareVersion);
+    const v = vs[vs.length - 1];
+    if (!v) return null;
+    const m = checkManifest(JSON.parse(await readFile(join(idDir, v, "manifest.json"), "utf8")));
+    return m.ok ? m.manifest! : null;
+  } catch { return null; }
 }

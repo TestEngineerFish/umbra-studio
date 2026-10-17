@@ -2,7 +2,8 @@ import { z } from "zod";
 import { envelope } from "../envelope.js";
 import { KIND_OF_EXT, readCatalogDetailed, whoHandles } from "../plugin/catalog.js";
 import { account } from "../account.js";
-import { memberPrice } from "../plugin/acquire.js";
+import { isHttpsUrl, memberPrice } from "../plugin/acquire.js";
+import { compareVersion } from "../plugin/version.js";
 import { listInstalled } from "../plugin/store.js";
 import { pluginVersions } from "../plugin/install.js";
 import { defineCap } from "./registry.js";
@@ -42,9 +43,14 @@ defineCap({
            留着是因为它是设计稿里的四态之一，接线时前端要认得它；
            等账号做好了这里改一行就有了。**不把它删掉**，删了将来会忘。 */
         state: got?.bundled ? "builtin" : got ? "installed" : "none",
-        installedVersion: got?.bundled ? c.version : vs.current,
-        /* 装着的版本比目录里的旧 = 有新版本 */
-        hasUpdate: !!got && !got.bundled && !!vs.current && vs.current !== c.version,
+        /* 内置的写**本机正在用的那一版**（出厂或升级后的）—— 原来写的是目录里的版本，两者不一样时会把「可更新」藏掉 */
+        installedVersion: got?.bundled ? got.manifest.version : vs.current,
+        /* 装着的版本比目录里的旧 = 有新版本。内置的（S4 §3）：目录版本高于正在用的、且有 https 安装包才算 —— 没包的「可更新」点了也装不上 */
+        hasUpdate: got?.bundled
+          ? compareVersion(c.version, got.manifest.version) > 0 && isHttpsUrl(c.package_url)
+          : !!got && !!vs.current && vs.current !== c.version,
+        /* 内置插件升过级：详情页 / 已装页要能说「出厂 X」并给「退回出厂版本」 */
+        upgraded: !!got?.upgraded, factoryVersion: got?.factoryVersion ?? null,
         unsigned: !!got && got.unsigned,
         /* 随当前会员赠送（服务端 `/membership.gift_plugins`）：前端价格那格画「随会员」 */
         gift: gift.has(c.id),

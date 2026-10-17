@@ -31,6 +31,9 @@ export interface MarketRow {
   package_url?: string;
   /** 会员价（积分）：登录且会员档有折扣、且要花积分买时才有。画「会员价 N」+ 划线原价；真扣多少以回包为准 */
   member_price?: number;
+  /** 内置插件正在用升级装的那一版（S4 §3）；`factoryVersion` 是出厂那一版 */
+  upgraded?: boolean;
+  factoryVersion?: string | null;
 }
 
 /** `acquire_plugin` 的回包：每一步的结果都在 —— 「买了没装上」和「没买成」是两种下一步 */
@@ -53,6 +56,9 @@ export type CatalogSource = "server" | "cache" | "bundled";
 export interface InstalledRow {
   id: string; name: string; version: string;
   bundled: boolean;
+  /** 内置插件正在用升级装的那一版（S4 §3）：「卸载」换成「退回出厂版本 factoryVersion」 */
+  upgraded?: boolean;
+  factoryVersion?: string | null;
   unsigned: boolean;
   kinds: string[];
   surfaces: string[];
