@@ -5,8 +5,8 @@ import type { HostAdapter } from "../host";
 import { mem } from "../layout/layout";
 import { toast } from "../ui/Toast";
 
-/** 首页：项目列表（列表 / 网格、搜索、星标、最近打开、缩略图）+ 导入目录 + 新建项目（M6-6 平移） */
-export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, projectsVersion }: { core: Core; host: HostAdapter; onOpen: (dir: string) => void; onNewProject: () => void; onImport: () => void; onSettings: () => void; projectsVersion: number }) {
+/** 首页：项目列表（列表 / 网格、搜索、星标、最近打开、缩略图）+ 导入目录 + 新建项目（M6-6 平移）+ 商城入口（`onMarket`，2026-10-17） */
+export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, onMarket, projectsVersion }: { core: Core; host: HostAdapter; onOpen: (dir: string) => void; onNewProject: () => void; onImport: () => void; onSettings: () => void; onMarket: () => void; projectsVersion: number }) {
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
   const [q, setQ] = useState(""); const [view, setView] = useState<"list" | "grid">(() => mem.get("us.homeView", "list"));
   const [stars, setStars] = useState<string[]>(() => mem.get("us.stars", [])); const [starOnly, setStarOnly] = useState(false);
@@ -56,6 +56,7 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, p
       <header className="h-11 px-4 flex items-center gap-3 border-b border-border bg-panel shrink-0">
         <span className="font-semibold text-sm">Umbra Studio</span><span className="flex-1" />
         <span className="text-[11px] text-muted mr-2">{host.kind === "desktop" ? "桌面" : "浏览器"}</span>
+        <button className="btn ghost sm" onClick={onMarket} data-ud="home-market" title="插件商城：上架的插件、已装、积分">商城</button>
         <button className="btn ghost sm" onClick={onSettings}>设置</button>
         <button className="btn sm" onClick={onImport} title="选一个目录：已是项目就直接打开；只是一堆 .dc.html 就接管成新项目">导入目录</button>
         <button className="btn sm primary" onClick={onNewProject}>新建项目</button>

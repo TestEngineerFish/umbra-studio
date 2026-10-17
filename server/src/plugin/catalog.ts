@@ -136,6 +136,9 @@ export interface ReadCatalogOptions {
   bundledFile?: string;
   /** 跳过 memo（测试用）。 */
   noMemo?: boolean;
+  /** 不读 memo、当场问一次服务端（结果照样记进 memo）。商城页每次打开用它 —— 后台刚上架的要马上看得到，
+   *  不能等 `MEMO_OK_MS` 那 5 分钟；✎ 那颗钮（`whoHandles`）仍走 memo。 */
+  fresh?: boolean;
 }
 
 let memo: { at: number; ok: boolean; result: CatalogResult } | null = null;
@@ -146,7 +149,7 @@ export function resetCatalogMemo(): void { memo = null; }
 /** 读目录（带来源）。没有任何一级就是空市场 —— **空市场不是错误**，第一期很可能就只有内置的那一个。 */
 export async function readCatalogDetailed(opts: ReadCatalogOptions = {}): Promise<CatalogResult> {
   const now = Date.now();
-  if (!opts.noMemo && memo && now - memo.at < (memo.ok ? MEMO_OK_MS : MEMO_FAIL_MS)) return memo.result;
+  if (!opts.noMemo && !opts.fresh && memo && now - memo.at < (memo.ok ? MEMO_OK_MS : MEMO_FAIL_MS)) return memo.result;
   const cacheFile = opts.cacheFile ?? CACHE_FILE;
   const bundledFile = opts.bundledFile ?? BUNDLED_FILE;
   let serverUrl = opts.serverUrl;

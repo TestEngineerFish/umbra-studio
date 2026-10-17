@@ -3,7 +3,7 @@
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { catalogUrl, fetchServerCatalog, pickCatalog, readCatalogDetailed, validateCatalog, type CatalogEntry } from "./plugin/catalog.js";
+import { catalogUrl, fetchServerCatalog, pickCatalog, readCatalogDetailed, resetCatalogMemo, validateCatalog, type CatalogEntry } from "./plugin/catalog.js";
 import { fmtBytes, giftPluginIdsOf, storageOf } from "./account.js";
 
 let pass = 0, fail = 0;
@@ -74,6 +74,21 @@ ok(d.source === "bundled" && called === 0, "没配服务端：不发请求，直
 writeFileSync(cacheFile, "{not json");
 const e = await readCatalogDetailed({ ...base, fetchFn: async () => { throw new Error("offline"); } });
 ok(e.source === "bundled", "缓存文件坏了 → 当没有，回落出厂");
+/* `fresh`（商城页）：memo 里有结果也当场再问一次 —— 后台刚上架的要马上看得到 */
+{
+  resetCatalogMemo();
+  let n = 0;
+  const srv = (id: string) => async () => { n++; return resp(200, { plugins: [entry(id)] }); };
+  const mb = { serverUrl: "https://x", cacheFile, bundledFile };
+  await readCatalogDetailed({ ...mb, fetchFn: srv("v1") });
+  const memoHit = await readCatalogDetailed({ ...mb, fetchFn: srv("v2") });
+  ok(n === 1 && memoHit.entries[0]?.id === "v1", "不带 fresh：5 分钟内走 memo，不再问", `n=${n}`);
+  const fr = await readCatalogDetailed({ ...mb, fresh: true, fetchFn: srv("v2") });
+  ok(n === 2 && fr.entries[0]?.id === "v2", "fresh：跳过 memo 当场问，拿到刚上架的", `n=${n}`);
+  const after = await readCatalogDetailed({ ...mb, fetchFn: srv("v3") });
+  ok(n === 2 && after.entries[0]?.id === "v2", "fresh 的结果照样记进 memo（✎ 那颗钮跟着看到新的）", `n=${n}`);
+  resetCatalogMemo();
+}
 rmSync(dir, { recursive: true, force: true });
 
 /* ── ⑥ 赠送插件解析 ── */

@@ -3,6 +3,7 @@ import { boot as readBoot, Core, type ProjectHandle } from "./api/client";
 import { getHost } from "./host";
 import { applyTheme, loadLayout, saveLayout, type LayoutState } from "./layout/layout";
 import { Home } from "./pages/Home";
+import { Market } from "./market/Market";
 import { NewProjectSheet, SettingsSheet } from "./sheets/Sheets";
 import { Toasts, toast } from "./ui/Toast";
 import { guardUnsaved } from "./ui/dirty";
@@ -17,7 +18,7 @@ export default function App() {
   const hub = useMemo(() => (b ? Core.fromBoot(b) : null), [b]);
   const host = useMemo(() => (hub ? getHost({ post: (r, body) => hub.post(r, body) }) : null), [hub]);
   const [project, setProject] = useState<ProjectHandle | null>(() => (b && b.name && b.dir ? { url: b.url, token: b.token, ws: b.ws, name: b.name, title: b.title ?? b.name, dir: b.dir } : null));
-  const [page, setPage] = useState<"home" | "work">(() => (location.pathname.endsWith("/home") || !(b && b.name) ? "home" : "work"));
+  const [page, setPage] = useState<"home" | "work" | "market">(() => (location.pathname.endsWith("/home") || !(b && b.name) ? "home" : "work"));
   const [layout, setLayoutRaw] = useState<LayoutState>(loadLayout);
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
   const [projectsVersion, bump] = useState(0);
@@ -31,7 +32,7 @@ export default function App() {
      但**一刷新就废**：地址里没令牌了，页面直接变成「拿不到访问令牌」。
      uitest 那条「刷新后引擎还是它」就卡在这里，连 treeitem 都等不出来。
      桌面壳里地址本来就不带令牌（走 preload），所以这句对它是空操作。 */
-  useEffect(() => { history.replaceState(null, "", (page === "home" ? "/__app/home" : "/__app/") + location.search); }, [page]);
+  useEffect(() => { history.replaceState(null, "", (page === "work" ? "/__app/" : "/__app/home") + location.search); }, [page]);
   /* 插件接线（M11-5）。**装不上的要说出来** —— 静静不显示的话，
      用户只会看到「我装的插件不见了」，而他刚付过钱。
      `loadPlugins` 可以重复调（装完 / 卸完再调一次），内部按 id 去重。 */
@@ -114,8 +115,12 @@ export default function App() {
   }
   return (
     <>
-      {page === "home" || !project
-        ? <Home core={hub} host={host} onOpen={(d) => void open(d)} onNewProject={() => setSheet({ kind: "newProject" })} onImport={() => void importDir()} onSettings={() => setSheet({ kind: "settings" })} projectsVersion={projectsVersion} />
+      {/* 首页的「商城」（sam 2026-10-17）：没开项目也能逛 —— 和工作台里「插件市场…」是同一个组件，走 hub 的全局能力；
+          商品以 Umbra 后台上架的为准（`list_market` 每次当场问服务端）。关掉回首页。 */}
+      {page === "market"
+        ? <div className="h-full flex min-h-0"><Market core={hub} onClose={() => setPage("home")} onSettings={() => setSheet({ kind: "settings" })} /></div>
+        : page === "home" || !project
+        ? <Home core={hub} host={host} onOpen={(d) => void open(d)} onNewProject={() => setSheet({ kind: "newProject" })} onImport={() => void importDir()} onSettings={() => setSheet({ kind: "settings" })} onMarket={() => setPage("market")} projectsVersion={projectsVersion} />
         : <Workbench key={project.dir} project={project} host={host} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
       {sheet?.kind === "newProject" && <NewProjectSheet hub={hub} host={host} initialDir={sheet.dir} onClose={() => setSheet(null)} onOpen={(d) => void open(d)} />}
       {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectUrl={page === "work" && project ? project.url : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)} />}

@@ -23,7 +23,8 @@ defineCap({
   faces: ["mcp", "http"],
   http: { route: "market", method: "GET" },
   run: async () => {
-    const { entries: catalog, source } = await readCatalogDetailed();
+    /* 每次打开商城都当场问服务端（`fresh`）：商品以后台上架为准，刚上 / 下架的不能等 memo 过期 */
+    const { entries: catalog, source } = await readCatalogDetailed({ fresh: true });
     /* 登录着就问一次「我这档会员送哪些插件」（后台配的）；失败当没有 —— 标不标赠送不该让市场打不开 */
     const perks = await account.perks();
     const gift = new Set(perks.gift);
