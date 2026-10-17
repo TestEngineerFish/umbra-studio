@@ -335,12 +335,13 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 
 ## 9. 当前状态一句话（2026-10-16）
 
-**插件仓库的种子导出完了**（`doc/23` S1，决策 §〇 D1–D6）：`export/umbra-plugins-seed/` 是将来 `umbra-plugins` 仓库的全部骨架 ——
+**插件仓库的种子导出完了**（`doc/23` S1，决策 §〇 D1–D6）。⚠️ **已迁出，正本在 umbra-plugins**（https://github.com/TestEngineerFish/umbra-plugins）——
+2026-10-17 S4 删掉了 Studio 里的 `export/umbra-plugins-seed/`。下面是当时的记录：`export/umbra-plugins-seed/` 是将来 `umbra-plugins` 仓库的全部骨架 ——
 `sdk/`（umbra.js 与 theme.css 各收口成一份 + manifest JSON Schema + PLUGIN-SPEC + PACKAGE-FORMAT 含测试向量）、三个内置插件迁入（去版本号层）、
 零依赖的 `pack` / `validate` / `sync-studio` 脚本、CI。**本仓库一个现有文件都没删、`server/` `app/` `shell/` 没动** —— 切换在 S4。
 ⚠️ 容器格式和 `pack.ts` 字节级一致是用 Studio 自己的 `dist/plugin/pack.js` 对拍出来的（15/15），不是看代码「长得一样」；
 其中一条容易漏：容器里的 manifest 副本带 `checkManifest` 补的 `priority: 50`，服务端 Python 签名前**必须照做**。
-读数：seed `validate` 3/3 · `pack` 3 包 · 校验器回归 24/24 · `plugintest` 92/92。差异裁决全文在 `export/umbra-plugins-seed/sdk/CHANGELOG.md`。
+读数：seed `validate` 3/3 · `pack` 3 包 · 校验器回归 24/24 · `plugintest` 92/92。差异裁决全文在 umbra-plugins 的 `sdk/CHANGELOG.md`（原 `export/umbra-plugins-seed/sdk/CHANGELOG.md`）。
 
 ## 9 之前的状态（2026-10-11）
 

@@ -74,15 +74,20 @@ npm --prefix server run ui -- <项目名> --port 4173 --no-open
 ### 4.5 桌面版一键启动（Electron 壳）
 
 ```bash
-./start.sh                 # 缺依赖就装 → 编译 server 与 app → 起壳
+./start.sh                 # 缺依赖就装 → 编译 server 与 app → 同步内置插件 → 起壳
 ./start.sh --no-build      # 刚编过、只想再开一次
 ```
 
 手工等价于：`npm --prefix server install && npm --prefix server run build`、
-`npm --prefix app install && npm --prefix app run build`、`npm --prefix shell install && npm --prefix shell start`。
+`npm --prefix app install && npm --prefix app run build`、`npm --prefix server run sync-plugins`、`npm --prefix shell install && npm --prefix shell start`。
 
-**插件市场在哪**：先打开一个项目（首页点项目卡），顶栏点**项目名** → 菜单里「插件市场…」，它在详情区当一个页签打开；
-首页没有入口。看目录、会员价不用登录；买、装、同步许可证要先在「项目设置 → Umbra 账号」登录。
+**内置插件来自 umbra-plugins，`sync-plugins` 拉**（S4，`doc/23` §四）：`plugins/<id>/` 是构建产物、不进仓库。
+来源自动选：`UMBRA_PLUGINS_DIR`（缺省 `../umbra-plugins`）有检出就在那边打包再解；否则下 GitHub Release
+（`UMBRA_PLUGINS_RELEASE`，缺省 `latest`；仓库私有，令牌按 `GH_TOKEN` → `../.secrets/gh-token` → `gh auth token` 依次试）。
+打包（`npm --prefix shell run dist*`）前会自动同步，三个内置插件缺一个就拒绝打包。
+
+**插件市场在哪**：首页顶栏「商城」整页打开；或打开项目后顶栏点**项目名** → 菜单里「插件市场…」，在详情区当一个页签打开。
+商品以 Umbra 后台上架的为准（每次打开当场问服务端）。看目录、会员价不用登录；买、装、同步许可证要先在「项目设置 → Umbra 账号」登录。
 
 **插件许可证的公钥**在 `keys/publisher.pub`（Ed25519，随程序发、进仓库；私钥只在服务端 ECS）。
 换了服务端私钥就要同步换这份，否则所有许可证验不过。
@@ -173,7 +178,8 @@ UMBRASTUDIO_PROJECTS_ROOT=/path/to/projects node server/dist/index.js
 | --- | --- | --- |
 | `doc/` | 契约、需求、写稿规则、实测报告、批次记录 | ✅ |
 | `server/` | MCP server（Node + TS，27 个工具） | ✅（`dist/` 除外） |
-| `runtime/` | `support.js` + 两个 React UMD，**刻意 vendor**（断网可用是前提） | ✅ |
+| `runtime/` | `support.js` + 两个 React UMD，**刻意 vendor**（断网可用是前提）；`umbra-plugin.js` 由 `sync-plugins` 从 umbra-plugins 的 SDK 拷来 | ✅ |
+| `plugins/` | 内置插件（markdown / code / html）。**内置插件来自 umbra-plugins，`sync-plugins` 拉**；只有出厂目录 `catalog.json` 进仓库 | 只 `catalog.json` |
 | `ui/` | 工具自己的界面稿（S1–S5、S7、IconGlyph） | ✅（派生的运行时副本除外） |
 | `fixtures/` | 工具自己的回归基准，每份钉一条犯过的错 | ✅ |
 | `projects/` | 用户的设计项目 | ❌ |

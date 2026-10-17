@@ -8,7 +8,10 @@
 /* ⚠️ 插件是 .mjs 没有类型声明 —— 用运行期路径 import，绕开 tsc 的静态解析。
    **判据要测的是插件里真跑的那一份**，不是它的一个 TS 副本
    （复制一份去测等于测了个影子，两边会各自漂）。 */
-const MOD = new URL("../../plugins/com.umbra.code/1.0.0/jsonpos.mjs", import.meta.url).href;
+/* 内置插件是构建产物（S4）：按同步下来的那一版找，不写死版本目录 */
+const { builtinDirOf } = await import("./sync_plugins.js");
+const { pathToFileURL } = await import("node:url");
+const MOD = pathToFileURL(builtinDirOf("com.umbra.code") + "/jsonpos.mjs").href;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { parseWithPos, nodeAt, prettyPath } = (await import(MOD)) as any;
 
@@ -140,7 +143,7 @@ ok("根是 `$`", prettyPath("") === "$");
    而「看起来在工作、点过去跳到别的地方」**比「解析不了」更坏**。 */
 console.log("\n JSONC 的注释与尾逗号（issue #49）");
 {
-  const { stripJsonc } = await import("./../../plugins/com.umbra.code/1.0.0/jsonpos.mjs" as string) as { stripJsonc: (t: string) => string };
+  const { stripJsonc } = await import(MOD) as { stripJsonc: (t: string) => string };
   const CASES: Array<[string, string]> = [
     ["行注释", '{\n  // 说明\n  "a": 1\n}'],
     ["块注释", '{\n  /* 多行\n     注释 */\n  "a": 1\n}'],

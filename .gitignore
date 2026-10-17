@@ -94,3 +94,6 @@ shell/out/
 
 # 插件市场目录的服务端缓存（server/src/plugin/catalog.ts）：开发时 STATE_ROOT = 仓库根，别把它提交进来
 plugins/catalog-cache.json
+# 内置插件是**构建产物**（S4，doc/23 §四.1）：源码正本在 umbra-plugins 仓库，`npm --prefix server run sync-plugins` 解进来。
+# plugins/ 下只追踪出厂目录 catalog.json（离线兜底）。
+plugins/*/
