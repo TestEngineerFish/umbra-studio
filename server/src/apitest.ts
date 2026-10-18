@@ -998,5 +998,30 @@ console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网�
   }
 }
 
+/* ── 插件沙箱限额的接口（2026-10-19）── 设置读写的细节在 limitstest，这里只钉 HTTP 这一层：
+   GET 的形状、POST 越界回 400 且不写盘、合法的写得进去。⚠️ 动的是 STATE_ROOT 下真的 plugin_limits.json，收尾还原。 */
+console.log("\n插件沙箱限额接口（plugin_limits）");
+{
+  const { readFile: rf, writeFile: wf, rm: rmf } = await import("node:fs/promises");
+  const { join: pj } = await import("node:path");
+  const { STATE_ROOT } = await import("./project.js");
+  const file = pj(STATE_ROOT, ".umbrastudio", "plugin_limits.json");
+  const before = await rf(file, "utf8").catch(() => null);
+  try {
+    const g = await (await fetch(u("plugin_limits"))).json() as { ok: boolean; data: { config: Record<string, number>; ranges: Record<string, { min: number; max: number; def: number }>; limits: Record<string, unknown> } };
+    ok(g.ok && typeof g.data.config.memoryMB === "number" && g.data.ranges.memoryMB?.def === 512 && g.data.limits.rangeRead === true
+      && g.data.limits.memoryBytes === g.data.config.memoryMB! * 1048576,
+      "GET plugin_limits：config + ranges + 派生 limits", JSON.stringify(g.data.limits));
+    const bad = await post("plugin_limits", { memoryMB: 99999 });
+    const bj = await bad.json() as { ok: boolean; errors?: Array<{ code?: string }> };
+    const after = await rf(file, "utf8").catch(() => null);
+    ok(bad.status === 400 && bj.errors?.[0]?.code === "E_BAD_INPUT" && after === before, "POST 越界 → 400 E_BAD_INPUT，盘上不变", `HTTP ${bad.status}`);
+    const good = await (await post("plugin_limits", { deadlineSec: 42 })).json() as { ok: boolean; data: { config: { deadlineSec: number }; limits: { deadlineMs: number } } };
+    ok(good.ok && good.data.config.deadlineSec === 42 && good.data.limits.deadlineMs === 42_000, "POST 合法值写得进去，回包就是新值");
+  } finally {
+    if (before === null) await rmf(file, { force: true }); else await wf(file, before);
+  }
+}
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);
