@@ -90,6 +90,70 @@ ok(!bad.ok, "since 不是时间 → 报错不猜");
   ok(viaAi.content === null && viaAi.base64 === undefined && /不是文本文件/.test(viaAi.why ?? ""), "**模型 / MCP 读同一份：不给 base64**（一份 PDF 的 base64 会撑爆上下文）", viaAi.why);
   const viaHttp = (await cap("read_file").run({ path: "纪要.pdf" } as never, asHuman)).data as { base64?: string };
   ok(viaHttp.base64 === undefined, "前端自己（http）读也不给 —— 只有插件要");
+
+  /* ── 按字节范围读（2026-10-19）：插件读大文件（大 .gltf / .obj / 视频）用，只读那一段、不算 sha256 ── */
+  const { randomBytes } = await import("node:crypto");
+  const { setPluginLimits } = await import("./plugin/limits.js");
+  const blob = randomBytes(10_000);
+  await writeFile(join(projDir, "模型.bin"), blob);
+  type Ranged = { path: string; content: null; encoding: string; base64: string; size: number; kind: string; updatedAt: string; sha256?: string;
+    range: { byteOffset: number; byteLength: number; size: number; more: boolean } };
+  const rr = async (input: Record<string, unknown>) => hostCall({ manifest: man, project }, "read_file", input);
+  const seg = await rr({ path: "模型.bin", byteOffset: 100, byteLength: 1000 });
+  const sd = seg.data as Ranged;
+  ok(seg.ok && sd.content === null && sd.encoding === "base64" && Buffer.from(sd.base64, "base64").equals(blob.subarray(100, 1100)),
+    "**范围读：正常一段，字节对得上**", `${Buffer.from(sd.base64 ?? "", "base64").length} 字节`);
+  ok(JSON.stringify(sd.range) === JSON.stringify({ byteOffset: 100, byteLength: 1000, size: 10_000, more: true }), "range = { byteOffset, byteLength, size, more }", JSON.stringify(sd.range));
+  ok(!("sha256" in sd) && sd.size === 10_000 && sd.path === "模型.bin" && typeof sd.updatedAt === "string",
+    "**范围读的回包没有 sha256**（只读了一段，算不出整份的），size / path / updatedAt 照给", Object.keys(sd).join(","));
+  const last = (await rr({ path: "模型.bin", byteOffset: 9_500, byteLength: 1000 })).data as Ranged;
+  ok(last.range.byteLength === 500 && last.range.more === false && Buffer.from(last.base64, "base64").equals(blob.subarray(9_500)),
+    "末段：要 1000 给 500（实际读到的），more:false", JSON.stringify(last.range));
+  const empty = await rr({ path: "模型.bin", byteOffset: 10_000, byteLength: 10 });
+  const ed = empty.data as Ranged;
+  ok(empty.ok && ed.base64 === "" && ed.range.byteLength === 0 && ed.range.more === false, "offset = size → 空段，不报错", JSON.stringify(ed.range));
+  const rejected = async (input: Record<string, unknown>, what: string) => {
+    const r = await rr(input);
+    ok(!r.ok && r.errors[0]?.code === "E_BAD_INPUT", `拒：${what}`, r.errors[0]?.message ?? "没拒");
+  };
+  await rejected({ path: "模型.bin", byteOffset: 10_001, byteLength: 10 }, "byteOffset 超过 size");
+  await rejected({ path: "模型.bin", byteOffset: 0 }, "只给 byteOffset");
+  await rejected({ path: "模型.bin", byteLength: 10 }, "只给 byteLength");
+  await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 10, offset: 1 }, "和 offset（按行分页）同时给");
+  await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 10, limit: 5 }, "和 limit 同时给");
+  await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 0 }, "byteLength = 0");
+  await rejected({ path: "模型.bin", byteOffset: -1, byteLength: 10 }, "byteOffset 负数");
+  await rejected({ path: "模型.bin", byteOffset: 1.5, byteLength: 10 }, "byteOffset 小数（插件这条路不跑 zod，手工核）");
+  await rejected({ path: "模型.bin", byteOffset: "0", byteLength: 10 }, "byteOffset 是字符串");
+  await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 100 * 1048576 + 1 }, "byteLength 超过二进制读取上限");
+
+  /* 文本类文件也能按字节读：按原始字节，不解码（大 .gltf 靠它）。多字节字符切在半中间也照给 */
+  const mdBytes = Buffer.from(text + "\n第 121 行", "utf8");
+  const tx = await rr({ path: "notes/长文.md", byteOffset: 1, byteLength: 7 });
+  const td = tx.data as Ranged;
+  ok(tx.ok && td.kind !== "binary" && Buffer.from(td.base64, "base64").equals(mdBytes.subarray(1, 8)) && td.content === null,
+    "**文本类文件（.md）也能按字节读**，给的是原始字节（切在汉字中间也不改）", `kind=${td.kind}`);
+
+  /* 非插件来源不开放 */
+  const mcpR = await cap("read_file").run({ path: "模型.bin", byteOffset: 0, byteLength: 10 } as never, asAi);
+  ok(!mcpR.ok && mcpR.errors[0]?.code === "E_BAD_INPUT" && /只对插件开放/.test(mcpR.errors[0]?.message ?? ""), "**模型 / MCP 给了 byteOffset → E_BAD_INPUT（只对插件开放）**");
+  const httpR = await cap("read_file").run({ path: "模型.bin", byteOffset: 0, byteLength: 10 } as never, asHuman);
+  ok(!httpR.ok && httpR.errors[0]?.code === "E_BAD_INPUT", "前端（http）给了也拒");
+
+  /* 二进制整份读的上限跟着设置走 */
+  const big = randomBytes(11 * 1048576);
+  await writeFile(join(projDir, "大.bin"), big);
+  const whole1 = (await rr({ path: "大.bin" })).data as { base64?: string; why?: string };
+  ok(whole1.base64 !== undefined && Buffer.from(whole1.base64, "base64").length === big.length, "默认上限 100 MB：11 MB 整份给");
+  await setPluginLimits({ binaryReadMaxMB: 10 });
+  const whole2 = (await rr({ path: "大.bin" })).data as { base64?: string; why?: string };
+  ok(whole2.base64 === undefined && /上限 10 MB/.test(whole2.why ?? "") && /byteOffset/.test(whole2.why ?? ""),
+    "**设置改成 10 MB：同一份整份读被拒，原因里指了范围读这条路**", whole2.why);
+  const part = (await rr({ path: "大.bin", byteOffset: 10 * 1048576, byteLength: 10 * 1048576 })).data as Ranged;
+  ok(part.range.byteLength === 1048576 && part.range.more === false && Buffer.from(part.base64, "base64").equals(big.subarray(10 * 1048576)),
+    "同一份按段读得到（第二段 1 MB，more:false）", JSON.stringify(part.range));
+  await rejected({ path: "大.bin", byteOffset: 0, byteLength: 10 * 1048576 + 1 }, "byteLength 超过改小后的上限");
+  await setPluginLimits({ binaryReadMaxMB: 100 });
 }
 
 const caps = (await cap("list_capabilities").run({} as never, { project: null, via: "http" })).data as { core: Array<{ name: string; source: string }>; verbs: Array<{ tool: string; exposed: boolean }>; failures: Record<string, string> };

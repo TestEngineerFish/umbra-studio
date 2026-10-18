@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
-import { countTypes, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { getPluginLimits } from "../plugin/limits.js";
+import { countTypes, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { gitFallbackOf } from "../gitkeep.js";
 import { clearStagedDraft, getStagedDraft, listStagedDrafts, stageDraft } from "../staged.js";
 import { defineCap } from "./registry.js";
@@ -49,7 +50,10 @@ defineCap({
   name: "read_file", title: "读一个文件（非设计稿）", scope: "project",
   summary: [
     "读文本文件，返回内容与 sha256。**写回去要把这个 sha256 原样带上** —— 盘上被别人改过就会被拒绝，不会把改动盖掉。",
-    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限 100 MB）。",
+    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限见设置 → 插件沙箱，默认 100 MB）。",
+    "**插件调用时**还能按字节范围读：`byteOffset` + `byteLength` 两个都给（非负整数，`byteLength` 1..上限，`byteOffset` ≤ size），任何文件都按原始字节读、只读那一段，"
+      + "回 `content: null` + `encoding: \"base64\"` + `base64` + `range: { byteOffset, byteLength(实际读到的), size, more }`。"
+      + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。模型 / MCP / 前端调用不开放。",
     "`encoding` 给别的编码时**只换读法，盘上那份一个字节都没动**（M10-5，中文 CSV 常被当成 UTF-8 读成乱码）。",
     "⚠️ `sha256` 永远是**原始字节**的，不随编码变 —— 所以按 GBK 读出来的文本，拿这个 sha 回去校验仍然对得上。",
   ].join("\n"),
@@ -60,13 +64,46 @@ defineCap({
        ⚠️ 切过的 `content` 不能原样 `write_file` 回去（那会把文件写成一页）—— `range` 字段在就说明是一页，回包里也写明。 */
     offset: z.number().int().min(1).optional().describe("从第几行起（1 起算）。给了就按行分页"),
     limit: z.number().int().min(1).max(5000).optional().describe("最多给几行。只给 limit 不给 offset = 从第 1 行起"),
+    /* 按字节范围读（2026-10-19）：**只对插件开放**，模型 / MCP / 前端给了就拒（见 run 里）。 */
+    byteOffset: z.number().int().min(0).optional().describe("（仅插件）按字节读：从第几个字节起（0 起算）。要和 byteLength 一起给"),
+    byteLength: z.number().int().min(1).optional().describe("（仅插件）按字节读：读多少字节（1..上限）。要和 byteOffset 一起给"),
   },
   http: { route: "file", method: "GET" },
-  run: async ({ path, encoding, offset, limit }, c) => {
+  run: async ({ path, encoding, offset, limit, byteOffset, byteLength }, c) => {
+    /* ⚠️ **插件这条路不跑 zod**（`host.ts` 直接 `cap.run`，HTTP 门面也不跑）—— 上面那几个 `.int().min()` 对插件不算数，
+       字节范围的入参在这里手工核。核不过一律回 E_BAD_INPUT 信封，**不抛**：`hostCall` 会把抛出来的东西包成 E_IO，
+       插件就分不清「我参数给错了」和「盘坏了」。 */
+    if (byteOffset !== undefined || byteLength !== undefined) {
+      const no = (name: string, why: string, fix?: string) =>
+        envelope(null, [err(X.BAD_INPUT, "(input)", { kind: "key", name }, why, fix ? { fix } : undefined)]);
+      /* 非插件来源不开放：模型拿到一段 base64 读不懂、只占上下文；前端有自己的读法 */
+      if (c.via !== "plugin") return no("byteOffset", "按字节范围读（byteOffset / byteLength）只对插件开放", "要文本就去掉这两个参数；大文件按行分页用 offset / limit");
+      if (byteOffset === undefined || byteLength === undefined) {
+        return no(byteOffset === undefined ? "byteOffset" : "byteLength", "byteOffset 和 byteLength 要一起给（只给了一个）",
+          "从头读就给 byteOffset: 0");
+      }
+      if (offset !== undefined || limit !== undefined) {
+        return no("offset", "按字节读（byteOffset / byteLength）和按行分页（offset / limit）不能同时给", "二选一：二进制或大文件按字节，文本按行");
+      }
+      const isNat = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+      if (!isNat(byteOffset)) return no("byteOffset", `byteOffset 要是非负整数，收到的是 ${JSON.stringify(byteOffset)}`);
+      const max = (await getPluginLimits()).binaryReadMaxMB * 1048576;
+      if (!isNat(byteLength) || byteLength < 1 || byteLength > max) {
+        return no("byteLength", `byteLength 要是 1..${max} 的整数（上限 = 设置里的二进制读取上限 ${max / 1048576} MB），收到的是 ${JSON.stringify(byteLength)}`,
+          "大文件分几段读：每段不超过上限，按回包 range.more 决定要不要读下一段");
+      }
+      const size = fileSizeOf(p(c), path);
+      if (byteOffset > size) return no("byteOffset", `byteOffset ${byteOffset} 超过文件大小 ${size}`, "byteOffset 最大等于 size（那时回空段）");
+      return envelope(await readFileRange(p(c), path, byteOffset, byteLength));
+    }
     /* ⚠️ **插件调用时二进制按字节给**（2026-10-17 用户报：PDF 插件「宿主回的内容里既没有 base64 也没有 content」）。
        插件 SDK 的约定是二进制回 `encoding: "base64"` + `base64`，pdf / xlsx / zip 三个插件都按它写，而这里从来没给过。
-       只对 `via === "plugin"` 打开：模型 / MCP 拿到一份 PDF 的 base64 只会撑爆上下文。 */
-    const r = await readAnyFile(p(c), path, encoding, { binary: c.via === "plugin" });
+       只对 `via === "plugin"` 打开：模型 / MCP 拿到一份 PDF 的 base64 只会撑爆上下文。
+       上限以设置为准（`plugin/limits.ts`），只在插件这条路上读设置。 */
+    const plugin = c.via === "plugin";
+    const r = await readAnyFile(p(c), path, encoding, plugin
+      ? { binary: true, binaryMax: (await getPluginLimits()).binaryReadMaxMB * 1048576 }
+      : {});
     if ((offset === undefined && limit === undefined) || r.content === null) return envelope(r);
     const lines = r.content.split("\n");
     const from = offset ?? 1;
