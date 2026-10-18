@@ -73,7 +73,12 @@ const off = onVerbsChanged(() => { changes++; });
 const mine = (vs: Array<{ plugin: string; tool: string }>) => vs.filter((v) => v.plugin === "com.umbra.verbs").map((v) => v.tool).sort();
 const all1 = await allVerbs();
 ok(mine(all1).join(",") === "verbs__cut,verbs__play", "夹具的两件动词都扫到了", mine(all1).join(" "));
-ok(all1.filter((v) => v.plugin === "com.umbra.markdown" && v.exposed && v.state === "builtin").length === 2, "内置 markdown 插件的两件动词按 builtin 全挂出（它是第一个真用上 B 面的）");
+/* 不数件数：内置 markdown 跟着插件仓同步（S4），1.1.0 起是四件（多了 search / insert_after_section）。
+   钉的是「它的动词**全部**按 builtin 挂出、最早那两件在」—— 写死「2 件」的话，插件仓每加一件这里就红一次。 */
+const md1 = all1.filter((v) => v.plugin === "com.umbra.markdown");
+ok(md1.length >= 2 && md1.every((v) => v.exposed && v.state === "builtin")
+  && ["markdown__outline", "markdown__replace_section"].every((t) => md1.some((v) => v.tool === t)),
+  "内置 markdown 插件的动词按 builtin 全挂出（它是第一个真用上 B 面的）", md1.map((v) => v.tool).join(" "));
 const exposed1 = mine(await listVerbs());
 ok(exposed1.join(",") === "verbs__play", "**没授权只挂 free 的那件**（play 在、cut 不在）", exposed1.join(" "));
 ok(all1.find((v) => v.tool === "verbs__cut")?.exposed === false && all1.find((v) => v.tool === "verbs__cut")?.state === "unlicensed", "cut 在全表里标 exposed:false / unlicensed");

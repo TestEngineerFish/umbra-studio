@@ -7,8 +7,9 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { checkManifest, HOST_API_MAJOR } from "./plugin/manifest.js";
+import { highestVersion } from "./plugin/version.js";
 import { PluginSandbox } from "./plugin/sandbox.js";
 import { allowedCapNames } from "./plugin/host.js";
 import { buildProject } from "./project.js";
@@ -205,7 +206,10 @@ if (started) {
    这里把它变成读数。 */
 {
   const { TOOL_ROOT: TR3 } = await import("./project.js");
-  const MD_DIR = join(TR3, "plugins", "com.umbra.markdown", "1.0.0");
+  /* 版本目录不写死：内置插件由 sync-studio 从插件仓同步进来（S4），版本会跟着插件仓走 ——
+     原来写死 1.0.0，同步到 1.1.0 之后这一节在读清单那一步就 ENOENT，整套测试半路崩掉。取在场的最高版本。 */
+  const MD_ROOT = join(TR3, "plugins", "com.umbra.markdown");
+  const MD_DIR = join(MD_ROOT, highestVersion(readdirSync(MD_ROOT)) ?? "1.0.0");
   const mdMan = checkManifest(JSON.parse(readFileSync(join(MD_DIR, "manifest.json"), "utf8")));
   ok(!!mdMan.manifest, "（前提）markdown 插件的清单合法", mdMan.problems?.join(" / ") || "合法");
   if (mdMan.manifest) {
@@ -213,7 +217,9 @@ if (started) {
     let up = true;
     try { await mdSb.start(); } catch (e) { up = false; ok(false, "**真插件的 B 面在 QuickJS 里起得来**", (e as Error).message); }
     if (up) {
-      ok(mdSb.caps.length === 2, "**它那两件能力照旧报上来**", mdSb.caps.map((c) => c.name).join(" / "));
+      // 不数件数（1.1.0 起四件，同 verbtest 那条）：钉「最早那两件还在」。
+      ok(["com.umbra.markdown.outline", "com.umbra.markdown.replace_section"].every((n) => mdSb.caps.some((c) => c.name === n)),
+        "**它那两件能力照旧报上来**", mdSb.caps.map((c) => c.name).join(" / "));
       const T2 = join(tmpdir(), `umbrastudio-mdtest-${Date.now()}`);
       await mkdir(T2, { recursive: true });
       await writeFile(join(T2, "project.json"), JSON.stringify({ name: "mdtest", title: "md 回归" }));
