@@ -300,6 +300,46 @@ export class AccountService {
     return { url };
   }
 
+  /** 服务端是 local（2026-10-19 起 Umbra 接账号中心后就是这一种，对端上仍叫 local）：邮箱 + 密码登录。
+   *  `POST /auth/login` 回一张长效不透明令牌（没有刷新令牌；`tokenExpMs` 认不出 exp → 不会去刷新，失效时服务端 401、界面照实显示没登录）。
+   *  失败按服务端的分档说：密码不对 / 试太多（带等多少秒）/ 连不上。密码只在这一次请求里用，不落盘。 */
+  async loginPassword(email: string, password: string, serverUrl?: string): Promise<AccountStatus> {
+    const base = (serverUrl || (await getAccount()).serverUrl).replace(/\/+$/, "");
+    this.lastError = "";
+    let r: Awaited<ReturnType<FetchLike>>;
+    try {
+      r = await this.fetchFn(`${base}/auth/login`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password, device: "umbra-studio" }) } as never);
+    } catch (e) {
+      throw new Error(`连不上 ${base}：${(e as Error).message}`);
+    }
+    if (!r.ok) {
+      const code = r.headers?.get?.("x-umbra-error") || "";
+      let detail = "";
+      try { detail = String(((await r.json()) as { detail?: unknown }).detail ?? ""); } catch { /* 不是 JSON */ }
+      if (code === "too_many_attempts") {
+        const wait = Number(r.headers?.get?.("retry-after") || 0);
+        throw new Error(wait > 0 ? `试得太多了，${wait} 秒后再试` : "试得太多了，过一会儿再试");
+      }
+      if (r.status === 401) throw new Error(detail || "邮箱或密码不对");
+      throw new Error(detail || `登录没成（${r.status}）`);
+    }
+    const d = (await r.json()) as { token?: string };
+    if (!d.token) throw new Error("服务端没回令牌");
+    const user = await this.me(base, d.token);
+    await setAccount({ serverUrl: base, accessToken: d.token, refreshToken: "", user, signedInAt: new Date().toISOString() });
+    this.provider = "local";
+    this.log(`[account] 已用密码登录：user ${user.id}`);
+    void this.syncLicense();
+    return this.status();
+  }
+
+  /** 问服务端怎么登录并记下（设置页据此画「密码表单」还是「打开浏览器」）。问不到回 unknown，不抛。 */
+  async probeProvider(): Promise<AccountStatus["provider"]> {
+    try { await this.authConfig((await getAccount()).serverUrl); } catch { /* 断网：保持原样 */ }
+    return this.provider;
+  }
+
   /** 换到令牌之后：问服务端我是谁，成了就落盘。 */
   private async finish(serverUrl: string, _cfg: OidcClientConfig, t: OidcTokens): Promise<void> {
     try {

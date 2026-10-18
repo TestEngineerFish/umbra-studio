@@ -1,4 +1,4 @@
-// 来源：UmbraPC electron/core/convert/engine.ts（2026-10-18 a72ac3a），改动：相对 import 补 .js；perSource[0]、route.steps[i] 加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/engine.ts（2026-10-19 d0ebb1d），改动：相对 import 补 .js；perSource[0]、route.steps[i] 加非空断言（noUncheckedIndexedAccess）
 // 格式转换引擎（doc/格式转换-方案调研-2026-10-18.md §四、§9.3）。
 //
 // 一次转换 = 判格式 → 规划路线 → 在任务自己的临时目录里一步步转 → 占好成品位置 → 挪过去 → 删临时目录。
@@ -11,7 +11,7 @@
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { formatById, formatOfPath } from "./formats.js";
+import { formatById, formatOfPath, type FormatCategory } from "./formats.js";
 import { planRoute, reachable, type Route } from "./route.js";
 import { releaseOutput, reserveOutput, settleOutput } from "./output.js";
 import type { Converter, StepOptions, ToolStatus } from "./types.js";
@@ -106,7 +106,7 @@ export class ConvertEngine {
     if (!froms.size) return { from: [], targets: [], unknown };
     const { ready, missing } = await this.split();
     const all = [...ready, ...missing.keys()];
-    const perSource: Set<string>[] = [...froms].map((f) => reachable(all, f));
+    const perSource: Set<string>[] = [...froms].map((f) => new Set([...reachable(all, f)].filter((to) => sensible(f, to))));
     const candidates: string[] = [...perSource[0]!].filter((to: string) => perSource.every((s) => s.has(to)));
     const out: TargetInfo[] = [];
     for (const to of candidates) {
@@ -183,6 +183,20 @@ export class ConvertEngine {
       await fs.rm(work, { recursive: true, force: true }).catch(() => {});
     }
   }
+}
+
+/** 文字类的源。 */
+const TEXTY: ReadonlySet<FormatCategory> = new Set(["document", "sheet", "slides", "text", "ebook", "pdf"]);
+/** 音视频。 */
+const MEDIA: ReadonlySet<FormatCategory> = new Set(["video", "audio"]);
+
+/** 列「能转成什么」时去掉没意义的组合：文字类的东西转成音视频。
+ *  增强转换包的格式图很宽，多步一拼就会出「docx → gif → mp4」这种技术上通、没人要的路（10-18 实测撞到）。
+ *  只管**列不列**，不拦明确的请求（AI / 工作流写明了要 mp4，照转）。 */
+export function sensible(from: string, to: string): boolean {
+  const a = formatById(from)?.category;
+  const b = formatById(to)?.category;
+  return !(a && b && TEXTY.has(a) && MEDIA.has(b));
 }
 
 /** 常用的排前面。 */

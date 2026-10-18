@@ -143,6 +143,41 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
   ok(!/登录已失效/.test(msg) && w.seen.some((x) => x.path.endsWith("/buy") && x.token === NEW), "购买：先刷新再用新令牌买", msg || "ok");
 }
 
+/* ⑨ 服务端是 local（2026-10-19 接账号中心之后）：邮箱密码登录。不透明令牌没有 exp —— 不刷新、照用；失败按分档说 */
+{
+  await setAccount({ serverUrl: BASE, accessToken: "", refreshToken: "", user: null, signedInAt: "" });
+  const LOCAL = "opaque-local-token";
+  const calls: string[] = [];
+  const fetchFn = async (url: string, init: { method: string; headers?: Record<string, string>; body?: string }) => {
+    const path = url.slice(BASE.length);
+    calls.push(path);
+    const json = (status: number, body: unknown, hdr: Record<string, string> = {}) =>
+      ({ ok: status < 300, status, json: async () => body, headers: { get: (n: string) => hdr[n.toLowerCase()] ?? null } });
+    if (path === "/auth/config") return json(200, { provider: "local", managed_by: "center" });
+    if (path === "/auth/login") {
+      const b = JSON.parse(init.body || "{}") as { email: string; password: string; device: string };
+      if (b.password === "slow") return json(401, { detail: "试得太频繁了" }, { "x-umbra-error": "too_many_attempts", "retry-after": "42" });
+      return b.password === "right password" && b.device === "umbra-studio" ? json(200, { token: LOCAL, user: { id: 1 } }) : json(401, { detail: "邮箱或密码不对" }, { "x-umbra-error": "bad_credentials" });
+    }
+    if (path === "/auth/me") return init.headers?.Authorization === `Bearer ${LOCAL}` ? json(200, { user: { id: 1, name: "sam" } }) : json(401, {});
+    if (path === "/membership") return init.headers?.Authorization === `Bearer ${LOCAL}` ? json(200, { gift_plugins: [], discount_pct: 100 }) : json(401, {});
+    return json(404, {});
+  };
+  const svc = new AccountService(new OidcLogin(async () => { throw new Error("不该刷新"); }), fetchFn as never);
+  ok(await svc.probeProvider() === "local", "probeProvider 认出 local");
+  let msg = "";
+  try { await svc.loginPassword("sam@example.com", "wrong one!!"); } catch (e) { msg = (e as Error).message; }
+  ok(msg === "邮箱或密码不对", "密码不对：照服务端那句说", msg);
+  try { await svc.loginPassword("sam@example.com", "slow"); } catch (e) { msg = (e as Error).message; }
+  ok(/42 秒/.test(msg), "试太多：带上等多少秒", msg);
+  const st = await svc.loginPassword("sam@example.com", "right password");
+  const a = await getAccount();
+  ok(st.signedIn && a.accessToken === LOCAL && a.refreshToken === "", "登上：存下不透明令牌，没有刷新令牌");
+  ok(!JSON.stringify(a).includes("right password"), "密码不落盘");
+  const p = await svc.perks();
+  ok(p.ok, "不透明令牌（没有 exp）照用、不去刷新");
+}
+
 await rm(STATE, { recursive: true, force: true });
 console.log(`\n${fail ? "✗" : "✓"} 令牌刷新 ${pass}/${pass + fail}`);
 process.exit(fail ? 1 : 0);

@@ -36,7 +36,7 @@ export class OidcFail extends Error {
 
 /** 出网。缺省 Node 全局 fetch；回归里换成假的。 */
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) =>
-  Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+  Promise<{ ok: boolean; status: number; json(): Promise<unknown>; headers?: { get(name: string): string | null } }>;
 
 export class OidcLogin {
   private current: { server: http.Server; cancel: (why: OidcFailReason) => void } | null = null;

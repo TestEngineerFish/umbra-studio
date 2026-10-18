@@ -343,6 +343,10 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState("");
   const [editServer, setEditServer] = useState(false);
+  // 服务端怎么登录：local（邮箱密码，接账号中心之后就是这一种）/ oidc（打开浏览器）/ unknown（问不到，按浏览器那颗画）。
+  const [provider, setProvider] = useState("unknown");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   // 存储容量那一行（Umbra 草案 §十一）：只看不管。null = 没登录 / 老服务端，整行不画。
   type Storage = { used: number; limit: number; pct: number; warn: "ok" | "warn" | "critical" | "full"; tier: string | null };
   const [storage, setStorage] = useState<Storage | null>(null);
@@ -353,6 +357,17 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     setStorage(sr.ok && sr.data ? sr.data.storage : null);
   }, [core]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void core.get<{ provider: string }>("account_provider").then((r) => { if (r.ok && r.data) setProvider(r.data.provider); }); }, [core, st?.serverUrl]);
+  const loginPassword = async () => {
+    setBusy(true);
+    const r = await core.post<Status>("account_login_password", { email, password });
+    setBusy(false);
+    setPassword("");
+    if (!r.ok || r.errors?.length) { toast(r.errors?.[0]?.message || "登录没成"); if (r.data) setSt(r.data); return; }
+    if (r.data) setSt(r.data);
+    toast("已登录 Umbra 账号");
+    void load();
+  };
   // 登录进行中：每 1.5 秒看一眼，登上 / 失败 / 5 分钟就停。
   useEffect(() => {
     if (!busy) return;
@@ -406,8 +421,15 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     <div className="flex items-center gap-2">
       {st?.signedIn
         ? <button className="btn" onClick={logout}>登出</button>
-        : <button className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
-      {busy && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
+        : provider === "local"
+          ? <form className="flex items-center gap-2 flex-wrap" onSubmit={(e) => { e.preventDefault(); void loginPassword(); }}>
+              <input className="min-w-[12rem]" type="email" autoComplete="username" placeholder="邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <input className="min-w-[10rem]" type="password" autoComplete="current-password" placeholder="密码" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <button className="btn primary" type="submit" disabled={busy || !email || !password}>{busy ? "登录中…" : "登录"}</button>
+              <span className="text-muted text-xs">忘了密码：在 Umbra PC / iOS 的登录页点「忘记密码」</span>
+            </form>
+          : <button className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
+      {busy && provider !== "local" && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
       {!busy && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
     </div>
     {st?.signedIn && storage && (

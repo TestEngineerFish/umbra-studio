@@ -46,6 +46,34 @@ defineCap({
 });
 
 defineCap({
+  name: "account_login_password", title: "用邮箱密码登录", scope: "global",
+  summary: "服务端是 local 时（接了账号中心之后就是这一种）用邮箱 + 密码登录；密码只用这一次、不落盘，令牌不回。",
+  input: {
+    email: z.string().describe("邮箱"),
+    password: z.string().describe("密码"),
+    serverUrl: z.string().optional().describe("这一次用哪台 Umbra 服务端；不给用存着的"),
+  },
+  faces: ["http"],
+  http: { route: "account_login_password", method: "POST" },
+  run: async ({ email, password, serverUrl }) => {
+    try {
+      return envelope(await account.loginPassword(email, password, serverUrl));
+    } catch (e) {
+      return envelope(await account.status(), [err("E_ACCOUNT_LOGIN", (e as Error).message)]);
+    }
+  },
+});
+
+defineCap({
+  name: "account_provider", title: "这台服务端怎么登录", scope: "global",
+  summary: "问 Umbra 服务端的 /auth/config：oidc（打开浏览器）还是 local（邮箱密码）。问不到回 unknown。",
+  input: {},
+  faces: ["http"],
+  http: { route: "account_provider", method: "GET" },
+  run: async () => envelope({ provider: await account.probeProvider() }),
+});
+
+defineCap({
   name: "account_storage", title: "存储容量（只看）", scope: "global",
   summary: "这个账号在 Umbra 服务端上存了多少、上限多少、到哪一档（草案 §十一）。Studio 不往服务端传东西，只给账号块画一行；清理与管理在 PC / iOS 的账号页。没登录 / 老服务端回 null。",
   input: {},
