@@ -40,7 +40,8 @@
     "verbtest": "npm run build && node dist/verbtest.js",
     "upgradetest": "npm run build && node dist/upgradetest.js",
     "tokentest": "npm run build && node dist/tokentest.js",
-    "gaptest": "npm run build && node dist/gaptest.js"
+    "gaptest": "npm run build && node dist/gaptest.js",
+    "converttest": "npm run build && node dist/converttest.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",

@@ -10,6 +10,7 @@
 import "./account.js";
 import "./files.js";
 import "./chat.js";
+import "./convert.js";
 import "./design.js";
 import "./drafts.js";
 import "./edit.js";

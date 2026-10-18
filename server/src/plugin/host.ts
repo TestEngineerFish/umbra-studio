@@ -22,7 +22,7 @@ import type { PluginManifest } from "./manifest.js";
  *  包括将来新加的。黑名单的问题是「加了一件危险能力但忘了拉黑」，
  *  而那种疏漏不会有任何症状，直到出事。
  */
-const ALLOWED: Record<string, { need: "read" | "write" }> = {
+const ALLOWED: Record<string, { need: "read" | "write"; cap?: string }> = {
   list_files:         { need: "read" },
   read_file:          { need: "read" },
   list_file_versions: { need: "read" },
@@ -45,6 +45,15 @@ const ALLOWED: Record<string, { need: "read" | "write" }> = {
   move_file:          { need: "write" },
   trash_file:         { need: "write" },
   revert_file:        { need: "write" },
+  /* 格式转换（2026-10-18，`doc/20` §3.3）。插件不许起子进程（P1 / Q40），要 ffmpeg / LibreOffice 就调这一件：
+     参数只有 `path` / `to` / `quality`，命令行和成品位置全在宿主定（`cap/convert.ts`）。
+     ⚠️ **要 write** —— 它往项目里新建了一个文件。成品永不覆盖，但「往盘上写」的权限不按「会不会覆盖」分级
+     （同 `stage_draft` 那条：分级一旦开始按情形走，白名单就守不住了）。
+     对插件叫 `file.convert`（`doc/20` 里一直这么写），注册表里叫 `convert_file`：MCP / 模型的工具名不许带点。
+     原名 `media.transcode`，2026-10-18 放宽成通用的转换（不只音视频）。 */
+  "file.convert":       { need: "write", cap: "convert_file" },
+  /* 能转成什么（含「没装 X」的原因与安装命令）。只读：它只看文件名和本机装了哪些工具 */
+  list_convert_targets: { need: "read" },
 };
 
 export interface HostCtx {
@@ -74,7 +83,7 @@ export async function hostCall(ctx: HostCtx, name: string, input: unknown): Prom
     return deny("第一期只支持 scope: project");
   }
   /* 关④：能力真的存在吗（注册表里可能还没搬过来） */
-  const cap = allCaps().find((c) => c.name === name);
+  const cap = allCaps().find((c) => c.name === (rule.cap ?? name));
   if (!cap) return deny(`能力 ${name} 还没搬进 cap/ 注册表`, "见 doc/00 §八十三：能力在分批搬，这件还没轮到");
 
   /* 跑。`via: "plugin"` 会让变更记录写「插件」而不是 AI 或人手改 ——

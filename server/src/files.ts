@@ -330,6 +330,31 @@ export async function writeAnyFile(p: Project, rel: string, content: string | Bu
   return { path: clean, written: true, snapshot, previous, bytes: buf.length, sha256: sha256(buf), steps };
 }
 
+/** 工具自己产的东西 / 工具状态目录里的路径（给不走 `writeAnyFile` 却要守同一条线的地方用，比如格式转换）。 */
+export function isToolArtifactPath(rel: string): boolean { return isToolArtifact(rel); }
+
+/** 一份**别的路已经落了盘的新文件**，补上写入口落盘之后那两件事：存第一版快照、记一次 git。
+ *
+ *  ⚠️ **为什么不直接走 `writeAnyFile`**（格式转换，2026-10-18）：转换引擎的成品规矩是「先用 `wx` 占一个空位、
+ *  转好了再挪过去、永不覆盖」—— 两个任务同时要「报告.pdf」时只有一个占得到，另一个顺延到「报告 (1).pdf」。
+ *  走 `writeAnyFile` 的话要么先把整份成品读进内存（视频动辄几个 GB），要么在占位之后再写一遍 ——
+ *  而那一遍会把空占位当成「盘上被别人改过的一版」先存一个 0 字节的「外部改动」快照。
+ *  所以成品照引擎的规矩落盘，落完在这里补记 —— 版本历史里它和 `write_file` 新建出来的文件长得一样。
+ *
+ *  ⚠️ **太大的不存快照**（超过 `BINARY_MAX`）：快照是整份 gzip 进 `.umbrastudio/`，一部转出来的电影
+ *  会让状态目录翻倍；git 那一版同理不记。回 `null` + 一句原因，调用方照实转告。 */
+export async function recordCreatedFile(p: Project, rel: string, origin: VersionOrigin, note?: string): Promise<{ snapshot: string | null; why?: string }> {
+  const clean = normalizeRel(p, rel);
+  const abs = join(p.dir, clean.split("/").join(sep));
+  const st = statSync(abs);
+  if (st.size > BINARY_MAX) {
+    return { snapshot: null, why: `文件 ${(st.size / 1048576).toFixed(1)} MB，超过快照上限 ${BINARY_MAX / 1048576} MB，没存版本` };
+  }
+  const snapshot = await saveSnapshot(p, clean, await readFile(abs), origin, note);
+  void commitAfterWrite(p.dir, clean, snapshot, null);
+  return { snapshot };
+}
+
 export interface FileSnapshotMeta {
   version: string; src: string; at: string; bytes: number; note?: string;
   /** 和**上一版**比，增了几行 / 删了几行。第一版没有上一版，所以是「全新增」。

@@ -40,6 +40,7 @@ import { setTokenValue } from "./token_edit.js";
 import { listTemplates, saveAsTemplate, deleteTemplate } from "./templates.js";
 import { exportProject, importProject } from "./export.js";
 import { invokeVerb, isVerb, listVerbs, verbToolDef } from "./plugin/verbs.js";
+import { allCaps } from "./cap/registry.js";   // 只取表，不在这里装配（装配在 index.ts / api.ts，免得和 cap/chat.ts 绕成环）
 
 /* 与 index.ts 的 GUIDES 同一张表（写稿规则文档索引）。不从 index.ts 引 —— 那会形成循环导入。 */
 const GUIDES: Record<string, { file: string; note: string }> = {
@@ -291,6 +292,20 @@ export async function executeToolCall(p: Project, tc: ToolCall): Promise<string>
         const file = args.file as string | undefined;
         const r = await listReferences(p, file);
         return JSON.stringify({ ok: true, file: r.file ?? null, imports: r.imports, importedBy: r.importedBy, overview: r.overview?.slice(0, 30) });
+      }
+
+      /* ── 格式转换（2026-10-18）。实现在能力注册表（`cap/convert.ts`），这里**只转调** ——
+         MCP 面（通道 B 的本地 CLI、外部客户端）和插件面（`file.convert`）走的是同一件能力，
+         这条通道的工具表是手写的（见下面 `tools`），所以要在这里接一次，但判据、路径校验、成品规矩不另写。
+         `via: "mcp"` → 快照记「AI」，和这条通道的 write_file 一致。 ── */
+      case "convert_file":
+      case "list_convert_targets": {
+        const cap = allCaps().find((c) => c.name === tc.function.name);
+        if (!cap) return JSON.stringify({ ok: false, error: `能力 ${tc.function.name} 不在注册表里` });
+        const r = await cap.run(args as never, { project: p, via: "mcp" });
+        const data = typeof r.data === "object" && r.data !== null ? r.data as object : {};
+        return JSON.stringify(r.ok ? { ok: true, ...data }
+          : { ok: false, ...data, error: r.errors.map((e) => e.fix ? `${e.message}（${e.fix}）` : e.message).join("；") });
       }
 
       default: {
@@ -549,6 +564,8 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
       { type: "function", function: { name: "revert_to", description: "把稿退回某一版（历史只增不改）", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" }, version: { type: "string" } }, required: ["project", "file", "version"] } } },
       { type: "function", function: { name: "list_references", description: "查询稿件的引用关系（谁引用了我/我引用了谁）", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" } }, required: ["project"] } } },
       { type: "function", function: { name: "get_changes_since", description: "跨版本净变更，回答「我实现的是 vX，现在最新 vY，我要改什么」", parameters: { type: "object", properties: { project: { type: "string" }, since: { type: "string" }, path: { type: "string" } }, required: ["project", "since"] } } },
+      { type: "function", function: { name: "list_convert_targets", description: "一个文件在这台电脑上能转成哪些格式。不能转的给 reason（如「没装 LibreOffice」）和 hint（安装命令），照实告诉用户；转之前先问它", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string", description: "相对项目根的文件路径" } }, required: ["project", "path"] } } },
+      { type: "function", function: { name: "convert_file", description: "把项目里一个文件转成别的格式（图片 / 文档 / 表格 / 音视频）。成品放在源文件旁边、重名加「 (1)」、永不覆盖；返回 state / output（成品路径）/ error / note（有损提醒）/ via", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string", description: "相对项目根的源文件路径" }, to: { type: "string", description: "目标格式，如 pdf / jpg / mp4 / docx" }, quality: { type: "number", description: "有损图片（jpg / heic / avif / webp）质量 1–100，可不给" } }, required: ["project", "path", "to"] } } },
       /* 插件动词（M13-1）：装了什么、授权到哪，表就长什么样 —— 没授权的只剩插件标了 free 的那几件（`doc/22` §3.3）。
          扫不到（沙箱起不来）就当没有，不让一个坏插件把整轮会话拖死。 */
       ...(await listVerbs().catch(() => [])).map(verbToolDef),

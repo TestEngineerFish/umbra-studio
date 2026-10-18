@@ -1,0 +1,146 @@
+import { z } from "zod";
+import { realpath, stat } from "node:fs/promises";
+import { basename, posix, relative, sep } from "node:path";
+import { envelope, err, ToolError, type Envelope } from "../envelope.js";
+import { X } from "../codes.js";
+import { isToolArtifactPath, recordCreatedFile } from "../files.js";
+import { isInside, resolveInside } from "../pathguard.js";
+import type { Project } from "../project.js";
+import { convertEngine, FORMATS, formatOfPath, normalizeTarget } from "../convert/index.js";
+import { extOf } from "../convert/formats.js";
+import { defineCap } from "./registry.js";
+import { originOf, type CapCtx } from "./types.js";
+
+/** 格式转换（格式转换二期 · Studio 宿主能力，2026-10-18；方案 `Geek/doc/格式转换-方案调研-2026-10-18.md` §5.1 / §9.3）。
+ *
+ *  **为什么是宿主能力**：插件不许起子进程（`doc/20` P1 / `11` Q40，manifest 连 `exec` 槽位都不留），
+ *  而转换几乎全靠外部程序（sips / ffmpeg / LibreOffice / Pandoc）。所以由宿主跑、插件只递三个参数：
+ *  **哪个文件、转成什么、（有损图片的）质量**。命令行、工具路径、成品放哪，插件一样都碰不到。
+ *  原名 `media.transcode`（只管音视频），2026-10-18 放宽成通用的 `file.convert` —— 文档 / 表格 / 图片
+ *  走的是同一个引擎、同一套成品规矩，分成两件能力只会让白名单多一道要守的口子。
+ *
+ *  一件能力三个门面：插件经 `plugin/host.ts` 叫它 `file.convert`（白名单里的别名），
+ *  MCP / 应用内会话叫它 `convert_file`（Anthropic / OpenAI 的工具名不许带点）。实现只有这一份。
+ *
+ *  成品规矩照引擎（`convert/output.ts`）：**放在源文件旁边、重名加「 (1)」、永不覆盖**（包括不覆盖源文件自己），
+ *  先在临时目录转完、成功了才挪过去，失败不留半截。落盘之后补记一版快照（`recordCreatedFile`），
+ *  目录树的刷新走磁盘监听（`serve.ts`），和别的新文件一样。
+ */
+const p = (c: CapCtx) => c.project!;
+
+const bad = (name: string, message: string, fix?: string): ToolError =>
+  new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name }, message, fix ? { fix } : undefined));
+
+/** 调用方给的路径 → 源文件的**真实**绝对路径 + 项目根的真实路径。
+ *
+ *  三道闸，**顺序不能换**：
+ *  ① 字面上不许跨出项目根（`pathguard.resolveInside` —— 全项目唯一那份判定，`..` / 绝对路径都在这里拦）；
+ *  ② **按真实路径再判一次**：项目里一个指向 `~/.ssh` 的软链，字面上在项目里、真身在外面。
+ *     不判这一条，`file.convert("链/id_rsa", "txt")` 就能把项目外的文件转一份放进项目 —— 等于读了它。
+ *     ⚠️ 项目根自己也要 `realpath`：macOS 的临时目录 `/var` → `/private/var` 本身就是软链，只解一边会把所有文件都判成「在外面」；
+ *  ③ 工具自己的目录（`.umbrastudio/`、`.git/`、`_runtime` …）里的东西不转 —— 成品会落在旁边，那里不是用户的地方。
+ *
+ *  ⚠️ 不用 `files.ts` 的 `clean()` 那一套：它把 `..` **悄悄删掉**再拼（`../x` 变成 `x`），
+ *  对读写同一个文件没问题，对转换就是「用户说的是项目外的 x，我们转了项目里同名的另一个 x」。这里要的是拒。 */
+async function resolveSource(proj: Project, rel: unknown): Promise<{ root: string; abs: string; rel: string }> {
+  const raw = typeof rel === "string" ? rel.trim() : "";
+  if (!raw) throw bad("path", "路径是空的", "给一个相对项目根的文件路径，比如 素材/封面.png");
+  let lexical: string;
+  try { lexical = resolveInside(proj.dir, raw); }
+  catch { throw bad("path", `路径跨出了项目目录：${raw}`, "只能转换项目目录里的文件。"); }
+  const root = await realpath(proj.dir);
+  const real = await realpath(lexical).catch(() => null);
+  if (!real) {
+    throw new ToolError(err(X.DRAFT_NOT_FOUND, raw, { kind: "file", name: raw }, `项目里没有文件 ${raw}`,
+      { fix: "先用 list_files 看看这一层有什么" }));
+  }
+  if (!isInside(root, real)) {
+    throw bad("path", `${raw} 是一个指向项目外面的链接，不能转换`, "只能转换真身在项目目录里的文件（软链指到外面的不算）。");
+  }
+  const st = await stat(real);
+  if (!st.isFile()) throw bad("path", `${raw} 不是文件`, "转换只认单个文件；目录要逐个转。");
+  const relReal = relative(root, real).split(sep).join(posix.sep);
+  if (isToolArtifactPath(relReal)) {
+    throw bad("path", `${relReal} 是工具自己的文件或状态目录里的东西，不转`, "转换只给用户自己的文件用。");
+  }
+  return { root, abs: real, rel: relReal };
+}
+
+/** 跑一件能力，把 `ToolError` 装回信封 —— 插件那条路（`hostCall`）只认信封，抛出去会被包成一句笼统的「出错」，错误码就丢了。 */
+async function guarded(fn: () => Promise<Envelope<unknown>>): Promise<Envelope<unknown>> {
+  try { return await fn(); }
+  catch (e) {
+    if (e instanceof ToolError) return envelope(e.data, [e.diagnostic]);
+    throw e;
+  }
+}
+
+const KNOWN = FORMATS.map((f) => f.id).join(" / ");
+
+defineCap({
+  name: "list_convert_targets", title: "一个文件能转成什么格式", scope: "project",
+  summary: [
+    "列这个文件在这台电脑上能转成哪些格式。每项 `available` 说能不能转；",
+    "**不能时给 `reason`（「没装 LibreOffice」）和 `hint`（一行安装命令）** —— 照实转告用户，别说成「不支持」。",
+    "能转但有损 / 有出入时给 `note`（「只转第 1 页」），`via` 是走哪几个工具。转之前先问它，别猜。",
+  ].join("\n"),
+  input: { path: z.string().describe("相对项目根的文件路径") },
+  http: { route: "convert_targets", method: "GET" },
+  run: ({ path }, c) => guarded(async () => {
+    const src = await resolveSource(p(c), path);
+    const r = await convertEngine().targets([src.abs]);
+    if (!r.from.length) {
+      return envelope({ path: src.rel, from: null, targets: [] }, [err(X.BAD_INPUT, src.rel, { kind: "file", name: basename(src.rel) },
+        "不认识这个文件的格式（按扩展名判，不猜文件头）", { fix: `认得的格式：${KNOWN}` })]);
+    }
+    return envelope({ path: src.rel, from: r.from[0], targets: r.targets },
+      [], { available: r.targets.filter((t) => t.available).length, total: r.targets.length });
+  }),
+});
+
+defineCap({
+  name: "convert_file", title: "把一个文件转成另一种格式", scope: "project",
+  summary: [
+    "把项目里的一个文件转成别的格式（图片 / 文档 / 表格 / 演示 / 音视频），**成品放在源文件旁边**：",
+    "同名换扩展名，重名就加「 (1)」「 (2)」…，**永远不覆盖任何文件**（包括源文件）。源文件只读不动。",
+    "`to` 写格式名或扩展名都行（pdf / .jpeg / JPG）。先用 list_convert_targets 看能不能转、为什么不能。",
+    "返回 `state`（done / failed / skipped）、`output`（成品的项目内路径）、失败时 `error`、有损时 `note`、`via`（走了哪几个工具）。",
+    "视频转码可能要好几分钟，这一件会等到转完才返回。",
+  ].join("\n"),
+  input: {
+    path: z.string().describe("相对项目根的源文件路径"),
+    to: z.string().describe("目标格式，如 pdf / jpg / mp4 / docx"),
+    quality: z.number().int().min(1).max(100).optional().describe("有损图片格式（jpg / heic / avif / webp）的质量 1–100；不给用工具默认值"),
+  },
+  http: { route: "file_convert", method: "POST" },
+  run: ({ path, to, quality }, c) => guarded(async () => {
+    const proj = p(c);
+    const target = normalizeTarget(to);
+    if (!target) throw bad("to", `不认识目标格式「${to}」`, `能写的：${KNOWN}`);
+    const src = await resolveSource(proj, path);
+    /* 预判成品的名字（第 0 个候选）：落在工具自己的名字上（`index.dc.html` 这种）就不转 ——
+       引擎的占位只保证不覆盖，不知道哪些名字是工具留给自己的。 */
+    const predicted = posix.join(posix.dirname(src.rel), `${basename(src.rel).replace(/\.[^./\\]+$/, "")}.${extOf(target)}`);
+    if (isToolArtifactPath(predicted)) throw bad("to", `成品会叫 ${predicted}，那是工具自己用的名字`, "先把源文件改个名再转。");
+
+    const [r] = await convertEngine().convert({ files: [src.abs], to: target, options: quality ? { quality } : {} });
+    const base = { path: src.rel, to: target };
+    if (!r || r.state !== "done" || !r.output) {
+      const why = r?.error ?? "没有转出结果";
+      return envelope({ ...base, state: r?.state ?? "failed", error: why, ...(r?.via ? { via: r.via } : {}) },
+        [err(X.IO, src.rel, { kind: "file", name: basename(src.rel) }, `转换没成：${why}`)]);
+    }
+    const output = relative(src.root, r.output).split(sep).join(posix.sep);
+    /* 成品照引擎的规矩落了盘，这里补记一版（谁转的 = 谁改的，和 write_file 同一套 `originOf`）。
+       记不上（太大）不算转换失败 —— 文件已经在了，照实说一句就行。 */
+    const rec = await recordCreatedFile(proj, output, originOf(c.via), `由 ${src.rel} 转换（${r.via ?? "?"}）`)
+      .catch((e) => ({ snapshot: null, why: `版本没记上：${(e as Error).message}` }));
+    return envelope({
+      ...base, state: "done", output,
+      ...(r.note ? { note: r.note } : {}),
+      ...(r.via ? { via: r.via } : {}),
+      snapshot: rec.snapshot,
+      ...(rec.why ? { snapshotNote: rec.why } : {}),
+    });
+  }),
+});
