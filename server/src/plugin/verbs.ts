@@ -256,6 +256,22 @@ export async function invokeVerb(tool: string, input: unknown, project: Project)
   }
 }
 
+/** 改了插件限额之后调（`limits.ts` 的 `setPluginLimits`）：**停掉全部在跑的沙箱，槽位留着**。
+ *
+ *  限额是沙箱起来那一刻定的（内存上限进 QuickJS 运行时、期限进 runner、RPC 超时进 `PluginSandbox`），
+ *  所以要生效只能换进程。槽位和它报上来的 `caps` 留着 —— 动词表不用变，
+ *  下一次 `invokeVerb` → `sandbox.invoke` 发现进程没了会按新限额 `start()`（#123 那条路）。
+ *  起不来的槽位（`error` 非空）删掉并让表失效：它可能就是被旧限额卡住的，下次列动词时按新限额再试一次。
+ *  ⚠️ 正在飞的调用会被拒（「沙箱退出了」）—— 改设置的那一下有调用在跑，这是可接受的代价。 */
+export function restartVerbSandboxes(): void {
+  let hadError = false;
+  for (const [id, s] of pool) {
+    s.sandbox.stop();
+    if (s.error) { pool.delete(id); hadError = true; }
+  }
+  if (hadError) invalidate();
+}
+
 /** 停掉全部沙箱并清表（回归收尾、进程退出用）。 */
 export function stopAllVerbSandboxes(): void {
   for (const [, s] of pool) s.sandbox.stop();

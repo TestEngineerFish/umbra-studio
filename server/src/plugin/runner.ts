@@ -48,11 +48,27 @@ const dir = process.env.UD_PLUGIN_DIR ?? "";
 const entry = process.env.UD_PLUGIN_ENTRY ?? "";
 
 /** 一次调用最多跑多久（毫秒）。到点由 `setInterruptHandler` 在**解释器里面**打断。
- *  ⚠️ 这和宿主那边的 15 秒 RPC 超时**不是一回事**：那一条只让调用方的 promise 落地，
- *  插件的死循环还在空转（原来就是这样）。这一条真把它停下来。 */
-const DEADLINE_MS = 10_000;
-/** 一个插件上下文最多占多少内存。超了 QuickJS 自己抛 `out of memory`。 */
-const MEM_LIMIT = 128 * 1024 * 1024;
+ *  ⚠️ 这和宿主那边的 RPC 超时（= 这个值 + 5 秒）**不是一回事**：那一条只让调用方的 promise 落地，
+ *  插件的死循环还在空转（原来就是这样）。这一条真把它停下来。
+ *
+ *  2026-10-19 起由宿主在 `init` 里给（`limits.ts`，设置里能调）；**这里的值只是兜底** ——
+ *  init 没带、或带了不像数的东西时用。所以是 `let`，在 `buildVm()` 之前定下来。 */
+let DEADLINE_MS = 10_000;
+/** 一个插件上下文最多占多少内存。超了 QuickJS 自己抛 `out of memory`。同上，init 给的优先。 */
+let MEM_LIMIT = 128 * 1024 * 1024;
+/** 宿主给的整份限额（`PluginLimitsView` 的形状），原样挂到 VM 里的 `host.limits`。
+ *  这里不 import 宿主的类型 —— runner 跑在沙箱进程里，不该依赖宿主那一侧的模块。 */
+let limits: Record<string, unknown> = {};
+
+/** 读 init 的 `limits`：正数才认，否则保留兜底值。插件看到的 `memoryBytes` / `deadlineMs`
+ *  是**实际生效的那两个数**，不是宿主说了什么就报什么。 */
+function takeLimits(raw: unknown): void {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const pos = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
+  if (pos(o.memoryBytes)) MEM_LIMIT = Math.floor(o.memoryBytes as number);
+  if (pos(o.deadlineMs)) DEADLINE_MS = Math.floor(o.deadlineMs as number);
+  limits = { ...o, memoryBytes: MEM_LIMIT, deadlineMs: DEADLINE_MS };
+}
 
 let seq = 0;
 /** 还在等宿主回话的 `host.call`：id → 那个 QuickJS 侧的 deferred */
@@ -195,6 +211,12 @@ function buildVm(): void {
   Scope.withScope((s) => {
     const host = s.manage(ctx.newObject());
     ctx.setProp(host, "version", s.manage(ctx.newNumber(1)));
+    /* 当前限额（只读快照）：插件据此决定「整份读还是分段读」「这份文件我吃不吃得下」。
+       冻住是防呆 —— 改了也不会让宿主多给一个字节，但别让插件以为自己改成了。 */
+    const freeze = s.manage(ctx.unwrapResult(ctx.evalCode("(o) => Object.freeze(o)", "__limits__")));
+    const lim = s.manage(toVm(limits));
+    ctx.unwrapResult(ctx.callFunction(freeze, ctx.undefined, lim)).dispose();
+    ctx.setProp(host, "limits", lim);
 
     const fnCall = s.manage(ctx.newFunction("call", (capH, inputH) => {
       const cap = ctx.getString(capH);
@@ -264,6 +286,8 @@ process.on("message", async (raw: unknown) => {
   const id = Number(msg.id);
   try {
     if (msg.type === "init") {
+      /* 限额先于 VM：`buildVm()` 第一行就要用 `MEM_LIMIT` */
+      takeLimits(msg.limits);
       const mod = await newQuickJSWASMModuleFromVariant(RELEASE_SYNC);
       rt = mod.newRuntime();
       ctx = rt.newContext();

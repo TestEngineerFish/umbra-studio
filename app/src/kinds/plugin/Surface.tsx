@@ -76,7 +76,16 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
       fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue 并附上这句话。" }],
   });
 
-  const push = () => {
+  /* 插件沙箱的限额（2026-10-19，服务端 `plugin/limits.ts`）：和 B 面的 `host.limits` 是同一份派生值。
+     **每次推 ctx 前现取一次** —— 设置改了之后，下一次推（换文件 / 换版本 / 重开）就带新值，不做实时推送。
+     取不到（老核心没这条路由 / 一时连不上）就沿用上一次的，再不行是 `null`：插件不认这个字段也不会坏。 */
+  const limitsRef = useRef<unknown>(null);
+  const push = async () => {
+    try {
+      const r = await ctx.core.get<{ limits: unknown }>("plugin_limits");
+      if (r.ok && r.data) limitsRef.current = r.data.limits;
+    } catch { /* 沿用上一次的 */ }
+    /* ⚠️ ctx 在 await **之后**再取：等的这一下文件可能已经换了，要推当场的那个 */
     const c = ctxRef.current;
     ref.current?.contentWindow?.postMessage(
       /* `version` = 「现在要看这个文件的哪一版」（M10-2b）。`null` = 看当前那份。
@@ -84,7 +93,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
          怎么把 s5 画出来（读原文、语法高亮、差异标红、强制只读）是插件的事。
          插件不认这个字段也不会坏：它照旧显示当前那份，只是没有「看旧版」这个能力。 */
       { t: "ctx", path: c.path, kind: c.kind, version: c.version ?? null,
-        theme: document.documentElement.dataset.theme ?? null }, "*");
+        theme: document.documentElement.dataset.theme ?? null, limits: limitsRef.current }, "*");
   };
 
   useEffect(() => {
@@ -102,7 +111,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
          `postMessage` 不排队，窗口里还没有监听器时发过去就没了。
          症状是「插件框出来了，但里面一直是『读取中…』」，看着像插件写错了。
          M11-5 当场栽过。 */
-      if (m.t === "ready") { push(); return; }
+      if (m.t === "ready") { void push(); return; }
       if (m.t === "chrome") {
         /* 只有正文那一个 frame 能设 chrome —— 面板也能设的话，
            两个 frame 会互相覆盖，而症状是「编辑栏时有时无」。 */
@@ -221,7 +230,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
      ⚠️ **依赖数组漏一项就是一个「点了没反应」**：`viewingVersion` 漏掉的话，
      版本列表里点一行、状态变了、而消息压根没发出去。
      §八十 的 ⌘E「按了没反应」是同一个病（keydown 依赖数组漏项），这是第二次。 */
-  useEffect(() => { push(); }, [ctx.path, ctx.kind, ctx.viewingVersion]);
+  useEffect(() => { void push(); }, [ctx.path, ctx.kind, ctx.viewingVersion]);
   /* 文件在盘上变了（AI 改的、别的编辑器改的）要告诉插件重读。
      **插件自己发现不了** —— 它没有文件系统也没有事件流。
      不推的话症状是「AI 改完了，右边还是旧的」（2026-09-24 用户实测过同类）。 */

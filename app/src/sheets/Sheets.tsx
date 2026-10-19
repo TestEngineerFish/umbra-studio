@@ -522,6 +522,101 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
   </section>;
 }
 
+/** 设置里的「插件沙箱」块（2026-10-19，服务端 `plugin/limits.ts`）。
+ *
+ *  三项限额原来写死在核心里（128 MB / 10 秒 / 100 MB），插件因此只吃得下二三十 MB 的文件。
+ *  合法范围和默认值**由服务端给**（`plugin_limits` 的 `ranges`），这里不抄一份 —— 抄了迟早对不上。
+ *  失焦或回车就存；越界在这里先拦一道（少一次来回），服务端照样再核（门面不信前端）。
+ *  存上之后在跑的插件沙箱会被停掉，下一次调用按新值重开 —— 用户不用重启 Studio。 */
+type LimitKey = "memoryMB" | "deadlineSec" | "binaryReadMaxMB";
+type LimitRanges = Record<LimitKey, { min: number; max: number; def: number }>;
+const LIMIT_ROWS: Array<{ key: LimitKey; label: string; unit: string; note: string }> = [
+  { key: "memoryMB", label: "内存", unit: "MB",
+    note: "插件工具一次调用最多可用的内存。调大能让插件处理更大的文件，也会让单个插件最多多占这么多内存。" },
+  { key: "deadlineSec", label: "单次时限", unit: "秒",
+    note: "插件工具一次调用最多跑多久，到点就打断。调大能让插件处理完更大的文件，代价是插件卡住时要等更久才报错。" },
+  { key: "binaryReadMaxMB", label: "二进制读取上限", unit: "MB",
+    note: "插件一次能从宿主读进去多少字节（整份读 PDF / 压缩包，或分段读一段）。超过这个大小的文件插件只能分段读。" },
+];
+function PluginLimitsPanel({ core }: { core: Core }) {
+  const [cfg, setCfg] = useState<Record<LimitKey, number> | null>(null);
+  const [ranges, setRanges] = useState<LimitRanges | null>(null);
+  const [draft, setDraft] = useState<Record<LimitKey, string>>({ memoryMB: "", deadlineSec: "", binaryReadMaxMB: "" });
+  const [errs, setErrs] = useState<Partial<Record<LimitKey, string>>>({});
+  const [busy, setBusy] = useState(false);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const apply = (d: { config: Record<LimitKey, number>; ranges: LimitRanges }) => {
+    setCfg(d.config); setRanges(d.ranges);
+    setDraft({ memoryMB: String(d.config.memoryMB), deadlineSec: String(d.config.deadlineSec), binaryReadMaxMB: String(d.config.binaryReadMaxMB) });
+  };
+  const load = useCallback(async () => {
+    const r = await core.get<{ config: Record<LimitKey, number>; ranges: LimitRanges }>("plugin_limits").catch(() => null);
+    if (r?.ok && r.data) { apply(r.data); setLoadErr(null); }
+    else setLoadErr(r?.errors?.[0]?.message ?? "读不到插件限额（核心可能是旧版本）");
+  }, [core]);
+  useEffect(() => { void load(); }, [load]);
+
+  const save = async (patch: Partial<Record<LimitKey, number>>, keys: LimitKey[]) => {
+    setBusy(true);
+    const r = await core.post<{ config: Record<LimitKey, number>; ranges: LimitRanges }>("plugin_limits", patch).catch((e) => ({ ok: false, errors: [{ message: String((e as Error)?.message ?? e) }] } as const));
+    setBusy(false);
+    if (!r.ok || !("data" in r) || !r.data) {
+      const why = r.errors?.[0]?.message ?? "没存上";
+      setErrs((x) => ({ ...x, ...Object.fromEntries(keys.map((k) => [k, why])) }));
+      return;
+    }
+    apply(r.data);
+    setErrs({});
+    toast("插件限额已保存", "正在跑的插件会在下一次调用时按新值重开", "ok");
+  };
+  const commit = (k: LimitKey) => {
+    if (!cfg || !ranges) return;
+    const raw = draft[k].trim();
+    const n = Number(raw);
+    const rg = ranges[k];
+    if (!raw || !Number.isInteger(n)) { setErrs((x) => ({ ...x, [k]: `要填整数（${rg.min}–${rg.max}）` })); return; }
+    if (n < rg.min || n > rg.max) { setErrs((x) => ({ ...x, [k]: `超出范围 ${rg.min}–${rg.max}` })); return; }
+    setErrs((x) => ({ ...x, [k]: undefined }));
+    if (n === cfg[k]) return;
+    void save({ [k]: n }, [k]);
+  };
+  const isDefault = !!cfg && !!ranges && LIMIT_ROWS.every((r) => cfg[r.key] === ranges[r.key].def);
+
+  return (
+    <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="text-sm font-semibold shrink-0">插件沙箱</h3>
+        <span className="text-[11px] text-muted flex-1 min-w-[12rem]">插件工具（B 面）在隔离的沙箱里跑，这几项是它能用多少资源</span>
+        <button className="btn sm ghost shrink-0" disabled={!ranges || busy || isDefault}
+          onClick={() => ranges && void save({ memoryMB: ranges.memoryMB.def, deadlineSec: ranges.deadlineSec.def, binaryReadMaxMB: ranges.binaryReadMaxMB.def }, LIMIT_ROWS.map((r) => r.key))}
+          title="三项都回到出厂值">恢复默认</button>
+      </div>
+      {loadErr && <div className="text-xs text-err">{loadErr}</div>}
+      {cfg && ranges && LIMIT_ROWS.map((row) => {
+        const rg = ranges[row.key];
+        const e = errs[row.key];
+        return (
+          <div key={row.key} className="flex flex-col gap-1">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="w-28 shrink-0">{row.label}</span>
+              <input type="number" inputMode="numeric" min={rg.min} max={rg.max} step={1} disabled={busy}
+                value={draft[row.key]} onChange={(ev) => setDraft((d) => ({ ...d, [row.key]: ev.target.value }))}
+                onBlur={() => commit(row.key)}
+                onKeyDown={(ev) => { if (ev.key === "Enter") (ev.target as HTMLInputElement).blur(); }}
+                className={inputCls + " w-28 font-mono" + (e ? " border-err" : "")} />
+              <span className="text-muted">{row.unit}</span>
+              <span className="text-[11px] text-muted">范围 {rg.min}–{rg.max}，默认 {rg.def}</span>
+            </div>
+            <p className="text-[11px] text-muted leading-relaxed pl-[7.5rem]">{row.note}</p>
+            {e && <p className="text-[11px] text-err pl-[7.5rem]">{e}</p>}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 export function SettingsSheet({ core, host, projectUrl, layout, setLayout, onClose }: { core: Core | null; host: HostAdapter | null; projectUrl: string | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
   const s8 = projectUrl ? `${projectUrl}${encodeURIComponent("S8-项目设置.dc.html")}?embed=1` : null;
   return <Sheet onClose={onClose} wide={!!s8}>
@@ -535,6 +630,7 @@ export function SettingsSheet({ core, host, projectUrl, layout, setLayout, onClo
       </div>
       {core && <AccountPanel core={core} host={host} />}
       {core && <CliPicker core={core} />}
+      {core && <PluginLimitsPanel core={core} />}
       {/* iframe 的高度给固定值，别用 vh —— 它在会滚的内容区里，用 vh 会和外层的滚动打架 */}
       {s8 ? <iframe src={s8} title="项目设置" className="w-full border border-border rounded bg-panel shrink-0" style={{ height: 560 }} />
         : <p className="text-muted">打开一个项目后，这里还有设计系统、限额、回收站与危险操作。</p>}

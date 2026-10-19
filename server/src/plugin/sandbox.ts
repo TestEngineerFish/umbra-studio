@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Project } from "../project.js";
 import { hostCall, type HostCtx } from "./host.js";
+import { getPluginLimitsView, type PluginLimitsView } from "./limits.js";
 import type { PluginManifest } from "./manifest.js";
 
 /** 工具面（B 面）的沙箱（M11-4，形状见 `doc/20` §三）。
@@ -55,10 +56,31 @@ export class PluginSandbox {
   /** 插件声明的能力（`name` → summary/input；`free` 见 `runner.ts` 的 `CapMeta`）。沙箱起来后由它报上来 */
   caps: Array<{ name: string; title: string; summary: string; input: Record<string, unknown>; free?: boolean }> = [];
 
-  constructor(private manifest: PluginManifest, private dir: string) {}
+  /** 这个进程起来时取的限额（`limits.ts`）。**进程活着期间不变** —— 改了设置由 `verbs.ts` 的
+   *  `restartVerbSandboxes` 停掉进程，下次调用重开时再取。没起过是 `null`。 */
+  limits: PluginLimitsView | null = null;
+  private starting: Promise<void> | null = null;
 
+  /** `opts.limits`：钉死一份限额（回归用 —— 不想让读数跟着本机设置变）。不给就在每次 fork 时现读设置。 */
+  constructor(private manifest: PluginManifest, private dir: string, private opts: { limits?: PluginLimitsView } = {}) {}
+
+  /** 宿主这条 RPC 等多久 = 插件的期限 + 5 秒（原来写死 15 秒，配的是写死的 10 秒期限）。
+   *  多出来的 5 秒留给 VM 里的中断先生效、错误先回来 —— 两条同时到点的话，
+   *  调用方拿到的是含糊的「超时」而不是插件那边说得清的「interrupted」。 */
+  get rpcTimeoutMs(): number { return (this.limits?.deadlineMs ?? 10_000) + 5_000; }
+
+  /** ⚠️ 起进程之前要先 `await` 一次读限额 —— 这一下让出了控制权，两个调用同时进来就会各 fork 一个。
+   *  所以「正在起」也算一种状态，后来的等同一个 promise。 */
   async start(): Promise<void> {
+    if (this.starting) return this.starting;
     if (this.child) return;
+    this.starting = this.boot();
+    try { await this.starting; } finally { this.starting = null; }
+  }
+
+  private async boot(): Promise<void> {
+    /* 限额在 fork 这一刻取：内存上限 / 期限要在 runner 建 VM 之前就到（init 的 payload）。 */
+    this.limits = this.opts.limits ?? await getPluginLimitsView();
     const execArgv = [
       "--permission",
       `--allow-fs-read=${real(this.dir)}/`,
@@ -101,23 +123,34 @@ export class PluginSandbox {
       },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
-    this.child.on("message", (msg) => void this.onMessage(msg as Record<string, unknown>));
-    this.child.on("exit", (code) => {
+    const child = this.child;
+    child.on("message", (msg) => void this.onMessage(msg as Record<string, unknown>));
+    child.on("exit", (code) => {
+      /* ⚠️ **只管自己那个进程**：`stop()` 之后马上 `start()` 的话（改了限额 → 下次调用重开），
+         旧进程的 exit 事件会晚到 —— 不比对的话它会把**新**进程的句柄清掉、把新进程的调用全拒掉。 */
+      if (this.child !== child) return;
       this.child = null;
       /* 进程没了，所有在飞的调用都要落地 —— 不落地的话调用方永远挂着 */
       for (const [, p] of this.pending) p.reject(new Error(`插件 ${this.manifest.id} 的沙箱退出了（code ${code}）`));
       this.pending.clear();
     });
-    await this.rpc("init", {});
+    await this.rpc("init", { limits: this.limits });
   }
 
-  stop(): void { this.child?.kill(); this.child = null; }
+  stop(): void {
+    if (!this.child) return;
+    this.child.kill();
+    this.child = null;
+    /* 在飞的调用当场落地（exit 事件那边已经不认这个进程了，见上） */
+    for (const [, p] of this.pending) p.reject(new Error(`插件 ${this.manifest.id} 的沙箱被停掉了`));
+    this.pending.clear();
+  }
 
   /** 调插件声明的一件能力 */
   async invoke(capName: string, input: unknown, project: Project): Promise<unknown> {
     /* ⚠️ 沙箱可能被上一次超时停掉了（issue #123）——**重开**，而不是报「沙箱没起来」。
        后者会把一次性的卡死变成「这个插件从此不能用」。 */
-    if (!this.child) await this.start();
+    if (!this.child || this.starting) await this.start();
     this.ctx = { manifest: this.manifest, project };
     return this.rpc("invoke", { cap: capName, input });
   }
@@ -126,6 +159,7 @@ export class PluginSandbox {
 
   private rpc(type: string, payload: Record<string, unknown>): Promise<unknown> {
     const id = ++this.seq;
+    const ms = this.rpcTimeoutMs;
     return new Promise((resolve, reject) => {
       if (!this.child) { reject(new Error("沙箱没起来")); return; }
       this.pending.set(id, { resolve, reject });
@@ -137,13 +171,13 @@ export class PluginSandbox {
            Q48 的读数是「打断之后沙箱还活着」，而那只对**同步**死循环成立 ——
            挂在 `host.call` 回调里的那一种，VM 里的中断判定来不及生效（见 `runner.ts`
            的 `runJobs`），结果是**那个进程 100% 占一个核、再也不回话**，
-           而这条 RPC 超时原来**不杀它、也不重启** → 之后每次调用都等满 15 秒。
+           而这条 RPC 超时原来**不杀它、也不重启** → 之后每次调用都等满超时（当时是写死的 15 秒）。
            「打不断时至少要能换一个活的」：停掉它，下次 `invoke` 会重新 `start()`。
            ⚠️ 只在 `invoke` 超时时停 —— `init` 超时时进程多半还没起好，
            `stop()` 它只会把真正的原因（起不来）盖成「超时」。 */
         if (type === "invoke") this.stop();
-        reject(new Error(`插件 ${this.manifest.id} 的 ${type} 超时（15s）${type === "invoke" ? "；沙箱已停掉，下次调用会重开" : ""}`));
-      }, 15_000);
+        reject(new Error(`插件 ${this.manifest.id} 的 ${type} 超时（${Math.round(ms / 1000)}s）${type === "invoke" ? "；沙箱已停掉，下次调用会重开" : ""}`));
+      }, ms);
     });
   }
 
