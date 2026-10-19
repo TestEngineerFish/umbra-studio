@@ -53,7 +53,7 @@ defineCap({
     "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限见设置 → 插件沙箱，默认 100 MB）。**插件调用时**文本整份读的上限也跟设置走（默认 2 MB）；别的来源一律 2 MB。",
     "**插件调用时**还能按字节范围读：`byteOffset` + `byteLength` 两个都给（非负整数，`byteLength` 1..上限，`byteOffset` ≤ size），任何文件都按原始字节读、只读那一段，"
       + "回 `content: null` + `encoding: \"base64\"` + `base64` + `range: { byteOffset, byteLength(实际读到的), size, more }`。"
-      + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。模型 / MCP / 前端调用不开放。",
+      + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。`encoding` 只能不给或给 `\"base64\"`（范围读不解码），给别的回 E_BAD_INPUT。模型 / MCP / 前端调用不开放。",
     "`encoding` 给别的编码时**只换读法，盘上那份一个字节都没动**（M10-5，中文 CSV 常被当成 UTF-8 读成乱码）。",
     "⚠️ `sha256` 永远是**原始字节**的，不随编码变 —— 所以按 GBK 读出来的文本，拿这个 sha 回去校验仍然对得上。",
   ].join("\n"),
@@ -84,6 +84,12 @@ defineCap({
       }
       if (offset !== undefined || limit !== undefined) {
         return no("offset", "按字节读（byteOffset / byteLength）和按行分页（offset / limit）不能同时给", "二选一：二进制或大文件按字节，文本按行");
+      }
+      /* 范围读一律回原始字节（base64），不解码 —— 给了别的 `encoding` 原来**被悄悄忽略**，插件以为拿到的是按 GBK 解好的文本。
+         拒绝而不是忽略：`"base64"` 和回包的形状一致，允许；别的（含 utf-8 / gbk / null）一律 E_BAD_INPUT。 */
+      if (encoding !== undefined && encoding !== "base64") {
+        return no("encoding", `按字节范围读只回原始字节（base64），不按 encoding 解码；收到的 encoding 是 ${JSON.stringify(encoding)}`,
+          "去掉 encoding，或给 \"base64\"；要按编码解成文本就整份读（不带 byteOffset / byteLength）");
       }
       const isNat = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0;
       if (!isNat(byteOffset)) return no("byteOffset", `byteOffset 要是非负整数，收到的是 ${JSON.stringify(byteOffset)}`);

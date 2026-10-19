@@ -126,6 +126,14 @@ ok(!bad.ok, "since 不是时间 → 报错不猜");
   await rejected({ path: "模型.bin", byteOffset: 1.5, byteLength: 10 }, "byteOffset 小数（插件这条路不跑 zod，手工核）");
   await rejected({ path: "模型.bin", byteOffset: "0", byteLength: 10 }, "byteOffset 是字符串");
   await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 100 * 1048576 + 1 }, "byteLength 超过二进制读取上限");
+  /* encoding 和范围读同给：不是 "base64" 就拒（原来被悄悄忽略）；"base64" 允许，回的段和不给时一样 */
+  await rejected({ path: "notes/长文.md", byteOffset: 0, byteLength: 10, encoding: "gbk" }, "**范围读 + encoding: gbk（原来悄悄忽略）**");
+  await rejected({ path: "notes/长文.md", byteOffset: 0, byteLength: 10, encoding: "utf-8" }, "范围读 + encoding: utf-8");
+  await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 10, encoding: null }, "范围读 + encoding: null");
+  const encErr = await rr({ path: "模型.bin", byteOffset: 0, byteLength: 10, encoding: "gbk" });
+  ok((encErr.errors[0] as { where?: unknown; message?: string } | undefined)?.message?.includes("gbk") === true, "拒的原因里点名了收到的 encoding", encErr.errors[0]?.message);
+  const b64 = await rr({ path: "模型.bin", byteOffset: 100, byteLength: 1000, encoding: "base64" });
+  ok(b64.ok && Buffer.from((b64.data as Ranged).base64, "base64").equals(blob.subarray(100, 1100)), "**范围读 + encoding: \"base64\" 允许**，段和不给时一样");
 
   /* 文本类文件也能按字节读：按原始字节，不解码（大 .gltf 靠它）。多字节字符切在半中间也照给 */
   const mdBytes = Buffer.from(text + "\n第 121 行", "utf8");
