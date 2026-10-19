@@ -135,6 +135,15 @@ export function tokenExpMs(token: string): number | null {
 /** 提前多久就当它快过期、先刷新（毫秒）。请求在路上也要时间，卡着点用会在服务端那头刚好过期。 */
 export const TOKEN_RENEW_SKEW_MS = 60_000;
 
+/** 密码登录 / 找回失败的分档（设置页按 kind 画错误条）。
+ *  kind：bad 邮箱或密码不对 · locked 试太多（`wait` 秒后再试，0 = 服务端没说）· offline 连不上 · other 其余（message 用服务端原话）。
+ *  `cause` 是给日志看的底层原因，不上界面。 */
+export class LoginFail extends Error {
+  constructor(readonly kind: "bad" | "locked" | "offline" | "other", message: string, readonly wait = 0, readonly cause_ = "") {
+    super(message);
+  }
+}
+
 export class AccountService {
   private lastError = "";
   /** 正在进行的那一次刷新（合并并发）：市场一打开 `perks` 和 `fetchLicense` 是同时发的，
@@ -302,7 +311,8 @@ export class AccountService {
 
   /** 服务端是 local（2026-10-19 起 Umbra 接账号中心后就是这一种，对端上仍叫 local）：邮箱 + 密码登录。
    *  `POST /auth/login` 回一张长效不透明令牌（没有刷新令牌；`tokenExpMs` 认不出 exp → 不会去刷新，失效时服务端 401、界面照实显示没登录）。
-   *  失败按服务端的分档说：密码不对 / 试太多（带等多少秒）/ 连不上。密码只在这一次请求里用，不落盘。 */
+   *  失败抛 `LoginFail`，按服务端的分档带上 kind：bad（密码不对）/ locked（试太多，带 wait 秒）/ offline（连不上）/ other。
+   *  设置页按 kind 画三段式错误条（Claude Design 批次 270 §一）。密码只在这一次请求里用，不落盘。 */
   async loginPassword(email: string, password: string, serverUrl?: string): Promise<AccountStatus> {
     const base = (serverUrl || (await getAccount()).serverUrl).replace(/\/+$/, "");
     this.lastError = "";
@@ -311,7 +321,7 @@ export class AccountService {
       r = await this.fetchFn(`${base}/auth/login`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim(), password, device: "umbra-studio" }) } as never);
     } catch (e) {
-      throw new Error(`连不上 ${base}：${(e as Error).message}`);
+      throw new LoginFail("offline", `连不上 ${base}`, 0, (e as Error).message);
     }
     if (!r.ok) {
       const code = r.headers?.get?.("x-umbra-error") || "";
@@ -319,19 +329,39 @@ export class AccountService {
       try { detail = String(((await r.json()) as { detail?: unknown }).detail ?? ""); } catch { /* 不是 JSON */ }
       if (code === "too_many_attempts") {
         const wait = Number(r.headers?.get?.("retry-after") || 0);
-        throw new Error(wait > 0 ? `试得太多了，${wait} 秒后再试` : "试得太多了，过一会儿再试");
+        throw new LoginFail("locked", wait > 0 ? `试得太多了，${wait} 秒后再试` : "试得太多了，过一会儿再试", wait > 0 ? wait : 0);
       }
-      if (r.status === 401) throw new Error(detail || "邮箱或密码不对");
-      throw new Error(detail || `登录没成（${r.status}）`);
+      if (r.status === 401) throw new LoginFail("bad", detail || "邮箱或密码不对");
+      if (r.status >= 500) throw new LoginFail("offline", `连不上 ${base}`, 0, `服务端回 ${r.status}`);
+      throw new LoginFail("other", detail || `登录没成（${r.status}）`);
     }
     const d = (await r.json()) as { token?: string };
-    if (!d.token) throw new Error("服务端没回令牌");
+    if (!d.token) throw new LoginFail("other", "服务端没回令牌");
     const user = await this.me(base, d.token);
     await setAccount({ serverUrl: base, accessToken: d.token, refreshToken: "", user, signedInAt: new Date().toISOString() });
     this.provider = "local";
     this.log(`[account] 已用密码登录：user ${user.id}`);
     void this.syncLicense();
     return this.status();
+  }
+
+  /** 忘了密码（批次 270 §一：Studio 自己做）：`POST /auth/forgot`。服务端不管这个邮箱有没有账号都回同一句，
+   *  这里也不分辨——成功只说明「请求送到了」。连不上抛 `LoginFail("offline")`，别的失败抛 other。 */
+  async forgotPassword(email: string, serverUrl?: string): Promise<void> {
+    const base = (serverUrl || (await getAccount()).serverUrl).replace(/\/+$/, "");
+    let r: Awaited<ReturnType<FetchLike>>;
+    try {
+      r = await this.fetchFn(`${base}/auth/forgot`, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }) } as never);
+    } catch (e) {
+      throw new LoginFail("offline", `连不上 ${base}`, 0, (e as Error).message);
+    }
+    if (r.status >= 500) throw new LoginFail("offline", `连不上 ${base}`, 0, `服务端回 ${r.status}`);
+    if (!r.ok) {
+      let detail = "";
+      try { detail = String(((await r.json()) as { detail?: unknown }).detail ?? ""); } catch { /* 不是 JSON */ }
+      throw new LoginFail("other", detail || `没发出去（${r.status}）`);
+    }
   }
 
   /** 问服务端怎么登录并记下（设置页据此画「密码表单」还是「打开浏览器」）。问不到回 unknown，不抛。 */

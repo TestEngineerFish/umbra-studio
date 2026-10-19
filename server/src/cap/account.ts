@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import { envelope } from "../envelope.js";
-import { account } from "../account.js";
+import { account, LoginFail } from "../account.js";
 import { defineCap } from "./registry.js";
 
 const err = (code: string, message: string) =>
@@ -59,7 +59,29 @@ defineCap({
     try {
       return envelope(await account.loginPassword(email, password, serverUrl));
     } catch (e) {
-      return envelope(await account.status(), [err("E_ACCOUNT_LOGIN", (e as Error).message)]);
+      // stats.fail / stats.wait：设置页按它画哪一档错误条（批次 270 §一）；message 是第一段的原话。
+      const f = e instanceof LoginFail ? { fail: e.kind, wait: e.wait } : { fail: "other", wait: 0 };
+      return envelope(await account.status(), [err("E_ACCOUNT_LOGIN", (e as Error).message)], f);
+    }
+  },
+});
+
+defineCap({
+  name: "account_forgot", title: "忘了密码：发重置信", scope: "global",
+  summary: "服务端是 local 时，请 Umbra 服务端给这个邮箱发重置信（POST /auth/forgot）。不管邮箱有没有账号都回同一个结果。",
+  input: {
+    email: z.string().describe("登录用的邮箱"),
+    serverUrl: z.string().optional().describe("这一次用哪台 Umbra 服务端；不给用存着的"),
+  },
+  faces: ["http"],
+  http: { route: "account_forgot", method: "POST" },
+  run: async ({ email, serverUrl }) => {
+    try {
+      await account.forgotPassword(email, serverUrl);
+      return envelope({ sent: true });
+    } catch (e) {
+      const f = e instanceof LoginFail ? { fail: e.kind, wait: 0 } : { fail: "other", wait: 0 };
+      return envelope({ sent: false }, [err("E_ACCOUNT_FORGOT", (e as Error).message)], f);
     }
   },
 });

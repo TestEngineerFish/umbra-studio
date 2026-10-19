@@ -14,7 +14,8 @@ import { join } from "node:path";
 const STATE = await mkdtemp(join(tmpdir(), "umbra-tokentest-"));
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
 
-const { AccountService, tokenExpMs, TOKEN_RENEW_SKEW_MS } = await import("./account.js");
+const { AccountService, LoginFail, tokenExpMs, TOKEN_RENEW_SKEW_MS } = await import("./account.js");
+type LoginFail = InstanceType<typeof LoginFail>;
 const { OidcLogin } = await import("./oidc.js");
 const { getAccount, setAccount } = await import("./account.js");
 
@@ -159,6 +160,7 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
       if (b.password === "slow") return json(401, { detail: "试得太频繁了" }, { "x-umbra-error": "too_many_attempts", "retry-after": "42" });
       return b.password === "right password" && b.device === "umbra-studio" ? json(200, { token: LOCAL, user: { id: 1 } }) : json(401, { detail: "邮箱或密码不对" }, { "x-umbra-error": "bad_credentials" });
     }
+    if (path === "/auth/forgot") return JSON.parse(init.body || "{}").email ? json(200, { ok: true }) : json(400, { detail: "缺邮箱" });
     if (path === "/auth/me") return init.headers?.Authorization === `Bearer ${LOCAL}` ? json(200, { user: { id: 1, name: "sam" } }) : json(401, {});
     if (path === "/membership") return init.headers?.Authorization === `Bearer ${LOCAL}` ? json(200, { gift_plugins: [], discount_pct: 100 }) : json(401, {});
     return json(404, {});
@@ -166,10 +168,17 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
   const svc = new AccountService(new OidcLogin(async () => { throw new Error("不该刷新"); }), fetchFn as never);
   ok(await svc.probeProvider() === "local", "probeProvider 认出 local");
   let msg = "";
-  try { await svc.loginPassword("sam@example.com", "wrong one!!"); } catch (e) { msg = (e as Error).message; }
-  ok(msg === "邮箱或密码不对", "密码不对：照服务端那句说", msg);
-  try { await svc.loginPassword("sam@example.com", "slow"); } catch (e) { msg = (e as Error).message; }
-  ok(/42 秒/.test(msg), "试太多：带上等多少秒", msg);
+  let kind = "", wait = -1;
+  const grab = (e: unknown) => { msg = (e as Error).message; kind = (e as LoginFail).kind; wait = (e as LoginFail).wait; };
+  try { await svc.loginPassword("sam@example.com", "wrong one!!"); } catch (e) { grab(e); }
+  ok(msg === "邮箱或密码不对" && kind === "bad", "密码不对：照服务端那句说、kind=bad", msg);
+  try { await svc.loginPassword("sam@example.com", "slow"); } catch (e) { grab(e); }
+  ok(/42 秒/.test(msg) && kind === "locked" && wait === 42, "试太多：带上等多少秒、kind=locked", msg);
+  await svc.forgotPassword("sam@example.com");
+  ok(calls.includes("/auth/forgot"), "忘了密码：发到 /auth/forgot");
+  const down = new AccountService(new OidcLogin(), (async () => { throw new Error("ECONNREFUSED"); }) as never);
+  try { await down.loginPassword("sam@example.com", "x", BASE); } catch (e) { grab(e); }
+  ok(kind === "offline" && msg === `连不上 ${BASE}`, "连不上：kind=offline，第一段写地址", msg);
   const st = await svc.loginPassword("sam@example.com", "right password");
   const a = await getAccount();
   ok(st.signedIn && a.accessToken === LOCAL && a.refreshToken === "", "登上：存下不透明令牌，没有刷新令牌");

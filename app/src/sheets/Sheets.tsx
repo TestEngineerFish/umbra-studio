@@ -337,6 +337,91 @@ function fmtBytes(b: number): string {
   return `${mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
 }
 
+/** 设置 › Umbra 账号的邮箱密码表单（服务端说 local 时；Claude Design 批次 270 §一，稿《公用/批次 270 · Studio 账号登录》）。
+ *  竖排、宽 340：邮箱、密码上下两格，下面一行是主钮 +「忘了密码」。失败不用吐司——挂在密码格下面一条三段式，
+ *  改完再点登录才消失；试太多时秒数真的在走、主钮置灰写「N 秒后再试」，到 0 自动恢复；连不上那一档给［重试］。
+ *  「忘了密码」Studio 自己做（接 /auth/forgot）：密码格收起、钮变「发重置信」；发完不管邮箱有没有账号都回同一句（同 PC 登录窗）。 */
+function PasswordLogin({ core, serverUrl, onSignedIn }: { core: Core; serverUrl: string; onSignedIn: (status: unknown) => void }) {
+  type Fail = { kind: "bad" | "locked" | "offline" | "other"; what: string; wait: number };
+  const [mode, setMode] = useState<"login" | "forgot" | "sent">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [fail, setFail] = useState<Fail | null>(null);
+  // 试太多：还要等几秒（每秒减一，到 0 清掉错误条、主钮恢复）。
+  const [left, setLeft] = useState(0);
+  useEffect(() => {
+    if (left <= 0) return;
+    const t = setTimeout(() => { if (left <= 1) { setLeft(0); setFail(null); } else setLeft(left - 1); }, 1000);
+    return () => clearTimeout(t);
+  }, [left]);
+  const failOf = (r: { errors?: { message: string }[]; stats?: Record<string, unknown> }): Fail => {
+    const kind = (r.stats?.fail as Fail["kind"]) || "other";
+    return { kind, what: r.errors?.[0]?.message || "没成", wait: Number(r.stats?.wait || 0) };
+  };
+  const submit = async () => {
+    if (busy || left > 0) return;
+    setBusy(true); setFail(null);
+    if (mode === "forgot") {
+      const r = await core.post<{ sent: boolean }>("account_forgot", { email });
+      setBusy(false);
+      if (r.ok && r.data?.sent) { setMode("sent"); return; }
+      setFail(failOf(r));
+      return;
+    }
+    const r = await core.post<unknown>("account_login_password", { email, password });
+    setBusy(false);
+    if (r.ok && !r.errors?.length) { setPassword(""); onSignedIn(r.data); return; }
+    const f = failOf(r);
+    if (f.kind === "locked") setLeft(f.wait > 0 ? f.wait : 60);
+    setFail(f);
+  };
+  // 第二段：服务端以后给更具体的原因就换掉（设计稿原话）。
+  const why = (f: Fail): string => f.kind === "bad" ? "改一下再点登录。连错几次会暂时锁住。"
+    : f.kind === "locked" ? "为了防止有人猜密码，服务器暂时不收这个邮箱的登录。"
+    : f.kind === "offline" ? "网络断了，或者服务器没在跑。" : "";
+  const what = (f: Fail): string => f.kind === "bad" ? `登不进去：${f.what}` : f.kind === "locked" ? `试得太多了，${left} 秒后再试`
+    : f.kind === "offline" ? `连不上 ${serverUrl}` : f.what;
+  if (mode === "sent") return <div className="flex flex-col gap-2.5 max-w-[440px]">
+    <div className="flex gap-2 items-start rounded-[10px] px-3.5 py-3" style={{ background: "var(--success-soft, rgba(15,118,110,.12))" }}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--success, #0F766E)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-[3px]"><path d="M3 7.5h18v11H3zM3 7.5l9 6.5 9-6.5" /></svg>
+      <div className="flex flex-col gap-1 min-w-0">
+        <span className="text-[12.5px] font-semibold" style={{ color: "var(--success, #0F766E)" }}>如果这个邮箱有账号，重置信已经发出去了</span>
+        <span className="text-xs leading-[1.7]">点信里那条链接，在浏览器里设新密码。链接 1 小时内有效；改完之后所有设备都会退出，包括这台上的 Studio，要用新密码重新登录。</span>
+      </div>
+    </div>
+    <button type="button" className="self-start text-[12.5px]" style={{ color: "var(--accent, #e8873a)" }} onClick={() => { setMode("login"); setFail(null); }}>回去登录</button>
+  </div>;
+  const forgot = mode === "forgot";
+  const off = busy || left > 0;
+  const main = forgot ? "发重置信" : left > 0 ? `${left} 秒后再试` : busy ? "正在登录" : "登录";
+  return <form className="flex flex-col gap-3 w-full max-w-[340px]" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+    {forgot && <span className="text-[12.5px] leading-[1.7]">填登录用的邮箱，重置信发到那里。</span>}
+    <label className="flex flex-col gap-1">
+      <span className="text-[11px] font-semibold tracking-[.06em] text-muted">邮箱</span>
+      <input className="h-8" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
+    </label>
+    {!forgot && <label className="flex flex-col gap-1">
+      <span className="text-[11px] font-semibold tracking-[.06em] text-muted">密码</span>
+      <input className="h-8" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
+        style={fail?.kind === "bad" ? { borderColor: "var(--tool-danger, #d33)" } : undefined} aria-invalid={fail?.kind === "bad"} />
+    </label>}
+    {fail && <div role="alert" className="flex gap-2 items-start rounded-[9px] px-3 py-2.5" style={{ background: "var(--danger-soft, rgba(180,35,24,.1))" }}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--tool-danger, #d33)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-[2px]"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM15 9l-6 6M9 9l6 6" /></svg>
+      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+        <span className="text-[12.5px] font-semibold" style={{ color: "var(--tool-danger, #d33)" }}>{what(fail)}</span>
+        {why(fail) && <span className="text-xs leading-[1.65]">{why(fail)}</span>}
+      </div>
+      {fail.kind === "offline" && <button type="button" className="btn shrink-0" onClick={() => void submit()}>重试</button>}
+    </div>}
+    <div className="flex items-center gap-3.5">
+      <button className="btn primary" type="submit" disabled={off || !email || (!forgot && !password)} style={{ fontVariantNumeric: "tabular-nums" }}>{main}</button>
+      <button type="button" className="text-[12.5px]" style={{ color: "var(--accent, #e8873a)" }}
+        onClick={() => { setMode(forgot ? "login" : "forgot"); setFail(null); setLeft(0); }}>{forgot ? "想起来了，去登录" : "忘了密码"}</button>
+    </div>
+  </form>;
+}
+
 function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) {
   type Status = { serverUrl: string; signedIn: boolean; user: { id: number; display_name?: string; email?: string; name?: string; is_owner?: boolean } | null; pending: boolean; lastError: string; provider: string; serverAi: boolean };
   const [st, setSt] = useState<Status | null>(null);
@@ -345,8 +430,6 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
   const [editServer, setEditServer] = useState(false);
   // 服务端怎么登录：local（邮箱密码，接账号中心之后就是这一种）/ oidc（打开浏览器）/ unknown（问不到，按浏览器那颗画）。
   const [provider, setProvider] = useState("unknown");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   // 存储容量那一行（Umbra 草案 §十一）：只看不管。null = 没登录 / 老服务端，整行不画。
   type Storage = { used: number; limit: number; pct: number; warn: "ok" | "warn" | "critical" | "full"; tier: string | null };
   const [storage, setStorage] = useState<Storage | null>(null);
@@ -358,16 +441,6 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
   }, [core]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void core.get<{ provider: string }>("account_provider").then((r) => { if (r.ok && r.data) setProvider(r.data.provider); }); }, [core, st?.serverUrl]);
-  const loginPassword = async () => {
-    setBusy(true);
-    const r = await core.post<Status>("account_login_password", { email, password });
-    setBusy(false);
-    setPassword("");
-    if (!r.ok || r.errors?.length) { toast(r.errors?.[0]?.message || "登录没成"); if (r.data) setSt(r.data); return; }
-    if (r.data) setSt(r.data);
-    toast("已登录 Umbra 账号");
-    void load();
-  };
   // 登录进行中：每 1.5 秒看一眼，登上 / 失败 / 5 分钟就停。
   useEffect(() => {
     if (!busy) return;
@@ -407,9 +480,12 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     toast(r.data.serverAi ? "通道 A 已切到服务端 AI（按积分扣）" : "通道 A 回到自填端点");
   };
   return <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
-    <div className="flex items-center gap-2">
-      <h3 className="text-sm font-semibold shrink-0">Umbra 账号</h3>
-      <span className="text-muted text-xs truncate">{st ? (st.signedIn ? `已登录 · ${who}${st.user?.is_owner ? " · 主人" : ""}` : "未登录（单机使用；同步、服务端 AI、插件市场要登录）") : "…"}</span>
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-2">
+        <h3 className="text-sm font-semibold shrink-0">Umbra 账号</h3>
+        <span className="text-muted text-xs truncate">{st ? (st.signedIn ? `已登录 · ${who}${st.user?.is_owner ? " · 主人" : ""}${st.user?.email ? ` · ${st.user.email}` : ""}` : "未登录（单机使用；同步、服务端 AI、插件市场要登录）") : "…"}</span>
+      </div>
+      <span className="text-muted text-xs">和 Umbra PC、iOS 用同一个账号。</span>
     </div>
     <div className="flex items-center gap-2 text-xs">
       <span className="text-muted shrink-0">服务端</span>
@@ -420,17 +496,12 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     </div>
     <div className="flex items-center gap-2">
       {st?.signedIn
-        ? <button className="btn" onClick={logout}>登出</button>
+        ? <button className="btn" onClick={logout}>退出登录</button>
         : provider === "local"
-          ? <form className="flex items-center gap-2 flex-wrap" onSubmit={(e) => { e.preventDefault(); void loginPassword(); }}>
-              <input className="min-w-[12rem]" type="email" autoComplete="username" placeholder="邮箱" value={email} onChange={(e) => setEmail(e.target.value)} />
-              <input className="min-w-[10rem]" type="password" autoComplete="current-password" placeholder="密码" value={password} onChange={(e) => setPassword(e.target.value)} />
-              <button className="btn primary" type="submit" disabled={busy || !email || !password}>{busy ? "登录中…" : "登录"}</button>
-              <span className="text-muted text-xs">忘了密码：在 Umbra PC / iOS 的登录页点「忘记密码」</span>
-            </form>
+          ? <PasswordLogin core={core} serverUrl={st?.serverUrl || ""} onSignedIn={(d) => { setSt(d as Status); toast("已登录 Umbra 账号"); void load(); }} />
           : <button className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
       {busy && provider !== "local" && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
-      {!busy && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
+      {!busy && provider !== "local" && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
     </div>
     {st?.signedIn && storage && (
       <div className="flex items-center gap-2 text-xs">

@@ -5,7 +5,8 @@ export interface Boot { url: string; token: string; name: string | null; title: 
 export interface ProjectHandle { url: string; token: string; ws: string; name: string; title: string; dir: string }
 /** 信封里的一条诊断：`fix` 是给人看的改法，比 message 更可操作（doc/00 §二） */
 export interface Err { code?: string; message: string; fix?: string; level?: string }
-export interface Envelope<T = unknown> { ok: boolean; data?: T; errors?: Err[] }
+/** `stats`：能力自带的附加结果（如账号登录失败的分档 `{fail, wait}`） */
+export interface Envelope<T = unknown> { ok: boolean; data?: T; errors?: Err[]; stats?: Record<string, unknown> }
 export interface UdEvent { type: "hello" | "job" | "chat" | "write" | "fs" | "plugin"; projectDir: string | null; payload: unknown; at: string }
 
 declare global { interface Window { __UD_APP?: Boot } }
