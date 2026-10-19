@@ -35,7 +35,9 @@ import { listDrafts, type Project } from "./project.js";
    加 `json` 时它没跟上，编译器当场就抓出来了 —— 这正是统一的用处。 */
 export type { FileKind };
 
-/** 文本文件的上限：超过就只给元数据，不把整份塞进响应 */
+/** 文本文件的上限：超过就只给元数据，不把整份塞进响应。
+ *  ⚠️ 这是**模型 / MCP / HTTP / chat** 的上限，不进设置（大文件塞进模型上下文没有用）。
+ *  插件来源的 `read_file` 用设置里的 `textReadMaxMB`（`plugin/limits.ts`，由 `cap/files.ts` 以 `opts.textMax` 传进来）。 */
 export const TEXT_MAX = 2 * 1024 * 1024;
 /** 二进制按字节给（base64）的上限：100 MB。base64 再 +33%，还要整串经 HTTP / postMessage 传进插件，再大就该换流式了。
  *  2026-10-19 起插件读取的上限**以设置为准**（`plugin/limits.ts` 的 `binaryReadMaxMB`，由 `cap/files.ts` 传进来），
@@ -201,8 +203,9 @@ const READ_ENCODINGS = new Set(["utf-8", "gbk", "gb18030", "big5", "shift_jis", 
 /** `opts.binary`：二进制文件也把原始字节按 base64 给（插件的约定：`content: null` + `encoding: "base64"` + `base64`，
  *  umbra-plugins `sdk/PLUGIN-SPEC.md` / pdf · xlsx · zip 三个插件都按它写）。**缺省不给** —— 模型 / MCP 调 `read_file`
  *  拿到一份 PDF 的 base64 只会把上下文撑爆，它们照旧拿「不是文本文件」。 */
-/*  `opts.binaryMax`：按字节给的上限（字节）。插件那条路传设置里的值，不传就是 `BINARY_MAX`。 */
-export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number } = {}): Promise<ReadFileResult> {
+/*  `opts.binaryMax`：按字节给的上限（字节）。插件那条路传设置里的值，不传就是 `BINARY_MAX`。
+ *  `opts.textMax`：文本整份给的上限（字节）。插件那条路传设置里的 `textReadMaxMB`，不传就是 `TEXT_MAX`（别的来源一律这个）。 */
+export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number; textMax?: number } = {}): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
   const buf = await readFile(abs);
@@ -222,7 +225,8 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
     }
     return out;
   }
-  if (st.size > TEXT_MAX) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${TEXT_MAX / 1024 / 1024} MB 上限${opts.binary ? RANGE_HINT : ""}`; return out; }
+  const textMax = opts.textMax ?? TEXT_MAX;
+  if (st.size > textMax) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${Math.round(textMax / 1048576)} MB 上限${opts.binary ? RANGE_HINT : ""}`; return out; }
   /* ⚠️ **`sha256` 算的是原始字节，不随编码变**（上面 `sha256(buf)`）——
      所以按 GBK 读出来的文本，拿这个 sha 回去做写前校验仍然是对的。
      这一点不成立的话「按别的编码读」就会把写入口的那道闸绕过去。 */

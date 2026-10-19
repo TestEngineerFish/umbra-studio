@@ -1010,7 +1010,9 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
   try {
     const g = await (await fetch(u("plugin_limits"))).json() as { ok: boolean; data: { config: Record<string, number>; ranges: Record<string, { min: number; max: number; def: number }>; limits: Record<string, unknown> } };
     ok(g.ok && typeof g.data.config.memoryMB === "number" && g.data.ranges.memoryMB?.def === 512 && g.data.limits.rangeRead === true
-      && g.data.limits.memoryBytes === g.data.config.memoryMB! * 1048576,
+      && g.data.limits.memoryBytes === g.data.config.memoryMB! * 1048576
+      && g.data.ranges.textReadMaxMB?.def === 2 && g.data.ranges.textReadMaxMB?.min === 1 && g.data.ranges.textReadMaxMB?.max === 64
+      && g.data.limits.textReadMax === g.data.config.textReadMaxMB! * 1048576,
       "GET plugin_limits：config + ranges + 派生 limits", JSON.stringify(g.data.limits));
     const bad = await post("plugin_limits", { memoryMB: 99999 });
     const bj = await bad.json() as { ok: boolean; errors?: Array<{ code?: string }> };
@@ -1018,6 +1020,11 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
     ok(bad.status === 400 && bj.errors?.[0]?.code === "E_BAD_INPUT" && after === before, "POST 越界 → 400 E_BAD_INPUT，盘上不变", `HTTP ${bad.status}`);
     const good = await (await post("plugin_limits", { deadlineSec: 42 })).json() as { ok: boolean; data: { config: { deadlineSec: number }; limits: { deadlineMs: number } } };
     ok(good.ok && good.data.config.deadlineSec === 42 && good.data.limits.deadlineMs === 42_000, "POST 合法值写得进去，回包就是新值");
+    const tx = await (await post("plugin_limits", { textReadMaxMB: 8 })).json() as { ok: boolean; data: { config: { textReadMaxMB: number; deadlineSec: number }; limits: { textReadMax: number } } };
+    ok(tx.ok && tx.data.config.textReadMaxMB === 8 && tx.data.limits.textReadMax === 8 * 1048576 && tx.data.config.deadlineSec === 42,
+      "POST textReadMaxMB 写得进去，派生的 textReadMax 跟着变，别的项不动");
+    const txBad = await post("plugin_limits", { textReadMaxMB: 65 });
+    ok(txBad.status === 400, "POST textReadMaxMB 越界（65）→ 400", `HTTP ${txBad.status}`);
   } finally {
     if (before === null) await rmf(file, { force: true }); else await wf(file, before);
   }

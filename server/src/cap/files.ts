@@ -50,7 +50,7 @@ defineCap({
   name: "read_file", title: "读一个文件（非设计稿）", scope: "project",
   summary: [
     "读文本文件，返回内容与 sha256。**写回去要把这个 sha256 原样带上** —— 盘上被别人改过就会被拒绝，不会把改动盖掉。",
-    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限见设置 → 插件沙箱，默认 100 MB）。",
+    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限见设置 → 插件沙箱，默认 100 MB）。**插件调用时**文本整份读的上限也跟设置走（默认 2 MB）；别的来源一律 2 MB。",
     "**插件调用时**还能按字节范围读：`byteOffset` + `byteLength` 两个都给（非负整数，`byteLength` 1..上限，`byteOffset` ≤ size），任何文件都按原始字节读、只读那一段，"
       + "回 `content: null` + `encoding: \"base64\"` + `base64` + `range: { byteOffset, byteLength(实际读到的), size, more }`。"
       + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。模型 / MCP / 前端调用不开放。",
@@ -101,8 +101,11 @@ defineCap({
        只对 `via === "plugin"` 打开：模型 / MCP 拿到一份 PDF 的 base64 只会撑爆上下文。
        上限以设置为准（`plugin/limits.ts`），只在插件这条路上读设置。 */
     const plugin = c.via === "plugin";
-    const r = await readAnyFile(p(c), path, encoding, plugin
-      ? { binary: true, binaryMax: (await getPluginLimits()).binaryReadMaxMB * 1048576 }
+    /* 文本整份读的上限也只在插件这条路上读设置（`textReadMaxMB`）：模型 / MCP / HTTP 照旧 `TEXT_MAX`（2 MB），
+       不让「设置里调大了」把一份大日志整个塞进模型上下文。 */
+    const lim = plugin ? await getPluginLimits() : null;
+    const r = await readAnyFile(p(c), path, encoding, lim
+      ? { binary: true, binaryMax: lim.binaryReadMaxMB * 1048576, textMax: lim.textReadMaxMB * 1048576 }
       : {});
     if ((offset === undefined && limit === undefined) || r.content === null) return envelope(r);
     const lines = r.content.split("\n");

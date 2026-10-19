@@ -32,16 +32,16 @@ console.log("插件沙箱限额");
 /* ══ ① 设置读写 ══ */
 {
   const d = await getPluginLimits();
-  ok(d.memoryMB === 512 && d.deadlineSec === 30 && d.binaryReadMaxMB === 100, "没文件 → 默认 512 MB / 30 秒 / 100 MB", JSON.stringify(d));
+  ok(d.memoryMB === 512 && d.deadlineSec === 30 && d.binaryReadMaxMB === 100 && d.textReadMaxMB === 2, "没文件 → 默认 512 MB / 30 秒 / 100 MB / 文本 2 MB", JSON.stringify(d));
   const v = await getPluginLimitsView();
   ok(v.memoryBytes === 512 * MB && v.deadlineMs === 30_000 && v.binaryReadMax === 100 * MB && v.textReadMax === TEXT_MAX && v.rangeRead === true,
-    "派生给插件的那份：字节 / 毫秒、textReadMax = TEXT_MAX、rangeRead: true", JSON.stringify(v));
+    "派生给插件的那份：字节 / 毫秒、textReadMax 默认 = TEXT_MAX（2 MB）、rangeRead: true", JSON.stringify(v));
 
   /* 手改坏了的文件：读的时候夹 / 回落，不让插件因为一份坏配置全体起不来 */
   await mkdir(join(STATE, ".umbrastudio"), { recursive: true });
-  await writeFile(FILE, JSON.stringify({ memoryMB: 99999, deadlineSec: "很久", binaryReadMaxMB: 3.4 }));
+  await writeFile(FILE, JSON.stringify({ memoryMB: 99999, deadlineSec: "很久", binaryReadMaxMB: 3.4, textReadMaxMB: 500 }));
   const c = await getPluginLimits();
-  ok(c.memoryMB === 2048 && c.deadlineSec === 30 && c.binaryReadMaxMB === 10, "读：越界夹到范围、非数字回落默认", JSON.stringify(c));
+  ok(c.memoryMB === 2048 && c.deadlineSec === 30 && c.binaryReadMaxMB === 10 && c.textReadMaxMB === 64, "读：越界夹到范围、非数字回落默认", JSON.stringify(c));
   await writeFile(FILE, "{ 这不是 JSON");
   ok(JSON.stringify(await getPluginLimits()) === JSON.stringify(DEFAULT_LIMITS), "读：坏 JSON → 整份默认");
   await rm(FILE);
@@ -57,6 +57,8 @@ console.log("插件沙箱限额");
   await rejects({ deadlineSec: 121 }, "deadlineSec 超上限");
   await rejects({ binaryReadMaxMB: 5 }, "binaryReadMaxMB 低于下限");
   await rejects({ deadlineSec: 7.5 }, "不是整数");
+  await rejects({ textReadMaxMB: 0 }, "textReadMaxMB 低于下限（1）");
+  await rejects({ textReadMaxMB: 65 }, "textReadMaxMB 超上限（64）");
   await rejects({ memoryMB: "512" }, "字符串（门面不跑 zod，类型在这里核）");
   await rejects({ cpu: 4 }, "不认识的键");
   await rejects(null, "不是对象");
@@ -65,7 +67,10 @@ console.log("插件沙箱限额");
   ok(!exists, "拒了的那几次一个字节都没写盘");
 
   const n = await setPluginLimits({ memoryMB: 256 });
-  ok(n.memoryMB === 256 && n.deadlineSec === 30 && n.binaryReadMaxMB === 100, "写一项，别的原样保留", JSON.stringify(n));
+  ok(n.memoryMB === 256 && n.deadlineSec === 30 && n.binaryReadMaxMB === 100 && n.textReadMaxMB === 2, "写一项，别的原样保留", JSON.stringify(n));
+  const t = await setPluginLimits({ textReadMaxMB: 16 });
+  ok(t.textReadMaxMB === 16 && (await getPluginLimitsView()).textReadMax === 16 * MB && t.memoryMB === 256,
+    "**textReadMaxMB 进设置：写 16 → 派生的 textReadMax = 16 MB**", JSON.stringify(t));
   const disk = JSON.parse(await readFile(FILE, "utf8"));
   ok(disk.memoryMB === 256 && (await getPluginLimits()).memoryMB === 256, "落了盘，下一次现读就是新值");
   await setPluginLimits({ ...DEFAULT_LIMITS });
@@ -106,7 +111,7 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
 
 {
   /* 内存：64 MB 时分配 100 MB 抛 out of memory；512 MB 时同一件照常 */
-  const small = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 64, deadlineSec: 30, binaryReadMaxMB: 100 }) });
+  const small = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 64, deadlineSec: 30, binaryReadMaxMB: 100, textReadMaxMB: 2 }) });
   await small.start();
   const why = await errOf(small.invoke(cap("alloc"), { mb: 100 }, project));
   ok(/out of memory/i.test(why), "**给 64 MB 时分配 100 MB → out of memory**", why.slice(0, 60));
@@ -114,7 +119,7 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
   ok(tiny === 8 * MB, "（对照）同一个沙箱里分配 8 MB 照常 —— 拒的是「超了」，不是「坏了」", String(tiny));
   small.stop();
 
-  const big = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 512, deadlineSec: 30, binaryReadMaxMB: 100 }) });
+  const big = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 512, deadlineSec: 30, binaryReadMaxMB: 100, textReadMaxMB: 2 }) });
   await big.start();
   const got = await big.invoke(cap("alloc"), { mb: 100 }, project).catch((e) => (e as Error).message);
   ok(got === 100 * MB, "**给 512 MB 时分配 100 MB 照常**", String(got));
@@ -123,7 +128,7 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
 
 {
   /* 期限：给 5 秒时 6 秒的死循环被打断；沙箱还活着 */
-  const v5 = limitsView({ memoryMB: 128, deadlineSec: 5, binaryReadMaxMB: 100 });
+  const v5 = limitsView({ memoryMB: 128, deadlineSec: 5, binaryReadMaxMB: 100, textReadMaxMB: 2 });
   const sb = new PluginSandbox(manifest as never, PDIR, { limits: v5 });
   await sb.start();
   const t0 = Date.now();
