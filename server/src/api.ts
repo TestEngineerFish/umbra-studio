@@ -123,7 +123,7 @@ export interface ApiCtx { project: Project | null; token: string; port: number }
    漏一条的后果很实在 —— `ai_config` 一开始没放进来，首页打开设置时读不到通道 B 的当前配置，
    模型框空着、选中项退回默认值，看着像「没配过」。 */
 const GLOBAL_ROUTES = new Set(["projects", "open_project", "create_project", "inspect_dir", "reveal_dir",
-  "local_clis", "local_cli_models", "ai_config", "ai_channel_b"]);
+  "local_clis", "local_cli_models", "ai_config", "ai_channel_b", "plugin_limits"]);
 
 /** 作业化会话的中断句柄：jobId → AbortController（作业活在进程里，这张表也是） */
 const chatAborts = new Map<string, AbortController>();
@@ -372,6 +372,21 @@ export async function handleApi(
         maxBudgetUsd: b.maxBudgetUsd ?? cur.maxBudgetUsd,
       } });
       json(reply, 200, { ok: true, data: { cli: spec.id, model, label: spec.label, verified: spec.verified, note: spec.note } });
+      return true;
+    }
+    /* 插件沙箱限额（2026-10-19，`plugin/limits.ts`）。和 ai_config 一样是机器级的，首页也要能用。
+       GET 回 { config（存盘那三项）, ranges（合法范围 + 默认值，界面照它显示）, limits（插件看到的派生值） }；
+       A 面插件宿主（`Surface.tsx`）推 ctx 时也取这一条的 `limits`。
+       POST 收 `{ memoryMB?, deadlineSec?, binaryReadMaxMB? }`：越界 / 非整数 / 不认识的键 → 400 E_BAD_INPUT（ToolError 走下面的 catch），
+       写成功后在跑的插件沙箱全部停掉，下次调用按新值重开。 */
+    if (route === "plugin_limits") {
+      const lim = await import("./plugin/limits.js");
+      if (req.method === "POST") {
+        if (!originOk(req, ctx.port)) { json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] }); return true; }
+        await lim.setPluginLimits(await readBody(req));
+      }
+      const config = await lim.getPluginLimits();
+      json(reply, 200, { ok: true, data: { config, ranges: lim.LIMIT_RANGES, limits: lim.limitsView(config) } });
       return true;
     }
     if (route === "ai_config" && req.method === "GET") {

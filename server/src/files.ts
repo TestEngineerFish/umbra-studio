@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, posix, relative, sep } from "node:path";
 import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
@@ -37,7 +37,9 @@ export type { FileKind };
 
 /** 文本文件的上限：超过就只给元数据，不把整份塞进响应 */
 export const TEXT_MAX = 2 * 1024 * 1024;
-/** 二进制按字节给（base64）的上限：100 MB。base64 再 +33%，还要整串经 HTTP / postMessage 传进插件，再大就该换流式了。 */
+/** 二进制按字节给（base64）的上限：100 MB。base64 再 +33%，还要整串经 HTTP / postMessage 传进插件，再大就该换流式了。
+ *  2026-10-19 起插件读取的上限**以设置为准**（`plugin/limits.ts` 的 `binaryReadMaxMB`，由 `cap/files.ts` 传进来），
+ *  这里只是默认值；`recordCreatedFile` 的快照上限仍用它（那是状态目录的体积问题，不是插件吃不吃得下）。 */
 export const BINARY_MAX = 100 * 1024 * 1024;
 
 /** 文件类型认定走 `shared/kinds.ts` 那一份唯一出处（M8-14）。
@@ -158,6 +160,12 @@ export async function countTypes(p: Project): Promise<{ dc: number; md: number; 
   return t;
 }
 
+/** 按**行**分页读的那一页（`read_file` 的 `offset` / `limit`，M13-3）。行号 1 起算。 */
+export interface LineRange { from: number; to: number; total: number; more: boolean }
+/** 按**字节**读的那一段（`read_file` 的 `byteOffset` / `byteLength`，只对插件开放）。
+ *  `byteLength` 是**实际读到的**字节数（末段会比要的少），`more` = 这一段后面还有没有。 */
+export interface ByteRange { byteOffset: number; byteLength: number; size: number; more: boolean }
+
 export interface ReadFileResult {
   path: string; kind: FileKind; size: number; updatedAt: string; sha256: string;
   /** 文本文件的正文；二进制或超限时为 null */
@@ -173,6 +181,16 @@ export interface ReadFileResult {
   encoding?: string;
   /** 二进制文件的原始字节（base64）。**只在 `binary: true` 时给**（插件读 PDF / xlsx / zip 用，`read_file` 按 `via === "plugin"` 打开） */
   base64?: string;
+  /** 按行分页时才有（`cap/files.ts` 补上）。按字节读的回包是另一个类型（`ReadFileBytesResult`），两种 `range` 不混 */
+  range?: LineRange;
+}
+
+/** 按字节范围读的回包。**没有 `sha256`**：只读了一段，算不出整份的摘要 ——
+ *  要写回请整份读（拿整份的 sha256 去做写前校验）。字段名和 umbra-plugins 那边定死了。 */
+export interface ReadFileBytesResult {
+  path: string; kind: FileKind; size: number; updatedAt: string;
+  content: null; encoding: "base64"; base64: string;
+  range: ByteRange;
 }
 
 /** 允许按哪些编码读。**白名单，不是「随便传什么都试」** ——
@@ -183,7 +201,8 @@ const READ_ENCODINGS = new Set(["utf-8", "gbk", "gb18030", "big5", "shift_jis", 
 /** `opts.binary`：二进制文件也把原始字节按 base64 给（插件的约定：`content: null` + `encoding: "base64"` + `base64`，
  *  umbra-plugins `sdk/PLUGIN-SPEC.md` / pdf · xlsx · zip 三个插件都按它写）。**缺省不给** —— 模型 / MCP 调 `read_file`
  *  拿到一份 PDF 的 base64 只会把上下文撑爆，它们照旧拿「不是文本文件」。 */
-export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean } = {}): Promise<ReadFileResult> {
+/*  `opts.binaryMax`：按字节给的上限（字节）。插件那条路传设置里的值，不传就是 `BINARY_MAX`。 */
+export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number } = {}): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
   const buf = await readFile(abs);
@@ -197,12 +216,13 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
   if (!isTextual(rel)) {
     out.why = "不是文本文件";
     if (opts.binary) {
-      if (st.size > BINARY_MAX) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过二进制读取上限 ${BINARY_MAX / 1048576} MB`;
+      const max = opts.binaryMax ?? BINARY_MAX;
+      if (st.size > max) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过二进制读取上限 ${Math.round(max / 1048576)} MB${RANGE_HINT}`;
       else { out.encoding = "base64"; out.base64 = buf.toString("base64"); }
     }
     return out;
   }
-  if (st.size > TEXT_MAX) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${TEXT_MAX / 1024 / 1024} MB 上限`; return out; }
+  if (st.size > TEXT_MAX) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${TEXT_MAX / 1024 / 1024} MB 上限${opts.binary ? RANGE_HINT : ""}`; return out; }
   /* ⚠️ **`sha256` 算的是原始字节，不随编码变**（上面 `sha256(buf)`）——
      所以按 GBK 读出来的文本，拿这个 sha 回去做写前校验仍然是对的。
      这一点不成立的话「按别的编码读」就会把写入口的那道闸绕过去。 */
@@ -223,6 +243,44 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
   }
   out.lines = out.content.length ? out.content.split("\n").length : 0;
   return out;
+}
+
+/** 超限时给插件的那半句：它有路可走，别让它以为这份文件就是读不了 */
+const RANGE_HINT = "；可以用 byteOffset / byteLength 按字节分段读";
+
+/** 按字节范围读一段（插件读大文件用：大 .gltf / .obj / 视频…）。
+ *
+ *  ⚠️ **只读那一段**：`open` + `read(pos, len)`，不整份读、不算 sha256 —— 整份读进来正是这条路要绕开的事
+ *  （一份 2 GB 的文件分段读，每段都整份读一遍就是 2 GB × 段数）。所以回包**没有 `sha256`**。
+ *  对**任何文件**都按原始字节读，包括文本类 kind（不解码、不管编码）。
+ *
+ *  入参在调用方核过（`cap/files.ts`：非负整数、`byteLength` 1..上限、`byteOffset` ≤ size）；
+ *  这里只按文件实际大小截：`byteOffset === size` 回空段。 */
+export async function readFileRange(p: Project, rel: string, byteOffset: number, byteLength: number): Promise<ReadFileBytesResult> {
+  const abs = mustFile(p, rel);
+  const fh = await open(abs, "r");
+  try {
+    const st = await fh.stat();
+    const want = Math.max(0, Math.min(byteLength, st.size - byteOffset));
+    const buf = Buffer.alloc(want);
+    let got = 0;
+    /* `read` 一次不保证读满（大段、网络盘），读到够或读到头为止 */
+    while (got < want) {
+      const { bytesRead } = await fh.read(buf, got, want - got, byteOffset + got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    return {
+      path: rel, kind: kindOf(rel), size: st.size, updatedAt: st.mtime.toISOString(),
+      content: null, encoding: "base64", base64: buf.subarray(0, got).toString("base64"),
+      range: { byteOffset, byteLength: got, size: st.size, more: byteOffset + got < st.size },
+    };
+  } finally { await fh.close(); }
+}
+
+/** 文件大小（字节）。范围读要先拿它核 `byteOffset` */
+export function fileSizeOf(p: Project, rel: string): number {
+  return statSync(mustFile(p, rel)).size;
 }
 
 export interface WriteFileOptions {

@@ -11,6 +11,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { checkManifest, HOST_API_MAJOR } from "./plugin/manifest.js";
 import { highestVersion } from "./plugin/version.js";
 import { PluginSandbox } from "./plugin/sandbox.js";
+import { limitsView } from "./plugin/limits.js";
 import { allowedCapNames } from "./plugin/host.js";
 import { buildProject } from "./project.js";
 import { BUILTIN, kindOf, registerKind, unregisterKindsFrom } from "./shared/kinds.js";
@@ -51,7 +52,9 @@ ok(kindOf("data/表.udemo") === "udemo", "插件加的类型立刻生效");
 ok(kindOf("x.dc.html") === BUILTIN.dc, "没动到内置类型");
 
 /* ── ③ 沙箱：先证明它活着，再看它关不关得住 ── */
-const sb = new PluginSandbox(good.manifest!, DIR);
+/* 限额钉在原来写死的那一档（128 MB / 10 秒 → RPC 超时 15 秒）：下面 ⑧ / ⑨b 的阈值是照它定的，
+   不能跟着本机设置变。设置本身的读数在 `limitstest`。 */
+const sb = new PluginSandbox(good.manifest!, DIR, { limits: limitsView({ memoryMB: 128, deadlineSec: 10, binaryReadMaxMB: 100 }) });
 let started = true;
 try { await sb.start(); } catch (e) { started = false; ok(false, "沙箱起得来", (e as Error).message); }
 
