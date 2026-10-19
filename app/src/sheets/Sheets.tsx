@@ -527,7 +527,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
  *  几项限额原来写死在核心里（128 MB / 10 秒 / 100 MB / 文本 2 MB），插件因此只吃得下二三十 MB 的文件。
  *  合法范围和默认值**由服务端给**（`plugin_limits` 的 `ranges`），这里不抄一份 —— 抄了迟早对不上。
  *  失焦或回车就存；越界在这里先拦一道（少一次来回），服务端照样再核（门面不信前端）。
- *  存上之后在跑的插件沙箱会被停掉，下一次调用按新值重开 —— 用户不用重启 Studio。 */
+ *  存上之后新的调用按新值起新的沙箱进程；正在跑的那一次照旧跑完再退（优雅换池）—— 用户不用重启 Studio。 */
 type LimitKey = "memoryMB" | "deadlineSec" | "binaryReadMaxMB" | "textReadMaxMB";
 type LimitRanges = Record<LimitKey, { min: number; max: number; def: number }>;
 const LIMIT_ROWS: Array<{ key: LimitKey; label: string; unit: string; note: string }> = [
@@ -573,7 +573,7 @@ function PluginLimitsPanel({ core }: { core: Core }) {
     }
     apply(r.data);
     setErrs({});
-    toast("插件限额已保存", "正在跑的插件会在下一次调用时按新值重开", "ok");
+    toast("插件限额已保存", "下一次调用起按新值跑；正在跑的那一次不受影响", "ok");
   };
   const commit = (k: LimitKey) => {
     if (!cfg || !ranges) return;

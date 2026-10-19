@@ -98,6 +98,12 @@ export default function register(host) {
     frozen = host.limits.memoryBytes !== 1 && Object.isFrozen(host.limits);
     return { limits: host.limits, frozen, boot };
   });
+  /* 慢调用 + 跑完之后回调一次宿主：优雅换池时它在旧进程里，回调要照样通（上下文按进程分） */
+  cap("slowhost", async ({ ms }) => {
+    const t = Date.now(); while (Date.now() - t < ms) { /* 转 */ }
+    const r = await host.call("count_file_types", {});
+    return { boot, hostOk: !!(r && r.ok), limits: host.limits };
+  });
   /* 永远不 resolve：runner 那头一直在等，只有宿主那条 RPC 超时能让调用方落地 */
   cap("hang", () => new Promise(() => {}));
 }
@@ -189,6 +195,62 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
     const c = await invokeVerb(v.tool, {}, project);
     ok(c.ok && (c.data as { boot: string }).boot === db?.boot, "之后不再换（只在改设置时重开一次）");
   }
+}
+
+/* ══ ⑤ 优雅换池：改设置时正在跑的调用照常返回，下一次调用走新进程、新限额 ══ */
+{
+  const verbs = await allVerbs();
+  const vLim = verbs.find((x) => x.plugin === manifest.id && x.cap === cap("limits"));
+  const vSlow = verbs.find((x) => x.plugin === manifest.id && x.cap === cap("slowhost"));
+  ok(!!vLim && !!vSlow, "夹具的 limits / slowhost 两件动词都在");
+  if (vLim && vSlow) {
+    const a = await invokeVerb(vLim.tool, {}, project);
+    const boot0 = ((a.ok ? a.data : null) as { boot: string }).boot;
+    let slowDone = false;
+    const slow = invokeVerb(vSlow.tool, { ms: 2500 }, project).then((r) => { slowDone = true; return r; });
+    await new Promise((r) => setTimeout(r, 400));
+    await setPluginLimits({ deadlineSec: 11 });
+    const n = await invokeVerb(vLim.tool, {}, project);
+    const dn = (n.ok ? n.data : null) as { limits: { deadlineMs: number }; boot: string } | null;
+    ok(!!dn && dn.limits.deadlineMs === 11_000 && dn.boot !== boot0,
+      "**改设置时有慢调用在跑：下一次调用走新进程、新限额（11 秒）**", JSON.stringify(n).slice(0, 90));
+    ok(!slowDone, "而且不用等旧进程那一次跑完（新进程另起，两个同时在）");
+    const sr = await slow;
+    const ds = (sr.ok ? sr.data : null) as { boot: string; hostOk: boolean; limits: { deadlineMs: number } } | null;
+    ok(sr.ok && ds?.boot === boot0 && ds.limits.deadlineMs === 9000,
+      "**那个慢调用正常返回**（原来会落地成「沙箱被停掉了」）—— 跑在旧进程、旧限额上", JSON.stringify(sr).slice(0, 120));
+    ok(ds?.hostOk === true, "旧进程跑完后回调宿主（count_file_types）照样通 —— 上下文按进程分，没被新调用顶掉");
+    const again = await invokeVerb(vLim.tool, {}, project);
+    ok(again.ok && ((again.ok ? again.data : null) as { boot: string }).boot === dn?.boot, "之后的调用都在新进程上");
+  }
+}
+
+{
+  /* 直接对 PluginSandbox：退役进程手上有活时留着，活落地就退；手上没活的当场退 */
+  const sb = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ ...DEFAULT_LIMITS, deadlineSec: 5 }) });
+  await sb.start();
+  const b0 = ((await sb.invoke(cap("limits"), {}, project)) as { boot: string }).boot;
+  const slow = sb.invoke(cap("spin"), { ms: 1500 }, project);
+  await new Promise((r) => setTimeout(r, 200));
+  sb.retire();
+  ok(sb.drainingCount === 1, "retire：手上有调用的旧进程进退役名单，不当场杀", String(sb.drainingCount));
+  const b1 = ((await sb.invoke(cap("limits"), {}, project)) as { boot: string }).boot;
+  ok(b1 !== b0, "retire 之后的调用起了新进程");
+  ok(await slow.catch((e) => (e as Error).message) === "转完了", "退役进程手上那一次照常跑完");
+  await new Promise((r) => setTimeout(r, 300));
+  ok(sb.drainingCount === 0, "活落地之后旧进程退掉了", String(sb.drainingCount));
+  sb.retire();
+  ok(sb.drainingCount === 0, "手上没活的进程 retire 当场退");
+  /* 退役进程卡死：到它自己的 RPC 超时（期限 5 秒 + 5 秒）就不等了，不会永远挂着 */
+  await sb.start();
+  const t0 = Date.now();
+  const hung = sb.invoke(cap("hang"), {}, project).catch((e) => (e as Error).message);
+  await new Promise((r) => setTimeout(r, 200));
+  sb.retire();
+  const why = await hung;
+  ok(/超时（10s）/.test(String(why)) && Date.now() - t0 < 12_000 && sb.drainingCount === 0,
+    "**退役进程卡死：到它自己的时限（10 秒）落地并退掉**", `${Date.now() - t0}ms · ${String(why).slice(0, 40)}`);
+  sb.stop();
 }
 
 stopAllVerbSandboxes();

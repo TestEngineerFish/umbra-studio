@@ -108,9 +108,9 @@ export async function getPluginLimitsView(): Promise<PluginLimitsView> {
 const bad = (name: string, message: string, fix?: string) =>
   new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name }, message, fix ? { fix } : undefined));
 
-/** 改其中几项，别的原样保留；原子写。**写完把在跑的插件沙箱都停掉** —— 限额是沙箱起来那一刻定的
- *  （内存上限进 QuickJS 运行时、期限进 runner），不停的话新值要等到下次重启 Studio 才生效。
- *  停掉的沙箱在下一次调用时按新限额重开（`sandbox.ts` 的 `invoke`）。
+/** 改其中几项，别的原样保留；原子写。**写完让在跑的插件沙箱退役（优雅换池）** —— 限额是沙箱起来那一刻定的
+ *  （内存上限进 QuickJS 运行时、期限进 runner），不换进程的话新值要等到下次重启 Studio 才生效。
+ *  新调用走按新限额起的新进程；旧进程手上的调用跑完（或到它自己的时限）再退（`sandbox.ts` 的 `retire`）。
  *
  *  ⚠️ 门面不跑 zod（`api.ts`），所以校验在这里手写：只认这四个键、整数、在范围里，别的一律拒。 */
 export async function setPluginLimits(patch: unknown): Promise<PluginLimits> {

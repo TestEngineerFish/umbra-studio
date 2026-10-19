@@ -49,15 +49,35 @@ const NET_BLOCK = join(fileURLToPath(new URL(".", import.meta.url)), "net-block.
 
 interface Pending { resolve: (v: unknown) => void; reject: (e: Error) => void }
 
+/** 一个沙箱进程和它自己的那份状态。
+ *
+ *  2026-10-19 拆出来（**优雅换池**）：改了限额之后，新调用要走按新限额起的进程，
+ *  而旧进程手上还有调用 —— 原来是当场 `kill`，那一次调用落地成「沙箱被停掉了」。
+ *  现在旧进程**退役**（`retiring`）：不再接新调用，手上的跑完（或到它自己的 RPC 超时）再退。
+ *  于是同一个 `PluginSandbox` 下面会**同时有两个进程**，在飞的调用、回调宿主用的项目上下文、
+ *  限额都得跟着进程走，不能再挂在 `PluginSandbox` 上共用一份。 */
+interface Proc {
+  child: ChildProcess;
+  pending: Map<number, Pending>;
+  /** 这个进程起来时取的限额。**进程活着期间不变** */
+  limits: PluginLimitsView;
+  /** 回调宿主时用的上下文（最近一次 `invoke` 给的）。按进程分：退役进程的回调不能拿到新调用的项目 */
+  ctx: HostCtx | null;
+  /** 退役了：手上的调用跑完就退，不再接新调用 */
+  retiring: boolean;
+}
+
 export class PluginSandbox {
-  private child: ChildProcess | null = null;
+  /** 接新调用的那个进程。没起过 / 被停掉 / 退役了是 `null` */
+  private cur: Proc | null = null;
+  /** 退役中、手上还有调用的旧进程（`retire()`） */
+  private draining = new Set<Proc>();
   private seq = 0;
-  private pending = new Map<number, Pending>();
   /** 插件声明的能力（`name` → summary/input；`free` 见 `runner.ts` 的 `CapMeta`）。沙箱起来后由它报上来 */
   caps: Array<{ name: string; title: string; summary: string; input: Record<string, unknown>; free?: boolean }> = [];
 
-  /** 这个进程起来时取的限额（`limits.ts`）。**进程活着期间不变** —— 改了设置由 `verbs.ts` 的
-   *  `restartVerbSandboxes` 停掉进程，下次调用重开时再取。没起过是 `null`。 */
+  /** 当前进程起来时取的限额（`limits.ts`）。改了设置由 `verbs.ts` 的 `restartVerbSandboxes` 让进程退役，
+   *  下次调用起新进程时再取。没起过是 `null`；退役之后、新进程起来之前仍是上一份（读数用）。 */
   limits: PluginLimitsView | null = null;
   private starting: Promise<void> | null = null;
 
@@ -68,19 +88,24 @@ export class PluginSandbox {
    *  多出来的 5 秒留给 VM 里的中断先生效、错误先回来 —— 两条同时到点的话，
    *  调用方拿到的是含糊的「超时」而不是插件那边说得清的「interrupted」。 */
   get rpcTimeoutMs(): number { return (this.limits?.deadlineMs ?? 10_000) + 5_000; }
+  private static timeoutOf(l: PluginLimitsView | null): number { return (l?.deadlineMs ?? 10_000) + 5_000; }
+
+  /** 退役中还没退的旧进程有几个（回归用） */
+  get drainingCount(): number { return this.draining.size; }
 
   /** ⚠️ 起进程之前要先 `await` 一次读限额 —— 这一下让出了控制权，两个调用同时进来就会各 fork 一个。
    *  所以「正在起」也算一种状态，后来的等同一个 promise。 */
   async start(): Promise<void> {
     if (this.starting) return this.starting;
-    if (this.child) return;
+    if (this.cur) return;
     this.starting = this.boot();
     try { await this.starting; } finally { this.starting = null; }
   }
 
   private async boot(): Promise<void> {
     /* 限额在 fork 这一刻取：内存上限 / 期限要在 runner 建 VM 之前就到（init 的 payload）。 */
-    this.limits = this.opts.limits ?? await getPluginLimitsView();
+    const limits = this.opts.limits ?? await getPluginLimitsView();
+    this.limits = limits;
     const execArgv = [
       "--permission",
       `--allow-fs-read=${real(this.dir)}/`,
@@ -106,7 +131,7 @@ export class PluginSandbox {
     ];
     /* ⚠️ 用 `process.execPath` —— 打包后它是 Electron，`ELECTRON_RUN_AS_NODE` 让它当 node 跑。
        写死 "node" 的话打包版机器上可能根本没有 node（用户不是开发者）。 */
-    this.child = fork(RUNNER, [], {
+    const child = fork(RUNNER, [], {
       execPath: process.execPath,
       execArgv,
       /* ⚠️ **白名单，不是 `...process.env`**（issue #24）：原来把宿主的全部环境变量
@@ -123,78 +148,107 @@ export class PluginSandbox {
       },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
     });
-    const child = this.child;
-    child.on("message", (msg) => void this.onMessage(msg as Record<string, unknown>));
+    const proc: Proc = { child, pending: new Map(), limits, ctx: null, retiring: false };
+    this.cur = proc;
+    child.on("message", (msg) => void this.onMessage(proc, msg as Record<string, unknown>));
     child.on("exit", (code) => {
-      /* ⚠️ **只管自己那个进程**：`stop()` 之后马上 `start()` 的话（改了限额 → 下次调用重开），
-         旧进程的 exit 事件会晚到 —— 不比对的话它会把**新**进程的句柄清掉、把新进程的调用全拒掉。 */
-      if (this.child !== child) return;
-      this.child = null;
-      /* 进程没了，所有在飞的调用都要落地 —— 不落地的话调用方永远挂着 */
-      for (const [, p] of this.pending) p.reject(new Error(`插件 ${this.manifest.id} 的沙箱退出了（code ${code}）`));
-      this.pending.clear();
+      /* ⚠️ **只管自己那个进程**：`stop()` / 退役之后马上起新进程的话（改了限额 → 下次调用重开），
+         旧进程的 exit 事件会晚到 —— 所以这里只清它自己的那份，不碰 `cur` 指向的新进程。 */
+      if (this.cur === proc) this.cur = null;
+      this.draining.delete(proc);
+      /* 进程没了，它手上所有在飞的调用都要落地 —— 不落地的话调用方永远挂着 */
+      for (const [, p] of proc.pending) p.reject(new Error(`插件 ${this.manifest.id} 的沙箱退出了（code ${code}）`));
+      proc.pending.clear();
     });
-    await this.rpc("init", { limits: this.limits });
+    await this.rpc(proc, "init", { limits });
   }
 
+  /** 杀掉一个进程，它手上在飞的调用当场落地（exit 事件那边晚到时 pending 已经空了） */
+  private kill(proc: Proc, why: string): void {
+    proc.child.kill();
+    if (this.cur === proc) this.cur = null;
+    this.draining.delete(proc);
+    for (const [, p] of proc.pending) p.reject(new Error(why));
+    proc.pending.clear();
+  }
+
+  /** **硬停**：当前进程和退役中的旧进程都杀掉，在飞的调用全部落地。回归收尾、进程退出、超时换进程用。 */
   stop(): void {
-    if (!this.child) return;
-    this.child.kill();
-    this.child = null;
-    /* 在飞的调用当场落地（exit 事件那边已经不认这个进程了，见上） */
-    for (const [, p] of this.pending) p.reject(new Error(`插件 ${this.manifest.id} 的沙箱被停掉了`));
-    this.pending.clear();
+    const why = `插件 ${this.manifest.id} 的沙箱被停掉了`;
+    if (this.cur) this.kill(this.cur, why);
+    for (const p of [...this.draining]) this.kill(p, why);
+  }
+
+  /** **优雅换池**（2026-10-19，改了限额时 `verbs.ts` 调）：当前进程退役 —— 不再接新调用，
+   *  下一次 `invoke` 按新限额起一个新进程；旧进程手上的调用照常跑完（或到它自己的 RPC 超时）再退。
+   *  手上没调用的当场退。⚠️ 正在起（init 没回）的进程也一样退役：它的 init 落地后没有调用，随即退掉。 */
+  retire(): void {
+    const proc = this.cur;
+    if (!proc) return;
+    this.cur = null;
+    proc.retiring = true;
+    if (proc.pending.size === 0) { proc.child.kill(); return; }
+    this.draining.add(proc);
+  }
+
+  /** 退役进程手上的调用都落地了就退 */
+  private reap(proc: Proc): void {
+    if (proc.retiring && proc.pending.size === 0) { this.draining.delete(proc); proc.child.kill(); }
   }
 
   /** 调插件声明的一件能力 */
   async invoke(capName: string, input: unknown, project: Project): Promise<unknown> {
-    /* ⚠️ 沙箱可能被上一次超时停掉了（issue #123）——**重开**，而不是报「沙箱没起来」。
+    /* ⚠️ 沙箱可能被上一次超时停掉了（issue #123），或者刚退役（改了限额）——**重开**，而不是报「沙箱没起来」。
        后者会把一次性的卡死变成「这个插件从此不能用」。 */
-    if (!this.child || this.starting) await this.start();
-    this.ctx = { manifest: this.manifest, project };
-    return this.rpc("invoke", { cap: capName, input });
+    /* 起的那一下（等 init）里又改了一次设置的话，刚起好的进程也退役了 —— 再起一次（有限次，不空转） */
+    for (let i = 0; i < 3 && (!this.cur || this.starting); i++) await this.start();
+    const proc = this.cur;
+    if (!proc) throw new Error("沙箱没起来");
+    proc.ctx = { manifest: this.manifest, project };
+    return this.rpc(proc, "invoke", { cap: capName, input });
   }
 
-  private ctx: HostCtx | null = null;
-
-  private rpc(type: string, payload: Record<string, unknown>): Promise<unknown> {
+  private rpc(proc: Proc, type: string, payload: Record<string, unknown>): Promise<unknown> {
     const id = ++this.seq;
-    const ms = this.rpcTimeoutMs;
+    const ms = PluginSandbox.timeoutOf(proc.limits);
     return new Promise((resolve, reject) => {
-      if (!this.child) { reject(new Error("沙箱没起来")); return; }
-      this.pending.set(id, { resolve, reject });
-      this.child.send({ id, type, ...payload });
+      if (proc.child.exitCode !== null || proc.child.killed) { reject(new Error("沙箱没起来")); return; }
+      proc.pending.set(id, { resolve, reject });
+      proc.child.send({ id, type, ...payload });
       /* 超时必须有：插件里一个死循环会让整个会话卡住，而症状是「AI 不动了」 */
       setTimeout(() => {
-        if (!this.pending.delete(id)) return;
+        if (!proc.pending.delete(id)) return;
         /* ⚠️ **超时就把子进程停掉**（issue #123，2026-10-06）。
            Q48 的读数是「打断之后沙箱还活着」，而那只对**同步**死循环成立 ——
            挂在 `host.call` 回调里的那一种，VM 里的中断判定来不及生效（见 `runner.ts`
            的 `runJobs`），结果是**那个进程 100% 占一个核、再也不回话**，
            而这条 RPC 超时原来**不杀它、也不重启** → 之后每次调用都等满超时（当时是写死的 15 秒）。
-           「打不断时至少要能换一个活的」：停掉它，下次 `invoke` 会重新 `start()`。
+           「打不断时至少要能换一个活的」：停掉**它自己那个进程**，下次 `invoke` 会重新 `start()`。
+           （退役中的旧进程也走这一条 —— 到它自己的时限还没回，就不等了。）
            ⚠️ 只在 `invoke` 超时时停 —— `init` 超时时进程多半还没起好，
            `stop()` 它只会把真正的原因（起不来）盖成「超时」。 */
-        if (type === "invoke") this.stop();
+        if (type === "invoke") this.kill(proc, `插件 ${this.manifest.id} 的沙箱被停掉了`);
+        else this.reap(proc);
         reject(new Error(`插件 ${this.manifest.id} 的 ${type} 超时（${Math.round(ms / 1000)}s）${type === "invoke" ? "；沙箱已停掉，下次调用会重开" : ""}`));
       }, ms);
     });
   }
 
-  private async onMessage(msg: Record<string, unknown>): Promise<void> {
+  private async onMessage(proc: Proc, msg: Record<string, unknown>): Promise<void> {
     /* 沙箱回调宿主：这是插件唯一能碰到外界的路 */
     if (msg.type === "host") {
-      const out = this.ctx
-        ? await hostCall(this.ctx, String(msg.cap), msg.input)
+      const out = proc.ctx
+        ? await hostCall(proc.ctx, String(msg.cap), msg.input)
         : { ok: false, data: null, errors: [{ code: "E_NO_CTX", message: "这次调用没有项目上下文" }], warnings: [], stats: {} };
-      this.child?.send({ id: msg.id, type: "host:done", result: out });
+      if (proc.child.connected) proc.child.send({ id: msg.id, type: "host:done", result: out });
       return;
     }
     if (msg.type === "caps") { this.caps = (msg.caps as typeof this.caps) ?? []; return; }
-    const p = this.pending.get(Number(msg.id));
+    const p = proc.pending.get(Number(msg.id));
     if (!p) return;
-    this.pending.delete(Number(msg.id));
+    proc.pending.delete(Number(msg.id));
     if (msg.error) p.reject(new Error(String(msg.error)));
     else p.resolve(msg.result);
+    this.reap(proc);
   }
 }
