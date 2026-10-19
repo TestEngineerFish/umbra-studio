@@ -42,7 +42,8 @@
     "tokentest": "npm run build && node dist/tokentest.js",
     "gaptest": "npm run build && node dist/gaptest.js",
     "converttest": "npm run build && node dist/converttest.js",
-    "limitstest": "npm run build && node dist/limitstest.js"
+    "limitstest": "npm run build && node dist/limitstest.js",
+    "actxtest": "npm run build && node dist/actxtest.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
