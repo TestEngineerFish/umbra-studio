@@ -38,8 +38,8 @@ export interface PluginLimits {
 export const LIMIT_RANGES: Record<keyof PluginLimits, { min: number; max: number; def: number }> = {
   memoryMB: { min: 64, max: 2048, def: 512 },
   deadlineSec: { min: 5, max: 120, def: 30 },
-  /* 默认值 = 原来的 `files.ts` `BINARY_MAX`（100 MB）。⚠️ **这里不能写 `BINARY_MAX / 1048576`**：
-     `files.ts` 经 project → … → `sandbox.ts` 绕回本文件，模块顶层取它会撞上「初始化之前访问」
+  /* 默认值 = 原来的 `files.ts` `BINARY_MAX`（100 MB；那个常量 2026-10-19 删了，快照上限也改读这一项）。
+     ⚠️ **这里不能从 `files.ts` 取任何东西**：`files.ts` 经 project → … → `sandbox.ts` 绕回本文件，模块顶层取它会撞上「初始化之前访问」
      （gaptest 当场栽过）。 */
   binaryReadMaxMB: { min: 10, max: 1024, def: 100 },
   /* 默认值 = `files.ts` 的 `TEXT_MAX`（2 MB）；同上，不能在顶层引它。上限 64 MB：

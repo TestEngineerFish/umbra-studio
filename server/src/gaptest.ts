@@ -153,7 +153,21 @@ ok(!bad.ok, "since 不是时间 → 报错不猜");
   ok(part.range.byteLength === 1048576 && part.range.more === false && Buffer.from(part.base64, "base64").equals(big.subarray(10 * 1048576)),
     "同一份按段读得到（第二段 1 MB，more:false）", JSON.stringify(part.range));
   await rejected({ path: "大.bin", byteOffset: 0, byteLength: 10 * 1048576 + 1 }, "byteLength 超过改小后的上限");
+
+  /* 新建文件记快照（`recordCreatedFile`，格式转换落盘后补记那一版）的上限也是这一项，不再是写死的 100 MB */
+  const { recordCreatedFile } = await import("./files.js");
+  const rec10 = await recordCreatedFile(project, "大.bin", "插件");
+  ok(rec10.snapshot === null && /快照上限 10 MB/.test(rec10.why ?? ""), "**设置 10 MB：11 MB 的新文件不记快照，原因里写的是设置的值**", rec10.why);
+  /* 插件读旧版本（read_file_version）也守这条线；前端不受影响 */
+  const wb = await cap("write_file").run({ path: "旧版.bin", content: big.toString("base64"), encoding: "base64", expectSha256: "0" } as never, asHuman);
+  const ver = (wb.data as { snapshot?: string } | null)?.snapshot ?? "s1";
+  const vp = (await hostCall({ manifest: man, project }, "read_file_version", { path: "旧版.bin", version: ver })).data as { base64?: string; why?: string; bytes?: number };
+  ok(wb.ok && vp.base64 === undefined && /上限 10 MB/.test(vp.why ?? "") && vp.bytes === big.length, "**插件读 11 MB 的旧版本：超过设置的 10 MB → 不给 base64**", vp.why ?? JSON.stringify(wb.errors));
+  const vh = (await cap("read_file_version").run({ path: "旧版.bin", version: ver } as never, asHuman)).data as { base64?: string };
+  ok(!!vh.base64 && Buffer.from(vh.base64, "base64").length === big.length, "（对照）前端读同一版照给");
   await setPluginLimits({ binaryReadMaxMB: 100 });
+  const rec100 = await recordCreatedFile(project, "大.bin", "插件");
+  ok(typeof rec100.snapshot === "string" && !rec100.why, "改回 100 MB：同一份记得上快照", String(rec100.snapshot));
 
   /* 文本整份读的上限（textReadMaxMB，2026-10-19）：**只管插件来源**，模型 / MCP / HTTP 仍是 2 MB 常量 */
   const log = ("一行日志 0123456789abcdef\n").repeat(Math.ceil(3 * 1048576 / 30));

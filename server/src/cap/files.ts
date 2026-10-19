@@ -225,6 +225,15 @@ defineCap({
        另给 `base64` 原样字节，`sha256` / `bytes` 按真实字节算。 */
     if (!isTextual(path)) {
       const buf = await readSnapshotBytes(p(c), path, version);
+      /* 插件来源和 `read_file` 守同一条线（设置里的二进制读取上限）：原来这里没有上限，
+         一份比上限还大的旧版本（外部改动的快照没有体积闸）会整份 base64 进沙箱。别的来源照旧（前端要看图）。 */
+      if (c.via === "plugin") {
+        const max = (await getPluginLimits()).binaryReadMaxMB * 1048576;
+        if (buf.length > max) {
+          return envelope({ path, version, content: null, sha256: sha256(buf), bytes: buf.length,
+            why: `这一版 ${(buf.length / 1048576).toFixed(1)} MB，超过二进制读取上限 ${Math.round(max / 1048576)} MB` });
+        }
+      }
       return envelope({ path, version, content: null, why: "不是文本文件", encoding: "base64", base64: buf.toString("base64"),
         sha256: sha256(buf), bytes: buf.length });
     }
