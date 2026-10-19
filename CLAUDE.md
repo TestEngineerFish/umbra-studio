@@ -337,7 +337,18 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 
 ---
 
-## 9. 当前状态一句话（2026-10-17）
+## 9. 当前状态一句话（2026-10-19）
+
+**插件沙箱限额进设置 + 按字节范围读**（`doc/20` §3.6，`doc/12` 「插件限额」一行；分支 `plugin-limits` 已合、`plugin-limits-2` 待合）。
+① 设置 › 插件沙箱四项：内存 512 MB · 时限 30 秒 · 二进制读取上限 100 MB · **文本读取上限 2 MB**（`STATE_ROOT/.umbrastudio/plugin_limits.json`，`server/src/plugin/limits.ts`）；
+文本上限**只管插件来源的 `read_file`**，模型 / MCP / HTTP / chat 仍是 `TEXT_MAX` 2 MB 常量。快照上限（`recordCreatedFile`）也读二进制那一项，`BINARY_MAX` 常量删了。
+② 插件看得到限额：B 面 `host.limits`、A 面 ctx 的 `limits`（`{ memoryBytes, deadlineMs, binaryReadMax, textReadMax, rangeRead: true }`）。
+③ `read_file` 对插件按 `byteOffset` / `byteLength` 读（不给 sha256）；`encoding` 只能不给或给 `"base64"`，别的 `E_BAD_INPUT`。
+④ **改设置优雅换池**（`PluginSandbox.retire`）：新调用走新进程，旧进程手上的调用跑完（或到它自己的时限）再退 —— 改设置那一下正在跑的调用不再失败。
+⚠️ `actxtest`（新）要先 `npm --prefix app run build`，没浏览器 / 没构建时整块跳过（不算通过）。
+读数：`limitstest` **46/46** · `actxtest` **18/18** · `gaptest` 60/60 · `apitest` 117/117 · `plugintest` 93/93 · `verbtest` 27/27 · `captest` 301/301 · 其余回归全绿（`converttest` 41/42 那条是 Studio 副本与 UmbraPC 来源不一致，和这批无关）。
+
+## 9 之前的状态（2026-10-17）
 
 **S4 做完：Studio 切到外部插件仓库**（`doc/23` §四，任务书 `doc/S4-Studio切到外部插件仓库.md`，分支 `s4-external-plugins` → PR）。
 ① `plugins/<id>/` 不再进仓库，`npm --prefix server run sync-plugins` 从 umbra-plugins 拉（本地检出优先，否则私有 Release）；`start.sh` 和 `shell` 的 `beforePack` 先同步，缺一个内置就拒绝打包。
