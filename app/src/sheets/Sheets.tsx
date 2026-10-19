@@ -524,11 +524,11 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
 
 /** 设置里的「插件沙箱」块（2026-10-19，服务端 `plugin/limits.ts`）。
  *
- *  三项限额原来写死在核心里（128 MB / 10 秒 / 100 MB），插件因此只吃得下二三十 MB 的文件。
+ *  几项限额原来写死在核心里（128 MB / 10 秒 / 100 MB / 文本 2 MB），插件因此只吃得下二三十 MB 的文件。
  *  合法范围和默认值**由服务端给**（`plugin_limits` 的 `ranges`），这里不抄一份 —— 抄了迟早对不上。
  *  失焦或回车就存；越界在这里先拦一道（少一次来回），服务端照样再核（门面不信前端）。
- *  存上之后在跑的插件沙箱会被停掉，下一次调用按新值重开 —— 用户不用重启 Studio。 */
-type LimitKey = "memoryMB" | "deadlineSec" | "binaryReadMaxMB";
+ *  存上之后新的调用按新值起新的沙箱进程；正在跑的那一次照旧跑完再退（优雅换池）—— 用户不用重启 Studio。 */
+type LimitKey = "memoryMB" | "deadlineSec" | "binaryReadMaxMB" | "textReadMaxMB";
 type LimitRanges = Record<LimitKey, { min: number; max: number; def: number }>;
 const LIMIT_ROWS: Array<{ key: LimitKey; label: string; unit: string; note: string }> = [
   { key: "memoryMB", label: "内存", unit: "MB",
@@ -537,18 +537,23 @@ const LIMIT_ROWS: Array<{ key: LimitKey; label: string; unit: string; note: stri
     note: "插件工具一次调用最多跑多久，到点就打断。调大能让插件处理完更大的文件，代价是插件卡住时要等更久才报错。" },
   { key: "binaryReadMaxMB", label: "二进制读取上限", unit: "MB",
     note: "插件一次能从宿主读进去多少字节（整份读 PDF / 压缩包，或分段读一段）。超过这个大小的文件插件只能分段读。" },
+  { key: "textReadMaxMB", label: "文本读取上限", unit: "MB",
+    note: "插件一次能整份读进去多大的文本文件（日志、大 JSON / CSV）。只管插件；AI 读文件仍是 2 MB，不会因为这里调大而把大文件塞进对话。" },
 ];
+/** 表单草稿：每项一个字符串（输入框里可能是半截数字） */
+const draftOf = (c: Record<LimitKey, number>) =>
+  Object.fromEntries(LIMIT_ROWS.map((r) => [r.key, c[r.key] === undefined ? "" : String(c[r.key])])) as Record<LimitKey, string>;
 function PluginLimitsPanel({ core }: { core: Core }) {
   const [cfg, setCfg] = useState<Record<LimitKey, number> | null>(null);
   const [ranges, setRanges] = useState<LimitRanges | null>(null);
-  const [draft, setDraft] = useState<Record<LimitKey, string>>({ memoryMB: "", deadlineSec: "", binaryReadMaxMB: "" });
+  const [draft, setDraft] = useState<Record<LimitKey, string>>({ memoryMB: "", deadlineSec: "", binaryReadMaxMB: "", textReadMaxMB: "" });
   const [errs, setErrs] = useState<Partial<Record<LimitKey, string>>>({});
   const [busy, setBusy] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
   const apply = (d: { config: Record<LimitKey, number>; ranges: LimitRanges }) => {
     setCfg(d.config); setRanges(d.ranges);
-    setDraft({ memoryMB: String(d.config.memoryMB), deadlineSec: String(d.config.deadlineSec), binaryReadMaxMB: String(d.config.binaryReadMaxMB) });
+    setDraft(draftOf(d.config));
   };
   const load = useCallback(async () => {
     const r = await core.get<{ config: Record<LimitKey, number>; ranges: LimitRanges }>("plugin_limits").catch(() => null);
@@ -568,7 +573,7 @@ function PluginLimitsPanel({ core }: { core: Core }) {
     }
     apply(r.data);
     setErrs({});
-    toast("插件限额已保存", "正在跑的插件会在下一次调用时按新值重开", "ok");
+    toast("插件限额已保存", "下一次调用起按新值跑；正在跑的那一次不受影响", "ok");
   };
   const commit = (k: LimitKey) => {
     if (!cfg || !ranges) return;
@@ -581,7 +586,9 @@ function PluginLimitsPanel({ core }: { core: Core }) {
     if (n === cfg[k]) return;
     void save({ [k]: n }, [k]);
   };
-  const isDefault = !!cfg && !!ranges && LIMIT_ROWS.every((r) => cfg[r.key] === ranges[r.key].def);
+  /* 只摆服务端给了范围的那几项：核心比界面旧（还不认 textReadMaxMB）时少一行，而不是整块崩 */
+  const rows = ranges ? LIMIT_ROWS.filter((r) => ranges[r.key]) : [];
+  const isDefault = !!cfg && !!ranges && rows.every((r) => cfg[r.key] === ranges[r.key].def);
 
   return (
     <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
@@ -589,11 +596,11 @@ function PluginLimitsPanel({ core }: { core: Core }) {
         <h3 className="text-sm font-semibold shrink-0">插件沙箱</h3>
         <span className="text-[11px] text-muted flex-1 min-w-[12rem]">插件工具（B 面）在隔离的沙箱里跑，这几项是它能用多少资源</span>
         <button className="btn sm ghost shrink-0" disabled={!ranges || busy || isDefault}
-          onClick={() => ranges && void save({ memoryMB: ranges.memoryMB.def, deadlineSec: ranges.deadlineSec.def, binaryReadMaxMB: ranges.binaryReadMaxMB.def }, LIMIT_ROWS.map((r) => r.key))}
-          title="三项都回到出厂值">恢复默认</button>
+          onClick={() => ranges && void save(Object.fromEntries(rows.map((r) => [r.key, ranges[r.key].def])), rows.map((r) => r.key))}
+          title="几项都回到出厂值">恢复默认</button>
       </div>
       {loadErr && <div className="text-xs text-err">{loadErr}</div>}
-      {cfg && ranges && LIMIT_ROWS.map((row) => {
+      {cfg && ranges && rows.map((row) => {
         const rg = ranges[row.key];
         const e = errs[row.key];
         return (

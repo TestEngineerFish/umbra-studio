@@ -375,10 +375,10 @@ export async function handleApi(
       return true;
     }
     /* 插件沙箱限额（2026-10-19，`plugin/limits.ts`）。和 ai_config 一样是机器级的，首页也要能用。
-       GET 回 { config（存盘那三项）, ranges（合法范围 + 默认值，界面照它显示）, limits（插件看到的派生值） }；
+       GET 回 { config（存盘那四项）, ranges（合法范围 + 默认值，界面照它显示）, limits（插件看到的派生值） }；
        A 面插件宿主（`Surface.tsx`）推 ctx 时也取这一条的 `limits`。
-       POST 收 `{ memoryMB?, deadlineSec?, binaryReadMaxMB? }`：越界 / 非整数 / 不认识的键 → 400 E_BAD_INPUT（ToolError 走下面的 catch），
-       写成功后在跑的插件沙箱全部停掉，下次调用按新值重开。 */
+       POST 收 `{ memoryMB?, deadlineSec?, binaryReadMaxMB?, textReadMaxMB? }`：越界 / 非整数 / 不认识的键 → 400 E_BAD_INPUT（ToolError 走下面的 catch），
+       写成功后在跑的插件沙箱全部退役（优雅换池）：新调用按新值起新进程，旧进程手上的调用跑完再退。 */
     if (route === "plugin_limits") {
       const lim = await import("./plugin/limits.js");
       if (req.method === "POST") {

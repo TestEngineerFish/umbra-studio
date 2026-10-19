@@ -32,16 +32,16 @@ console.log("插件沙箱限额");
 /* ══ ① 设置读写 ══ */
 {
   const d = await getPluginLimits();
-  ok(d.memoryMB === 512 && d.deadlineSec === 30 && d.binaryReadMaxMB === 100, "没文件 → 默认 512 MB / 30 秒 / 100 MB", JSON.stringify(d));
+  ok(d.memoryMB === 512 && d.deadlineSec === 30 && d.binaryReadMaxMB === 100 && d.textReadMaxMB === 2, "没文件 → 默认 512 MB / 30 秒 / 100 MB / 文本 2 MB", JSON.stringify(d));
   const v = await getPluginLimitsView();
   ok(v.memoryBytes === 512 * MB && v.deadlineMs === 30_000 && v.binaryReadMax === 100 * MB && v.textReadMax === TEXT_MAX && v.rangeRead === true,
-    "派生给插件的那份：字节 / 毫秒、textReadMax = TEXT_MAX、rangeRead: true", JSON.stringify(v));
+    "派生给插件的那份：字节 / 毫秒、textReadMax 默认 = TEXT_MAX（2 MB）、rangeRead: true", JSON.stringify(v));
 
   /* 手改坏了的文件：读的时候夹 / 回落，不让插件因为一份坏配置全体起不来 */
   await mkdir(join(STATE, ".umbrastudio"), { recursive: true });
-  await writeFile(FILE, JSON.stringify({ memoryMB: 99999, deadlineSec: "很久", binaryReadMaxMB: 3.4 }));
+  await writeFile(FILE, JSON.stringify({ memoryMB: 99999, deadlineSec: "很久", binaryReadMaxMB: 3.4, textReadMaxMB: 500 }));
   const c = await getPluginLimits();
-  ok(c.memoryMB === 2048 && c.deadlineSec === 30 && c.binaryReadMaxMB === 10, "读：越界夹到范围、非数字回落默认", JSON.stringify(c));
+  ok(c.memoryMB === 2048 && c.deadlineSec === 30 && c.binaryReadMaxMB === 10 && c.textReadMaxMB === 64, "读：越界夹到范围、非数字回落默认", JSON.stringify(c));
   await writeFile(FILE, "{ 这不是 JSON");
   ok(JSON.stringify(await getPluginLimits()) === JSON.stringify(DEFAULT_LIMITS), "读：坏 JSON → 整份默认");
   await rm(FILE);
@@ -57,6 +57,8 @@ console.log("插件沙箱限额");
   await rejects({ deadlineSec: 121 }, "deadlineSec 超上限");
   await rejects({ binaryReadMaxMB: 5 }, "binaryReadMaxMB 低于下限");
   await rejects({ deadlineSec: 7.5 }, "不是整数");
+  await rejects({ textReadMaxMB: 0 }, "textReadMaxMB 低于下限（1）");
+  await rejects({ textReadMaxMB: 65 }, "textReadMaxMB 超上限（64）");
   await rejects({ memoryMB: "512" }, "字符串（门面不跑 zod，类型在这里核）");
   await rejects({ cpu: 4 }, "不认识的键");
   await rejects(null, "不是对象");
@@ -65,7 +67,10 @@ console.log("插件沙箱限额");
   ok(!exists, "拒了的那几次一个字节都没写盘");
 
   const n = await setPluginLimits({ memoryMB: 256 });
-  ok(n.memoryMB === 256 && n.deadlineSec === 30 && n.binaryReadMaxMB === 100, "写一项，别的原样保留", JSON.stringify(n));
+  ok(n.memoryMB === 256 && n.deadlineSec === 30 && n.binaryReadMaxMB === 100 && n.textReadMaxMB === 2, "写一项，别的原样保留", JSON.stringify(n));
+  const t = await setPluginLimits({ textReadMaxMB: 16 });
+  ok(t.textReadMaxMB === 16 && (await getPluginLimitsView()).textReadMax === 16 * MB && t.memoryMB === 256,
+    "**textReadMaxMB 进设置：写 16 → 派生的 textReadMax = 16 MB**", JSON.stringify(t));
   const disk = JSON.parse(await readFile(FILE, "utf8"));
   ok(disk.memoryMB === 256 && (await getPluginLimits()).memoryMB === 256, "落了盘，下一次现读就是新值");
   await setPluginLimits({ ...DEFAULT_LIMITS });
@@ -93,6 +98,12 @@ export default function register(host) {
     frozen = host.limits.memoryBytes !== 1 && Object.isFrozen(host.limits);
     return { limits: host.limits, frozen, boot };
   });
+  /* 慢调用 + 跑完之后回调一次宿主：优雅换池时它在旧进程里，回调要照样通（上下文按进程分） */
+  cap("slowhost", async ({ ms }) => {
+    const t = Date.now(); while (Date.now() - t < ms) { /* 转 */ }
+    const r = await host.call("count_file_types", {});
+    return { boot, hostOk: !!(r && r.ok), limits: host.limits };
+  });
   /* 永远不 resolve：runner 那头一直在等，只有宿主那条 RPC 超时能让调用方落地 */
   cap("hang", () => new Promise(() => {}));
 }
@@ -106,7 +117,7 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
 
 {
   /* 内存：64 MB 时分配 100 MB 抛 out of memory；512 MB 时同一件照常 */
-  const small = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 64, deadlineSec: 30, binaryReadMaxMB: 100 }) });
+  const small = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 64, deadlineSec: 30, binaryReadMaxMB: 100, textReadMaxMB: 2 }) });
   await small.start();
   const why = await errOf(small.invoke(cap("alloc"), { mb: 100 }, project));
   ok(/out of memory/i.test(why), "**给 64 MB 时分配 100 MB → out of memory**", why.slice(0, 60));
@@ -114,7 +125,7 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
   ok(tiny === 8 * MB, "（对照）同一个沙箱里分配 8 MB 照常 —— 拒的是「超了」，不是「坏了」", String(tiny));
   small.stop();
 
-  const big = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 512, deadlineSec: 30, binaryReadMaxMB: 100 }) });
+  const big = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ memoryMB: 512, deadlineSec: 30, binaryReadMaxMB: 100, textReadMaxMB: 2 }) });
   await big.start();
   const got = await big.invoke(cap("alloc"), { mb: 100 }, project).catch((e) => (e as Error).message);
   ok(got === 100 * MB, "**给 512 MB 时分配 100 MB 照常**", String(got));
@@ -123,7 +134,7 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
 
 {
   /* 期限：给 5 秒时 6 秒的死循环被打断；沙箱还活着 */
-  const v5 = limitsView({ memoryMB: 128, deadlineSec: 5, binaryReadMaxMB: 100 });
+  const v5 = limitsView({ memoryMB: 128, deadlineSec: 5, binaryReadMaxMB: 100, textReadMaxMB: 2 });
   const sb = new PluginSandbox(manifest as never, PDIR, { limits: v5 });
   await sb.start();
   const t0 = Date.now();
@@ -184,6 +195,62 @@ const errOf = (p: Promise<unknown>) => p.then(() => "", (e) => (e as Error).mess
     const c = await invokeVerb(v.tool, {}, project);
     ok(c.ok && (c.data as { boot: string }).boot === db?.boot, "之后不再换（只在改设置时重开一次）");
   }
+}
+
+/* ══ ⑤ 优雅换池：改设置时正在跑的调用照常返回，下一次调用走新进程、新限额 ══ */
+{
+  const verbs = await allVerbs();
+  const vLim = verbs.find((x) => x.plugin === manifest.id && x.cap === cap("limits"));
+  const vSlow = verbs.find((x) => x.plugin === manifest.id && x.cap === cap("slowhost"));
+  ok(!!vLim && !!vSlow, "夹具的 limits / slowhost 两件动词都在");
+  if (vLim && vSlow) {
+    const a = await invokeVerb(vLim.tool, {}, project);
+    const boot0 = ((a.ok ? a.data : null) as { boot: string }).boot;
+    let slowDone = false;
+    const slow = invokeVerb(vSlow.tool, { ms: 2500 }, project).then((r) => { slowDone = true; return r; });
+    await new Promise((r) => setTimeout(r, 400));
+    await setPluginLimits({ deadlineSec: 11 });
+    const n = await invokeVerb(vLim.tool, {}, project);
+    const dn = (n.ok ? n.data : null) as { limits: { deadlineMs: number }; boot: string } | null;
+    ok(!!dn && dn.limits.deadlineMs === 11_000 && dn.boot !== boot0,
+      "**改设置时有慢调用在跑：下一次调用走新进程、新限额（11 秒）**", JSON.stringify(n).slice(0, 90));
+    ok(!slowDone, "而且不用等旧进程那一次跑完（新进程另起，两个同时在）");
+    const sr = await slow;
+    const ds = (sr.ok ? sr.data : null) as { boot: string; hostOk: boolean; limits: { deadlineMs: number } } | null;
+    ok(sr.ok && ds?.boot === boot0 && ds.limits.deadlineMs === 9000,
+      "**那个慢调用正常返回**（原来会落地成「沙箱被停掉了」）—— 跑在旧进程、旧限额上", JSON.stringify(sr).slice(0, 120));
+    ok(ds?.hostOk === true, "旧进程跑完后回调宿主（count_file_types）照样通 —— 上下文按进程分，没被新调用顶掉");
+    const again = await invokeVerb(vLim.tool, {}, project);
+    ok(again.ok && ((again.ok ? again.data : null) as { boot: string }).boot === dn?.boot, "之后的调用都在新进程上");
+  }
+}
+
+{
+  /* 直接对 PluginSandbox：退役进程手上有活时留着，活落地就退；手上没活的当场退 */
+  const sb = new PluginSandbox(manifest as never, PDIR, { limits: limitsView({ ...DEFAULT_LIMITS, deadlineSec: 5 }) });
+  await sb.start();
+  const b0 = ((await sb.invoke(cap("limits"), {}, project)) as { boot: string }).boot;
+  const slow = sb.invoke(cap("spin"), { ms: 1500 }, project);
+  await new Promise((r) => setTimeout(r, 200));
+  sb.retire();
+  ok(sb.drainingCount === 1, "retire：手上有调用的旧进程进退役名单，不当场杀", String(sb.drainingCount));
+  const b1 = ((await sb.invoke(cap("limits"), {}, project)) as { boot: string }).boot;
+  ok(b1 !== b0, "retire 之后的调用起了新进程");
+  ok(await slow.catch((e) => (e as Error).message) === "转完了", "退役进程手上那一次照常跑完");
+  await new Promise((r) => setTimeout(r, 300));
+  ok(sb.drainingCount === 0, "活落地之后旧进程退掉了", String(sb.drainingCount));
+  sb.retire();
+  ok(sb.drainingCount === 0, "手上没活的进程 retire 当场退");
+  /* 退役进程卡死：到它自己的 RPC 超时（期限 5 秒 + 5 秒）就不等了，不会永远挂着 */
+  await sb.start();
+  const t0 = Date.now();
+  const hung = sb.invoke(cap("hang"), {}, project).catch((e) => (e as Error).message);
+  await new Promise((r) => setTimeout(r, 200));
+  sb.retire();
+  const why = await hung;
+  ok(/超时（10s）/.test(String(why)) && Date.now() - t0 < 12_000 && sb.drainingCount === 0,
+    "**退役进程卡死：到它自己的时限（10 秒）落地并退掉**", `${Date.now() - t0}ms · ${String(why).slice(0, 40)}`);
+  sb.stop();
 }
 
 stopAllVerbSandboxes();

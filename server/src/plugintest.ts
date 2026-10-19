@@ -54,7 +54,7 @@ ok(kindOf("x.dc.html") === BUILTIN.dc, "没动到内置类型");
 /* ── ③ 沙箱：先证明它活着，再看它关不关得住 ── */
 /* 限额钉在原来写死的那一档（128 MB / 10 秒 → RPC 超时 15 秒）：下面 ⑧ / ⑨b 的阈值是照它定的，
    不能跟着本机设置变。设置本身的读数在 `limitstest`。 */
-const sb = new PluginSandbox(good.manifest!, DIR, { limits: limitsView({ memoryMB: 128, deadlineSec: 10, binaryReadMaxMB: 100 }) });
+const sb = new PluginSandbox(good.manifest!, DIR, { limits: limitsView({ memoryMB: 128, deadlineSec: 10, binaryReadMaxMB: 100, textReadMaxMB: 2 }) });
 let started = true;
 try { await sb.start(); } catch (e) { started = false; ok(false, "沙箱起得来", (e as Error).message); }
 

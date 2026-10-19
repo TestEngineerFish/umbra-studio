@@ -50,10 +50,10 @@ defineCap({
   name: "read_file", title: "读一个文件（非设计稿）", scope: "project",
   summary: [
     "读文本文件，返回内容与 sha256。**写回去要把这个 sha256 原样带上** —— 盘上被别人改过就会被拒绝，不会把改动盖掉。",
-    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限见设置 → 插件沙箱，默认 100 MB）。",
+    "二进制文件（PDF / 表格 / 压缩包…）不给正文（`content: null`）；**插件调用时**另给 `encoding: \"base64\"` + `base64` 原样字节（上限见设置 → 插件沙箱，默认 100 MB）。**插件调用时**文本整份读的上限也跟设置走（默认 2 MB）；别的来源一律 2 MB。",
     "**插件调用时**还能按字节范围读：`byteOffset` + `byteLength` 两个都给（非负整数，`byteLength` 1..上限，`byteOffset` ≤ size），任何文件都按原始字节读、只读那一段，"
       + "回 `content: null` + `encoding: \"base64\"` + `base64` + `range: { byteOffset, byteLength(实际读到的), size, more }`。"
-      + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。模型 / MCP / 前端调用不开放。",
+      + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。`encoding` 只能不给或给 `\"base64\"`（范围读不解码），给别的回 E_BAD_INPUT。模型 / MCP / 前端调用不开放。",
     "`encoding` 给别的编码时**只换读法，盘上那份一个字节都没动**（M10-5，中文 CSV 常被当成 UTF-8 读成乱码）。",
     "⚠️ `sha256` 永远是**原始字节**的，不随编码变 —— 所以按 GBK 读出来的文本，拿这个 sha 回去校验仍然对得上。",
   ].join("\n"),
@@ -85,6 +85,12 @@ defineCap({
       if (offset !== undefined || limit !== undefined) {
         return no("offset", "按字节读（byteOffset / byteLength）和按行分页（offset / limit）不能同时给", "二选一：二进制或大文件按字节，文本按行");
       }
+      /* 范围读一律回原始字节（base64），不解码 —— 给了别的 `encoding` 原来**被悄悄忽略**，插件以为拿到的是按 GBK 解好的文本。
+         拒绝而不是忽略：`"base64"` 和回包的形状一致，允许；别的（含 utf-8 / gbk / null）一律 E_BAD_INPUT。 */
+      if (encoding !== undefined && encoding !== "base64") {
+        return no("encoding", `按字节范围读只回原始字节（base64），不按 encoding 解码；收到的 encoding 是 ${JSON.stringify(encoding)}`,
+          "去掉 encoding，或给 \"base64\"；要按编码解成文本就整份读（不带 byteOffset / byteLength）");
+      }
       const isNat = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0;
       if (!isNat(byteOffset)) return no("byteOffset", `byteOffset 要是非负整数，收到的是 ${JSON.stringify(byteOffset)}`);
       const max = (await getPluginLimits()).binaryReadMaxMB * 1048576;
@@ -101,8 +107,11 @@ defineCap({
        只对 `via === "plugin"` 打开：模型 / MCP 拿到一份 PDF 的 base64 只会撑爆上下文。
        上限以设置为准（`plugin/limits.ts`），只在插件这条路上读设置。 */
     const plugin = c.via === "plugin";
-    const r = await readAnyFile(p(c), path, encoding, plugin
-      ? { binary: true, binaryMax: (await getPluginLimits()).binaryReadMaxMB * 1048576 }
+    /* 文本整份读的上限也只在插件这条路上读设置（`textReadMaxMB`）：模型 / MCP / HTTP 照旧 `TEXT_MAX`（2 MB），
+       不让「设置里调大了」把一份大日志整个塞进模型上下文。 */
+    const lim = plugin ? await getPluginLimits() : null;
+    const r = await readAnyFile(p(c), path, encoding, lim
+      ? { binary: true, binaryMax: lim.binaryReadMaxMB * 1048576, textMax: lim.textReadMaxMB * 1048576 }
       : {});
     if ((offset === undefined && limit === undefined) || r.content === null) return envelope(r);
     const lines = r.content.split("\n");
@@ -222,6 +231,15 @@ defineCap({
        另给 `base64` 原样字节，`sha256` / `bytes` 按真实字节算。 */
     if (!isTextual(path)) {
       const buf = await readSnapshotBytes(p(c), path, version);
+      /* 插件来源和 `read_file` 守同一条线（设置里的二进制读取上限）：原来这里没有上限，
+         一份比上限还大的旧版本（外部改动的快照没有体积闸）会整份 base64 进沙箱。别的来源照旧（前端要看图）。 */
+      if (c.via === "plugin") {
+        const max = (await getPluginLimits()).binaryReadMaxMB * 1048576;
+        if (buf.length > max) {
+          return envelope({ path, version, content: null, sha256: sha256(buf), bytes: buf.length,
+            why: `这一版 ${(buf.length / 1048576).toFixed(1)} MB，超过二进制读取上限 ${Math.round(max / 1048576)} MB` });
+        }
+      }
       return envelope({ path, version, content: null, why: "不是文本文件", encoding: "base64", base64: buf.toString("base64"),
         sha256: sha256(buf), bytes: buf.length });
     }

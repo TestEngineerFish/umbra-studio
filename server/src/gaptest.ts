@@ -126,6 +126,14 @@ ok(!bad.ok, "since 不是时间 → 报错不猜");
   await rejected({ path: "模型.bin", byteOffset: 1.5, byteLength: 10 }, "byteOffset 小数（插件这条路不跑 zod，手工核）");
   await rejected({ path: "模型.bin", byteOffset: "0", byteLength: 10 }, "byteOffset 是字符串");
   await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 100 * 1048576 + 1 }, "byteLength 超过二进制读取上限");
+  /* encoding 和范围读同给：不是 "base64" 就拒（原来被悄悄忽略）；"base64" 允许，回的段和不给时一样 */
+  await rejected({ path: "notes/长文.md", byteOffset: 0, byteLength: 10, encoding: "gbk" }, "**范围读 + encoding: gbk（原来悄悄忽略）**");
+  await rejected({ path: "notes/长文.md", byteOffset: 0, byteLength: 10, encoding: "utf-8" }, "范围读 + encoding: utf-8");
+  await rejected({ path: "模型.bin", byteOffset: 0, byteLength: 10, encoding: null }, "范围读 + encoding: null");
+  const encErr = await rr({ path: "模型.bin", byteOffset: 0, byteLength: 10, encoding: "gbk" });
+  ok((encErr.errors[0] as { where?: unknown; message?: string } | undefined)?.message?.includes("gbk") === true, "拒的原因里点名了收到的 encoding", encErr.errors[0]?.message);
+  const b64 = await rr({ path: "模型.bin", byteOffset: 100, byteLength: 1000, encoding: "base64" });
+  ok(b64.ok && Buffer.from((b64.data as Ranged).base64, "base64").equals(blob.subarray(100, 1100)), "**范围读 + encoding: \"base64\" 允许**，段和不给时一样");
 
   /* 文本类文件也能按字节读：按原始字节，不解码（大 .gltf 靠它）。多字节字符切在半中间也照给 */
   const mdBytes = Buffer.from(text + "\n第 121 行", "utf8");
@@ -153,7 +161,42 @@ ok(!bad.ok, "since 不是时间 → 报错不猜");
   ok(part.range.byteLength === 1048576 && part.range.more === false && Buffer.from(part.base64, "base64").equals(big.subarray(10 * 1048576)),
     "同一份按段读得到（第二段 1 MB，more:false）", JSON.stringify(part.range));
   await rejected({ path: "大.bin", byteOffset: 0, byteLength: 10 * 1048576 + 1 }, "byteLength 超过改小后的上限");
+
+  /* 新建文件记快照（`recordCreatedFile`，格式转换落盘后补记那一版）的上限也是这一项，不再是写死的 100 MB */
+  const { recordCreatedFile } = await import("./files.js");
+  const rec10 = await recordCreatedFile(project, "大.bin", "插件");
+  ok(rec10.snapshot === null && /快照上限 10 MB/.test(rec10.why ?? ""), "**设置 10 MB：11 MB 的新文件不记快照，原因里写的是设置的值**", rec10.why);
+  /* 插件读旧版本（read_file_version）也守这条线；前端不受影响 */
+  const wb = await cap("write_file").run({ path: "旧版.bin", content: big.toString("base64"), encoding: "base64", expectSha256: "0" } as never, asHuman);
+  const ver = (wb.data as { snapshot?: string } | null)?.snapshot ?? "s1";
+  const vp = (await hostCall({ manifest: man, project }, "read_file_version", { path: "旧版.bin", version: ver })).data as { base64?: string; why?: string; bytes?: number };
+  ok(wb.ok && vp.base64 === undefined && /上限 10 MB/.test(vp.why ?? "") && vp.bytes === big.length, "**插件读 11 MB 的旧版本：超过设置的 10 MB → 不给 base64**", vp.why ?? JSON.stringify(wb.errors));
+  const vh = (await cap("read_file_version").run({ path: "旧版.bin", version: ver } as never, asHuman)).data as { base64?: string };
+  ok(!!vh.base64 && Buffer.from(vh.base64, "base64").length === big.length, "（对照）前端读同一版照给");
   await setPluginLimits({ binaryReadMaxMB: 100 });
+  const rec100 = await recordCreatedFile(project, "大.bin", "插件");
+  ok(typeof rec100.snapshot === "string" && !rec100.why, "改回 100 MB：同一份记得上快照", String(rec100.snapshot));
+
+  /* 文本整份读的上限（textReadMaxMB，2026-10-19）：**只管插件来源**，模型 / MCP / HTTP 仍是 2 MB 常量 */
+  const log = ("一行日志 0123456789abcdef\n").repeat(Math.ceil(3 * 1048576 / 30));
+  await writeFile(join(projDir, "大.txt"), log);
+  type Whole = { content: string | null; why?: string; sha256?: string };
+  const t1 = (await rr({ path: "大.txt" })).data as Whole;
+  ok(t1.content === null && /超过 2 MB 上限/.test(t1.why ?? "") && /byteOffset/.test(t1.why ?? ""),
+    "默认 2 MB：插件整份读 3 MB 的文本 → 只给元数据，原因里指了范围读", t1.why);
+  await setPluginLimits({ textReadMaxMB: 4 });
+  const t2 = (await rr({ path: "大.txt" })).data as Whole;
+  ok(t2.content === log && typeof t2.sha256 === "string", "**设置改成 4 MB：插件整份读得到 3 MB 的文本**", `${(t2.content ?? "").length} 字`);
+  const tAi = (await cap("read_file").run({ path: "大.txt" } as never, asAi)).data as Whole;
+  const tHttp = (await cap("read_file").run({ path: "大.txt" } as never, asHuman)).data as Whole;
+  ok(tAi.content === null && /超过 2 MB 上限/.test(tAi.why ?? "") && tHttp.content === null,
+    "**同一设置下模型 / MCP 和前端（http）仍按 2 MB 拒**（不让大文件进模型上下文）", tAi.why);
+  const tSearch = await cap("search_in_file").run({ path: "大.txt", query: "日志" } as never, asAi);
+  ok(!tSearch.ok, "search_in_file 也不跟插件设置走（仍是 2 MB）");
+  const tPage = (await rr({ path: "大.txt", offset: 2, limit: 3 })).data as Whole & { range?: { from: number; to: number } };
+  ok(tPage.content === "一行日志 0123456789abcdef\n一行日志 0123456789abcdef\n一行日志 0123456789abcdef" && tPage.range?.to === 4,
+    "插件按行分页读大文本也按设置的上限（4 MB 内能分页）", JSON.stringify(tPage.range));
+  await setPluginLimits({ textReadMaxMB: 2 });
 }
 
 const caps = (await cap("list_capabilities").run({} as never, { project: null, via: "http" })).data as { core: Array<{ name: string; source: string }>; verbs: Array<{ tool: string; exposed: boolean }>; failures: Record<string, string> };

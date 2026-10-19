@@ -35,12 +35,18 @@ import { listDrafts, type Project } from "./project.js";
    加 `json` 时它没跟上，编译器当场就抓出来了 —— 这正是统一的用处。 */
 export type { FileKind };
 
-/** 文本文件的上限：超过就只给元数据，不把整份塞进响应 */
+/** 文本文件的上限：超过就只给元数据，不把整份塞进响应。
+ *  ⚠️ 这是**模型 / MCP / HTTP / chat** 的上限，不进设置（大文件塞进模型上下文没有用）。
+ *  插件来源的 `read_file` 用设置里的 `textReadMaxMB`（`plugin/limits.ts`，由 `cap/files.ts` 以 `opts.textMax` 传进来）。 */
 export const TEXT_MAX = 2 * 1024 * 1024;
-/** 二进制按字节给（base64）的上限：100 MB。base64 再 +33%，还要整串经 HTTP / postMessage 传进插件，再大就该换流式了。
- *  2026-10-19 起插件读取的上限**以设置为准**（`plugin/limits.ts` 的 `binaryReadMaxMB`，由 `cap/files.ts` 传进来），
- *  这里只是默认值；`recordCreatedFile` 的快照上限仍用它（那是状态目录的体积问题，不是插件吃不吃得下）。 */
-export const BINARY_MAX = 100 * 1024 * 1024;
+/** 二进制按字节给（base64）的上限 / 新建文件记快照的上限：**以设置为准**（`plugin/limits.ts` 的 `binaryReadMaxMB`，默认 100 MB）。
+ *  原来是这里的常量 `BINARY_MAX = 100 MB`；2026-10-19 起插件读取改读设置，同一天把快照那条也改过去、删掉常量 ——
+ *  留着它就会有一条路悄悄还按 100 MB 走，而设置页上写的是另一个数。
+ *  ⚠️ **动态 import**：`plugin/limits.ts` 经 project → … 绕回本文件，静态引就成环（见那边 `LIMIT_RANGES` 的注）。 */
+async function binaryMaxSetting(): Promise<number> {
+  const { getPluginLimits } = await import("./plugin/limits.js");
+  return (await getPluginLimits()).binaryReadMaxMB * 1048576;
+}
 
 /** 文件类型认定走 `shared/kinds.ts` 那一份唯一出处（M8-14）。
  *  以前这里有一份扩展名映射、前端 `layout.ts` 里还有一份，两份今天一致纯属运气 ——
@@ -201,8 +207,9 @@ const READ_ENCODINGS = new Set(["utf-8", "gbk", "gb18030", "big5", "shift_jis", 
 /** `opts.binary`：二进制文件也把原始字节按 base64 给（插件的约定：`content: null` + `encoding: "base64"` + `base64`，
  *  umbra-plugins `sdk/PLUGIN-SPEC.md` / pdf · xlsx · zip 三个插件都按它写）。**缺省不给** —— 模型 / MCP 调 `read_file`
  *  拿到一份 PDF 的 base64 只会把上下文撑爆，它们照旧拿「不是文本文件」。 */
-/*  `opts.binaryMax`：按字节给的上限（字节）。插件那条路传设置里的值，不传就是 `BINARY_MAX`。 */
-export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number } = {}): Promise<ReadFileResult> {
+/*  `opts.binaryMax`：按字节给的上限（字节）。不传就现读设置（`binaryMaxSetting`）。
+ *  `opts.textMax`：文本整份给的上限（字节）。插件那条路传设置里的 `textReadMaxMB`，不传就是 `TEXT_MAX`（别的来源一律这个）。 */
+export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number; textMax?: number } = {}): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
   const buf = await readFile(abs);
@@ -216,13 +223,14 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
   if (!isTextual(rel)) {
     out.why = "不是文本文件";
     if (opts.binary) {
-      const max = opts.binaryMax ?? BINARY_MAX;
+      const max = opts.binaryMax ?? await binaryMaxSetting();
       if (st.size > max) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过二进制读取上限 ${Math.round(max / 1048576)} MB${RANGE_HINT}`;
       else { out.encoding = "base64"; out.base64 = buf.toString("base64"); }
     }
     return out;
   }
-  if (st.size > TEXT_MAX) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${TEXT_MAX / 1024 / 1024} MB 上限${opts.binary ? RANGE_HINT : ""}`; return out; }
+  const textMax = opts.textMax ?? TEXT_MAX;
+  if (st.size > textMax) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${Math.round(textMax / 1048576)} MB 上限${opts.binary ? RANGE_HINT : ""}`; return out; }
   /* ⚠️ **`sha256` 算的是原始字节，不随编码变**（上面 `sha256(buf)`）——
      所以按 GBK 读出来的文本，拿这个 sha 回去做写前校验仍然是对的。
      这一点不成立的话「按别的编码读」就会把写入口的那道闸绕过去。 */
@@ -399,14 +407,15 @@ export function isToolArtifactPath(rel: string): boolean { return isToolArtifact
  *  而那一遍会把空占位当成「盘上被别人改过的一版」先存一个 0 字节的「外部改动」快照。
  *  所以成品照引擎的规矩落盘，落完在这里补记 —— 版本历史里它和 `write_file` 新建出来的文件长得一样。
  *
- *  ⚠️ **太大的不存快照**（超过 `BINARY_MAX`）：快照是整份 gzip 进 `.umbrastudio/`，一部转出来的电影
+ *  ⚠️ **太大的不存快照**（超过设置里的二进制读取上限，默认 100 MB；和插件 `read_file` 整份读的上限是同一个值）：快照是整份 gzip 进 `.umbrastudio/`，一部转出来的电影
  *  会让状态目录翻倍；git 那一版同理不记。回 `null` + 一句原因，调用方照实转告。 */
 export async function recordCreatedFile(p: Project, rel: string, origin: VersionOrigin, note?: string): Promise<{ snapshot: string | null; why?: string }> {
   const clean = normalizeRel(p, rel);
   const abs = join(p.dir, clean.split("/").join(sep));
   const st = statSync(abs);
-  if (st.size > BINARY_MAX) {
-    return { snapshot: null, why: `文件 ${(st.size / 1048576).toFixed(1)} MB，超过快照上限 ${BINARY_MAX / 1048576} MB，没存版本` };
+  const max = await binaryMaxSetting();
+  if (st.size > max) {
+    return { snapshot: null, why: `文件 ${(st.size / 1048576).toFixed(1)} MB，超过快照上限 ${Math.round(max / 1048576)} MB（设置 → 插件沙箱 → 二进制读取上限），没存版本` };
   }
   const snapshot = await saveSnapshot(p, clean, await readFile(abs), origin, note);
   void commitAfterWrite(p.dir, clean, snapshot, null);
