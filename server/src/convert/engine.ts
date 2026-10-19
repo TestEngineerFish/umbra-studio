@@ -1,4 +1,4 @@
-// 来源：UmbraPC electron/core/convert/engine.ts（2026-10-19 d0ebb1d），改动：相对 import 补 .js；perSource[0]、route.steps[i] 加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/engine.ts（2026-10-19 cb7d2cc），改动：相对 import 补 .js；perSource[0]、route.steps[i] 加非空断言（noUncheckedIndexedAccess）
 // 格式转换引擎（doc/格式转换-方案调研-2026-10-18.md §四、§9.3）。
 //
 // 一次转换 = 判格式 → 规划路线 → 在任务自己的临时目录里一步步转 → 占好成品位置 → 挪过去 → 删临时目录。
@@ -37,6 +37,8 @@ export interface FileResult {
   error?: string;
   note?: string;
   via?: string;
+  /** 停止（signal 中止）时没转完的那几个：转换窗口写「没转 · 停止时还没转，原文件没动」，不算「没转成」。 */
+  cancelled?: boolean;
 }
 
 export interface ConvertRequest {
@@ -125,6 +127,26 @@ export class ConvertEngine {
     return { from: [...froms], targets: out, unknown };
   }
 
+  /** 不看具体文件、这台电脑「能转成什么」的总表（工作流节点「转成什么格式」下拉用：节点里的文件要到运行时才知道）。
+   *  能转 = 至少有一种认得的格式能用现有工具转过去；转不了 = 装上某个工具才通（给原因）；根本没有路的不列。 */
+  async catalog(): Promise<TargetInfo[]> {
+    const { ready, missing } = await this.split();
+    const all = [...ready, ...missing.keys()];
+    const out: TargetInfo[] = [];
+    const ids = [...new Set(all.flatMap((c) => c.edges.map((e) => e.to)))].filter((id) => formatById(id));
+    for (const to of ids) {
+      const label = formatById(to)?.label ?? to;
+      const froms = [...new Set(all.flatMap((c) => c.edges.map((e) => e.from)))].filter((f) => f !== to);
+      if (froms.some((f) => planRoute(ready, f, to))) { out.push({ to, label, available: true }); continue; }
+      const blocked = froms.map((f) => planRoute(all, f, to)).find((r) => r && r.steps.some((st) => missing.has(st.converter)));
+      if (!blocked) continue;
+      const st = blocked.steps.map((x) => missing.get(x.converter)).find((x): x is Extract<ToolStatus, { ok: false }> => !!x && !x.ok);
+      out.push({ to, label, available: false, reason: st?.reason ?? "这台电脑上转不了", hint: st?.hint });
+    }
+    out.sort((a, b) => Number(b.available) - Number(a.available) || order(a.to) - order(b.to) || a.to.localeCompare(b.to));
+    return out;
+  }
+
   /** 转一批文件。逐个文件独立成败：一个失败不影响其他的。 */
   async convert(req: ConvertRequest): Promise<FileResult[]> {
     const files = req.files.slice(0, MAX_FILES);
@@ -150,6 +172,7 @@ export class ConvertEngine {
     if (!st || !st.isFile()) return { source, state: "failed", error: "文件不存在" };
     const { note, via } = describe([route]);
 
+    if (req.signal?.aborted) return { source, state: "failed", error: "已取消", cancelled: true, via };
     const work = await fs.mkdtemp(path.join(this.tmpRoot, "umbra-convert-"));
     let reserved = "";
     try {
@@ -159,12 +182,17 @@ export class ConvertEngine {
         const s = route.steps[i]!;
         const output = path.join(work, `step${i + 1}.${formatById(s.to)?.exts[0] ?? s.to}`);
         const n = route.steps.length;
-        await this.gate(s.converter).run(() => s.converter.convert({
+        await this.gate(s.converter).run(() => {
+          // 排到了再报「开始了」（null = 还不知道进度）：转换窗口靠第一次进度把这一行从「排队中」换成「正在转换」。
+          if (req.signal?.aborted) throw new Error("已取消");
+          if (i === 0) progress(null);
+          return s.converter.convert({
           input, from: s.from, to: s.to, output, workDir: work,
           options: req.options ?? {},
           signal: req.signal ?? new AbortController().signal,
           progress: (f) => progress(f === null ? null : (i + f) / n),
-        }));
+          });
+        });
         // 有的工具失败了退出码还是 0（afconvert 写 mp3）：成品不在或是空的，就当失败。
         const made = await fs.stat(output).catch(() => null);
         if (!made || !made.isFile() || made.size === 0) throw new Error(`${s.converter.name} 没有转出内容`);
@@ -177,6 +205,7 @@ export class ConvertEngine {
       reserved = "";
       return { source, state: "done", output: out, note, via };
     } catch (e) {
+      if (req.signal?.aborted) return { source, state: "failed", error: "已取消", cancelled: true, via };
       return { source, state: "failed", error: e instanceof Error ? e.message : String(e), via };
     } finally {
       if (reserved) await releaseOutput(reserved);

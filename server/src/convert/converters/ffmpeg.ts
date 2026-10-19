@@ -1,4 +1,4 @@
-// 来源：UmbraPC electron/core/convert/converters/ffmpeg.ts（2026-10-18 a72ac3a），改动：相对 import 补 .js；正则分组 m[1] / d[1] / t[1] 加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/converters/ffmpeg.ts（2026-10-19 cb7d2cc），改动：相对 import 补 .js；正则分组 m[1] / d[1] / t[1] 加非空断言（noUncheckedIndexedAccess）
 // 格式转换：用户自己装的 FFmpeg —— 音视频几乎全靠它，外加 webp 输出（sips 写不了）。
 //
 // 编码器先查再用（照 Filee，doc §9.3 第 6 条）：Homebrew 的 ffmpeg 和别处下的不一定带 x264 / libvpx / lame，
@@ -7,7 +7,7 @@
 
 import { runProc, procError } from "../proc.js";
 import type { ToolBox } from "../tools.js";
-import { INSTALL_HINT } from "../tools.js";
+import { missingStatus } from "../tools.js";
 import type { Converter, ConvertStep, Edge, ToolStatus } from "../types.js";
 
 const VIDEO_IN = ["mp4", "mov", "mkv", "webm", "avi", "gif"];
@@ -109,7 +109,7 @@ export function ffmpegConverter(tools: ToolBox): Converter {
     get edges() { return usable(); },
     async status(): Promise<ToolStatus> {
       const hit = tools.get("ffmpeg");
-      if (!hit.path) return { ok: false, reason: hit.rejected || "没装 FFmpeg", hint: INSTALL_HINT.ffmpeg };
+      if (!hit.path) return missingStatus("ffmpeg", hit);
       try { await probe(hit.path); } catch { /* 查不到编码器就按全量登记，转的时候再报 */ }
       return { ok: true };
     },

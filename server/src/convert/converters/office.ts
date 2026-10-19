@@ -1,4 +1,4 @@
-// 来源：UmbraPC electron/core/convert/converters/office.ts（2026-10-18 a72ac3a），改动：相对 import 补 .js；LO_FILTER / PANDOC_FROM / PANDOC_TO 取值加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/converters/office.ts（2026-10-19 cb7d2cc），改动：相对 import 补 .js；LO_FILTER / PANDOC_FROM / PANDOC_TO 取值加非空断言（noUncheckedIndexedAccess）
 // 格式转换：用户自己装的 LibreOffice / Pandoc（doc/格式转换-方案调研-2026-10-18.md §3.3）。
 //
 // LibreOffice：Office → PDF 的高保真路线（代价 8，比「textutil → html → 打印」那条 20 便宜，装了就优先它）。
@@ -11,7 +11,7 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runProc, procError } from "../proc.js";
-import { INSTALL_HINT, type ToolBox } from "../tools.js";
+import { missingStatus, type ToolBox } from "../tools.js";
 import type { Converter, Edge, ToolStatus } from "../types.js";
 
 const IDLE = 5 * 60_000;
@@ -55,7 +55,7 @@ export function libreOfficeConverter(tools: ToolBox, profileDir: string): Conver
     edges: loEdges(),
     async status(): Promise<ToolStatus> {
       const hit = tools.get("soffice");
-      return hit.path ? { ok: true } : { ok: false, reason: hit.rejected || "没装 LibreOffice", hint: INSTALL_HINT.soffice };
+      return hit.path ? { ok: true } : missingStatus("soffice", hit);
     },
     async convert(step) {
       const bin = tools.get("soffice").path;
@@ -95,7 +95,7 @@ export function pandocConverter(tools: ToolBox): Converter {
     edges,
     async status(): Promise<ToolStatus> {
       const hit = tools.get("pandoc");
-      return hit.path ? { ok: true } : { ok: false, reason: hit.rejected || "没装 Pandoc", hint: INSTALL_HINT.pandoc };
+      return hit.path ? { ok: true } : missingStatus("pandoc", hit);
     },
     async convert(step) {
       const bin = tools.get("pandoc").path;
