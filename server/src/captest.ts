@@ -256,6 +256,63 @@ for (const n of wasHttpOnly) {
      offenders.length ? offenders.join(" · ") : `扫了 ${ROOT.replace(/.*\/server\//, "server/")}，零处`);
 }
 
+/* ── 壳页面引的东西，部署时一件都不许漏（2026-10-20）──
+
+   `IconGlyph.dc.html` 第 11 行写着 `<script src="./icons.js">`，而 `icons.js` 住在 `ui/` ——
+   既不在 `SHELLS`（那是稿）也不在 `RUNTIME_FILES`（那是 `runtime/` 的三件套），
+   **两个清单都够不着它**，于是用户三个真实项目里它一个都没有。
+   症状不是「控制台多一个 404」：`window.UMBRA_ICONS` 永远是 undefined，
+   那份稿**一个图标都画不出来**，而稿本身打得开、排版也对 —— 看上去像设计侧把图标画丢了。
+
+   ⚠️ 判据的两头都要独立于「现在拷了什么」：
+   ① 候选从**真部署出去的页面**里抽（`<script src>` / `<link href>` 的相对引用），
+      不从部署清单抽 —— 从清单抽是**循环的**：漏拷的那个压根不在清单里，永远不会被检查。
+   ② 「在不在」**去盘上看**，不读清单。「清单里写了」和「文件真的到了」是两件事（`00` §144.4）。
+
+   ⚠️ 只钉**加载时必取**的那两种（script / link）。`<a href>` 是点击才走的导航，
+   另算一笔打出来（壳里那句 `./S1-稿件索引.dc.html` 在项目里叫 `index.dc.html`，
+   是真的点不开 —— 但它和「图标画不出来」不是一个量级，不混进同一条判据里）。 */
+{
+  const { mkdtemp, rm, readdir, readFile: rf } = await import("node:fs/promises");
+  const { existsSync, realpathSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { buildProject } = await import("./project.js");
+  const { buildIndex } = await import("./indexpage.js");
+
+  const dir = await mkdtemp(join(realpathSync(tmpdir()), "us-shellasset-"));
+  try {
+    await buildIndex(await buildProject(dir), null);
+    const pages = (await readdir(dir)).filter((f) => f.endsWith(".dc.html"));
+    ok(pages.length > 0, "部署真的把壳写出去了（这一节要拿它们当调用方）", `${pages.length} 份`);
+
+    const LOAD = [/<script\b[^>]*\bsrc="(\.\/[^"]+)"/g, /<link\b[^>]*\bhref="(\.\/[^"]+)"/g];
+    const NAV = /<a\b[^>]*\bhref="(\.\/[^"]+\.dc\.html)"/g;
+    const wanted = new Map<string, string>();   // 相对路径 → 哪份页面引的
+    const deadNav = new Set<string>();
+    for (const f of pages) {
+      const src = await rf(join(dir, f), "utf8");
+      for (const re of LOAD) for (const m of src.matchAll(re)) if (!wanted.has(m[1]!)) wanted.set(m[1]!, f);
+      for (const m of src.matchAll(NAV)) {
+        const t = decodeURI(m[1]!).replace(/^\.\//, "");
+        if (!existsSync(join(dir, t))) deadNav.add(`${t}（${f}）`);
+      }
+    }
+    ok(wanted.size > 0, "壳里真的引了本地资源", `${wanted.size} 件`);
+
+    const absent: string[] = [];
+    for (const [ref, from] of wanted) {
+      if (!existsSync(join(dir, decodeURI(ref).replace(/^\.\//, "")))) absent.push(`${ref}（${from}）`);
+    }
+    ok(absent.length === 0,
+      "**壳页面加载时要取的本地文件，部署后一件不缺**（漏一件 = 那份稿里的功能静默失效）",
+      absent.length ? absent.join(" · ") : `${[...wanted.keys()].join(" · ")} 全在`);
+
+    if (deadNav.size) console.log(`  · （另记，不计分）壳里点不开的导航链接：${[...deadNav].join(" · ")}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /* ── 收尾：自己造的兜底仓库（M14-6）──
    ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
    而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。

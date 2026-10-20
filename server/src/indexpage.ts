@@ -455,6 +455,20 @@ const SHELLS = [
   "IconGlyph.dc.html",
 ];
 
+/** 壳页面**自己引**的旁挂资源 —— 和壳同一个目录，壳里按相对路径取。
+ *
+ *  ⚠️ `IconGlyph.dc.html` 第 11 行就是 `<script src="./icons.js"></script>`，
+ *  而它一直**不在任何拷贝清单里**（`SHELLS` 只拷稿、`ensureRuntimeBeside` 只拷
+ *  `runtime/` 下的三件套与点选桥，`icons.js` 住在 `ui/`，两边都够不着）。
+ *  后果**不是「少一个 404」**：那份稿在项目里打开时 `window.UMBRA_ICONS` 永远是
+ *  undefined，于是**一个图标都画不出来** —— 而稿本身打得开、排版也对，
+ *  看上去像是设计侧把图标画丢了。**能打开 ≠ 画得出来。**
+ *  实测（2026-10-20）：`projects/` 下三个项目**全部**是 IconGlyph 在、icons.js 不在。
+ *
+ *  ⚠️ 这里是「壳的依赖」不是「运行时三件套」，所以不并进 `RUNTIME_FILES`：
+ *  三件套跟着**每一份稿**按目录分发，而这一件只跟着壳走（只有项目根有壳）。 */
+const SHELL_ASSETS = ["icons.js"];
+
 /** 这是工具自己的页面，不是设计稿 —— 索引与接口的稿件清单都要排掉它，
  *  否则工具界面会出现在自己的稿件列表里。 */
 export function isToolPage(rel: string): boolean {
@@ -612,11 +626,26 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
     shells.push(rel(p, to));
   }
 
+  /* 壳引的旁挂资源。**按大小决定要不要重拷**，和 `ensureRuntimeBeside` 同一个做法 ——
+     每次 build_index 都无条件重写的话，用户仓库里这个文件会反复出现在改动里。 */
+  for (const name of SHELL_ASSETS) {
+    const from = join(TOOL_ROOT, "ui", name);
+    if (!existsSync(from)) continue;
+    const to = join(p.dir, name);
+    let need = !existsSync(to);
+    if (!need) {
+      const [a, b] = await Promise.all([stat(from), stat(to)]);
+      need = a.size !== b.size;
+    }
+    if (need) { await copyFile(from, to); shells.push(rel(p, to)); }
+  }
+
   /* 部署清单 = 我们真的往项目目录里写过的东西。交给 .gitignore 那一段。 */
   const ignored = await ensureIgnored(p, [
     "index.dc.html", "index-data.js", "_ds-tool/", "_runtime/", ".umbrastudio/", ".umbra" + "design/",   // 旧名：迁移后留着不删，也不该进用户仓库
     "react.production.min.js", "react-dom.production.min.js", "support.js",
     ...SHELLS,
+    ...SHELL_ASSETS,
   ]);
   if (ignored) prep.steps.push(`更新 ${ignored} 的工具产物忽略段`);
 
