@@ -594,6 +594,82 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await writeFile(join(GG, "MERGE_HEAD"), "deadbeef\n", "utf8");
   ok("正在 merge 时也回 `broken`", await gitFallbackOf(G, "a.txt") === "broken", await gitFallbackOf(G, "a.txt"));
   await rm(join(GG, "MERGE_HEAD"), { force: true });
+
+  /* ── 大文件不进 git 兜底（M14-1，Q67）──
+     ⚠️ 这一条今天之前**只存在于一句注释里**：`recordCreatedFile` 写着「git 那一版同理不记」，
+     而那句话只对它自己那条路成立（它在 `commitAfterWrite` 之前就 return 了）。
+     别的三条路一道闸都没有 —— git 存整份内容进 `STATE_ROOT`，而用户看不见那个目录。
+
+     ⚠️ **上限要现读设置，不能写死 100 MB**：这个数是用户可以改的
+     （设置 → 插件沙箱 → 二进制读取上限）。写死的话，他把上限调大之后
+     这几条判据会**在产品完全正确的情况下变红** —— 判据读的得和实现读的是同一个源。
+     ⚠️ **文件造成稀疏的**（只在末尾写一个字节）：上限可能是 1 GB，
+     真写满既慢又占盘，而闸看的是 `st.size`，稀疏文件的 `size` 就是它声明的那个数。 */
+  {
+    const { gitShow, repoMetaOf, repoMetaOfGitDir } = await import("./gitkeep.js");
+    const { getPluginLimits } = await import("./plugin/limits.js");
+    const { open } = await import("node:fs/promises");
+    const max = (await getPluginLimits()).binaryReadMaxMB * 1048576;
+    const fh = await open(join(G, "大视频.bin"), "w");
+    await fh.write(Buffer.from([0]), 0, 1, max);          // 稀疏：size = max + 1
+    await fh.close();
+    await writeFile(join(G, "小的.txt"), "一行\n", "utf8");
+    const sz = (await import("node:fs")).statSync(join(G, "大视频.bin")).size;
+    ok("样本有效：那个文件真的比上限大一个字节", sz === max + 1, { sz, max });
+
+    /* ⚠️ **一次提交里大小混着** —— 这一条钉住的是「跳过的只是超限那一个」。
+       实现写成「有一个超限就整次不提交」的话，一次落盘点名三个文件时
+       另外两个的版本会**一起丢掉**，而症状和「git 坏了」一模一样。 */
+    const sha = await ciPaths(G, ["小的.txt", "大视频.bin"], "大小混着的一次提交");
+    ok("**超限的那一个不拖累别的**：这次提交照样成了", !!sha, sha);
+    ok("小文件进了 git（走产品自己的读路径取回来）",
+       (await gitShow(G, "HEAD", "小的.txt")) === "一行\n");
+    ok("**大文件没进 git**（`git log` 里一条都没有）",
+       gx(["log", "--oneline", "--", "大视频.bin"]) === "",
+       gx(["log", "--oneline", "--", "大视频.bin"]));
+
+    /* 界面要说得出原因 —— 用户看到的是这一档 */
+    ok("**界面问得出原因**：这个文件回 `toobig`，不是 `on` 也不是 `broken`",
+       await gitFallbackOf(G, "大视频.bin") === "toobig", await gitFallbackOf(G, "大视频.bin"));
+    ok("同一个仓库里的小文件照旧回 `on`（闸是按文件的，不是按仓库的）",
+       await gitFallbackOf(G, "小的.txt") === "on", await gitFallbackOf(G, "小的.txt"));
+
+    /* ⚠️ **档位的顺序本身是一条判据**：两种原因同时成立时，对这个文件来说
+       真正的原因是「太大」—— 回 `broken` 会让他去删一个删了也没用的锁文件。 */
+    await writeFile(join(GG, "index.lock"), "", "utf8");
+    ok("**锁着 + 超限时回 `toobig` 而不是 `broken`**（出路不同，不能给错那一个）",
+       await gitFallbackOf(G, "大视频.bin") === "toobig", await gitFallbackOf(G, "大视频.bin"));
+    await rm(join(GG, "index.lock"), { force: true });
+
+    /* ── 兜底仓库记得住「自己是谁的」（M14-1 ②）──
+       ⚠️ 为什么要有这几条：`gitDirOf` 的目录名是 `<目录名>__<路径 sha256 前 16 位>`，
+       **哈希不可逆**。实测本机 591 个兜底仓库、93 MB，`config` 里只有 `bare = true` 一行 ——
+       「目录已经没了，把它的历史也清掉」这件事因此**根本做不到**。 */
+    const meta = await repoMetaOf(G);
+    ok("**仓库自报它是哪个目录的**（不然 591 个目录名谁都认不出来）",
+       meta.worktree === (await import("node:path")).resolve(G), JSON.stringify(meta.worktree));
+    ok("按 GIT_DIR 也读得到（清理那一面手上只有目录名）",
+       (await repoMetaOfGitDir(GG)).worktree === meta.worktree);
+    ok("指纹四项都在（Q68 的形状：dev / ino / birthtime / 首见）",
+       typeof meta.dev === "number" && typeof meta.ino === "number"
+       && typeof meta.birthtimeMs === "number" && typeof meta.firstSeenAt === "number",
+       JSON.stringify(meta));
+    {
+      const st = (await import("node:fs")).statSync(G);
+      ok("**指纹是真去 stat 的，不是占位的 0**", meta.dev === st.dev && meta.ino === st.ino,
+         { 记的: [meta.dev, meta.ino], 实际: [st.dev, st.ino] });
+    }
+
+    /* ⚠️ **存量那 591 个仓库**：它们建的时候没有这一节。
+       这一条钉的是「再被打开一次就补上」—— 不补的话新代码只管新项目，
+       而用户机器上的历史全是旧的，清理功能对它们**永远**用不上。 */
+    gx(["config", "--remove-section", "umbra"]);
+    ok("样本有效：拆掉之后确实认不出来了（模拟 2026-10-20 之前建的仓库）",
+       (await repoMetaOf(G)).worktree === null);
+    await mkRepo(G);
+    ok("**老仓库再被打开一次就补齐了**（不是只管新建的）",
+       (await repoMetaOf(G)).worktree === (await import("node:path")).resolve(G));
+  }
 }
 
 /* ── 草稿暂存（M10-2c）──

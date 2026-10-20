@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { STATE_ROOT } from "./project.js";
 
@@ -114,6 +114,40 @@ function gitDirOf(dir: string): string {
  *  复刻的话算法一改判据就指到一个不存在的目录，而 `rm -rf` 不存在的路径不报错
  *  （§134.6 那条「判据要拼实现的路径，必须调实现那个函数」）。 */
 export const gitDirForTest = (dir: string): string => gitDirOf(dir);
+
+/** **兜底仓库的大小闸**（M14-1，Q67）：超过这个数的文件**不记进 git**。
+ *
+ *  ⚠️ 这一条今天之前**只存在于注释里** —— `recordCreatedFile` 的注释写着
+ *  「快照是整份 gzip 进 `.umbrastudio/`，一部转出来的电影会让状态目录翻倍；
+ *  **git 那一版同理不记**」，而那句话只对**它自己那一条路**成立
+ *  （它在 `commitAfterWrite` 之前就 return 了）。
+ *  别的三条路（`write_file` 落盘后、发现外部改动时、格式转换之外的新建）
+ *  **一道闸都没有**：git 把整份内容压进 `STATE_ROOT/.umbrastudio/git/`，
+ *  一个 2 GB 的文件改五次就是十个 G，而用户**完全看不到这个目录**。
+ *  **注释比代码乐观** —— 这是第二次（§87 那条「注释也会变成说谎的状态列」）。
+ *
+ *  数取**和快照同一个**（设置 → 插件沙箱 → 二进制读取上限，默认 100 MB）：
+ *  两条兜底路用两个数的话，用户会看到「版本历史里有这一版、而 git 里没有」
+ *  这种解释不了的不一致，而设置页上只写着一个数。
+ *  ⚠️ **动态 import**：`plugin/limits.ts` → `project.js` → 本文件（`hasRepo`）已经成环，
+ *  静态引会把环收紧（`files.ts` 第 46 行那个函数同一个理由）。 */
+async function sizeMax(): Promise<number> {
+  const { getPluginLimits } = await import("./plugin/limits.js");
+  return (await getPluginLimits()).binaryReadMaxMB * 1048576;
+}
+
+/** 这个文件超过兜底上限了没有。回 `null` = 没超。
+ *  ⚠️ **问不出大小就不拦**（文件不在、权限不够）—— 拦错的后果是「该记的没记上而没人知道」，
+ *  而放过去的后果顶多是 `git add` 自己失败。兜底不该因为问不出来而失灵。 */
+async function tooBig(dir: string, rel: string): Promise<string | null> {
+  try {
+    const st = statSync(join(dir, rel.split("/").join(sep)));
+    if (!st.isFile()) return null;
+    const max = await sizeMax();
+    if (st.size <= max) return null;
+    return `${(st.size / 1048576).toFixed(1)} MB，超过 ${Math.round(max / 1048576)} MB`;
+  } catch { return null; }
+}
 
 /** ⚠️ **HARDEN 留着，但它不再是主闸。**
  *  主闸是「不读对方的 config」（见 `gitDirOf`）。这几项现在的作用是
@@ -239,7 +273,10 @@ export async function ensureRepo(dir: string): Promise<boolean> {
   if (OFF) return false;
   try {
     const gd = gitDirOf(dir);
-    if (existsSync(join(gd, "HEAD"))) return true;        // 已经建过
+    /* ⚠️ 已经建过的也要**补一次身份** —— 2026-10-20 之前建的仓库里一条都没有，
+       而「清掉已失效的兜底仓库」要靠它（下面 `stampIdentity` 的注）。
+       补不上不影响兜底本身，所以不看返回值。 */
+    if (existsSync(join(gd, "HEAD"))) { await stampIdentity(gd, dir); return true; }
     await mkdir(gd, { recursive: true });
     /* ⚠️ **`init --bare` 建在我们自己的目录里，不碰项目里的 `.git`**（issue #74）。
        `--bare` 是因为工作区由 `GIT_WORK_TREE` 指定 —— 这个 GIT_DIR 自己不需要工作区。
@@ -255,9 +292,78 @@ export async function ensureRepo(dir: string): Promise<boolean> {
       "# Umbra Studio 的版本兜底：这几样不记",
       ".umbrastudio/", ".umbradesign/", "node_modules/", ".DS_Store", "",
     ].join("\n"), "utf8");
+    await stampIdentity(gd, dir);
     return true;
   } catch { return false; }
 }
+
+/** **把「这个仓库是哪个目录的」写进它自己的 config**（M14-1，Q67）。
+ *
+ *  ⚠️ 为什么非写不可：`gitDirOf` 的目录名是 `<目录名>__<路径的 sha256 前 16 位>`，
+ *  **哈希不可逆**。实测本机 `STATE_ROOT/.umbrastudio/git/` 有 **591 个仓库、93 MB**，
+ *  而里面的 `config` 是 `bare = true` 一行 —— **问不出它对应哪个目录**。
+ *  于是「目录已经没了，把它的兜底仓库也清掉」这件事**根本做不到**：
+ *  我们既不知道该查哪个路径，也不知道清掉的是谁的历史。
+ *  （M14-3 的三档清理里，第②档就卡在这一条上。）
+ *
+ *  指纹四项和「打开记录」那边同一个形状（Q68）：`dev` / `ino` / `birthtimeMs` / 首见时间。
+ *  ⚠️ **它们是用来报警的，不是用来认人的** —— 同名重建会让 `ino` 变（本机 APFS 实测
+ *  382955240 → 382955242），而 Windows 的 file ID 官方说会复用、创建时间还会被
+ *  文件系统隧道继承。所以比不上就说「这个位置换了一个」，**绝不拿它当身份证**。
+ *
+ *  用 `git config` 而不是自己往 config 文件追加几行：路径里有 `#` `;` `"` 或反斜线时
+ *  git 的 config 格式要转义，**手写迟早写出一份读不回来的 config**。 */
+async function stampIdentity(gd: string, dir: string): Promise<void> {
+  try {
+    /* 已经记过就一个子进程都不起 —— `ensureRepo` 在每次落盘的路上。
+       认 `[umbra]` 这个节名而不是 `worktree = ` 这个串：后者在 `core.worktree`
+       上也会命中（§101.8 那条「判据里出现的字符串要是它检查的那个东西本身」）。 */
+    if (/^\s*\[umbra\]/m.test(await readFile(join(gd, "config"), "utf8"))) return;
+    const st = statSync(resolve(dir));
+    for (const [k, v] of [
+      ["umbra.worktree", resolve(dir)],
+      ["umbra.dev", String(st.dev)],
+      ["umbra.ino", String(st.ino)],
+      ["umbra.birthtime", String(Math.round(st.birthtimeMs))],
+      ["umbra.firstseen", String(Date.now())],
+    ] as [string, string][]) await exec(["config", k, v], dir);
+  } catch { /* 记不上不影响兜底 —— 它只是让清理变得可能 */ }
+}
+
+/** 一个兜底仓库自报的身份。`worktree` 为 `null` = **2026-10-20 之前建的**，认不出对应哪个目录。
+ *  ⚠️ 那一批只有再被打开过一次才会补上（`ensureRepo`）——
+ *  从此再没打开过的，**我们就是认不出来，照实说，不猜**。 */
+export interface RepoMeta {
+  gitDir: string;
+  worktree: string | null;
+  dev: number | null;
+  ino: number | null;
+  birthtimeMs: number | null;
+  firstSeenAt: number | null;
+}
+
+/** 读一个兜底仓库的身份。**按 GIT_DIR 取**，因为清理那一面手上只有目录名（哈希不可逆）。
+ *  一个子进程读全部五项（`--get-regexp`），不是一项一个。 */
+export async function repoMetaOfGitDir(gd: string): Promise<RepoMeta> {
+  const out: RepoMeta = { gitDir: gd, worktree: null, dev: null, ino: null, birthtimeMs: null, firstSeenAt: null };
+  try {
+    const txt = await execRaw(["--git-dir", gd, "config", "--get-regexp", "^umbra\\."]);
+    for (const line of txt.split("\n")) {
+      const i = line.indexOf(" ");
+      if (i < 0) continue;
+      const k = line.slice(0, i), v = line.slice(i + 1);
+      if (k === "umbra.worktree") out.worktree = v;
+      else if (k === "umbra.dev") out.dev = Number(v);
+      else if (k === "umbra.ino") out.ino = Number(v);
+      else if (k === "umbra.birthtime") out.birthtimeMs = Number(v);
+      else if (k === "umbra.firstseen") out.firstSeenAt = Number(v);
+    }
+  } catch { /* 一条都没有（老仓库）→ 全 null */ }
+  return out;
+}
+
+/** 某个项目目录的兜底仓库自报的身份。给判据和设置页用。 */
+export const repoMetaOf = (dir: string): Promise<RepoMeta> => repoMetaOfGitDir(gitDirOf(dir));
 
 /** ⚠️ **正在 merge / rebase / cherry-pick / 二分查找中，一律不动这个仓库**。
  *
@@ -316,6 +422,17 @@ export async function commitPaths(dir: string, paths: string[], message: string)
        用户在他的仓库里 rebase 不再影响我们（原来那是个真实的顾虑）。 */
     if (!(await ensureRepo(dir))) return null;
     if (await inMiddleOfSomething(dir)) return null;
+    /* ⚠️ **大小闸装在这里，而不是四个调用方各装一道**（M14-1，Q67）：
+       这是三条写路径唯一的汇流处（`commitAfterWrite` / `commitExternalChanges` /
+       判据直调），装在上游等于「以后再加一条路就又漏一道」——
+       和纪律① 唯一写入口同一个道理。
+       超过上限的那几个**跳过**，剩下的照常记：一次落盘点名多个文件时，
+       不该因为其中一个是大视频就把另外两个的版本也丢掉。
+       用户在界面上看到的那句话走 `gitFallbackOf` 的 `toobig` 档。 */
+    const keep: string[] = [];
+    for (const rel of paths) if (!(await tooBig(dir, rel))) keep.push(rel);
+    if (!keep.length) return null;
+    paths = keep;
     /* 身份：我们自己提交，用一个明确的作者名 —— `GIT_CONFIG_GLOBAL=/dev/null`
        之后 git 不认识任何 user.name，不给就会报 "Author identity unknown"。
        ⚠️ 不用用户的身份 —— 这不是他写的提交，是工具的兜底记录。 */
@@ -336,6 +453,12 @@ export async function commitPaths(dir: string, paths: string[], message: string)
  *  - `ignored` 有 git，但这个文件被 `.gitignore` 忽略了 —— 他可以去改 `.gitignore`
  *  - `off`     这个目录没在用 git 记版本 —— 他可以 `git init`（正常情况下 `ensureRepo`
  *              会自动 init，所以这一种少见；`UMBRASTUDIO_NO_GIT=1` 或者没装 git 时会出现）
+ *  - `toobig`  这个文件**超过兜底上限**（和快照同一个数，设置 → 插件沙箱 → 二进制读取上限）——
+ *              git 存的是整份内容，一个大视频改几次就能让状态目录翻几倍。
+ *              ⚠️ 这一档和 `broken` 分开，因为**出路完全不同**：`broken` 是他删个锁文件就好，
+ *              这一档他只能去把上限调大（或者接受这个文件没有兜底）。
+ *              ⚠️ **排在 `broken` 之前判**：两个同时成立时，对这个文件来说真正的原因是太大 ——
+ *              把锁文件删掉它照样不会被记进去，而「broken」会让他去做一件白做的事。
  *  - `broken`  有 git，但**现在提交不了**：`index.lock` 残留，或者正在 merge / rebase。
  *              ⚠️ 这一态是 2026-09-30 在用户自己的项目上实测抓到的，不是想出来的 ——
  *              他那个仓库 24 份快照、0 个 git 提交，根因就是一个残留的 `index.lock`，
@@ -345,7 +468,7 @@ export async function commitPaths(dir: string, paths: string[], message: string)
  *  ⚠️ **快照不受这件事影响**（它在 `.umbrastudio/snapshots/` 里），
  *  所以界面的口气是「少了一道兜底」而不是报错 —— 这是设计侧定的。
  *  失效的只是「别人在别的编辑器里改的那一版」这条兜底（§126.1 实测过）。 */
-export type GitFallback = "on" | "ignored" | "off" | "broken";
+export type GitFallback = "on" | "ignored" | "off" | "broken" | "toobig";
 
 export async function gitFallbackOf(dir: string, file: string): Promise<GitFallback> {
   if (OFF) return "off";
@@ -363,6 +486,8 @@ export async function gitFallbackOf(dir: string, file: string): Promise<GitFallb
        而这个函数的第一版**照样回 `on`** —— 它只看 `.git` 在不在、文件有没有被忽略。
        那是在拿一个看起来合理的检查冒充答案：**要回答的是「兜底在不在」，
        不是「git 目录在不在」。** 所以这里真的去问一句能不能提交。 */
+    /* ⚠️ 上限这一档要在 `broken` 之前 —— 见上面类型注释里那条「出路完全不同」 */
+    if (await tooBig(dir, file)) return "toobig";
     if (existsSync(join(gd, "index.lock"))) return "broken";
     if (await inMiddleOfSomething(dir)) return "broken";
     /* `check-ignore` 的退出码就是答案：0 = 被忽略，1 = 没被忽略。

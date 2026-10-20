@@ -26,8 +26,8 @@ export interface Snap {
   /** 和上一版比增删了几行。`null` = 没算（文件太大），`undefined` = 这一版读不出来 */
   delta?: { plus: number; minus: number } | null;
 }
-/** 这个文件的 git 兜底在不在。三态，因为后两种后果一样而出路不同（见 `gitkeep.ts`） */
-export type GitFallback = "on" | "ignored" | "off" | "broken";
+/** 这个文件的 git 兜底在不在。四种「没有」，因为后果一样而**出路各不相同**（见 `gitkeep.ts`） */
+export type GitFallback = "on" | "ignored" | "off" | "broken" | "toobig";
 
 /** 没有 git 兜底时说的那句话。**口气是「少了一道兜底」，不是报错** ——
  *  设计侧定的，理由是快照和回退都不受影响，按报错写会让人以为历史坏了。 */
@@ -46,6 +46,14 @@ const FALLBACK_NOTE: Record<Exclude<GitFallback, "on">, { head: string; fix: str
   broken: {
     head: "这个项目的 git 现在提交不了，外部改动没有兜底。",
     fix: "多半是 .git/index.lock 残留（某次 git 操作被中断），或者正在 merge / rebase。处理完它就自动恢复。",
+  },
+  /* ⚠️ 这一条**一定要说**（M14-1）：它和上面三条不同 —— 不是「这个项目没兜底」，
+     而是「**这一个文件**我们有意没记」。不说的话用户会以为它和别的文件一样有历史，
+     而真要找回上一版时才发现没有，那时候已经晚了。
+     快照那边同一个数、同一个理由（整份存进状态目录），所以口径要一致。 */
+  toobig: {
+    head: "这个文件太大，超过了版本上限，没有记进 git 兜底。",
+    fix: "git 和快照都存整份内容，一个大文件改几次就能让状态目录翻几倍。要记的话去「设置 → 插件沙箱 → 二进制读取上限」把它调大。",
   },
 };
 
