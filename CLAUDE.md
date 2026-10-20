@@ -341,7 +341,7 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 
 ## 9. 当前状态一句话（2026-10-20）
 
-**M14 的 1 / 2 / 3 / 6 四条做完**（需求与读数 `doc/24` §十三–§十七，条目 `doc/12` M14，决策 `doc/11` Q59–Q68；分支 `records-store`，**未 push**）。
+**M14 的 1 / 2 / 3 / 6 四条做完 + 4 的 A 段**（需求与读数 `doc/24` §十三–§十九，条目 `doc/12` M14，决策 `doc/11` Q59–Q68；分支 `records-store`，**未 push**）。
 这一批的共同主题是**旁数据不该住在用户的目录里**（用户 2026-10-20 的更正）：
 
 ① **M14-1**：git 兜底的**大文件闸**装在 `commitPaths`（三条写路径唯一的汇流处），上限和快照同一个数；
@@ -354,15 +354,20 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 黑名单的话「以后新加一种资产」会被删掉而没有判据会红。首页失效记录原来**静默消失**，
 而 `ProjectRow.missing` 那个分支**早就写好了、数据从来没送到过**。
 ④ **M14-6**：回归自己不再攒兜底仓库。判准一条（指向临时目录 + 目录已不在），**595 → 2 个、94 MB → 1 MB**。
+⑤ **M14-4 A 段**：新增 `server/src/statedirs.ts` 当**唯一出处**，十来处裸拼 `join(p.dir, ".umbrastudio", …)` 全收口（16 个文件 import 它）。
+**零行为变化**，十六套回归一条不变。新装一条闸（`captest`）：代码行再出现 `join(` + `.umbrastudio` 而不带 `STATE_ROOT` 一律红。
 
 **读数**：`purgetest` **45/45**（新建）· `identitytest` **36/36**（新建）· 界面端到端 **19/19**（临时状态目录起真服务、无头 Chrome 真点击）·
-`captest` 308/308 · `apitest` 122/122 · `filetest` / `lifecycletest` 全通 · `kindtest` 51/51 · `gaptest` 60/60 ·
-`limitstest` 46/46 · `difftest` 9/9 · `selftest` 零 error。**反向验证四 + 五 + 六例，全部报红。**
+`captest` **309/309** · `apitest` 122/122 · `filetest` / `lifecycletest` 全通 · `kindtest` 51/51 · `gaptest` 60/60 ·
+`limitstest` 46/46 · `difftest` 9/9 · `ziptest` 14/14 · `converttest` **42/42** · `plugintest` 93/93 · `verbtest` 27/27 ·
+`upgradetest` 37/37 · `selftest` 零 error。**反向验证 4 + 5 + 6 + 1 例，全部报红。**
 
-**下一条 M14-4**（唯一动存量的一条），已拆成 A / B 两段、两处耦合查清了，见 `doc/24` §十七：
-A 段把「这个项目的资产在哪」从十来处收口成一处（纯重构，验收是回归一条不变）；
-B 段才翻到 `records/<key>/`。⚠️ B 段开工前要先定 `thumb` 那个相对 URL（S1 索引页在用）
-和 ⓒ 那几样（`_ds-tool/tokens.css` 的 href 写死在稿里）各走哪一档。
+**下一条 M14-4 的 B 段**，再拆三小段（`doc/24` §十九）：**B1** 资产进 `records/` + 存量迁移 + **导出 / 导入跟着改** ·
+**B2** 缓存进 `cache/` + `thumb` 走路由（**已定，设计侧零改动**：S1 读的是我们生成的值，换成同源绝对路径就行）·
+**B3** 壳页面与运行时按需 + `buildIndex` 从 `open_project` 摘掉（**最难**：壳自己是稿，里面是 `./support.js` 这种相对引用）。
+⚠️ **B 段开工第一件事是改导出**：`export_project` 是 `tar -C projectDir .`，资产搬走之后
+**包里一版快照都没有，而回执照样报 `versionCount: N`** —— 假回执，而且要到「在另一台机器上导入」才暴露。
+M14-5（打开方式 / 拖拽 / 命令行）按 `doc/12` 的理由排在 M14-4 之后，**没开工**。
 
 ## 9 之前的状态（2026-10-19）
 
