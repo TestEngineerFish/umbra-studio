@@ -13,9 +13,13 @@
  *  跑：npm --prefix server run apitest
  */
 import { serveStart } from "./serve.js";
-import { buildProject, listProjectDirs } from "./project.js";
+import { buildProject } from "./project.js";
 import { start as startJob } from "./jobs.js";
 import { projectJobKey } from "./api.js";
+import { mkdtemp, rm as rmdirAll, writeFile as wfFix } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
+import { join as joinFix } from "node:path";
 
 let pass = 0, fail = 0;
 const ok = (c: boolean, what: string, detail = "") => {
@@ -23,10 +27,40 @@ const ok = (c: boolean, what: string, detail = "") => {
   else { fail++; console.log(`  ✗ ${what}${detail ? ` — ${detail}` : ""}`); }
 };
 
-const dirs = await listProjectDirs();
-if (!dirs.length) { console.log("– 没有项目可测，跳过（projects/ 是空的）"); process.exit(0); }
-const p = await buildProject(dirs[0] as string);
+/* ── 夹具：**自己建一个临时项目**（Q71，2026-10-21）──
+
+   原来这里是 `buildProject((await listProjectDirs())[0])` —— 也就是
+   **用户 `projects/` 下的第一个真实项目**，于是每跑一次回归就在他的项目上
+   起一次真服务、打一整套真 HTTP。2026-10-20 实测到它动了
+   `projects/Umbra_design/.umbrastudio/` 下三个目录的 mtime。
+
+   那一次没丢东西，但这是纪律⑥（`projects/` 下的东西不是我们的）和
+   `00` §166（「清掉自己造的文件」≠「清掉自己造的状态」）的同一族 ——
+   **它从 2026-09-28 建这套测试起就是这样，而收尾那几行只看「我创建了哪些文件」。**
+
+   ⚠️ 换夹具**不是改一行**：要先量「有多少条判据其实靠的是那个项目里真有几十份稿」。
+   2026-10-21 实测的答案是 **0 条** —— 15 节全部自己造夹具（写一份临时稿再操作），
+   换成空的临时项目之后读数一条不少（122/122）。**这一条是量出来的，不是看代码看出来的。**
+
+   ⚠️ `realpathSync(tmpdir())`：macOS 的 `/var` 是符号链接，不解的话
+   项目根与真实路径对不上（`verbtest` 踩过同族的坑）。 */
+const FIXTURE = await mkdtemp(joinFix(realpathSync(osTmpdir()), "umbrastudio-apitest-"));
+await wfFix(joinFix(FIXTURE, "project.json"), JSON.stringify({ name: "apitest 夹具" }, null, 2), "utf8");
+/* ⚠️ **这一份稿不是摆设 —— 它是换夹具时量出来的那 3 条。**
+   ④ 预览路由那一节先 `list files` 找项目里任意一份 `.html` 当样本，
+   空项目里找不到 → `if (anyHtml)` 整段跳过，而**那一轮照样全绿**
+   （119/119 看着和 122/122 一样「全过」）。缺的正是这三条：
+   「正常的 .html 能预览」「预览页注入了点选桥」「而盘上那份没被动过」。
+   > **总数本身也是一条判据**（`00` §160.4）—— 换夹具时**先对总数，再看绿不绿**。 */
+await wfFix(joinFix(FIXTURE, "样例.dc.html"),
+  "<!doctype html>\n<html lang=\"zh\"><head><meta charset=\"utf-8\"><title>apitest 夹具</title></head>\n" +
+  "<body><x-dc><div data-ud-node=\"root\">夹具</div></x-dc></body></html>\n", "utf8");
+const p = await buildProject(FIXTURE);
 const s = await serveStart(p);
+/* ⚠️ 这一条断言的是**夹具自己的身份**：项目根必须在系统临时目录下。
+   拿用户的真实项目当夹具是这套测试从 2026-09-28 起就在做的事，而**没有任何判据会红** ——
+   「跑完没报错」和「跑的时候没碰别人的东西」是两件事。 */
+ok(p.dir.startsWith(realpathSync(osTmpdir())), "**夹具是自己建的临时项目，不是用户的真实项目**（纪律⑥，Q71）", p.dir);
 const u = (route: string) => `${s.url}__ud/${route}?token=${encodeURIComponent(s.token)}`;
 const post = (route: string, body: unknown) => fetch(u(route), {
   method: "POST",
@@ -1043,5 +1077,6 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
   const r = await dropFallbackReposUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
 }
+await rmdirAll(FIXTURE, { recursive: true, force: true });
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

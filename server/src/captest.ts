@@ -313,6 +313,60 @@ for (const n of wasHttpOnly) {
   }
 }
 
+/* ── 回归不许在用户的真实项目上起服务（Q71，2026-10-21）──
+
+   `apitest` 从 2026-09-28 建起就是 `serveStart(buildProject(listProjectDirs()[0]))` ——
+   **也就是 `projects/` 下的第一个项目，用户的那个**，每跑一次就在上面起一次真服务、
+   打一整套真 HTTP。2026-10-20 才量到（查 `projects/` 目录时间戳时撞上的），而那之前跑了上百轮。
+
+   > **「跑完没报错」和「跑的时候没碰别人的东西」是两件事**，
+   > 而本项目的收尾纪律一直围着「我创建了哪些文件」写（`00` §166 那条教训的第五次）。
+
+   ⚠️ **禁的是「起服务」不是「读」**：`selftest` 也拿 `listProjectDirs()` 取语料，
+   但它只 `listDrafts` + `validateDraft`，**一个字节都不写** —— 那是有意的，也是对的
+   （语料是用户自己的项目，它正是拿真稿查校验器误报）。
+   所以判准是**两样同时出现**：`listProjectDirs` + `serveStart`。
+   将来谁合法地同时用到这两样，它也会红 —— 那时来看一眼，**宁可红**。
+
+   ⚠️ 注释里提它是允许的（这一节自己的注释就提了），所以要先剥注释再看 ——
+   只按「行首是不是 `*`」判的话，多行块注释中间那些行会漏网（第一版实测误报 7 处）。 */
+{
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const { join: j } = await import("node:path");
+  const SRC = join(process.cwd(), "src");
+  /** 剥掉块注释与行注释，只留下真正会执行的那部分 */
+  const codeOf = (src: string): string => {
+    const out: string[] = [];
+    let inBlock = false;
+    for (let ln of src.split("\n")) {
+      if (inBlock) {
+        const e = ln.indexOf("*/");
+        if (e < 0) { out.push(""); continue; }
+        ln = ln.slice(e + 2); inBlock = false;
+      }
+      for (;;) {
+        const b = ln.indexOf("/*");
+        if (b < 0) break;
+        const e = ln.indexOf("*/", b + 2);
+        if (e < 0) { ln = ln.slice(0, b); inBlock = true; break; }
+        ln = ln.slice(0, b) + ln.slice(e + 2);
+      }
+      out.push(ln.replace(/\/\/.*$/, ""));
+    }
+    return out.join("\n");
+  };
+  const tests = readdirSync(SRC).filter((f) => /test\.ts$/.test(f) && f !== "captest.ts");
+  ok(tests.length > 0, "扫得到回归源码（判据自己得先有东西可扫）", `${tests.length} 份`);
+  const offenders: string[] = [];
+  for (const f of tests) {
+    const code = codeOf(readFileSync(j(SRC, f), "utf8"));
+    if (code.includes("listProjectDirs") && code.includes("serveStart")) offenders.push(f);
+  }
+  ok(offenders.length === 0,
+    "**回归不许在 `listProjectDirs()` 来的项目上 `serveStart`**（那是用户的 `projects/`，纪律⑥）",
+    offenders.length ? offenders.join(" · ") : `扫了 ${tests.length} 份回归，零处`);
+}
+
 /* ── 收尾：自己造的兜底仓库（M14-6）──
    ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
    而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。
