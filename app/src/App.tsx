@@ -60,8 +60,13 @@ export default function App() {
   const open = useCallback(async (dir: string) => {
     if (!hub) return;
     if (project && dir === project.dir) { setPage("work"); return; }
-    const r = await hub.post<ProjectHandle & { app: string }>("open_project", { dir });
+    const r = await hub.post<ProjectHandle & { app: string; identity?: string }>("open_project", { dir });
     if (!r.ok || !r.data) { toast("打开项目失败", r.errors?.[0]?.message ?? "", "error"); return; }
+    /* ⚠️ **这个位置换了一个目录**（M14-2，Q68）：同名重建会让它静默继承旧的快照 / 评论 / 回收站，
+       而静默继承**不会报错** —— 用户只会觉得「这软件的历史是乱的」。所以这一句必须说。
+       只在 `replaced`（指纹齐、但对不上）时说；老记录没指纹回 `unknown`，**一个字都不说**。 */
+    if (r.data.identity === "replaced")
+      toast("这个位置换了一个目录", "和上次打开的不是同一个（新建的同名目录也算）。它的历史从这次重新算，旧的那份还留着。", "error");
     setProject({ url: r.data.url, token: r.data.token, ws: r.data.ws, name: r.data.name, title: r.data.title, dir: r.data.dir });
     setPage("work"); bump((v) => v + 1);
   }, [hub, project]);

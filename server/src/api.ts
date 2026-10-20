@@ -334,8 +334,12 @@ export async function handleApi(
       const { serveStart } = await import("./serve.js");
       const s = await serveStart(target);
       if (!s.indexExists) await buildIndex(target, s.url);   // 第一次打开：部署壳与令牌，否则 S2 / S6 / S8 全 404
-      await touchProject(target.dir, target.name, target.title);
-      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/" } });
+      /* ⚠️ `identity` 要带回前端（M14-2，Q68）：这个位置**换了一个目录**时得说一句。
+         不说的话用户会在一个昨天新建的目录里看到别人的快照、评论、回收站 ——
+         **而静默继承不会报错**，他只会觉得「这软件的历史是乱的」。
+         老记录回 `unknown`（没指纹），界面**什么都不说** —— 否则每条老记录都要弹一次窗。 */
+      const { identity } = await touchProject(target.dir, target.name, target.title);
+      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity } });
       return true;
     }
 

@@ -43,6 +43,7 @@
     "gaptest": "npm run build && node dist/gaptest.js",
     "converttest": "npm run build && node dist/converttest.js",
     "limitstest": "npm run build && node dist/limitstest.js",
+    "identitytest": "npm run build && node dist/identitytest.js",
     "actxtest": "npm run build && node dist/actxtest.js"
   },
   "dependencies": {

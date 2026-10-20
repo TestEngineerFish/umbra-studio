@@ -276,6 +276,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run sync-plugins` | **拉内置插件**（S4，2026-10-17）：`plugins/<id>/` 是构建产物，从 umbra-plugins 来 —— 本地 `../umbra-plugins`（`UMBRA_PLUGINS_DIR`）优先，否则 GitHub Release（`UMBRA_PLUGINS_RELEASE`，缺省 latest；私有仓库，令牌 `GH_TOKEN` → `../.secrets/gh-token` → `gh auth token` 依次真问）。顺带用 SDK 覆盖 `runtime/umbra-plugin.js` 与演示插件的桥。`--check`（`node server/dist/sync_plugins.js --check`）只查三个在不在。**新 clone 之后第一件事** |
 | `npm --prefix server run upgradetest` | **内置插件被市场升级回归**（S4 §3）：准入三条（验签 · 版本严格更高 · 不多认领内置类型）· 加载再判一遍 · 退回出厂版本 · B 面跟着换。临时状态目录 + 临时钥匙，出厂那份读真的 markdown（要先 sync） |
 | `npm --prefix server run tokentest` | **登录令牌过期自动刷新回归**（2026-10-17，用户报「已登录却提示登录已失效」）：Casdoor 访问令牌 7 天整点过期 —— 用前看 `exp` 快到期先刷新、401 再刷新重试一次、并发刷新合并成一次、刷新令牌被拒才清登录（断网不清）。临时状态目录 + 假服务端 |
+| `npm --prefix server run identitytest` | **打开记录的身份与指纹回归**（2026-10-20，M14-2）：同名重建 → `replaced` 不继承 · 老条目 → `unknown` **不报警** · 目录没了 → `missing` · `dev` 只记不比。⚠️ **临时状态目录，一条都不往真「最近打开」里写** —— 那个列表是用户的东西（首页直接显示），`doc/00` §166 实测过「删临时目录删不掉它」。⚠️ 收尾自检要用 `TOOL_ROOT` 不是 `process.cwd()`（npm 跑脚本时 cwd 是 `server/`，查错文件 = 一条**永远绿**的自检）|
 | `npm --prefix server run plugintest` | 插件机制回归（M11-4）：**重点不是「能跑」是「关不关得住」** —— 演示插件同时是攻击样本 |
 | `npm --prefix server run rendertest` | 渲染回归（要浏览器） |
 | `npm --prefix server run ui -- <项目名>` | 起界面给人用 |
