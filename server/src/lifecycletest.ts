@@ -95,6 +95,21 @@ async function main() {
         }
       }
     } catch { /* 忽略 */ }
+    /* ── 兜底仓库也是「自己造的状态」（M14-6，2026-10-20）──
+       ⚠️ 上面那一段只收了「最近打开」。而这一套每轮还会在 `STATE_ROOT/.umbrastudio/git/`
+       里留下**一串**仓库：`umbrastudio-lifecycle-<时间戳>` 自己，加上它里面
+       建出来的 `新项目` / 兄弟项目那些 —— 实测 591 个仓库里 111 个叫 `新项目`。
+       判准只有一条：**指向系统临时目录、而那个目录已经不在了**。
+       不枚举名字前缀 —— 嵌套建出来的叫什么我们事先不知道，
+       而按前缀列清单漏一个就静默复发、症状和没修一模一样。
+       ⚠️ `onlyDead`：目录还在的不动；用户真实项目的仓库不在临时目录下，碰不到。 */
+    try {
+      const { dropFallbackReposUnder } = await import("./purge.js");
+      const r = await dropFallbackReposUnder(tmpdir(), { onlyDead: true });
+      const after = await dropFallbackReposUnder(tmpdir(), { onlyDead: true });
+      if (after.removed.length) console.log(`  ✗ （收尾）兜底仓库没清干净，还剩 ${after.removed.length} 个`);
+      else console.log(`  ✓ （收尾）自己造的兜底仓库清干净了（这一轮 ${r.removed.length} 个 · ${Math.round(r.freedBytes / 1024)} KB · 认不出的老仓库 ${r.unidentifiable} 个）`);
+    } catch { /* 清不掉也不该让回归报失败 */ }
   }
 }
 

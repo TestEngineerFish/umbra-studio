@@ -1282,6 +1282,28 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**直接改 tokens 文件（不走 set_token_value）之后也拿到新值**", (await val()) === "#C92A2A80", await val());
 }
 
+/* ── 收尾：**删掉自己造的文件 ≠ 删掉自己造的状态**（`00` §166）──
+   ⚠️ 这一套的样本项目每轮都是新路径（`Date.now()` / `mkdtemp`）→ **每轮都是一个新兜底仓库**，
+   而它们住在 `STATE_ROOT`，`rm DIR` 删不掉。实测攒到 **591 个 / 93 MB**，
+   其中 265 个是 `umbrastudio-filetest-*`（`doc/24` §11.3）。
+
+   判准**只有一条**：指向系统临时目录、而那个目录已经不在了。
+   实测这一轮造的 19 个仓库**全部**指向 `/var/folders/.../T/` 下
+   （`evil` / `新项目` / `设计稿` 这些嵌套出来的也一样）——
+   所以不用枚举名字前缀，而按前缀列清单的话漏一个就静默复发、症状和没修一模一样。
+   ⚠️ `onlyDead`：目录还在的不动（别人的回归可能正跑着）。
+   ⚠️ 用户真实项目的仓库**碰不到** —— 它们不在临时目录下。 */
 await rm(DIR, { recursive: true, force: true });
+{
+  const { dropFallbackReposUnder } = await import("./purge.js");
+  const { tmpdir: td9 } = await import("node:os");
+  const r = await dropFallbackReposUnder(td9(), { onlyDead: true });
+  /* 收尾自检：清完之后**一个死的都不该剩**。
+     ⚠️ 这一条不是「清掉了 N 个」—— 那种读数在「本来就没有」时也成立（§166 同族）。
+     `unidentifiable` 是 2026-10-20 之前建的那一批，**我们认不出来**，照实带在读数里。 */
+  const after = await dropFallbackReposUnder(td9(), { onlyDead: true });
+  ok(`（收尾）自己造的兜底仓库清干净了`, after.removed.length === 0,
+     { 这一轮清掉: r.removed.length, 腾出KB: Math.round(r.freedBytes / 1024), 还活着的临时项目: r.keptAlive, 认不出的老仓库: r.unidentifiable });
+}
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

@@ -162,3 +162,44 @@ export async function forgetProject(dir: string, confirm: boolean): Promise<{
   const stillOnDisk = existsSync(ud) && ASSET_ENTRIES.some((n) => existsSync(join(ud, n))) ? ud : null;
   return { forgot: true, freedBytes, removedRecord: removed, stillOnDisk };
 }
+
+/** 清掉**指向某个目录树下**的全部 git 兜底仓库（M14-6）。
+ *
+ *  ⚠️ 这件事在 2026-10-20 之前**做不到**：目录名是 `<目录名>__<路径 sha256 前 16 位>`，
+ *  **哈希不可逆**，而 `config` 里只有 `bare = true` 一行 —— 问不出它对应哪个目录。
+ *  M14-1 给每个仓库写了 `[umbra] worktree` 之后它才成立。
+ *
+ *  **给回归自己收尾用的**：`filetest` / `lifecycletest` 的样本项目在系统临时目录下，
+ *  而它们每轮都是新路径（`Date.now()` / `mkdtemp`）→ **每轮都是一个新仓库**。
+ *  实测：跑 5 轮 `filetest` + 1 轮 `lifecycletest` 多出 **65 个**仓库。
+ *  按路径前缀清，连它们**嵌套建出来的**项目（`新项目` / `evil` 那些）一起清掉 ——
+ *  一个个记下来再删的话，漏一个就静默复发，而症状和没修一模一样。
+ *
+ *  ⚠️ `unidentifiable` 要**照实回**：2026-10-20 之前建的仓库一条 `[umbra]` 都没有，
+ *  **我们就是认不出来**。把它算进「清掉了」会让读数说谎。 */
+export async function dropFallbackReposUnder(root: string, opts?: { onlyDead?: boolean }): Promise<{
+  removed: string[]; freedBytes: number; unidentifiable: number; keptAlive: number;
+}> {
+  const { repoMetaOfGitDir } = await import("./gitkeep.js");
+  const gitRoot = join(STATE_ROOT, UD_DIRNAME, "git");
+  const out = { removed: [] as string[], freedBytes: 0, unidentifiable: 0, keptAlive: 0 };
+  const under = resolve(root);
+  let names: string[] = [];
+  try { names = await readdir(gitRoot); } catch { return out; }
+  for (const name of names) {
+    const gd = join(gitRoot, name);
+    const meta = await repoMetaOfGitDir(gd);
+    if (!meta.worktree) { out.unidentifiable++; continue; }
+    const wt = resolve(meta.worktree);
+    if (wt !== under && !wt.startsWith(under + sep)) continue;
+    /* `onlyDead`：**目录还在的就不动**。回归收尾按这一档扫整个系统临时目录 ——
+       「指向临时目录、而那个目录已经不在了」是一条**不用枚举**的判准，
+       所以嵌套建出来的项目（`evil` / `新项目` / `设计稿`）和 `mkdtemp` 的随机名
+       全都自动落网。按名字前缀列清单的话，漏一个就静默复发。 */
+    if (opts?.onlyDead && existsSync(wt)) { out.keptAlive++; continue; }
+    out.freedBytes += await sizeOf(gd);
+    await rm(gd, { recursive: true, force: true });
+    out.removed.push(name);
+  }
+  return out;
+}

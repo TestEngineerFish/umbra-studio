@@ -221,5 +221,18 @@ for (const n of wasHttpOnly) {
      bad.length ? bad.join(" · ") : `${scanned} 个文件都是纯文本`);
 }
 
+/* ── 收尾：自己造的兜底仓库（M14-6）──
+   ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
+   而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。
+   判准只有一条：指向系统临时目录、而那个目录已经不在了。`onlyDead` 保证不碰还活着的。
+   ⚠️ 这一条是**实测补的**：filetest / lifecycletest 装了收尾之后，跑完一整轮
+   仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
+   **「有的测装了收尾」不等于「残留不再增长」。** */
+{
+  const { dropFallbackReposUnder } = await import("./purge.js");
+  const { tmpdir: td0 } = await import("node:os");
+  const r = await dropFallbackReposUnder(td0(), { onlyDead: true });
+  if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
+}
 console.log(fail === 0 ? `\n✓ 能力注册表 ${pass}/${pass + fail}` : `\n✗ 能力注册表 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);
