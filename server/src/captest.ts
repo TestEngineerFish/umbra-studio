@@ -14,6 +14,21 @@ const ok = (c: boolean, what: string, detail = "") => {
   else { fail++; console.log(`  ✗ ${what}${detail ? " — " + detail : ""}`); }
 };
 
+/* ⚠️ **开头先数一次兜底仓库。**（2026-10-21）
+   收尾那条「清掉 N 个」**认不出来的既不删也不报** —— 于是「清掉 0 个」
+   有两种可能：本来就没有，或者我们压根没认出来（纪律④）。
+   拿「跑之前有哪些」当基线，收尾比一次**完全不依赖任何匹配逻辑**：
+   多出来一个就是我们自己留下的，不管它为什么没被清掉。 */
+const REPO_ROOT_FOR_CHECK = await (async () => {
+  const { STATE_ROOT: SR } = await import("./project.js");
+  const { UD_DIRNAME: UD } = await import("./statedirs.js");
+  return join(SR, UD, "git");
+})();
+const reposBefore: Set<string> = await (async () => {
+  const { readdir: rd } = await import("node:fs/promises");
+  try { return new Set(await rd(REPO_ROOT_FOR_CHECK)); } catch { return new Set<string>(); }
+})();
+
 console.log("能力注册表（M11-1）");
 const caps = allCaps();
 ok(caps.length > 0, "能力模块真的被 import 到了", `${caps.length} 件`);
@@ -375,10 +390,50 @@ for (const n of wasHttpOnly) {
    仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
    **「有的测装了收尾」不等于「残留不再增长」。** */
 {
-  const { dropFallbackReposUnder } = await import("./purge.js");
+  const { dropFallbackReposUnder, deadFallbackReposUnder } = await import("./purge.js");
   const { tmpdir: td0 } = await import("node:os");
   const r = await dropFallbackReposUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
+  /* ⚠️ **清完之后再数一次 —— 这一条测的是仪器本身。**（2026-10-21 新加）
+     上面那句「清掉 N 个」**认不出来的那些既不删也不报**，于是
+     「清掉 0 个」有两种可能：本来就没有，或者我们压根没认出来（纪律④）。
+     实测真发生过：`apitest` 的夹具路径解过符号链接（`/private/var/…`），
+     而清理按 `os.tmpdir()`（`/var/…`）比 —— **六轮攒了 6 个仓库，六次收尾都报 0**。 */
+  /* ⚠️ **自带一个样本来验仪器。**（2026-10-21，反向验证第一版没红逼出来的）
+
+     第一版只断言「清完之后没有死仓库」「跑完没新增」—— 而这一轮 `captest`
+     **自己压根没造出仓库**（它建的临时项目没走写入口，不触发 git 兜底），
+     于是装回缺陷之后两条照样绿。**判据在没有样本的时候，测的是「今天恰好没事」。**
+
+     现在自己造一个：建一个临时项目 → `ensureRepo` → 删掉目录 → 看清理认不认得它。
+     这样「清理仪器好不好用」变成一条**每轮都在跑**的读数，而不是「碰巧有残留才测得到」。 */
+  {
+    const { mkdtemp: mkt, rm: rmt } = await import("node:fs/promises");
+    const { existsSync: ex2, realpathSync: rp2 } = await import("node:fs");
+    const { ensureRepo } = await import("./gitkeep.js");
+    const { gitDirOfProject } = await import("./gitkeep.js");
+    /* ⚠️ 用 **realpath 过的** tmpdir —— macOS 上 `/var` 是链接，而这正是要验的那件事：
+       清理按 `os.tmpdir()`（`/var/…`）比，仓库自报的是 `/private/var/…`。 */
+    const sample = await mkt(join(rp2(td0()), "us-reposample-"));
+    await ensureRepo(sample);
+    const sampleGd = gitDirOfProject(sample);
+    ok(ex2(sampleGd), "样本自己先成立：临时项目真的有了一个兜底仓库", sampleGd.split("/").pop() ?? "");
+    await rmt(sample, { recursive: true, force: true });   // 目录没了 = 这个仓库从此是死的
+    const r2 = await dropFallbackReposUnder(td0(), { onlyDead: true });
+    ok(!ex2(sampleGd), "**清理认得出「解过符号链接的临时目录」里的死仓库**（这一条测的是仪器本身）",
+       ex2(sampleGd) ? "✗ 还在 —— 清理按一种路径写法比，而仓库自报的是另一种" : `清掉 ${r2.removed.length} 个`);
+  }
+
+  const stillDead = await deadFallbackReposUnder(td0());
+  ok(stillDead.length === 0, "**收尾之后临时目录下一个死仓库都不剩**",
+     stillDead.length ? stillDead.join(" · ") : "0 个");
+  /* 和开头那次比。**这一条不依赖任何匹配逻辑** —— 多出来就是红，不管为什么。 */
+  const { readdir: rd2 } = await import("node:fs/promises");
+  let reposAfter: string[] = [];
+  try { reposAfter = await rd2(REPO_ROOT_FOR_CHECK); } catch { /* 没有就是没有 */ }
+  const added = reposAfter.filter((n) => !reposBefore.has(n));
+  ok(added.length === 0, "**跑完一轮没给自己留下兜底仓库**（和开头那次逐个比，不靠路径匹配）",
+     added.length ? added.join(" · ") : `${reposAfter.length} 个，和开头一样`);
 }
 console.log(fail === 0 ? `\n✓ 能力注册表 ${pass}/${pass + fail}` : `\n✗ 能力注册表 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

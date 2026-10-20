@@ -365,10 +365,17 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 `serveStart(buildProject(listProjectDirs()[0]))`，**2026-09-28 建起就是这样，跑了上百轮才量到**。
 ⚠️ 换夹具时读数先掉到 **119/119**（看着和 122 一样「全绿」）—— 缺的 3 条全在④预览路由，
 它先 `list files` 找任意 `.html` 当样本，空项目里 `if (anyHtml)` **整段跳过**。
-**总数本身也是一条判据**（第二次）。收尾：跑完 15 套后 `projects/` 下 **670 项逐字节一致**。
+**总数本身也是一条判据**（第二次）。
+⚠️ **真正花时间的是收尾**（`doc/24` §20.6.2）：连出三条 —— 删夹具排在清理之后（六轮攒 6 个，六次都报「清掉 0 个」）·
+`dropFallbackReposUnder` **只按一种路径写法比**（macOS `/var` 是链接，同一个坑的第三次，**产品代码的缺陷**）·
+`plugintest` 是 M14-6 漏掉的第七套（跑完一整轮数出来的：16 套全绿而仓库 2 → 3）。
+⚠️ 而第一版收尾判据**装回缺陷也不红** —— `captest` 自己那一轮没造出仓库。
+> **判据在没有样本的时候，测的是「今天恰好没事」。**
+改成**自带样本**（建项目 → `ensureRepo` → 删目录 → 看清理认不认得）之后才钉得住。
+收尾读数：16 套退出码全 0 · 兜底仓库 **2 → 2** · `projects/` **670 项逐字节一致**。
 
 **读数**：`purgetest` **45/45**（新建）· `identitytest` **36/36**（新建）· 界面端到端 **19/19**（临时状态目录起真服务、无头 Chrome 真点击）·
-`captest` **314/314** · `apitest` **123/123** · `filetest` / `lifecycletest` 全通 · `kindtest` 51/51 · `gaptest` 60/60 ·
+`captest` **318/318** · `apitest` **123/123** · `filetest` / `lifecycletest` 全通 · `kindtest` 51/51 · `gaptest` 60/60 ·
 `limitstest` 46/46 · `difftest` 9/9 · `ziptest` 14/14 · `converttest` **42/42** · `plugintest` 93/93 · `verbtest` 27/27 ·
 `upgradetest` 37/37 · `selftest` 零 error。**反向验证 4 + 5 + 6 + 1 例，全部报红。**
 

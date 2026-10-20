@@ -1064,6 +1064,13 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
   }
 }
 
+/* ⚠️ **删夹具要排在下面那段清理之前。**（2026-10-21 自己栽的）
+   清理的判准是「指向临时目录、**而那个目录已经不在了**」——
+   夹具还在的时候它算「活着」，于是**不清**；等下面跑完我再删目录，
+   仓库就留下了。连跑六轮攒了 6 个，而**每一轮的收尾都报「清掉 0 个」**。
+   > 顺序错一行，收尾就从「清干净」变成「每轮留一个」，而读数长得一模一样。 */
+await rmdirAll(FIXTURE, { recursive: true, force: true });
+
 /* ── 收尾：自己造的兜底仓库（M14-6）──
    ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
    而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。
@@ -1077,6 +1084,5 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
   const r = await dropFallbackReposUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
 }
-await rmdirAll(FIXTURE, { recursive: true, force: true });
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

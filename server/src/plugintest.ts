@@ -589,5 +589,17 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
      "两份去掉头之后一字不差（同一个出处：umbra-plugins/sdk/umbra.js）");
 }
 
+/* ── 收尾：自己造的兜底仓库（M14-6 的第七套，2026-10-21 补）──
+   §「.md 插件」那一节在系统临时目录下建项目（`umbrastudio-mdtest-<时间戳>`）
+   并走写入口写稿 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，而删临时目录**删不掉它**。
+   ⚠️ **这一套是跑完一整轮之后数出来的**：15 套全绿、`projects/` 一个字节没动，
+   而仓库数 **2 → 3**。`captest` 的清理排在它前面，所以清不到它 ——
+   > **「有的测装了收尾」不等于「残留不再增长」**（M14-6 原话，这是它的第二次）。 */
+{
+  const { dropFallbackReposUnder } = await import("./purge.js");
+  const { tmpdir: td9 } = await import("node:os");
+  const r = await dropFallbackReposUnder(td9(), { onlyDead: true });
+  if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
+}
 console.log(fail === 0 ? `\n✓ 插件机制 ${pass}/${pass + fail}` : `\n✗ 插件机制 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

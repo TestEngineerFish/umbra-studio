@@ -28,7 +28,7 @@
  *  并在回执里**照实说**项目目录里那一份还在。M14-4 之后历史全在我们这边，它才真的全删。
  */
 import { readdir, rm, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME } from "./statedirs.js";
@@ -178,13 +178,57 @@ export async function forgetProject(dir: string, confirm: boolean): Promise<{
  *
  *  ⚠️ `unidentifiable` 要**照实回**：2026-10-20 之前建的仓库一条 `[umbra]` 都没有，
  *  **我们就是认不出来**。把它算进「清掉了」会让读数说谎。 */
+/** `root` 的**两种写法**：原样，和解完符号链接的那个。
+ *
+ *  ⚠️ **macOS 上 `/var` 是指向 `/private/var` 的符号链接**，于是同一个临时目录有两个名字：
+ *  `os.tmpdir()` 给的是 `/var/folders/…`，而 `mkdtemp(realpathSync(tmpdir()))` 建出来的项目
+ *  自报的 `[umbra] worktree` 是 `/private/var/folders/…`。
+ *  只按一种写法比的话 **`isInside` 判不出来 → 那个仓库不被清、也不被报告**，
+ *  而读数会说「清掉 0 个」—— 看上去和「本来就没有」一模一样（纪律④）。
+ *
+ *  **这条是 2026-10-21 实测撞到的**：`apitest` 换成 realpath 的临时夹具之后，
+ *  连跑六轮攒下 6 个仓库，而每一轮的收尾都报「清掉 0 个」。
+ *  （`verbtest` 的沙箱放行、Q62 的 `records/<key>` 都踩过同一个坑，这是第三次。） */
+function rootForms(root: string): string[] {
+  const a = resolve(root);
+  let b = a;
+  try { b = realpathSync(a); } catch { /* 不在就只用原样 */ }
+  return a === b ? [a] : [a, b];
+}
+
+/** 一个 worktree 路径在不在这些 root 之一下面 */
+const underAny = (wt: string, roots: string[]): boolean =>
+  roots.some((u) => wt === u || wt.startsWith(u + sep));
+
+/** **只查不删**：`root` 下面有多少个「指向一个已经不在的目录」的兜底仓库。
+ *
+ *  给回归的收尾**当判据**用：清理跑完之后这个数必须是 0。
+ *  ⚠️ 为什么不能用 `dropFallbackReposUnder` 的 `removed.length === 0` 代替 ——
+ *  **匹配不上的那些它既不删也不报**，于是两次都是 0。
+ *  **「清掉 0 个」有两种可能：本来就没有，或者我们压根没认出来。** */
+export async function deadFallbackReposUnder(root: string): Promise<string[]> {
+  const { repoMetaOfGitDir } = await import("./gitkeep.js");
+  const gitRoot = join(STATE_ROOT, UD_DIRNAME, "git");
+  const roots = rootForms(root);
+  const dead: string[] = [];
+  let names: string[] = [];
+  try { names = await readdir(gitRoot); } catch { return dead; }
+  for (const name of names) {
+    const meta = await repoMetaOfGitDir(join(gitRoot, name));
+    if (!meta.worktree) continue;                       // 认不出来的不算（照实说，见下）
+    const wt = resolve(meta.worktree);
+    if (underAny(wt, roots) && !existsSync(wt)) dead.push(name);
+  }
+  return dead;
+}
+
 export async function dropFallbackReposUnder(root: string, opts?: { onlyDead?: boolean }): Promise<{
   removed: string[]; freedBytes: number; unidentifiable: number; keptAlive: number;
 }> {
   const { repoMetaOfGitDir } = await import("./gitkeep.js");
   const gitRoot = join(STATE_ROOT, UD_DIRNAME, "git");
   const out = { removed: [] as string[], freedBytes: 0, unidentifiable: 0, keptAlive: 0 };
-  const under = resolve(root);
+  const roots = rootForms(root);
   let names: string[] = [];
   try { names = await readdir(gitRoot); } catch { return out; }
   for (const name of names) {
@@ -192,7 +236,7 @@ export async function dropFallbackReposUnder(root: string, opts?: { onlyDead?: b
     const meta = await repoMetaOfGitDir(gd);
     if (!meta.worktree) { out.unidentifiable++; continue; }
     const wt = resolve(meta.worktree);
-    if (wt !== under && !wt.startsWith(under + sep)) continue;
+    if (!underAny(wt, roots)) continue;
     /* `onlyDead`：**目录还在的就不动**。回归收尾按这一档扫整个系统临时目录 ——
        「指向临时目录、而那个目录已经不在了」是一条**不用枚举**的判准，
        所以嵌套建出来的项目（`evil` / `新项目` / `设计稿`）和 `mkdtemp` 的随机名
