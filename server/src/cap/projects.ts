@@ -7,6 +7,7 @@ import {
   archiveProject, buildProject, deleteProject, listDrafts, listProjectDirs, projectsRoot, updateProject,
 } from "../project.js";
 import { clearRecentProjects, listRecentProjects, removeRecentProject } from "../workspace.js";
+import { clearProjectCache, clearStaleRecords, forgetProject } from "../purge.js";
 import { listIcons, listComponents, searchTokens } from "../assets.js";
 import { listTrash } from "../refs.js";
 import { isToolPage } from "../indexpage.js";
@@ -83,6 +84,23 @@ defineCap({
 
     for (const r of recents) await describe(r.dir);
     for (const d of dirs) await describe(d);
+    /* ⚠️ **失效的记录要列出来**（M14-3，`doc/24` §14 那条顺带发现）。
+       上面 `describe` 的 `catch` 是为了「一条坏记录别拖垮整页」，但它的代价是
+       **这条记录在首页压根不出现** —— 于是用户 2026-10-20 要的那句
+       「如果指定的文件夹不存在了，点历史记录时提示」**连『点』的机会都没有**，
+       他只会觉得「我上周打开过的项目不见了」而没有任何解释。
+       所以给它们一行，带 `missing: true`，界面灰掉并给「从列表去掉 / 忘掉它」。
+       ⚠️ `identity: "replaced"` 的**不算失效** —— 那个位置有东西，只是换了一个，
+       它会被 `describe` 正常列出来（打开时才说那句话）。 */
+    for (const r of recents) {
+      if (r.identity !== "missing") continue;
+      /* ⚠️ **按「`rows` 里有没有这一行」判，不能按 `seen`**（判据第一次就抓到这个）：
+         `describe` 是 `seen.add(dir)` **在 try 之前**，读不出来才进 `catch` ——
+         所以失效的目录**已经在 `seen` 里了**，照 `seen` 过滤等于这一段永远不执行，
+         而「没有 missing 行」和「这一段写了但跳过了」长得一模一样。 */
+      if (rows.some((x) => x.dir === r.dir)) continue;
+      rows.push({ name: r.name, title: r.title, dir: r.dir, missing: true, drafts: 0, lastOpened: r.lastOpened });
+    }
     return envelope({ projectsRoot: projectsRoot(), projects: rows }, [], { count: rows.length });
   },
 });
@@ -154,6 +172,35 @@ defineCap({
   input: { dir: z.string().describe("项目目录绝对路径") },
   http: { route: "recent_remove", method: "POST" },
   run: async ({ dir }) => envelope(await removeRecentProject(dir)),
+});
+
+/* ── 「清除缓存」三档（M14-3，`doc/24` §8.7）。实现在 `purge.ts`，那里写着为什么安全线是白名单 ── */
+
+defineCap({
+  name: "clear_project_cache", title: "清掉这个项目可重算的缓存", scope: "project",
+  summary: "删体检报告 / 缩略图 / 索引数据 —— **下次打开自己长回来**。快照、评论、回收站、模板、会话**一个字节都不碰**（回执里的 `kept` 会把它们列出来）。磁盘紧张或者索引看起来不对时用它。",
+  input: {},
+  http: { route: "cache_clear", method: "POST" },
+  run: async (_i, c) => envelope(await clearProjectCache(p(c).dir)),
+});
+
+defineCap({
+  name: "clear_stale_records", title: "清掉已失效的打开记录", scope: "global",
+  summary: "「最近打开」里**目标目录已经不在**的那几条，连它们的 git 兜底仓库一起清掉。只认「路径压根不在」这一种；「位置换了一个」不在这一档（删它的历史要走 `forget_project`）。",
+  input: {},
+  http: { route: "records_clear_stale", method: "POST" },
+  run: async () => envelope(await clearStaleRecords()),
+});
+
+defineCap({
+  name: "forget_project", title: "忘掉一个项目（连历史）", scope: "global",
+  summary: "**真删，退不回来**：一条打开记录 + 我们为它存的 git 兜底历史。和 `remove_recent_project`（只是别在首页列它了，历史不动）**是两回事**。不给 `confirm: true` 会被拒。",
+  input: {
+    dir: z.string().describe("项目目录绝对路径"),
+    confirm: z.boolean().describe("必须是 true —— 历史删了退不回来"),
+  },
+  http: { route: "project_forget", method: "POST" },
+  run: async ({ dir, confirm }) => envelope(await forgetProject(dir, confirm)),
 });
 
 defineCap({

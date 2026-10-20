@@ -317,7 +317,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      所以判据要带 `--git-dir` / `--work-tree`，而且 `gitDirForTest` 必须**调实现那个函数**
      （自己复刻那段哈希的话，算法一改判据就指到一个不存在的目录，
      而 `git --git-dir <不存在>` 的报错看起来像「产品没提交」）。 */
-  const { gitDirForTest } = await import("./gitkeep.js");
+  const { gitDirOfProject: gitDirForTest } = await import("./gitkeep.js");
   const GD = gitDirForTest(DIR);
   const git = (args: string[]) => execFileSync("git",
     ["--git-dir", GD, "--work-tree", DIR, "-c", "core.quotepath=false", ...args],
@@ -422,7 +422,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      原来建一个 `<子目录>/.git`，现在落在我们自己的状态目录。
      ⚠️ 新架构下这件事**更彻底**：我们不再往用户的目录树里建任何仓库 ——
      所以顺带多钉一条「子目录里也没有 `.git`」。 */
-  const { gitDirForTest: gdOf } = await import("./gitkeep.js");
+  const { gitDirOfProject: gdOf } = await import("./gitkeep.js");
   ok("**项目在别人的仓库里时，提交落进我们自己的状态目录**（不是那个大仓库）",
      sha !== null && existsSync(join(gdOf(sub), "HEAD")),
      { 提交号: sha, 我们的仓库: existsSync(join(gdOf(sub), "HEAD")) });
@@ -545,8 +545,8 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      夹具在项目里 init 一个，它看不见，于是三态全回 `off`/`broken`。
      ⚠️ 这是「夹具复刻实现的布局」那一类：实现一改，夹具就指到别处
      （§134.6 那条「判据要拼实现的路径，必须调实现那个函数」）。 */
-  const { ensureRepo: mkRepo, gitDirForTest, commitPaths: ciPaths } = await import("./gitkeep.js");
-  const GG = gitDirForTest(G);
+  const { ensureRepo: mkRepo, gitDirOfProject, commitPaths: ciPaths } = await import("./gitkeep.js");
+  const GG = gitDirOfProject(G);
   const gx = (args: string[]) => execFileSync("git",
     ["--git-dir", GG, "--work-tree", G, ...args], { cwd: G, encoding: "utf8" }).trim();
 
@@ -941,7 +941,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   /* 功能还在吗 —— ⚠️ **问「我们的 GIT_DIR 里有几个提交」，不是看返回值**：
      `writeAnyFile` 内部已经提交过了，手工再调一次就是 nothing to commit、照样回 null
      （§140.3② 那个坑，两天内第二次）。 */
-  const { gitDirForTest } = await import("./gitkeep.js");
+  const { gitDirOfProject: gitDirForTest } = await import("./gitkeep.js");
   const gd = gitDirForTest(EVIL);
   let ours = 0;
   try { ours = Number(execFileSync("git", ["--git-dir", gd, "rev-list", "--count", "HEAD"]).toString().trim()) || 0; } catch { ours = 0; }
@@ -1050,7 +1050,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("**新建项目不在项目目录里建 `.git`**（#74 之后它永远收不到提交，只会误导人）",
      !existsSync(join(made.dir, ".git")) && !made.created.includes(".git/"),
      made.created.join(" / "));
-  const { gitDirForTest: gdf } = await import("./gitkeep.js");
+  const { gitDirOfProject: gdf } = await import("./gitkeep.js");
   ok("而兜底仓库建起来了（`gitEnabled` 说的是这一个）",
      made.gitEnabled === existsSync(join(gdf(made.dir), "HEAD")), String(made.gitEnabled));
 

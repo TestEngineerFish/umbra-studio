@@ -543,6 +543,59 @@ const LIMIT_ROWS: Array<{ key: LimitKey; label: string; unit: string; note: stri
 /** 表单草稿：每项一个字符串（输入框里可能是半截数字） */
 const draftOf = (c: Record<LimitKey, number>) =>
   Object.fromEntries(LIMIT_ROWS.map((r) => [r.key, c[r.key] === undefined ? "" : String(c[r.key])])) as Record<LimitKey, string>;
+/** 「存储与缓存」（M14-3，`doc/24` §8.7）。用户 2026-10-20：「清除缓存这个功能目前应该没有，可以补充一个」。
+ *
+ *  ⚠️ **两颗按钮都不碰算不出来的东西**，所以**都不要确认** ——
+ *  要确认的那一件（「忘掉一个项目，连历史」）在首页那条失效记录上，行内两段式。
+ *  把「清缓存」也套一层确认框，只会让人以为它危险，然后再也不点它。
+ *
+ *  ⚠️ 「清缓存」是**当前项目**的（`scope: "project"`），所以没开项目时按钮不出现 ——
+ *  不是灰着：一个灰着的按钮会让人找不到「要怎样才能点」。
+ *
+ *  ⚠️ **两颗按钮打的不是同一个服务**，这一条差点写错：
+ *  `clear_project_cache` 是 `scope: "project"` —— 要打**项目自己那个服务**（`projectCore`）；
+ *  `clear_stale_records` 是全局的 —— 打 hub。
+ *  桌面壳里 **hub 不属于任何项目**，拿 hub 去调项目域的能力会被门面拒掉，
+ *  而浏览器模式下两者恰好是同一个服务 → **在浏览器里测不出来，一上桌面版就坏**
+ *  （和 `Ask.tsx` 头注那条「这件事在 Electron 里也成立吗」同一族）。 */
+function StoragePanel({ core, projectCore }: { core: Core; projectCore: Core | null }) {
+  const [busy, setBusy] = useState<"" | "cache" | "stale">("");
+  const clearCache = async () => {
+    setBusy("cache");
+    const r = await (projectCore as Core).post<{ removed: string[]; freedBytes: number; kept: string[] }>("cache_clear", {});
+    setBusy("");
+    if (!r.ok) { toast("没清掉", r.errors?.[0]?.message ?? "", "error"); return; }
+    const kb = Math.round((r.data?.freedBytes ?? 0) / 1024);
+    /* ⚠️ **把「没动的那几样」说出来** —— 用户点「清除缓存」时最怕的就是
+       「我的版本历史是不是也被清了」。回执里的 `kept` 正是为这一句存在的。 */
+    toast(r.data?.removed.length ? `缓存清掉了，腾出约 ${kb} KB` : "本来就没有缓存可清",
+      `快照 / 评论 / 回收站 / 模板 / 草稿 / 会话一个字节都没动。下次打开时索引和缩略图会自己长回来。`, "ok");
+  };
+  const clearStale = async () => {
+    setBusy("stale");
+    const r = await core.post<{ removed: Array<{ name: string }>; freedBytes: number; left: number }>("records_clear_stale", {});
+    setBusy("");
+    if (!r.ok) { toast("没清掉", r.errors?.[0]?.message ?? "", "error"); return; }
+    const n = r.data?.removed.length ?? 0;
+    toast(n ? `清掉 ${n} 条失效记录` : "没有失效的记录",
+      n ? `腾出约 ${Math.round((r.data?.freedBytes ?? 0) / 1024)} KB（连它们的版本兜底仓库）；列表里还剩 ${r.data?.left} 条` : "「最近打开」里每一条的目录都还在", "ok");
+  };
+  return (
+    <section className="border-t border-border pt-3">
+      <h3 className="text-sm font-semibold mb-1">存储与缓存</h3>
+      <p className="text-[11px] text-muted leading-relaxed mb-2">
+        体检报告、缩略图、索引数据是<b className="text-text2">算得回来的</b>，清掉只是下次打开慢一点。
+        <br />快照、评论、回收站、模板、会话<b className="text-text2">算不回来</b> —— 这里两颗按钮都不碰它们。
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {projectCore && <button className="btn" disabled={busy !== ""} onClick={() => void clearCache()}>{busy === "cache" ? "正在清…" : "清掉当前项目的缓存"}</button>}
+        <button className="btn" disabled={busy !== ""} onClick={() => void clearStale()}>{busy === "stale" ? "正在清…" : "清掉已失效的打开记录"}</button>
+      </div>
+      {!projectCore && <p className="text-[11px] text-muted mt-2">「清掉缓存」是针对当前项目的 —— 打开一个项目后它会出现在这里。</p>}
+    </section>
+  );
+}
+
 function PluginLimitsPanel({ core }: { core: Core }) {
   const [cfg, setCfg] = useState<Record<LimitKey, number> | null>(null);
   const [ranges, setRanges] = useState<LimitRanges | null>(null);
@@ -624,7 +677,7 @@ function PluginLimitsPanel({ core }: { core: Core }) {
   );
 }
 
-export function SettingsSheet({ core, host, projectUrl, layout, setLayout, onClose }: { core: Core | null; host: HostAdapter | null; projectUrl: string | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
+export function SettingsSheet({ core, host, projectUrl, projectCore, layout, setLayout, onClose }: { core: Core | null; host: HostAdapter | null; projectUrl: string | null; projectCore: Core | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
   const s8 = projectUrl ? `${projectUrl}${encodeURIComponent("S8-项目设置.dc.html")}?embed=1` : null;
   return <Sheet onClose={onClose} wide={!!s8}>
     <Sheet.Head><h2 className="text-base font-semibold">设置</h2></Sheet.Head>
@@ -638,6 +691,7 @@ export function SettingsSheet({ core, host, projectUrl, layout, setLayout, onClo
       {core && <AccountPanel core={core} host={host} />}
       {core && <CliPicker core={core} />}
       {core && <PluginLimitsPanel core={core} />}
+      {core && <StoragePanel core={core} projectCore={projectCore} />}
       {/* iframe 的高度给固定值，别用 vh —— 它在会滚的内容区里，用 vh 会和外层的滚动打架 */}
       {s8 ? <iframe src={s8} title="项目设置" className="w-full border border-border rounded bg-panel shrink-0" style={{ height: 560 }} />
         : <p className="text-muted">打开一个项目后，这里还有设计系统、限额、回收站与危险操作。</p>}

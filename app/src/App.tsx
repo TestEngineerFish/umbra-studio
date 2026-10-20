@@ -23,6 +23,9 @@ export default function App() {
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
+  /** 项目自己那个服务的句柄 —— 设置页里「清掉当前项目的缓存」要打它（`scope: "project"`）。
+   *  ⚠️ 桌面壳里 **hub 不属于任何项目**，用 hub 调项目域的能力会被门面拒掉。 */
+  const projectCore = useMemo(() => (project ? new Core(project.url, project.token, project.ws) : null), [project]);
   /* 刷新 / 关窗前拦一下没落盘的改动（`00` §一二一）。挂一次，整个应用生效。 */
   useEffect(() => guardUnsaved(), []);
   useEffect(() => { applyTheme(layout.theme); const mq = window.matchMedia("(prefers-color-scheme: dark)"); const on = () => applyTheme(layout.theme); mq.addEventListener("change", on); return () => mq.removeEventListener("change", on); }, [layout.theme]);
@@ -128,7 +131,7 @@ export default function App() {
         ? <Home core={hub} host={host} onOpen={(d) => void open(d)} onNewProject={() => setSheet({ kind: "newProject" })} onImport={() => void importDir()} onSettings={() => setSheet({ kind: "settings" })} onMarket={() => setPage("market")} projectsVersion={projectsVersion} />
         : <Workbench key={project.dir} project={project} host={host} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
       {sheet?.kind === "newProject" && <NewProjectSheet hub={hub} host={host} initialDir={sheet.dir} onClose={() => setSheet(null)} onOpen={(d) => void open(d)} />}
-      {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectUrl={page === "work" && project ? project.url : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)} />}
+      {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectUrl={page === "work" && project ? project.url : null} projectCore={page === "work" ? projectCore : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)} />}
       <Toasts />
     </>
   );

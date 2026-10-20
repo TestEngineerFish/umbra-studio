@@ -109,11 +109,14 @@ function gitDirOf(dir: string): string {
   return join(STATE_ROOT, ".umbrastudio", "git", `${base}__${key}`);
 }
 
-/** 只给判据用：算出某个项目对应的 GIT_DIR。
- *  ⚠️ 判据**必须调这个函数**，不能自己复刻那段哈希 ——
- *  复刻的话算法一改判据就指到一个不存在的目录，而 `rm -rf` 不存在的路径不报错
- *  （§134.6 那条「判据要拼实现的路径，必须调实现那个函数」）。 */
-export const gitDirForTest = (dir: string): string => gitDirOf(dir);
+/** 算出某个项目对应的 GIT_DIR。
+ *  ⚠️ 判据和清理**必须调这个函数**，不能自己复刻那段哈希 ——
+ *  复刻的话算法一改就指到一个不存在的目录，而 `rm -rf` 不存在的路径不报错
+ *  （§134.6 那条「判据要拼实现的路径，必须调实现那个函数」）。
+ *  ⚠️ 名字原来叫 `gitDirForTest`，2026-10-20 改了：M14-3 的「忘掉这个项目」
+ *  要删它的兜底仓库，**生产代码也要用** —— 名字里带 `ForTest` 会让人以为
+ *  它是测试设施，于是下一个人又复刻一份哈希。 */
+export const gitDirOfProject = (dir: string): string => gitDirOf(dir);
 
 /** **兜底仓库的大小闸**（M14-1，Q67）：超过这个数的文件**不记进 git**。
  *
