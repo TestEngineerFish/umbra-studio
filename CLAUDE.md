@@ -264,7 +264,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run bridgetest` | **预览点选桥回归**（2026-10-06 新建，issue #17）：`runtime/select-bridge.js` 的几何。⚠️ 它在那之前**一条判据都没有** —— `uitest` 测工作台那一侧、`rendertest` 测控制台，两边都碰不到它。判据是**像素级数值**，不是「有没有画出来」 |
 | `npm --prefix server run difftest` | **跨版本净变更回归**（2026-10-06 新建，issue #91）：`doc/07` §六 那张合并规则表到底成不成立。⚠️ 夹具**必须写在 `<x-dc>` 里面** —— 放外面的话每一版只量到 `bytes_only`，而「至少一条」那种判据照样绿 |
 | `npm --prefix server run ziptest` | **发件包编码回归**（2026-09-29 新建）：中文文件名在严格解压方那边对不对。⚠️ **别拿系统 `unzip` 当仪器** —— 它不认 bit 11，正确的包也会被它报成乱码 |
-| `npm --prefix server run apitest` | **HTTP 路由层回归**（2026-09-28 新建）：住在路由层、别处测不到的行为。第一条是「同一会话并发发两条」（issue #35）。⚠️ **一条都不调真 AI** —— 用 `jobs.start` 塞慢作业造出「正忙」，要测的那条路照样走到 |
+| `npm --prefix server run apitest` | **HTTP 路由层回归**（2026-09-28 新建）：住在路由层、别处测不到的行为。第一条是「同一会话并发发两条」（issue #35）。⚠️ **一条都不调真 AI** —— 用 `jobs.start` 塞慢作业造出「正忙」，要测的那条路照样走到。<br>⚠️ **它拿 `listProjectDirs()[0]` 当夹具 —— 也就是用户的真实项目**（2026-10-20 实测：每跑一次就在 `projects/Umbra_design` 上起真服务，动过 `.umbrastudio/` 下三个目录的 mtime；那一次没丢东西）。**随手跑它之前先想一下这件事**，处置登记在 `doc/11` Q71 |
 | `npm --prefix server run captest` | 能力注册表回归（M11-1）：测的不是功能，是**散不散** —— 声明了就两面都有、名字不打架 |
 | `npm --prefix server run kindtest` | 类型表回归（M11-2）：一个路径算什么类型 + 插件注册的三道闸 |
 | `npm --prefix server run aifailtest` | **服务端 AI 失败分档回归**（2026-10-11 新建）：Umbra 的 402 按 `error.code` 分成厂商欠费 / 没会员 / 额度用完，按钮文案与 PC / iOS 同一张表（`ai_fail.ts`）。一条都不碰网络 |
@@ -275,7 +275,7 @@ ClaudeDesign 的项目在云端，**只拥有被上传过的东西**。之前只
 | `npm --prefix server run verbtest` | **插件动词挂出 / 收回回归**（2026-10-11 新建，M13-1/2）：没授权只挂 `free` 的、签许可证当场长出来、过期收回、调用进门再验。全程临时状态目录 + 临时钥匙（`UMBRASTUDIO_STATE_DIR` / `UMBRASTUDIO_PUBKEY`，**要在 import 核心模块之前设**）。⚠️ 临时目录要 `realpath`：macOS `/var` 是链接，沙箱按真路径放行会「import 不到 tools.mjs」 |
 | `npm --prefix server run sync-plugins` | **拉内置插件**（S4，2026-10-17）：`plugins/<id>/` 是构建产物，从 umbra-plugins 来 —— 本地 `../umbra-plugins`（`UMBRA_PLUGINS_DIR`）优先，否则 GitHub Release（`UMBRA_PLUGINS_RELEASE`，缺省 latest；私有仓库，令牌 `GH_TOKEN` → `../.secrets/gh-token` → `gh auth token` 依次真问）。顺带用 SDK 覆盖 `runtime/umbra-plugin.js` 与演示插件的桥。`--check`（`node server/dist/sync_plugins.js --check`）只查三个在不在。**新 clone 之后第一件事** |
 | `npm --prefix server run upgradetest` | **内置插件被市场升级回归**（S4 §3）：准入三条（验签 · 版本严格更高 · 不多认领内置类型）· 加载再判一遍 · 退回出厂版本 · B 面跟着换。临时状态目录 + 临时钥匙，出厂那份读真的 markdown（要先 sync） |
-| `npm --prefix server run tokentest` | **登录令牌过期自动刷新回归**（2026-10-17，用户报「已登录却提示登录已失效」）：Casdoor 访问令牌 7 天整点过期 —— 用前看 `exp` 快到期先刷新、401 再刷新重试一次、并发刷新合并成一次、刷新令牌被拒才清登录（断网不清）。临时状态目录 + 假服务端 |
+| `npm --prefix server run tokentest` | **登录令牌过期自动刷新回归**（2026-10-17，用户报「已登录却提示登录已失效」）：Casdoor 访问令牌 7 天整点过期 —— 用前看 `exp` 快到期先刷新、401 再刷新重试一次、并发刷新合并成一次、刷新令牌被拒才清登录（断网不清）。临时状态目录 + 假服务端。<br>⚠️ **2026-10-20 用户告知身份层改走自定义**（`doc/11` Q69）—— 这一套测的是 Casdoor 那个具体行为（7 天整点过期），对端换了它要跟着换。**在拿到对接说明之前一个字都不改** |
 | `npm --prefix server run identitytest` | **打开记录的身份与指纹回归**（2026-10-20，M14-2）：同名重建 → `replaced` 不继承 · 老条目 → `unknown` **不报警** · 目录没了 → `missing` · `dev` 只记不比。⚠️ **临时状态目录，一条都不往真「最近打开」里写** —— 那个列表是用户的东西（首页直接显示），`doc/00` §166 实测过「删临时目录删不掉它」。⚠️ 收尾自检要用 `TOOL_ROOT` 不是 `process.cwd()`（npm 跑脚本时 cwd 是 `server/`，查错文件 = 一条**永远绿**的自检）|
 | `npm --prefix server run purgetest` | **「清除缓存」三档回归**（2026-10-20，M14-3）：清缓存只删点名那四样 · **资产六样逐条验**（`snapshots` / `comments.json` / `trash` / `templates` / `staged` / `chats`）· 清失效记录连兜底仓库 · `forget_project` 不给 `confirm` 一律拒 · 失效记录在首页有一行。⚠️ 安全线是**白名单不是黑名单** —— 黑名单的话「以后新加一种资产」会被删掉而**没有判据会红**。临时状态目录，收尾验真实列表与真实兜底仓库都没被碰 |
 | `npm --prefix server run plugintest` | 插件机制回归（M11-4）：**重点不是「能跑」是「关不关得住」** —— 演示插件同时是攻击样本 |
@@ -341,7 +341,8 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 
 ## 9. 当前状态一句话（2026-10-20）
 
-**M14 的 1 / 2 / 3 / 6 四条做完 + 4 的 A 段**（需求与读数 `doc/24` §十三–§十九，条目 `doc/12` M14，决策 `doc/11` Q59–Q68；分支 `records-store`，**未 push**）。
+**M14 的 1 / 2 / 3 / 6 四条做完 + 4 的 A 段**（需求与读数 `doc/24` §十三–§二十，条目 `doc/12` M14，决策 `doc/11` Q59–Q71；分支 `records-store`）。
+⚠️ **这里不记「推到哪一版了」**，理由见 §9 之前 2026-10-06 那一条 —— `git log origin/master..` 一句就问得出来。
 这一批的共同主题是**旁数据不该住在用户的目录里**（用户 2026-10-20 的更正）：
 
 ① **M14-1**：git 兜底的**大文件闸**装在 `commitPaths`（三条写路径唯一的汇流处），上限和快照同一个数；
@@ -356,9 +357,13 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 ④ **M14-6**：回归自己不再攒兜底仓库。判准一条（指向临时目录 + 目录已不在），**595 → 2 个、94 MB → 1 MB**。
 ⑤ **M14-4 A 段**：新增 `server/src/statedirs.ts` 当**唯一出处**，十来处裸拼 `join(p.dir, ".umbrastudio", …)` 全收口（16 个文件 import 它）。
 **零行为变化**，十六套回归一条不变。新装一条闸（`captest`）：代码行再出现 `join(` + `.umbrastudio` 而不带 `STATE_ROOT` 一律红。
+⑥ **顺手清掉 `icons.js` 那条**（`doc/24` §二十）：`IconGlyph.dc.html` 会被部署进项目，而它引的 `ui/icons.js`
+**掉在两个拷贝清单的缝里**（`SHELLS` 管稿、`ensureRuntimeBeside` 管 `runtime/`，它两边都不属于）。
+症状不是「多一个 404」——**那份稿一个图标都画不出来，而稿本身打得开、排版也对**。
+判据两头都独立于拷贝清单：候选从**真部署出去的页面**里抽、「在不在」**去盘上看**。
 
 **读数**：`purgetest` **45/45**（新建）· `identitytest` **36/36**（新建）· 界面端到端 **19/19**（临时状态目录起真服务、无头 Chrome 真点击）·
-`captest` **309/309** · `apitest` 122/122 · `filetest` / `lifecycletest` 全通 · `kindtest` 51/51 · `gaptest` 60/60 ·
+`captest` **312/312** · `apitest` 122/122 · `filetest` / `lifecycletest` 全通 · `kindtest` 51/51 · `gaptest` 60/60 ·
 `limitstest` 46/46 · `difftest` 9/9 · `ziptest` 14/14 · `converttest` **42/42** · `plugintest` 93/93 · `verbtest` 27/27 ·
 `upgradetest` 37/37 · `selftest` 零 error。**反向验证 4 + 5 + 6 + 1 例，全部报红。**
 
@@ -368,6 +373,14 @@ tokens 从哪来。那部分靠本文 §6 的六条纪律，skill 只是补上�
 ⚠️ **B 段开工第一件事是改导出**：`export_project` 是 `tar -C projectDir .`，资产搬走之后
 **包里一版快照都没有，而回执照样报 `versionCount: N`** —— 假回执，而且要到「在另一台机器上导入」才暴露。
 M14-5（打开方式 / 拖拽 / 命令行）按 `doc/12` 的理由排在 M14-4 之后，**没开工**。
+
+**待用户拍板的（2026-10-20 新增三条，全文在 `doc/11` §四）**：
+**Q69** 身份层改走自定义 —— 用户 2026-10-20 原话「现在都走自定义的身份管理，后面会让其他 Agent 告知如何对接」。
+在拿到对接说明之前，`account.ts`（Casdoor 授权码 + PKCE）、`tokentest` 整套、通道 A 的 `useAccount`
+**这三处一个字都不改**（改了既没有判据也没有对端）；Q50 / Q51 / Q52 的 Casdoor 结论按「已被取代」看，留档不删。
+**Q70** 临时打开要不要「只读 + 一键解锁」横条（用户照 Notion 提）——⚠️ **闸装写入口不是界面**，
+**文案别写「需要导入」**（Notion 是能力所限，我们是刻意的保护，理由不同话就不能照抄）。落点 `doc/12` M14-7，排在 B1 之后。
+**Q71** `apitest` 拿用户的真实项目当夹具（2026-09-28 起就是这样，2026-10-20 才量到）。
 
 ## 9 之前的状态（2026-10-19）
 
