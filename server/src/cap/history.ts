@@ -15,6 +15,7 @@ import { listSnapshotMeta, walkProjectFiles } from "../files.js";
 import { buildIndex, collectIndex, indexStatus, isToolPage } from "../indexpage.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
+import { indexDataFile } from "../statedirs.js";
 
 /** 版本 / 变更 / 索引 / 引用 / 评论（M11-7 第五批）。
  *
@@ -118,7 +119,7 @@ defineCap({
     const proj = p(c);
     const files = (await listDrafts(proj)).map((a) => relative(proj.dir, a).split(sep).join("/")).filter((x) => !isToolPage(x));
     let indexed: Record<string, unknown> = {};
-    const dataFile = join(proj.dir, ".umbrastudio", "index-data.json");
+    const dataFile = indexDataFile(proj.dir);
     if (existsSync(dataFile)) {
       try {
         const data = JSON.parse(await readFile(dataFile, "utf8")) as { drafts?: Array<{ file: string }> };

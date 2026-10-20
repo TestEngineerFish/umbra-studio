@@ -221,6 +221,41 @@ for (const n of wasHttpOnly) {
      bad.length ? bad.join(" · ") : `${scanned} 个文件都是纯文本`);
 }
 
+/* ── 旁数据的路径只有一处（M14-4 A 段，`doc/24` §17.1）──
+   ⚠️ A 段的全部价值就是这一条，而**一次重构不会自己保持住** ——
+   下一个人加一种资产时最省事的写法就是再 `join(p.dir, ".umbrastudio", …)` 一次，
+   而那一处在 B 段搬去 `records/` 时会被漏掉 = 「这一类历史静默读不到」，
+   **而「读不到」和「本来就没存过」在界面上长得一模一样**。
+   所以装一道闸：代码行里同时出现 `join(` 和 `.umbrastudio`、而又不是
+   `STATE_ROOT` / `TOOL_ROOT` 那种（它们本来就该直接拼），一律算红。
+   ⚠️ 排除注释行 —— 本仓库注释里提 `.umbrastudio/` 的地方有三十多处，
+   把它们算进来这条判据会永远红，然后被人删掉。 */
+{
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { join: j, relative: rel } = await import("node:path");
+  const ROOT = new URL("../src", import.meta.url).pathname;
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = j(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.name.endsWith(".ts")) continue;
+      if (e.name === "statedirs.ts" || /test\.ts$/.test(e.name)) continue;   // 出处自己 + 回归
+      readFileSync(p, "utf8").split("\n").forEach((line, i) => {
+        const code = line.trim();
+        if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*")) return;
+        if (!/\.umbrastudio/.test(code) || !/join\(/.test(code)) return;
+        if (/STATE_ROOT|TOOL_ROOT/.test(code)) return;
+        offenders.push(`${rel(ROOT, p)}:${i + 1}`);
+      });
+    }
+  };
+  walk(ROOT);
+  ok(offenders.length === 0,
+     "**项目旁数据的路径只有 `statedirs.ts` 一处**（别处不许再 `join(dir, \".umbrastudio\", …)`）",
+     offenders.length ? offenders.join(" · ") : `扫了 ${ROOT.replace(/.*\/server\//, "server/")}，零处`);
+}
+
 /* ── 收尾：自己造的兜底仓库（M14-6）──
    ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
    而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。

@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { X } from "./codes.js";
 import { emit } from "./events.js";
 import { err, ToolError } from "./envelope.js";
+import { assetDir, UD_DIRNAME } from "./statedirs.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 工具自身的根：server/dist/.. → server/.. → Umbra Studio/
@@ -35,7 +36,10 @@ export const STATE_ROOT = process.env.UMBRASTUDIO_STATE_DIR
   : TOOL_ROOT;
 
 /** 项目 / 工具自己的配置目录名（M7-1 改名，`11` Q28）。旧名 `.umbradesign/` 的项目第一次打开时自动拷成新名，旧目录不删。 */
-export const UD_DIRNAME = ".umbrastudio";
+/** ⚠️ **定义搬去了 `statedirs.ts`**（M14-4 A 段）—— 本文件自己要用那边的 `assetDir`
+ *  （模板那一处），定义留在这边就成环。这里再导出，所以
+ *  所有 `import { UD_DIRNAME } from "./project.js"` 照旧能用。 */
+export { UD_DIRNAME } from "./statedirs.js";
 const LEGACY_UD_DIRNAME = ".umbra" + "design";
 export function migrateUdDirSync(dir: string): boolean {
   const oldDir = join(dir, LEGACY_UD_DIRNAME), newDir = join(dir, UD_DIRNAME);
@@ -569,7 +573,7 @@ export async function createDraft(
          ⚠️ 用 `resolveInside(模板目录, …)` 而不是 `isInside(项目, …)` ——
          **闸的粒度要配需求的粒度**：套模板只需要读模板目录，
          给它整个项目的读权限是多给的（M10-3 那条 `frame-src` 同一条道理）。 */
-      const tplDir = join(p.dir, ".umbrastudio", "templates");
+      const tplDir = assetDir(p.dir, "templates");
       let tplAbs: string;
       try { tplAbs = resolveInside(tplDir, relative(tplDir, resolve(source.templatePath))); }
       catch {

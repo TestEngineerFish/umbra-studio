@@ -13,6 +13,7 @@ import { isInside } from "./pathguard.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import type { ToolCall } from "./provider.js";
+import { assetDir } from "./statedirs.js";
 
 export interface ChatEntry {
   id: string;            // uuid
@@ -73,10 +74,10 @@ export interface CreateChatOpts {
 
 // ── 路径 ──
 
-const CHATS_DIR = ".umbrastudio" + "/chats";
+
 
 function chatsDir(projectDir: string): string {
-  return join(projectDir, CHATS_DIR);
+  return assetDir(projectDir, "chats");
 }
 
 /** 会话 ID 的合法形状 —— 和 `createChat` 生成的那一行对齐

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import type { Project } from "./project.js";
+import { assetDir } from "./statedirs.js";
 import { buildSnapshot, type Snapshot } from "./snapshot.js";
 import { conclusion, diffSnapshots, toMarkdown, type DiffResult } from "./diff.js";
 
@@ -103,7 +104,7 @@ export function pathKey(relPath: string): string {
 const legacyKey = (relPath: string): string => relPath.replace(/[\\/]/g, "__");
 
 export function snapDir(p: Project, relPath: string): string {
-  const root = join(p.dir, ".umbrastudio", "snapshots");
+  const root = assetDir(p.dir, "snapshots");
   const now = join(root, pathKey(relPath));
   /* ⚠️ **新名字没有而旧名字有时，用旧的**（只读兼容，不改名）。
      不这么做的话升级之后用户的版本历史**整段消失** —— 而他可能正靠它回退。

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { lineDelta, listSnapshots, normalizeRel, readAnyFile, sha256 } from "./files.js";
 import { pathKey } from "./history.js";
 import type { Project } from "./project.js";
+import { assetDir } from "./statedirs.js";
 
 /** 草稿暂存（M10-2c，设计侧第十三轮定形制）。
  *
@@ -47,12 +48,12 @@ export interface StagedDraft {
  *  `docs/x.md` 和 `docs__x.md` 落到同一个文件，于是两份文件的草稿互相覆盖。
  *  **两处各写一份，就是那条 bug 的来源。** */
 function stagedPath(p: Project, rel: string): string {
-  return join(p.dir, ".umbrastudio", "staged", `${pathKey(rel)}.json`);
+  return join(assetDir(p.dir, "staged"), `${pathKey(rel)}.json`);
 }
 
 /** 旧编码下的落点。**只用来读** —— 升级之后还能找回以前存的草稿。 */
 function legacyStagedPath(p: Project, rel: string): string {
-  return join(p.dir, ".umbrastudio", "staged", `${rel.replace(/[\\/]/g, "__")}.json`);
+  return join(assetDir(p.dir, "staged"), `${rel.replace(/[\\/]/g, "__")}.json`);
 }
 
 export interface StagedInfo {
@@ -94,7 +95,7 @@ export async function stageDraft(p: Project, relRaw: string, content: string): P
     baseVersion: snaps.length ? snaps[snaps.length - 1]! : null,
   };
   const f = stagedPath(p, rel);
-  await mkdir(join(p.dir, ".umbrastudio", "staged"), { recursive: true });
+  await mkdir(assetDir(p.dir, "staged"), { recursive: true });
   await writeFile(f, JSON.stringify(d), "utf8");
   return { path: rel, staged: true };
 }
@@ -152,7 +153,7 @@ export async function clearStagedDraft(p: Project, relRaw: string): Promise<{ pa
 
 /** 这个项目里还挂着哪些草稿。给「哪些文件我改了没落盘」那类问题用（MCP 面上有用）。 */
 export async function listStagedDrafts(p: Project): Promise<Array<{ path: string; at: string; stale: boolean }>> {
-  const dir = join(p.dir, ".umbrastudio", "staged");
+  const dir = assetDir(p.dir, "staged");
   if (!existsSync(dir)) return [];
   const out: Array<{ path: string; at: string; stale: boolean }> = [];
   for (const name of await readdir(dir)) {

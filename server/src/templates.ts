@@ -10,8 +10,14 @@ import { Project, draftPath as draftPathOf } from "./project.js";
 import { resolveInside } from "./pathguard.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
+import { UD_DIRNAME } from "./statedirs.js";
 
-const TEMPLATES_DIR = ".umbrastudio/templates";
+/** ⚠️ 这里原来是一个字面量 `".umbrastudio/templates"` —— 和 `project.ts` / `cap/drafts.ts`
+ *  那两处各写一遍。M14-4 A 段收口到 `statedirs.ts`：**路径怎么拼只有一处**，
+ *  否则 B 段搬去 `records/` 时漏掉这一处 = 「模板静默读不到」，
+ *  而「读不到」和「本来就没存过模板」在界面上长得一模一样。
+ *  留一个相对形式是因为下面 `resolveInside` 的闸按相对路径判。 */
+const TEMPLATES_DIR = `${UD_DIRNAME}/templates`;
 
 export interface TemplateInfo {
   /** 模板名 */

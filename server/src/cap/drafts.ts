@@ -8,6 +8,7 @@ import {
 } from "../refs.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
+import { assetDir } from "../statedirs.js";
 
 /** 稿件生命周期（M11-7 第一批搬）。
  *
@@ -21,7 +22,7 @@ import type { CapCtx } from "./types.js";
 const p = (c: CapCtx) => c.project!;
 
 /** 模板名 → 绝对路径。模板存在项目自己的 `.umbrastudio/templates/` 下 */
-const tplPath = (dir: string, name: string) => join(dir, ".umbrastudio", "templates", `${name}.dc.html`);
+const tplPath = (dir: string, name: string) => join(assetDir(dir, "templates"), `${name}.dc.html`);
 
 defineCap({
   name: "create_draft", title: "新建一份设计稿", scope: "project",

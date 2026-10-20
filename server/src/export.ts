@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { isInside } from "./pathguard.js";
+import { assetDir } from "./statedirs.js";
 
 export interface ExportResult {
   exportPath: string;
@@ -70,7 +71,7 @@ export async function exportProject(
      大项目的快照目录有几千个文件，同步读会把整个服务停住，
      而这个进程同时在接 MCP、WS 和别的 HTTP 请求。 */
   const drafts = (await readdir(projectDir)).filter((f) => f.endsWith(".dc.html"));
-  const snapRoot = join(projectDir, ".umbrastudio/snapshots");
+  const snapRoot = assetDir(projectDir, "snapshots");
   let versionCount = 0;
   if (existsSync(snapRoot)) {
     for (const sub of await readdir(snapRoot, { withFileTypes: true })) {

@@ -55,6 +55,7 @@ async function binaryMaxSetting(): Promise<number> {
    （`@shared/kinds`）。以前前后端各写一套 `kindOf`，两边迟早判不一样。
    注意是 import 进来再 re-export：`export {} from` 只转发，本模块内部还是取不到这个名字。 */
 import { kindOf, isTextualPath, type FileKind } from "./shared/kinds.js";
+import { assetDir, UD_DIRNAME } from "./statedirs.js";
 export { kindOf };
 
 /** 这个扩展名的内容能不能当文本读 */
@@ -640,7 +641,7 @@ export async function trashFile(p: Project, rel: string): Promise<{ path: string
   }
   const abs = mustFile(p, rel);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const to = join(p.dir, ".umbrastudio", "trash", stamp, clean(rel));
+  const to = join(assetDir(p.dir, "trash"), stamp, clean(rel));
   await mkdir(dirname(to), { recursive: true });
   await writeFile(to, await readFile(abs));
   await rm(abs);
@@ -931,7 +932,7 @@ async function imageSize(abs: string): Promise<{ width?: number; height?: number
  *  `max` 到了就停：一个几万文件的目录不该让一次问话扫完。 */
 export async function walkProjectFiles(p: Project, max = 5000): Promise<{ files: string[]; truncated: boolean }> {
   const out: string[] = [];
-  const skip = new Set([".umbrastudio", ".git", "node_modules"]);
+  const skip = new Set([UD_DIRNAME, ".git", "node_modules"]);
   const stack: string[] = [""];
   while (stack.length && out.length < max) {
     const rel = stack.pop()!;

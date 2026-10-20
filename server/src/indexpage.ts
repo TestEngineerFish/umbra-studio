@@ -23,6 +23,7 @@ import { listVersions } from "./history.js";
 import { serveOf } from "./serve.js";
 import { readCheck, sha256, type CheckRecord } from "./check.js";
 import { renderCheck } from "./render.js";
+import { indexDataFile, udDirOf } from "./statedirs.js";
 
 export type Health = "ok" | "warn" | "error" | "unchecked";
 
@@ -196,7 +197,7 @@ export async function indexStatus(p: Project): Promise<{
   exists: boolean; generatedAt: string | null; stale: boolean; reason: string | null;
   changed: string[]; added: string[]; removed: string[]; draftCount: number;
 }> {
-  const dataFile = join(p.dir, ".umbrastudio", "index-data.json");
+  const dataFile = indexDataFile(p.dir);
   const files = (await listDrafts(p))
     .map((a) => rel(p, a)).filter((r) => !isToolPage(r));
   if (!existsSync(dataFile)) {
@@ -551,10 +552,10 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
   }
 
   const data = await collectIndex(p);
-  const udDir = join(p.dir, ".umbrastudio");
+  const udDir = udDirOf(p.dir);
   await mkdir(udDir, { recursive: true });
 
-  const dataFile = join(udDir, "index-data.json");
+  const dataFile = indexDataFile(p.dir);
   await writeFile(dataFile, JSON.stringify(data, null, 1) + "\n", "utf8");
 
   const jsFile = join(p.dir, "index-data.js");

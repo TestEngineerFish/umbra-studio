@@ -13,6 +13,7 @@ import { listTrash } from "../refs.js";
 import { isToolPage } from "../indexpage.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
+import { indexDataFile } from "../statedirs.js";
 
 /** 项目域（M11-7 第三批）。
  *
@@ -62,7 +63,7 @@ defineCap({
            按片段读实现就会这样：看到的是 `describe` 的前五行，而它有二十行。 */
         if (c.via === "http") {
           let thumb: string | null = null, generatedAt: string | null = null;
-          const dataFile = join(dir, ".umbrastudio", "index-data.json");
+          const dataFile = indexDataFile(dir);
           if (existsSync(dataFile)) {
             try {
               const data = JSON.parse(await readFile(dataFile, "utf8")) as

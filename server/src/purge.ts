@@ -30,7 +30,8 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
-import { STATE_ROOT, UD_DIRNAME } from "./project.js";
+import { STATE_ROOT } from "./project.js";
+import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME } from "./statedirs.js";
 import { gitDirOfProject } from "./gitkeep.js";
 import { listRecentProjects, removeRecentProject } from "./workspace.js";
 import { X } from "./codes.js";
@@ -40,13 +41,13 @@ import { err, ToolError } from "./envelope.js";
  *  ⚠️ `select-bridge.js` 和壳页面（`index.dc.html` / S2 / S6 / S8）**不在这里**：
  *  它们也是 `buildIndex` 生成的，但删掉之后**在下一次打开之前预览和点选是坏的** ——
  *  「清一下缓存」不该让人的预览当场瞎掉。 */
-const CACHE_ENTRIES = ["checks", "shots", "index-data.json"];
+const CACHE_ENTRIES: string[] = [...CACHE_KINDS, "index-data.json"];
 /** 项目根那一份（同一份数据挂成 `window.__UD_INDEX`，给别的页用） */
 const ROOT_CACHE_ENTRIES = ["index-data.js"];
 
 /** ⓐ **算不出来的用户资产**。这个清单只有两个用处：给判据，和给下面那道防呆。
  *  ⚠️ 实现**不读它**（实现读的是白名单）—— 一个安全线有两处定义，迟早分叉。 */
-export const ASSET_ENTRIES = ["snapshots", "comments.json", "trash", "templates", "staged", "chats"];
+export const ASSET_ENTRIES: string[] = [...ASSET_KINDS, "comments.json"];
 
 const bad = (name: string, message: string, fix?: string) =>
   new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name }, message, fix ? { fix } : undefined));

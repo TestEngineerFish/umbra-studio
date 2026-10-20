@@ -18,6 +18,7 @@ import { extname, join, normalize, relative, resolve, sep } from "node:path";
 import { X } from "./codes.js";
 import { err, ToolError, warn, type Diagnostic } from "./envelope.js";
 import { draftPath, type Project } from "./project.js";
+import { cacheDir, cacheRel } from "./statedirs.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -353,11 +354,11 @@ async function renderCheckInner(
 
     let shot: string | null = null;
     if (alive && opts.screenshot !== false) {
-      const dir = join(p.dir, ".umbrastudio", "shots");
+      const dir = cacheDir(p.dir, "shots");
       await mkdir(dir, { recursive: true });
       const name = `${relPath.replace(/[\\/]/g, "__").replace(/\.dc\.html$/, "")}@${width}x${height}.png`;
       const okShot = await race(page.screenshot({ path: join(dir, name) }).then(() => true), 8000, false);
-      shot = okShot ? join(".umbrastudio", "shots", name).split(sep).join("/") : null;
+      shot = okShot ? cacheRel("shots", name) : null;
     }
 
     // ── 诊断 ──

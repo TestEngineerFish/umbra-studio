@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseDraft } from "./draft.js";
 import type { Project } from "./project.js";
+import { assetDir } from "./statedirs.js";
 
 /** 项目内一份稿的引用关系 */
 interface FileRefs {
@@ -504,7 +505,7 @@ export async function deleteDraft(
 
   // 回收站路径：.umbrastudio/trash/<ISO时间戳>/<原文件名>
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const trashDir = join(p.dir, ".umbrastudio", "trash", timestamp);
+  const trashDir = join(assetDir(p.dir, "trash"), timestamp);
   await mkdir(trashDir, { recursive: true });
 
   /* ⚠️ **回收站里留的是原相对路径，不是基名**（issue #81，2026-10-05）。
@@ -535,7 +536,7 @@ export async function listTrash(
   p: Project,
 ): Promise<Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }>> {
   const { readdir } = await import("node:fs/promises");
-  const trashRoot = join(p.dir, ".umbrastudio", "trash");
+  const trashRoot = assetDir(p.dir, "trash");
   if (!existsSync(trashRoot)) return [];
 
   const items: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }> = [];
@@ -586,7 +587,7 @@ export async function restoreDraft(
      同文件的 `purgeTrash` 有这道判定，**这里漏了**。
      和 #57 / #63 / #69 / #70 / #23 同一族：外部给的路径段没过
      「必须在某棵子树里」就进了 `resolve` + 写操作。 */
-  const trashRoot = join(p.dir, ".umbrastudio", "trash");
+  const trashRoot = assetDir(p.dir, "trash");
   const trashRel = trashPath.split("\\").join("/");
   const trashAbs = resolve(p.dir, trashRel);
   if (!isInside(trashRoot, trashAbs) || trashAbs === trashRoot) {
@@ -678,7 +679,7 @@ export async function purgeTrash(p: Project, trashPath: string): Promise<{ remov
      原来是 `startsWith + includes("..")`：形状上够用，但**和隔壁那个函数
      不是同一份判定**，于是「哪个函数守了、哪个没守」要逐个去看。 */
   const rel = trashPath.split("\\").join("/");
-  const trashRoot = join(p.dir, ".umbrastudio", "trash");
+  const trashRoot = assetDir(p.dir, "trash");
   const abs = resolve(p.dir, rel);
   if (!isInside(trashRoot, abs) || abs === trashRoot) {
     throw new Error(`只能彻底删除回收站里的条目：${rel}`);

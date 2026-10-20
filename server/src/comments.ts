@@ -10,6 +10,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { writeAtomic } from "./normalize.js";
+import { commentsFile, udDirOf } from "./statedirs.js";
 
 export interface Comment {
   id: string;
@@ -35,7 +36,7 @@ export interface Comment {
   line?: number | null;
 }
 
-function file(projectDir: string): string { return join(projectDir, ".umbrastudio", "comments.json"); }
+const file = (projectDir: string): string => commentsFile(projectDir);
 
 export async function listComments(projectDir: string, draft?: string): Promise<Comment[]> {
   const f = file(projectDir);
@@ -47,7 +48,7 @@ export async function listComments(projectDir: string, draft?: string): Promise<
 }
 
 async function save(projectDir: string, all: Comment[]): Promise<void> {
-  await mkdir(join(projectDir, ".umbrastudio"), { recursive: true });
+  await mkdir(udDirOf(projectDir), { recursive: true });
   await writeAtomic(file(projectDir), JSON.stringify(all, null, 1) + "\n");
 }
 
