@@ -478,7 +478,10 @@ README 原文核实是 **Swift 2.6 MB + `Compositor.xcodeproj`** 的原生 macOS
 它存在 `STATE_ROOT/.umbrastudio/workspace.json`，**首页直接显示它**，是用户的东西。
 
 ⚠️ **之前担心错了一条，照实更正**：那 13 组进程**全部**带 `UMBRASTUDIO_NO_GIT=1`，
-而且 `projects/Umbra_design` **根本不是 git 仓库** —— **没有任何 git 污染**。
+而且 `projects/Umbra_design` 的 git 仓库**一个提交都没有** —— **没有任何 git 污染**。
+⚠️ 这句话 2026-10-20 更正过一次：原文写的是「根本不是 git 仓库」，而实测它**是**一个独立仓库
+（`git rev-parse --show-toplevel` 指向它自己），只是 `rev-list --count HEAD` = **0**。
+结论不变（没污染），但**理由换了** —— 「不是仓库」是个会过期的断言，「0 个提交」才是当场量得到的读数。
 判进程是谁的也不用猜：stdout 全指向**会话专属**的 scratchpad。
 
 > ⚠️ **这一天最该带走的一句：「清掉自己造的文件」和「清掉自己造的状态」是两件事。**
