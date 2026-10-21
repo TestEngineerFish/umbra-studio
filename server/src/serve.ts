@@ -15,6 +15,7 @@ import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { TOOL_ROOT, type Project } from "./project.js";
 import { sendFile, isServable } from "./sendfile.js";
+import { cacheRoot } from "./statedirs.js";
 import { isToolPage } from "./indexpage.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
@@ -358,6 +359,21 @@ function routeStatic(
          「404」告诉不了他是路径写错了还是这个依赖没发，而 `SHARED_DIR` 能。 */
       reply.writeHead(404, { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" });
       reply.end(`共享库里没有这个文件。\n查的是：${resolve(SHARED_DIR, "." + normalize(raw.slice("/__shared".length)))}\n共享库根：${SHARED_DIR}`);
+      return;
+    }
+    /* ═══ 缩略图与体检报告（M14-4 B2）═══ `/__cache/<种类>/<文件>`
+       B2 把缓存搬进 `records/<ID>/cache/` 之后，S1 索引页里那个
+       `<img src={thumb}>` 在项目目录下**找不到文件了** —— 这条路由就是补上它。
+       `thumb` 的值由 `cacheRel()` 生成，所以**设计侧那份稿一个字都不用改**。
+
+       ⚠️ 只读、只认这个项目自己的缓存目录（`cacheRoot(dir)`），`serveStatic`
+       里那道 `isInside` 管住 `..`。缓存里只有我们生成的 png / json，**没有用户数据**。
+       ⚠️ 没有项目上下文（hub 服务）时直接 404 —— 不往下走，理由见 `/__shared/` 那一段
+       （往下走会落到 SPA 兜底页，于是「文件在不在」在外面完全看不出来）。 */
+    if (raw.startsWith("/__cache/")) {
+      if (dir && serveStatic(cacheRoot(dir), raw.slice("/__cache".length), reply)) return;
+      reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      reply.end("缓存里没有这个文件（缩略图 / 体检报告下次打开会重算）。\n");
       return;
     }
     /* ═══ 预览用户项目里的网页（M10-3）═══ `/__preview/<项目内相对路径>`

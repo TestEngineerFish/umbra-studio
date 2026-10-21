@@ -13,7 +13,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const STATE = await mkdtemp(join(tmpdir(), "umbra-purgetest-"));
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
@@ -23,6 +23,7 @@ const { clearProjectCache, clearStaleRecords, forgetProject, refuseIfDangerous, 
 const { touchProject, listRecentProjects, removeRecentProject } = await import("./workspace.js");
 const { ensureRepo, gitDirOfProject, commitPaths } = await import("./gitkeep.js");
 const { STATE_ROOT, TOOL_ROOT } = await import("./project.js");
+const { assetDir, cacheDir, commentsFile, indexDataFile } = await import("./statedirs.js");
 
 const BOX = await mkdtemp(join(tmpdir(), "umbra-purgebox-"));
 let bad = 0, n = 0;
@@ -35,28 +36,34 @@ console.log(`\n清除缓存三档 · 状态目录 ${STATE}\n`);
 ok("（前提）状态目录是临时的 —— 这一套不碰用户真实的列表与兜底仓库",
    STATE_ROOT.includes("umbra-purgetest-") && STATE_ROOT !== TOOL_ROOT, STATE_ROOT);
 
-/** 造一个「什么都有」的项目：缓存四样 + 资产六样 */
+/** 造一个「什么都有」的项目：缓存四样 + 资产六样。
+ *
+ *  ⚠️ **落点全从 `statedirs` 取，一处都不写死**（M14-4 B1 / B2 把它们搬去了
+ *  `STATE_ROOT/.umbrastudio/records/<ID>/`）。这一套测的是「清缓存删对了没有」，
+ *  **不是「它们放在哪」** —— 写死路径的夹具会让十几条判据红在「文件本来就不在」上。 */
 async function makeProject(name: string): Promise<string> {
   const dir = join(BOX, name);
-  const ud = join(dir, ".umbrastudio");
-  await mkdir(join(ud, "checks", "一次体检"), { recursive: true });
-  await writeFile(join(ud, "checks", "一次体检", "report.json"), '{"ok":true}', "utf8");
-  await mkdir(join(ud, "shots"), { recursive: true });
-  await writeFile(join(ud, "shots", "缩略图.png"), Buffer.alloc(2048), "utf8");
-  await writeFile(join(ud, "index-data.json"), JSON.stringify({ drafts: [] }), "utf8");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "project.json"), JSON.stringify({ name }), "utf8");
+  await mkdir(join(cacheDir(dir, "checks"), "一次体检"), { recursive: true });
+  await writeFile(join(cacheDir(dir, "checks"), "一次体检", "report.json"), '{"ok":true}', "utf8");
+  await mkdir(cacheDir(dir, "shots"), { recursive: true });
+  await writeFile(join(cacheDir(dir, "shots"), "缩略图.png"), Buffer.alloc(2048), "utf8");
+  await writeFile(indexDataFile(dir), JSON.stringify({ drafts: [] }), "utf8");
   await writeFile(join(dir, "index-data.js"), "window.__UD_INDEX = {};", "utf8");
   /* 资产六样 —— 下面每一样都有自己一条判据 */
-  await mkdir(join(ud, "snapshots", "稿.dc.html"), { recursive: true });
-  await writeFile(join(ud, "snapshots", "稿.dc.html", "s1.src.gz"), Buffer.alloc(99), "utf8");
-  await writeFile(join(ud, "comments.json"), '{"稿.dc.html":[{"text":"这里改一下"}]}', "utf8");
-  await mkdir(join(ud, "trash", "20261020"), { recursive: true });
-  await writeFile(join(ud, "trash", "20261020", "删掉的.dc.html"), "<x-dc></x-dc>", "utf8");
-  await mkdir(join(ud, "templates"), { recursive: true });
-  await writeFile(join(ud, "templates", "我的模板.dc.html"), "<x-dc></x-dc>", "utf8");
-  await mkdir(join(ud, "staged"), { recursive: true });
-  await writeFile(join(ud, "staged", "草稿.json"), "{}", "utf8");
-  await mkdir(join(ud, "chats"), { recursive: true });
-  await writeFile(join(ud, "chats", "chat-1.json"), '{"messages":[{"role":"user"}]}', "utf8");
+  await mkdir(join(assetDir(dir, "snapshots"), "稿.dc.html"), { recursive: true });
+  await writeFile(join(assetDir(dir, "snapshots"), "稿.dc.html", "s1.src.gz"), Buffer.alloc(99), "utf8");
+  await mkdir(dirname(commentsFile(dir)), { recursive: true });
+  await writeFile(commentsFile(dir), '{"稿.dc.html":[{"text":"这里改一下"}]}', "utf8");
+  await mkdir(join(assetDir(dir, "trash"), "20261020"), { recursive: true });
+  await writeFile(join(assetDir(dir, "trash"), "20261020", "删掉的.dc.html"), "<x-dc></x-dc>", "utf8");
+  await mkdir(assetDir(dir, "templates"), { recursive: true });
+  await writeFile(join(assetDir(dir, "templates"), "我的模板.dc.html"), "<x-dc></x-dc>", "utf8");
+  await mkdir(assetDir(dir, "staged"), { recursive: true });
+  await writeFile(join(assetDir(dir, "staged"), "草稿.json"), "{}", "utf8");
+  await mkdir(assetDir(dir, "chats"), { recursive: true });
+  await writeFile(join(assetDir(dir, "chats"), "chat-1.json"), '{"messages":[{"role":"user"}]}', "utf8");
   await writeFile(join(dir, "稿.dc.html"), "<x-dc></x-dc>", "utf8");
   return dir;
 }
@@ -64,26 +71,33 @@ async function makeProject(name: string): Promise<string> {
 /* ── ① 清缓存：删四样，资产六样一个都不许动 ── */
 {
   const dir = await makeProject("清缓存");
-  const ud = join(dir, ".umbrastudio");
+  /* ⚠️ **这一条是 B1 / B2 的验收**：资产和缓存都不许在用户的项目目录里了。
+     放在清缓存之前，因为清完之后缓存本来就没了，那时再量就分不清
+     「搬走了」和「刚被删了」。 */
+  ok("**资产和缓存都不在用户的项目目录里了**（B1 / B2）",
+     !existsSync(join(dir, ".umbrastudio")) && assetDir(dir, "snapshots").startsWith(STATE_ROOT) && cacheDir(dir, "shots").startsWith(STATE_ROOT),
+     { 项目里有没有umbrastudio: existsSync(join(dir, ".umbrastudio")), 快照: assetDir(dir, "snapshots").slice(STATE_ROOT.length) });
+  ok("**缓存和资产是兄弟目录，不是一层**（结构上清缓存就够不到资产）",
+     dirname(cacheDir(dir, "shots")) !== dirname(assetDir(dir, "snapshots")), { cache: cacheDir(dir, "shots"), asset: assetDir(dir, "snapshots") });
   const r = await clearProjectCache(dir);
 
   ok("删掉的正是点名那四样（不多不少）",
-     r.removed.slice().sort().join(" · ") === [".umbrastudio/checks", ".umbrastudio/shots", ".umbrastudio/index-data.json", "index-data.js"].sort().join(" · "),
+     r.removed.slice().sort().join(" · ") === ["cache/checks", "cache/shots", "cache/index-data.json", "index-data.js"].sort().join(" · "),
      r.removed);
   ok("腾出的字节数是真算的（不是 0）", r.freedBytes > 2048, r.freedBytes);
-  ok("体检报告没了", !existsSync(join(ud, "checks")));
-  ok("缩略图没了", !existsSync(join(ud, "shots")));
-  ok("索引数据没了", !existsSync(join(ud, "index-data.json")));
+  ok("体检报告没了", !existsSync(cacheDir(dir, "checks")));
+  ok("缩略图没了", !existsSync(cacheDir(dir, "shots")));
+  ok("索引数据没了", !existsSync(indexDataFile(dir)));
   ok("项目根那份 index-data.js 也没了", !existsSync(join(dir, "index-data.js")));
 
   /* ⚠️ **资产逐个验，不写「至少一条」** —— §145.4 那条「『至少一条』几乎总是假判据」。
      六样里漏删一样就是用户的一类历史没了，而「还剩五样」这种判据照样绿。 */
-  ok("**快照还在**（它是过去的内容，删了算不回来）", existsSync(join(ud, "snapshots", "稿.dc.html", "s1.src.gz")));
-  ok("**评论还在**", existsSync(join(ud, "comments.json")));
-  ok("**回收站还在**", existsSync(join(ud, "trash", "20261020", "删掉的.dc.html")));
-  ok("**模板还在**", existsSync(join(ud, "templates", "我的模板.dc.html")));
-  ok("**没落盘的草稿还在**", existsSync(join(ud, "staged", "草稿.json")));
-  ok("**会话历史还在**", existsSync(join(ud, "chats", "chat-1.json")));
+  ok("**快照还在**（它是过去的内容，删了算不回来）", existsSync(join(assetDir(dir, "snapshots"), "稿.dc.html", "s1.src.gz")));
+  ok("**评论还在**", existsSync(commentsFile(dir)));
+  ok("**回收站还在**", existsSync(join(assetDir(dir, "trash"), "20261020", "删掉的.dc.html")));
+  ok("**模板还在**", existsSync(join(assetDir(dir, "templates"), "我的模板.dc.html")));
+  ok("**没落盘的草稿还在**", existsSync(join(assetDir(dir, "staged"), "草稿.json")));
+  ok("**会话历史还在**", existsSync(join(assetDir(dir, "chats"), "chat-1.json")));
   ok("稿本身当然还在", existsSync(join(dir, "稿.dc.html")));
 
   ok("**回执把「没动的那几样」列出来**（不说的话用户不知道他的历史还在不在）",
@@ -135,7 +149,7 @@ async function makeProject(name: string): Promise<string> {
   ok("**还活着那条一个字节都没动**", r.left === 1 && existsSync(gdLive));
   const left = (await listRecentProjects(50)).recents;
   ok("列表里只剩它，而且还是 `same`", left.length === 1 && left[0]?.identity === "same", left.map((x) => x.identity));
-  ok("它的资产当然也还在", existsSync(join(活着, ".umbrastudio", "snapshots", "稿.dc.html", "s1.src.gz")));
+  ok("它的资产当然也还在", existsSync(join(assetDir(活着, "snapshots"), "稿.dc.html", "s1.src.gz")));
 }
 
 /* ── ③ 忘掉这一个：要确认，而且和「从列表去掉」分得清 ── */
@@ -145,7 +159,8 @@ async function makeProject(name: string): Promise<string> {
   await ensureRepo(dir);
   await commitPaths(dir, ["稿.dc.html"], "第一版");
   const gd = gitDirOfProject(dir);
-  ok("（前提）记录和兜底仓库都在", existsSync(gd) && !!(await listRecentProjects(50)).recents.find((r) => r.dir === dir));
+  const recDirBefore = dirname(assetDir(dir, "snapshots"));
+  ok("（前提）记录和兜底仓库都在", existsSync(gd) && existsSync(recDirBefore) && !!(await listRecentProjects(50)).recents.find((r) => r.dir === dir), recDirBefore);
 
   /* **「从列表去掉」不许碰历史** —— 两件事分开，这一条钉住那个分界 */
   await removeRecentProject(dir);
@@ -162,11 +177,16 @@ async function makeProject(name: string): Promise<string> {
   ok("确认之后：记录没了", !(await listRecentProjects(50)).recents.find((x) => x.dir === dir));
   ok("兜底历史也没了", !existsSync(gd));
   ok("腾出的字节数是真算的", r.freedBytes > 0, r.freedBytes);
-  /* ⚠️ 这一条是**诚实度判据**：今天快照还在用户的项目目录里，而这一件没有权力删它 ——
-     回执必须说出来，否则用户以为「忘掉」= 全删干净了。 */
-  ok("**回执照实说项目目录里那一份还在**（M14-4 之后历史才全在我们这边）",
-     r.stillOnDisk === join(dir, ".umbrastudio"), r.stillOnDisk);
-  ok("而那一份确实还在（所以上一条不是空话）", existsSync(join(dir, ".umbrastudio", "snapshots", "稿.dc.html", "s1.src.gz")));
+  /* ⚠️ 这两条**随 M14-4 B1 翻了个面，而翻面本身就是验收**：
+     B1 之前快照还在用户的项目目录里、这一件没有权力删它，所以回执必须
+     照实说「那一份还在」（`stillOnDisk` 指着那个目录）。
+     B1 之后**历史全在我们这边**，这一件才真的把它删干净 —— 于是
+     `stillOnDisk` 应该是 `null`，而记录目录应该真的没了。
+     ⚠️ `stillOnDisk` 这个字段**不删**：用户机器上 B1 之前写下的那一份还在原地
+     （Q72 拍板不迁不删），对那些项目它仍然会指出来。 */
+  ok("**回执不再说「项目目录里还有一份」**（B1 之后历史全在我们这边）", r.stillOnDisk === null, r.stillOnDisk);
+  ok("**记录目录真的被删了 —— 「忘掉」现在是真的忘掉**", !existsSync(recDirBefore), recDirBefore);
+  ok("（对照）那份稿本身还在，我们没碰用户的文件", existsSync(join(dir, "稿.dc.html")));
 }
 
 /* ── ④ 失效的记录要在首页**列出来**，不是静默消失 ──

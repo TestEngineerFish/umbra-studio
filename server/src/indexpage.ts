@@ -14,7 +14,7 @@
  */
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { basename, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { TOOL_ROOT, listDrafts, type Project } from "./project.js";
 import { parseDraft } from "./draft.js";
 import { validateDraft } from "./validate.js";
@@ -570,6 +570,10 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
   await mkdir(udDir, { recursive: true });
 
   const dataFile = indexDataFile(p.dir);
+  /* ⚠️ 建的是**这个文件自己的父目录**，不是项目里的 `.umbrastudio/`（M14-4 B2）。
+     上面那句 `mkdir(udDir)` 原来恰好把它一起建了 —— 搬走之后就不是同一个了，
+     照旧只建那个的话会 `ENOENT`（`captest` 当场抓到）。 */
+  await mkdir(dirname(dataFile), { recursive: true });
   await writeFile(dataFile, JSON.stringify(data, null, 1) + "\n", "utf8");
 
   const jsFile = join(p.dir, "index-data.js");

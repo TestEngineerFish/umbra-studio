@@ -13,7 +13,7 @@ import { listTrash } from "../refs.js";
 import { isToolPage } from "../indexpage.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
-import { indexDataFile } from "../statedirs.js";
+import { cacheAbsOf, indexDataFile } from "../statedirs.js";
 
 /** 项目域（M11-7 第三批）。
  *
@@ -71,7 +71,11 @@ defineCap({
               generatedAt = data.project?.generatedAt ?? null;
               const first = (data.drafts ?? []).filter((d) => d.thumb).sort((a, b) => b.elements - a.elements)[0];
               if (first?.thumb) {
-                const png = join(dir, first.thumb);
+                /* ⚠️ **不要自己 `join(dir, thumb)`**（M14-4 B2）：`thumb` 现在是
+                   `/__cache/shots/x.png` 这种**同源绝对路径**，拼出来会变成一个不存在的路径，
+                   而首页只会**静默显示空缩略图** —— 没有任何东西会报错。
+                   `cacheAbsOf` 同时认老值，所以 B2 之前生成的 `index-data.json` 照样显示得出来。 */
+                const png = cacheAbsOf(dir, first.thumb) ?? "";
                 /* 400KB 上限：首页可能列十几个项目，每个都塞一张大图会让这条响应变成几兆 */
                 if (existsSync(png) && statSync(png).size < 400 * 1024) thumb = "data:image/png;base64," + (await readFile(png)).toString("base64");
               }

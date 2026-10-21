@@ -31,9 +31,10 @@ import { readdir, rm, stat } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { STATE_ROOT } from "./project.js";
-import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME } from "./statedirs.js";
+import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME, cacheRoot } from "./statedirs.js";
 import { gitDirOfProject } from "./gitkeep.js";
 import { listRecentProjects, removeRecentProject } from "./workspace.js";
+import { recordDirOf } from "./records.js";
 import { deadRecordsUnder, dropOrphanRecords, dropRecord, dropRecordsUnder, existingRecordIdFor, recordsRoot } from "./records.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
@@ -89,16 +90,19 @@ export interface CacheCleared {
 /** ① 清缓存。**只删点名的那几样**，算不出来的一个都不碰。 */
 export async function clearProjectCache(dir: string): Promise<CacheCleared> {
   const root = resolve(dir);
-  const ud = join(root, UD_DIRNAME);
+  /* ⚠️ **缓存和资产现在是兄弟目录**（M14-4 B2）：
+     缓存在 `records/<ID>/cache/`，资产在 `records/<ID>/{snapshots,trash,…}`。
+     白名单那道闸留着不动 —— 两层防线：**结构上删不到资产，名单上也不许删**。 */
+  const cRoot = cacheRoot(root);
   const removed: string[] = [];
   let freedBytes = 0;
   for (const name of CACHE_ENTRIES) {
-    const t = join(ud, name);
+    const t = join(cRoot, name);
     if (!existsSync(t)) continue;
-    refuseIfDangerous(t, [ud]);
+    refuseIfDangerous(t, [cRoot]);
     freedBytes += await sizeOf(t);
     await rm(t, { recursive: true, force: true });
-    removed.push(`${UD_DIRNAME}/${name}`);
+    removed.push(`cache/${name}`);
   }
   for (const name of ROOT_CACHE_ENTRIES) {
     const t = join(root, name);
@@ -108,7 +112,9 @@ export async function clearProjectCache(dir: string): Promise<CacheCleared> {
     await rm(t, { recursive: true, force: true });
     removed.push(name);
   }
-  const kept = ASSET_ENTRIES.filter((n) => existsSync(join(ud, n)));
+  /* 「一个字节都没碰」那一列：资产现在在记录目录下，不在项目里 */
+  const aRoot = recordDirOf(root);
+  const kept = ASSET_ENTRIES.filter((n) => existsSync(join(aRoot, n)));
   return { removed, freedBytes, kept };
 }
 

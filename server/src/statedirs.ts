@@ -54,8 +54,17 @@ export const assetDir = (projectDir: string, what: AssetKind): string => join(re
 /** B1 之前资产在哪。**只给「看看旧的那份还在不在」用**（旧目录不迁也不删，Q72）。 */
 export const legacyAssetDir = (projectDir: string, what: AssetKind): string => join(projectDir, UD_DIRNAME, what);
 
+/** ⓑ 缓存根。**B2 之后也在记录里**：`records/<ID>/cache/`。
+ *  单独一层 `cache/` 不是整洁，是**安全线**：「清缓存」现在可以整层删，
+ *  而资产在它的**兄弟**目录里 —— 结构上就不可能被带走。
+ *  （白名单那道闸留着不动，两层防线。） */
+export const cacheRoot = (projectDir: string): string => join(recordDirOf(projectDir), "cache");
+
 /** ⓑ 缓存目录。 */
-export const cacheDir = (projectDir: string, what: CacheKind): string => join(projectDir, UD_DIRNAME, what);
+export const cacheDir = (projectDir: string, what: CacheKind): string => join(cacheRoot(projectDir), what);
+
+/** B2 之前缓存在哪。只给「看看旧的那份还在不在」用。 */
+export const legacyCacheDir = (projectDir: string, what: CacheKind): string => join(projectDir, UD_DIRNAME, what);
 
 /** 评论是**一个文件**不是目录（所以单列，不塞进 `AssetKind` 里假装它是目录）。
  *  它也是 ⓐ 资产，B1 跟着搬进记录目录。 */
@@ -64,11 +73,37 @@ export const commentsFile = (projectDir: string): string => join(recordDirOf(pro
 export const legacyCommentsFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "comments.json");
 
 /** 索引数据（ⓑ）。 */
-export const indexDataFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "index-data.json");
+export const indexDataFile = (projectDir: string): string => join(cacheRoot(projectDir), "index-data.json");
+/** B2 之前索引数据在哪。只给「看看旧的那份还在不在」用。 */
+export const legacyIndexDataFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "index-data.json");
 
-/** ⚠️ **项目内的相对形式**，给「要当 URL 用」的那几处（`render.ts` 回的 `shot`
- *  会进 `index-data.json` 的 `thumb`，而 **S1 索引页把它当相对 URL** 直接 `<img src>`）。
- *  B 段把缓存搬出项目之后**这一条会断** —— 它是 `doc/24` §17.2 那两处耦合的第一处，
- *  单列出来就是为了那天能一眼找到它。 */
+/** 缓存文件**当 URL 用**的那个形式（`render.ts` 回的 `shot` 会进 `index-data.json`
+ *  的 `thumb`，而 **S1 索引页把它直接 `<img src>`**）。
+ *
+ *  ⚠️ **B2 把它从「项目内相对路径」换成「同源绝对路径」**（`doc/24` §19.3）。
+ *  这是 A 段把它单列出来的理由 —— 「那天能一眼找到它」的那天就是今天。
+ *
+ *  > 当时列了三条路，核清之后发现**不用选**：S1 读的是 `thumb` 的**值**，
+ *  > 而那个值是**我们生成的**。从 `.umbrastudio/shots/x.png` 换成 `/__cache/shots/x.png`，
+ *  > 那份稿**一个字都不用改** —— 它在项目自己那个服务下打开，绝对路径解析到同一个核心。
+ *  >
+ *  > **一个看起来「要改契约」的问题，核清之后只是「换一个我们自己生成的值」。
+ *  > 这种便宜要先找一遍，再去问人。**
+ *
+ *  ⚠️ 服务端要把这个值**换回盘上的路径**时走 `cacheAbsOf`，别自己拼 —— 
+ *  首页缩略图就是那样的消费方（它读盘转 base64）。 */
 export const cacheRel = (what: CacheKind, name?: string): string =>
-  [UD_DIRNAME, what, ...(name ? [name] : [])].join("/").split(sep).join("/");
+  "/" + [CACHE_URL_SEG, what, ...(name ? [name] : [])].join("/");
+
+/** `cacheRel()` 那个 URL 的路由前缀（`serve.ts` 认它）。一处定义，两边用。 */
+export const CACHE_URL_SEG = "__cache";
+
+/** 把 `cacheRel()` 生成的那个 URL 换回盘上的绝对路径。认不出就 `null`。
+ *  ⚠️ **也认老值**（`.umbrastudio/shots/x.png`）：用户机器上 B2 之前生成的
+ *  `index-data.json` 里存的是旧形式，不认的话首页缩略图会**静默变空**。 */
+export function cacheAbsOf(projectDir: string, value: string): string | null {
+  const v = value.split(sep).join("/");
+  if (v.startsWith(`/${CACHE_URL_SEG}/`)) return join(cacheRoot(projectDir), ...v.slice(CACHE_URL_SEG.length + 2).split("/"));
+  if (v.startsWith(`${UD_DIRNAME}/`)) return join(projectDir, ...v.split("/"));   // B2 之前的老值
+  return null;
+}

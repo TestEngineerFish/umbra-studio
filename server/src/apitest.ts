@@ -1079,6 +1079,30 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
    > 顺序错一行，收尾就从「清干净」变成「每轮留一个」，而读数长得一模一样。 */
 await rmdirAll(FIXTURE, { recursive: true, force: true });
 
+/* ── 缩略图走路由（M14-4 B2）── `/__cache/<种类>/<文件>`
+   B2 把缓存搬进 `records/<ID>/cache/` 之后，S1 索引页那个 `<img src={thumb}>`
+   在项目目录下就找不到文件了 —— 这条路由是它的新落点。
+   ⚠️ **判据要同时钉两头**：`cacheRel()` 生成的那个值长什么样（S1 读它），
+   和那个值**真的取得到文件**。只钉一头的话，改了其中一边不会红。 */
+console.log("\n⑮ 缩略图走路由（M14-4 B2）");
+{
+  const { cacheDir: cd2, cacheRel: cr2 } = await import("./statedirs.js");
+  const { mkdir: mk, writeFile: wf } = await import("node:fs/promises");
+  const { join: join2 } = await import("node:path");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  await mk(cd2(FIXTURE, "shots"), { recursive: true });
+  await wf(join2(cd2(FIXTURE, "shots"), "缩略图.png"), png);
+  const val = cr2("shots", "缩略图.png");
+  ok(val === "/__cache/shots/缩略图.png", "`cacheRel()` 给的是**同源绝对路径**（S1 那份稿一个字都不用改）", val);
+  const r1 = await fetch(`${s.url.replace(/\/$/, "")}${val.split("/").map(encodeURIComponent).join("/")}?token=${encodeURIComponent(s.token)}`);
+  const body = Buffer.from(await r1.arrayBuffer());
+  ok(r1.status === 200 && body.equals(png), "**那个地址真的取得到那张图**（两头对上才算接通）", `${r1.status} · ${body.length} 字节`);
+  const r2 = await fetch(`${s.url}__cache/没有这个.png?token=${encodeURIComponent(s.token)}`);
+  ok(r2.status === 404, "没有的回 404，**不往下落到 SPA 兜底页**（`/__shared/` 那条实测教训）", String(r2.status));
+  const r3 = await fetch(`${s.url}__cache/..%2f..%2fproject.json?token=${encodeURIComponent(s.token)}`);
+  ok(r3.status === 404, "**`..` 爬不出缓存目录**（`serveStatic` 的 `isInside`）", String(r3.status));
+}
+
 /* ── 收尾：自己造的兜底仓库（M14-6）──
    ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
    而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。
