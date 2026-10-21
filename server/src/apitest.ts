@@ -918,7 +918,15 @@ console.log("\n⑫ 账号：OIDC 授权码 + PKCE（一·a，2026-10-10）——
   await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
   const fakeUrl = `http://127.0.0.1:${(fake.address() as { port: number }).port}`;
   const lg = (await (await post("account_login", { serverUrl: fakeUrl })).json()) as { ok: boolean; errors: { code: string; message: string }[] };
-  ok(!lg.ok && lg.errors?.[0]?.code === "E_ACCOUNT_LOGIN" && /OIDC/.test(lg.errors[0]!.message), "服务端是 local → 照实说还没开 OIDC，不起登录", lg.errors?.[0]?.message);
+  /* ⚠️ 2026-10-21 这条判据改过一次：原来钉的是报错里有没有「OIDC」这个词，
+     而那句话的原文是「要等服务端切到 Casdoor 之后才能从这里登录」——
+     账号中心对接说明定了 **Casdoor 不用了**，那个未来不会来，话本身就错了。
+     判据要钉的是**这道闸**（local 上不起 OIDC 登录）**加上「它告诉了用户该怎么办」**，
+     不是那一句具体措辞（`doc/11` Q69 · `00` §161.5 同族）。
+     ⚠️ `account_login` 这件能力在 Casdoor 下线后随 OIDC 一起删，这条判据跟着删。 */
+  const lgMsg = lg.errors?.[0]?.message ?? "";
+  ok(!lg.ok && lg.errors?.[0]?.code === "E_ACCOUNT_LOGIN" && /local/.test(lgMsg) && /邮箱|密码/.test(lgMsg),
+     "服务端是 local → 不起 OIDC 登录，而且说清了该走哪条路", lgMsg);
   fake.close();
   const st2 = (await (await fetch(u("account"))).json()) as { data: { serverUrl: string; pending: boolean } };
   ok(st2.data.serverUrl !== fakeUrl && st2.data.pending === false, "没登上不记这次给的地址、也没留一场在等");

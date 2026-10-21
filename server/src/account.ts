@@ -135,6 +135,28 @@ export function tokenExpMs(token: string): number | null {
 /** 提前多久就当它快过期、先刷新（毫秒）。请求在路上也要时间，卡着点用会在服务端那头刚好过期。 */
 export const TOKEN_RENEW_SKEW_MS = 60_000;
 
+/** 服务端说「这条会话真的失效了」的那个头（账号中心对接说明 2026-10-21 §二）。 */
+export const SESSION_INVALID_HEADER = "x-umbra-error";
+
+/** 这个 401 是不是「会话真的失效了」。**纯函数**，判据直接钉它。
+ *
+ *  ⚠️ **默认方向是「不是」** —— 读不到那个头（老服务端、网关挡在前面、代理自己回的 401）
+ *  一律**不算**失效。两个方向的代价不对称：
+ *  - 读不到就清 → 一个网关的 401 把用户的登录清掉，而他什么都没做错；
+ *  - 读不到就不清 → 真失效时界面会多说一会儿「已登录」。
+ *
+ *  账号中心承诺「失效时**任何接口都回 401 并带这个头**」，所以第二种的窗口是服务端兜住的；
+ *  而第一种没有任何东西兜。**选了不清，就必须把「为什么没清」写进 `lastError`** ——
+ *  不然这个选择会变成一个查不出来的沉默（`CLAUDE.md` 纪律③ 同族）。 */
+export function isSessionInvalid(r: { status: number; headers?: { get(name: string): string | null } }): boolean {
+  return r.status === 401 && (r.headers?.get(SESSION_INVALID_HEADER) ?? "").trim() === "session_invalid";
+}
+
+/** `/auth/me` 失败。`message === "401"` 这个约定别处在用，所以标记另挂一个字段。 */
+class MeFail extends Error {
+  constructor(message: string, readonly sessionInvalid = false) { super(message); }
+}
+
 /** 密码登录 / 找回失败的分档（设置页按 kind 画错误条）。
  *  kind：bad 邮箱或密码不对 · locked 试太多（`wait` 秒后再试，0 = 服务端没说）· offline 连不上 · other 其余（message 用服务端原话）。
  *  `cause` 是给日志看的底层原因，不上界面。 */
@@ -293,7 +315,10 @@ export class AccountService {
     } catch (e) {
       throw new Error(`连不上 ${base}：${(e as Error).message}`);
     }
-    if (!cfg) throw new Error("这台服务器还没开 OIDC 登录（/auth/config 说是 local）。要等服务端切到 Casdoor 之后才能从这里登录。");
+    /* ⚠️ 2026-10-21 改掉了这句的后半 —— 原文写「要等服务端切到 Casdoor 之后」，
+       而那个未来**不会来了**：账号中心对接说明定了 Casdoor 不用，线上 10-19 起
+       `/auth/config` 永远回 `local`。这条路留着只是为了 10-26 前的回退开关。 */
+    if (!cfg) throw new Error("这台服务器用的是邮箱 + 密码登录（/auth/config 说是 local）—— 用上面那个表单登，不走浏览器这条路。");
     const { url, done } = await this.oidc.start(cfg);
     const gen = ++this.loginGen;
     this.inFlight = gen;
@@ -387,7 +412,7 @@ export class AccountService {
 
   private async me(serverUrl: string, token: string): Promise<AccountUser> {
     const r = await this.fetchFn(`${serverUrl}/auth/me`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${token}` } });
-    if (r.status === 401) throw new Error("401");
+    if (r.status === 401) throw new MeFail("401", isSessionInvalid(r));
     if (!r.ok) throw new Error(`/auth/me 回了 ${r.status}`);
     const d = (await r.json()) as { user?: AccountUser };
     if (!d.user || typeof d.user.id !== "number") throw new Error("/auth/me 没有 user");
@@ -415,9 +440,19 @@ export class AccountService {
           this.lastError = "";
         }
       } catch { /* 下面按失效处理 */ }
+      /* 清不清登录，两条路的**证据**不一样（账号中心对接说明 2026-10-21 §二）：
+         - 有刷新令牌（OIDC 回退路）：「IdP 拒了这张刷新令牌」本身就是证据 —— 照旧清；
+         - 没有刷新令牌（不透明令牌，线上 10-19 起走这条）：唯一的证据是服务端那个头。
+         ⚠️ **原来这里对后者是「任何 401 都清」** —— `a.refreshToken` 是空串，
+         上面那个 `if` 进不去，`renewed` 永远 false，于是一个网关的 401
+         就能把用户的登录清掉，而他什么都没做错。 */
       if (!renewed) {
-        await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
-        this.lastError = "登录已经失效，重新登录一次";
+        if (a.refreshToken || (e as MeFail).sessionInvalid === true) {
+          await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
+          this.lastError = "登录已经失效，重新登录一次";
+        } else {
+          this.lastError = `服务端回了 401，但没说是会话失效（没有 ${SESSION_INVALID_HEADER}: session_invalid）—— 本机的登录没有清掉`;
+        }
       }
     }
     return this.status();

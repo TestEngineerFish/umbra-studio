@@ -6,7 +6,19 @@
  *  刷新令牌被 IdP 拒了才清登录，断网不清。
  *
  *  全程临时状态目录（`UMBRASTUDIO_STATE_DIR`，**要在 import 核心模块之前设**），网络全是注入的假服务端。
- *  跑：`npm --prefix server run tokentest` */
+ *  跑：`npm --prefix server run tokentest`
+ *
+ *  ⚠️ **2026-10-21 身份层换对端了**（`doc/11` Q69，账号中心对接说明
+ *  `Geek/doc/账号中心-对接说明-UmbraStudio-2026-10-21.md`）：**Casdoor 不用了**，
+ *  线上 10-19 起 `/auth/config` 回 `{"provider":"local","managed_by":"center"}`，
+ *  走的是邮箱 + 密码 + **不透明长串令牌，没有刷新令牌**。
+ *
+ *  于是这个文件分成两半，**两半都要留着**：
+ *  - ①–⑧ 测 **OIDC 那条路**（刷新令牌、7 天整点过期）。线上已经不走它，但 Casdoor
+ *    10-26 才下线、服务端还留着回退开关 `switch.sh oidc` —— **那条路还在，判据就得在**。
+ *    随 OIDC 代码一起删（对接说明 §三.3）。
+ *  - ⑨⑩ 测**线上现在真正走的那条**：不透明令牌。⑩ 是失效判准，
+ *    也就是「什么时候才允许清掉用户的登录」。 */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +26,7 @@ import { join } from "node:path";
 const STATE = await mkdtemp(join(tmpdir(), "umbra-tokentest-"));
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
 
-const { AccountService, LoginFail, tokenExpMs, TOKEN_RENEW_SKEW_MS } = await import("./account.js");
+const { AccountService, LoginFail, tokenExpMs, TOKEN_RENEW_SKEW_MS, isSessionInvalid } = await import("./account.js");
 type LoginFail = InstanceType<typeof LoginFail>;
 const { OidcLogin } = await import("./oidc.js");
 const { getAccount, setAccount } = await import("./account.js");
@@ -185,6 +197,82 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
   ok(!JSON.stringify(a).includes("right password"), "密码不落盘");
   const p = await svc.perks();
   ok(p.ok, "不透明令牌（没有 exp）照用、不去刷新");
+}
+
+
+/* ⑩ 不透明令牌的失效判准（账号中心对接说明 2026-10-21 §二）：
+      **只有 401 带 `x-umbra-error: session_invalid` 才清登录**，断网 / 5xx / 不带那个头的 401 都不清。
+
+   ⚠️ 这一节之前**一条判据都没有**，而产品代码当时是「任何 401 都清」——
+      `a.refreshToken` 是空串，`check()` 里那个 `if (cfg && a.refreshToken)` 进不去，
+      `renewed` 永远 false，于是**一个网关的 401 就能把用户的登录清掉**。
+      ①–⑧ 全绿也看不见它：它们每一条都有刷新令牌。 */
+{
+  const TOK = "opaque-check-token";
+  /** 只管 `/auth/me` 的世界：`me()` 说它回什么（`status: 0` = 断网）。
+   *  ⚠️ 刷新函数一律先计数再抛 —— 「永不刷新」这条要测的是**它没被调**，
+   *  而不是「调了没出事」（调了没出事在没有刷新令牌的世界里看起来一模一样）。 */
+  const checkWorld = (me: () => { status: number; hdr?: Record<string, string> }) => {
+    let refreshes = 0;
+    const fetchFn = async (url: string) => {
+      const path = url.slice(BASE.length);
+      const json = (status: number, body: unknown, hdr: Record<string, string> = {}) =>
+        ({ ok: status < 300, status, json: async () => body, headers: { get: (n: string) => hdr[n.toLowerCase()] ?? null } });
+      if (path === "/auth/config") return json(200, { provider: "local", managed_by: "center" });
+      if (path === "/auth/me") {
+        const r = me();
+        if (r.status === 0) throw new Error("fetch failed");
+        if (r.status === 200) return json(200, { user: { id: 1, name: "sam" } });
+        return json(r.status, { detail: "x" }, r.hdr ?? {});
+      }
+      return json(404, {});
+    };
+    const oidc = new OidcLogin(async () => { refreshes++; throw new Error("不该刷新"); });
+    return { svc: new AccountService(oidc, fetchFn as never), refreshes: () => refreshes };
+  };
+  const signInOpaque = () => setAccount({ serverUrl: BASE, accessToken: TOK, refreshToken: "", user: { id: 1, name: "sam" } as never, signedInAt: "2026-10-21T00:00:00Z" });
+
+  /* ⓐ 该清的时候清 */
+  await signInOpaque();
+  let w = checkWorld(() => ({ status: 401, hdr: { "x-umbra-error": "session_invalid" } }));
+  let st = await w.svc.check();
+  ok(!st.signedIn && !(await getAccount()).accessToken && w.refreshes() === 0,
+     "401 带 session_invalid：**清登录**，而且一次刷新都没发（不透明令牌没有刷新令牌）", st.lastError);
+
+  /* ⓑ 不该清的时候不清 —— 这两条是这一节的理由 */
+  await signInOpaque();
+  w = checkWorld(() => ({ status: 401 }));
+  st = await w.svc.check();
+  ok(st.signedIn && (await getAccount()).accessToken === TOK,
+     "**401 不带那个头：不清登录**（网关 / 代理自己回的 401 不是会话失效）");
+  ok(/没说是会话失效/.test(st.lastError),
+     "而且要说出「为什么没清」—— 选了不清就必须留线索，不然它是个查不出来的沉默", st.lastError);
+
+  /* ⓒ 5xx */
+  await signInOpaque();
+  w = checkWorld(() => ({ status: 503 }));
+  st = await w.svc.check();
+  ok(st.signedIn && (await getAccount()).accessToken === TOK, "5xx：不清登录", st.lastError);
+
+  /* ⓓ 断网（原来那条纪律照旧） */
+  await signInOpaque();
+  w = checkWorld(() => ({ status: 0 }));
+  st = await w.svc.check();
+  ok(st.signedIn && (await getAccount()).accessToken === TOK, "断网：不清登录", st.lastError);
+
+  /* ⓔ 判准本身是纯函数，直接钉它 —— 上面四条测的是「用对了」，这条测的是「它自己对」 */
+  const res = (status: number, h: Record<string, string> | null) =>
+    h === null ? { status } : { status, headers: { get: (n: string) => h[n.toLowerCase()] ?? null } };
+  ok(isSessionInvalid(res(401, { "x-umbra-error": "session_invalid" })) === true
+     && isSessionInvalid(res(401, { "x-umbra-error": "bad_credentials" })) === false
+     && isSessionInvalid(res(401, {})) === false
+     && isSessionInvalid(res(401, null)) === false
+     && isSessionInvalid(res(200, { "x-umbra-error": "session_invalid" })) === false,
+     "判准纯函数：状态码和头都要对，**读不到头一律不算失效**");
+
+  /* ⓕ 令牌是不透明长串：认不出 exp，所以永远不会去「预判过期」 */
+  ok(tokenExpMs(TOK) === null && tokenExpMs("opaque.two.parts.only") === null,
+     "不透明令牌：`tokenExpMs` 回 null —— 不预判过期，只靠服务端那个头");
 }
 
 await rm(STATE, { recursive: true, force: true });
