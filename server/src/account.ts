@@ -135,9 +135,16 @@ export function tokenExpMs(token: string): number | null {
 /** 提前多久就当它快过期、先刷新（毫秒）。请求在路上也要时间，卡着点用会在服务端那头刚好过期。 */
 export const TOKEN_RENEW_SKEW_MS = 60_000;
 
-/** 服务端说「这条会话真的失效了」的两个头（三端契约 `contract-session-revoked`，2026-09-28 定）。
- *  `x-umbra-error: session_invalid` 跟着 401 走；`x-umbra-session: invalid` **可以跟着任何状态码走，包括 200**。 */
-export const SESSION_INVALID_HEADER = "x-umbra-error";
+/** Umbra 服务端的**通用错误码头**。
+ *
+ *  ⚠️ **它不只用于会话失效** —— 2026-10-21 从实现侧确认：当前密码填错时回的是
+ *  `400` + `X-Umbra-Error: invalid_field`。所以**光看这个头有没有值是不够的**，
+ *  必须连状态码和具体的值一起判（见 `isSessionInvalid`）。
+ *  已知的值：`session_invalid` · `invalid_field` · `bad_credentials` · `too_many_attempts`。 */
+export const UMBRA_ERROR_HEADER = "x-umbra-error";
+
+/** 会话失效**专用**的那个头（三端契约 `contract-session-revoked`，2026-09-28 定）。
+ *  和上面那个不同：它只有一种含义，所以**可以跟着任何状态码走，包括 200**。 */
 export const SESSION_HEADER = "x-umbra-session";
 
 /** `x-umbra-session` 的值是不是 `invalid`。**大小写与空白宽容** —— 反代可能会动它（PC `server.ts` 同一句）。 */
@@ -161,7 +168,19 @@ export function isSessionInvalid(r: { status: number; headers?: { get(name: stri
      而别的凭据放行时，服务端回的是 **200** 并带这个头 —— 只看 401 的话**永远不知道会话已经没了**。 */
   if (isSessionInvalidHeader(r.headers?.get(SESSION_HEADER))) return true;
   /* ① 401 + `x-umbra-error: session_invalid`（跟着 401 走的那条）。 */
-  return r.status === 401 && (r.headers?.get(SESSION_INVALID_HEADER) ?? "").trim() === "session_invalid";
+  return r.status === 401 && (r.headers?.get(UMBRA_ERROR_HEADER) ?? "").trim() === "session_invalid";
+}
+
+/** 服务端回的那句**给人看的话**。⚠️ **只认字符串**。
+ *
+ *  FastAPI 在请求体不合法时回 **422**，而它的 `detail` 是一个**数组**
+ *  （`[{loc, msg, type}]`）—— `String()` 它会得到 **`"[object Object]"`**，
+ *  然后原样画到界面上。2026-10-21 实现侧说「422 落到 other 那一档就行」时才想到去查，
+ *  当时**四处都这么写着**（登录 / 忘了密码 / 改密码 / 改显示名），前两处今天就够得到。
+ *  不是字符串就回空串，让调用方用自己那句兜底文案。 */
+function detailOf(d: unknown): string {
+  const v = (d as { detail?: unknown } | null | undefined)?.detail;
+  return typeof v === "string" ? v : "";
 }
 
 /** `/auth/me` 失败。`message === "401"` 这个约定别处在用，所以标记另挂一个字段。 */
@@ -400,7 +419,7 @@ export class AccountService {
     if (!r.ok) {
       const code = r.headers?.get?.("x-umbra-error") || "";
       let detail = "";
-      try { detail = String(((await r.json()) as { detail?: unknown }).detail ?? ""); } catch { /* 不是 JSON */ }
+      try { detail = detailOf(await r.json()); } catch { /* 不是 JSON */ }
       if (code === "too_many_attempts") {
         const wait = Number(r.headers?.get?.("retry-after") || 0);
         throw new LoginFail("locked", wait > 0 ? `试得太多了，${wait} 秒后再试` : "试得太多了，过一会儿再试", wait > 0 ? wait : 0);
@@ -433,7 +452,7 @@ export class AccountService {
     if (r.status >= 500) throw new LoginFail("offline", `连不上 ${base}`, 0, `服务端回 ${r.status}`);
     if (!r.ok) {
       let detail = "";
-      try { detail = String(((await r.json()) as { detail?: unknown }).detail ?? ""); } catch { /* 不是 JSON */ }
+      try { detail = detailOf(await r.json()); } catch { /* 不是 JSON */ }
       throw new LoginFail("other", detail || `没发出去（${r.status}）`);
     }
   }
@@ -462,7 +481,7 @@ export class AccountService {
       let detail = "", field = "", code = "";
       try {
         const d = (await r.json()) as { detail?: unknown; field?: unknown; code?: unknown };
-        detail = String(d.detail ?? ""); field = String(d.field ?? ""); code = String(d.code ?? "");
+        detail = detailOf(d); field = String(d.field ?? ""); code = String(d.code ?? "");
       } catch { /* 不是 JSON */ }
       if (r.status === 400 && (code === "invalid_field" || field)) {
         throw new LoginFail("bad", detail || (field === "current" ? "当前密码不对" : "这一项填得不对"), 0, code, field || "current");
@@ -491,7 +510,7 @@ export class AccountService {
     if (r.status >= 500) throw new LoginFail("offline", "服务器这会儿不舒服，过一会儿再试", 0, `服务端回 ${r.status}`);
     if (!r.ok) {
       let detail = "", field = "";
-      try { const d = (await r.json()) as { detail?: unknown; field?: unknown }; detail = String(d.detail ?? ""); field = String(d.field ?? ""); } catch { /* 不是 JSON */ }
+      try { const d = (await r.json()) as { detail?: unknown; field?: unknown }; detail = detailOf(d); field = String(d.field ?? ""); } catch { /* 不是 JSON */ }
       if (r.status === 401) throw new LoginFail("other", "登录已经失效，重新登录一次再改");
       throw new LoginFail(r.status === 400 ? "bad" : "other", detail || `没改成（${r.status}）`, 0, "", field);
     }
@@ -563,7 +582,7 @@ export class AccountService {
           await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
           this.lastError = "登录已经失效，重新登录一次";
         } else {
-          this.lastError = `服务端回了 401，但没说是会话失效（没有 ${SESSION_INVALID_HEADER}: session_invalid）—— 本机的登录没有清掉`;
+          this.lastError = `服务端回了 401，但没说是会话失效（没有 ${UMBRA_ERROR_HEADER}: session_invalid）—— 本机的登录没有清掉`;
         }
       }
     }

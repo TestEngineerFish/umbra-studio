@@ -398,6 +398,28 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
   ok(kind === "bad" && field === "current" && msg === "当前密码不对", "当前密码不对：kind=bad、field=current、照服务端那句说", `${kind}/${field}/${msg}`);
   ok((await getAccount()).accessToken === TOK, "**而且一个字都不碰登录状态**（400 不是会话失效）");
 
+  /* ⓑ' 实现侧 2026-10-21 给的**真实响应原文**（Umbra `app.py` 的 `render_problem`）：
+        400 · 头 `X-Umbra-Error: invalid_field` · 体 `{detail, status, code, field}`。
+     ⚠️ 这一条真正钉的是**另一件事**：`x-umbra-error` 是**通用错误码头，不只用于会话失效** ——
+        它带着 `invalid_field` 回来时，`isSessionInvalid` 必须说「不是失效」。
+        把这个头当成「有值就是会话没了」的话，**用户一打错密码就被踢出登录**。 */
+  await signInOpaque();
+  w = opWorld(() => ({ status: 400, hdr: { "x-umbra-error": "invalid_field" },
+    body: { detail: "当前密码不对", status: 400, code: "invalid_field", field: "current" } }));
+  try { await w.svc.changePassword("wrong", "new pw"); } catch (e) { kind = (e as LoginFail).kind; field = (e as LoginFail).field; msg = (e as Error).message; }
+  ok(kind === "bad" && field === "current" && msg === "当前密码不对" && (await getAccount()).accessToken === TOK,
+     "**带 `X-Umbra-Error: invalid_field` 头的 400：仍然是「这一格重填」，不是「会话失效」**", `${kind}/${field}/${msg}`);
+
+  /* ⓑ'' FastAPI 的 422（请求体缺字段 / 类型不对）：`detail` 是个**数组** ——
+        `String()` 它会得到 `"[object Object]"` 并原样画到界面上。
+     ⚠️ 这一条是 2026-10-21 实现侧说「422 落到 other 那一档就行」时顺手查出来的，
+        而当时**四处都这么写着**（登录 / 忘了密码 / 改密码 / 改显示名），**前两处今天就够得到**。 */
+  await signInOpaque();
+  w = opWorld(() => ({ status: 422, body: { detail: [{ loc: ["body", "current"], msg: "field required", type: "value_error.missing" }] } }));
+  try { await w.svc.changePassword("", "new pw"); } catch (e) { kind = (e as LoginFail).kind; msg = (e as Error).message; }
+  ok(kind === "other" && !/\[object Object\]/.test(msg) && msg.length > 0,
+     "422（FastAPI 校验格式）：落 other 档，而且**不会把 `[object Object]` 画给用户**", `${kind} / ${msg}`);
+
   /* ⓒ 改密码时服务端 5xx → offline 档，也不清登录 */
   await signInOpaque();
   w = opWorld(() => ({ status: 503, body: {} }));
