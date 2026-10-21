@@ -8,6 +8,7 @@
     "build": "tsc -p . --noEmit && vite build",
     "check": "tsc -p . --noEmit",
     "uitest": "node uitest.mjs",
+    "hometest": "node hometest.mjs",
     "build:shared": "vite build --config vite.shared.config.ts"
   },
   "dependencies": {
