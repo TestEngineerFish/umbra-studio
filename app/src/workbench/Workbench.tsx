@@ -71,7 +71,9 @@ function AdoptBar({ project, core, onAdopted }: { project: ProjectHandle; core: 
   );
 }
 
-export function Workbench({ project, host, layout, setLayout, onHome, onSettings }: { project: ProjectHandle; host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void }) {
+export function Workbench({ project, host, layout, setLayout, onHome, onSettings, openAt, onOpenedAt }: { project: ProjectHandle; host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void;
+  /** 进来就自动打开这一份（「打开方式」打开单个文件时，M14-5）。**优先级最高** */
+  openAt?: string | null; onOpenedAt?: () => void }) {
   const core = useMemo(() => new Core(project.url, project.token, project.ws), [project]);
   const store = useProject(core, project.dir, project.designProject);
   /** 页签三态（M8-28）。存量是 `string[]`，`normalize` 认它 */
@@ -319,6 +321,10 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
        页签是我们自己维护的、**不限格式**，所以它才是「上次开着什么」的出处。
        这一条也是草稿暂存（M10-2c）的前提：刷新回来得先回到那个文件，
        才看得到「有一份没落盘的草稿」。 */
+    /* ⚠️ **`openAt` 排在页签之前**（M14-5）：用户是「右键这一份 › 用 Umbra Studio 打开」
+       进来的，他要的就是这一份。页签里上次开着的那份**不该顶掉它** ——
+       那会让「打开方式」看起来「点了没反应」。 */
+    if (openAt) { open(openAt); onOpenedAt?.(); return; }
     const fromTabs = tabs.length ? tabs[tabs.length - 1]!.path : null;
     const last = fromTabs ?? mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
     if (last) { open(last); return; }

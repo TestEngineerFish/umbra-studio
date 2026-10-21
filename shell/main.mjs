@@ -4,8 +4,8 @@
  *  - 单实例 / 菜单 / 最近项目 / 未落盘提示（上次没正常退出）
  *  前端只通过 preload 暴露的 window.umbraHost 碰壳（host adapter desktop 实现）。 */
 import { app, BrowserWindow, Menu, dialog, shell, ipcMain, Notification, nativeTheme } from "electron";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { basename, join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { externalAllowed, sameOrigin } from "./urlguard.mjs";
 
@@ -35,6 +35,53 @@ let hub = null;       // { url, port, token }
 let mainWin = null;
 let checkWin = null;
 const pending = [];   // 主窗口还没 ready 时攒下来的宿主事件
+
+/* ══ 「打开方式」/ 双击 / 命令行（M14-5，`doc/11` Q59–Q61）══
+ *
+ *  ⚠️ **`open-file` 必须在 `whenReady` 之前注册**（`doc/24` §六②）。
+ *  macOS 冷启动双击一个文件时，这个事件**在 app ready 之前就触发**了 ——
+ *  注册晚了就是「冷启动丢、热启动好」，也就是用户嘴里的「**有时候行有时候不行**」。
+ *  这一类缺陷最难报：它不是「不работает」，是「不稳定」。
+ *
+ *  ⚠️ `second-instance` 原来**把 argv 整个扔了**（同节①）——
+ *  Windows 上「应用已经开着时右键用它打开」至今是失效的，只是没人走到过。 */
+const queued = [];    // 核心还没起来时攒下的「要打开的路径」
+
+/** 从一串 argv 里挑出**真实存在的路径**。
+ *  ⚠️ 不按「第一个非选项参数」取：Electron 自己的开关（`--inspect` 之类）、
+ *  开发模式下的 `.`、以及 Windows 传来的引号形式都会混在里面。
+ *  **「它在盘上存在」是一条不用枚举的判准** —— 和 M14-6 清理兜底仓库同一个思路。 */
+function pathsFromArgv(argv) {
+  /* ⚠️ **要把「应用自己的路径」排掉**（2026-10-22 `shelltest` 当场抓到）。
+     开发模式下 `process.argv` 是 `[electron, <应用目录>, ...用户参数]` ——
+     而那个应用目录**在盘上存在**，于是「存在就打开」会把 `shell/` 自己当成项目打开：
+     实测首页变成了 `shell → out → mac-arm64 → Umbra Studio.app → …` 的目录树。
+     打包后 `getAppPath()` 在 `.app` 里，碰不到，所以**这是一条只在开发模式下出现的**
+     —— 正是 `doc/00` §63.1 那一族（开发模式下测不出来 / 只在开发模式下出现）的反面。 */
+  let selfPaths = [];
+  try { const ap = app.getAppPath(); selfPaths = [ap, resolve(ap)]; } catch { /* ready 之前拿不到也没关系 */ }
+  return argv.slice(1).filter((a) =>
+    typeof a === "string" && !a.startsWith("-") && a !== "." && !selfPaths.includes(a) && !selfPaths.includes(resolve(a)) && existsSync(a));
+}
+
+/** 打开一个路径：目录就当目录开，文件就开它的父目录并选中它。
+ *  ⚠️ **父目录不会被写进任何东西**（M14-4 B3）—— 这是 Q59 那一档成立的前提。
+ *  B3 之前这条路会在用户的下载文件夹里部署 780 KB，所以当时它不能做。 */
+function openPath(p) {
+  if (!p) return;
+  let st = null;
+  try { st = statSync(p); } catch { return; }
+  if (st.isDirectory()) sendHost({ type: "open-dir", dir: p });
+  else sendHost({ type: "open-file", dir: dirname(p), rel: basename(p) });
+}
+
+/** 核心还没起来时先攒着，起来之后一次性放出去。 */
+function takePath(p) {
+  if (core && mainWin) openPath(p); else queued.push(p);
+}
+
+/* **顶层注册**，不在 whenReady 里 —— 理由见上面那段⚠️ */
+app.on("open-file", (e, p) => { e.preventDefault(); takePath(p); });
 
 function sendHost(ev) { if (mainWin && !mainWin.isDestroyed() && mainWin.webContents.isLoadingMainFrame() === false) mainWin.webContents.send("host:event", ev); else pending.push(ev); }
 
@@ -212,7 +259,12 @@ async function createMainWindow() {
   mainWin.on("closed", () => { mainWin = null; });
 }
 
-app.on("second-instance", () => { if (mainWin) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus(); } });
+app.on("second-instance", (_e, argv) => {
+  if (mainWin) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus(); }
+  /* ⚠️ **argv 要接住**（`doc/24` §六①）：Windows 上「应用已经开着时右键 › 用它打开」
+     走的就是这条路 —— 原来这个回调把 argv 整个扔了，于是那一下**什么都不会发生**。 */
+  for (const p of pathsFromArgv(argv)) takePath(p);
+});
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (!mainWin && hub) void createMainWindow(); });
 app.on("before-quit", () => { writeSession({ cleanExit: true, at: new Date().toISOString() }); });
@@ -231,6 +283,10 @@ app.whenReady().then(async () => {
     await import(pathToFileURL(join(CORE_DIST, "index.js")).href);
   }
   if (prev && prev.cleanExit === false) sendHost({ type: "dirty-restart", at: prev.at ?? null });
+  /* 冷启动：命令行里带的路径（`open -a "Umbra Studio" <路径>` / `Umbra\ Studio <路径>`），
+     以及 ready 之前 `open-file` 攒下的那些。**两条一起放，顺序不重要** —— 第一期换当前窗口（Q61）。 */
+  for (const p of pathsFromArgv(process.argv)) queued.push(p);
+  while (queued.length) openPath(queued.shift());
   if (process.env.UMBRASTUDIO_AUTOTEST_LOG) {
     // 壳内自测：把关键读数写一行，Playwright _electron 之外的最低限度证据
     try { writeFileSync(process.env.UMBRASTUDIO_AUTOTEST_LOG, JSON.stringify({ hub: hub.url, cdp, coreRoot: CORE_ROOT, packaged: app.isPackaged, electron: process.versions.electron }) + "\n", { flag: "a" }); } catch { /* ignore */ }

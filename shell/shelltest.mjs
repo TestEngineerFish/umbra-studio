@@ -42,7 +42,8 @@ const mainWindow = async (app) => {
 };
 let app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL });
 let win = await mainWindow(app);
-await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 30000 });
+await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 30000 })
+  .catch(async (e) => { console.error("首页没出来，当前页面文字：", JSON.stringify((await win.evaluate(() => document.body.innerText)).slice(0, 300))); throw e; });
 console.log("launch→home:", Date.now() - t0, "ms | projects:", await win.evaluate(() => document.querySelectorAll("li").length), "| host:", await win.evaluate(() => ({ kind: window.umbraHost?.kind, pick: window.umbraHost?.capabilities().pickDirectory.ok })));
 console.log("windows:", await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(w => ({ visible: w.isVisible(), url: w.webContents.getURL().replace(/token=[^&]+/, "token=…").slice(0, 60) }))));
 console.log("cdp env in main:", await app.evaluate(() => process.env.UMBRASTUDIO_CDP ?? null));
@@ -341,6 +342,38 @@ await app.close();
   await c.close(); await new Promise(r => setTimeout(r, 800)); const alive = await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[U]mbraStudio/shell.*--mcp'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); });
   console.log("--mcp: 客户端断开后壳进程还活着:", alive, "(壳有窗口，stdin 关了不退出是预期；秘书用时窗口可见)");
 }
+/* ── 命令行带一个路径进来（M14-5 / `doc/11` Q59–Q61）──
+   「右键 › 打开方式」和「双击」走的是 macOS 的 `open-file` 事件，**判据写不进来**
+   （要 LaunchServices 真的派发）；而**命令行这条路和它们汇到同一个 `openPath()`**，
+   所以它是三条路里**唯一能钉住的那一条**。钉住它 = 钉住那个汇流处。
+   ⚠️ 单实例：这一段必须在前一个实例 `close()` 之后跑，否则新进程会被立刻挤掉。 */
+{
+  const { readdirSync } = await import("node:fs");
+  const copy = S + "/umbra_copy";
+  /* ⚠️ **别挑 `project.json`**（第一版挑中了它，而判据因此是假的）：
+     它在目录树里本来就列着，于是「页面上出现这个名字」在 argv 被**整个忽略**时
+     照样成立 —— 正是 `doc/00` §114.6「判据在测别的东西也会绿」。
+     挑一份**不会被自动打开**的普通文件，并且判据看的是**有没有为它开一个页签**。 */
+  const one = readdirSync(copy).find((f) => /\.(md|txt)$/i.test(f))
+    ?? readdirSync(copy).find((f) => f.endsWith(".dc.html") && !/^(index|S\d|IconGlyph)/.test(f));
+  if (!one) console.log("命令行打开：跳过 —— 测试副本里没有可打开的文件");
+  else {
+    const t2 = Date.now();
+    const a2 = await electron.launch({ executablePath: bin, args: [SHELL, copy + "/" + one], env, cwd: SHELL });
+    const w2 = await mainWindow(a2);
+    /* 判据是**工作台开到了那一份**，不是「窗口出来了」——
+       后者在参数被整个忽略的时候也成立（那正是 `second-instance` 原来的样子）。 */
+    let got = "";
+    try {
+      await w2.waitForFunction((name) => [...document.querySelectorAll('[data-ud="tab"]')].some((e) => e.getAttribute("data-path") === name),
+        one, { timeout: 25000 });
+      got = await w2.evaluate(() => [...document.querySelectorAll('[data-ud="tab"]')].map((e) => e.getAttribute("data-path")).join(" · "));
+    } catch { got = ""; }
+    console.log(`命令行打开一个文件 ${JSON.stringify(one)}:`, got ? `✓ ${Date.now() - t2}ms · 页签 ${got}` : "✗ 25 秒内没为它开页签（argv 被忽略了？）");
+    await a2.close();
+  }
+}
+
 console.log("autotest log:", (await readFile(S + "/shell-autotest.log", "utf8")).trim().split("\n").pop());
 
 /* ── 收尾：撤掉「最近打开」里那一条（2026-10-07）──

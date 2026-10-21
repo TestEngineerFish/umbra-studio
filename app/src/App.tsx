@@ -20,6 +20,9 @@ export default function App() {
   const [project, setProject] = useState<ProjectHandle | null>(() => (b && b.name && b.dir ? { url: b.url, token: b.token, ws: b.ws, name: b.name, title: b.title ?? b.name, dir: b.dir } : null));
   const [page, setPage] = useState<"home" | "work" | "market">(() => (location.pathname.endsWith("/home") || !(b && b.name) ? "home" : "work"));
   const [layout, setLayoutRaw] = useState<LayoutState>(loadLayout);
+  /** 打开项目之后要自动选中的那一份（「打开方式」打开单个文件时用，M14-5）。
+   *  ⚠️ **用完要清**：不清的话下次从首页点同一个项目，它还会把人送回那份文件。 */
+  const [openAt, setOpenAt] = useState<string | null>(null);
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
@@ -89,6 +92,10 @@ export default function App() {
        变成了一个设计项目。**「打开」和「接管」是两件事，原来被做成了一件。**
        现在打开就是打开（一个字节不写），要预览设计稿时工作台里那条横条再问。 */
     if (e.type === "open-dir") void open(e.dir);
+    /* 「打开方式」给的是**一个文件**（M14-5 / `doc/11` Q59）：以父目录为根打开、选中它。
+       ⚠️ 父目录**不会被写进任何东西**（M14-4 B3）—— B3 之前这条路会在用户的
+       下载文件夹里部署 780 KB，所以当时 Q59 做不了。 */
+    if (e.type === "open-file") void (async () => { setOpenAt(e.rel); await open(e.dir); })();
     if (e.type === "go-home") setPage("home");
     if (e.type === "dirty-restart") toast("上次没有正常退出", "如果当时有没落盘的改动，请在稿的版本历史里核对一下", "error");
   }), [host, hub, open]);
@@ -135,7 +142,7 @@ export default function App() {
         ? <div className="h-full flex min-h-0"><Market core={hub} onClose={() => setPage("home")} onSettings={() => setSheet({ kind: "settings" })} /></div>
         : page === "home" || !project
         ? <Home core={hub} host={host} onOpen={(d) => void open(d)} onNewProject={() => setSheet({ kind: "newProject" })} onImport={() => void importDir()} onSettings={() => setSheet({ kind: "settings" })} onMarket={() => setPage("market")} projectsVersion={projectsVersion} />
-        : <Workbench key={project.dir} project={project} host={host} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
+        : <Workbench key={project.dir} project={project} host={host} openAt={openAt} onOpenedAt={() => setOpenAt(null)} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
       {sheet?.kind === "newProject" && <NewProjectSheet hub={hub} host={host} initialDir={sheet.dir} onClose={() => setSheet(null)} onOpen={(d) => void open(d)} />}
       {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectUrl={page === "work" && project ? project.url : null} projectCore={page === "work" ? projectCore : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)} />}
       <Toasts />

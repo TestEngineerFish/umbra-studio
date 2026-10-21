@@ -17,4 +17,12 @@ export interface HostAdapter {
   /** 壳主动发来的事：菜单「打开目录」、上次没正常退出（未落盘提示）。浏览器宿主没有这些事。 */
   onEvent?(cb: (e: HostEvent) => void): () => void;
 }
-export type HostEvent = { type: "open-dir"; dir: string } | { type: "dirty-restart"; at: string | null } | { type: "go-home" };
+export type HostEvent =
+  | { type: "open-dir"; dir: string }
+  /** 从「打开方式」/ 双击 / 命令行打开**一个文件**（M14-5）：
+   *  以它的父目录为根打开，并选中这一份。
+   *  ⚠️ 和 `open-dir` 分成两件事，不是「传一个路径让前端自己 stat」——
+   *  **前端没有 fs**，判「这是文件还是目录」只有壳做得到。 */
+  | { type: "open-file"; dir: string; rel: string }
+  | { type: "dirty-restart"; at: string | null }
+  | { type: "go-home" };

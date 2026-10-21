@@ -115,7 +115,19 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "timestamp": "http://timestamp.apple.com/ts01",
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Folder",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "public.folder"
+            ]
+          }
+        ]
+      }
     },
     "win": {
       "target": [
@@ -136,6 +148,37 @@
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "compression": "normal",
     "beforePack": "./beforePack.cjs",
-    "afterPack": "./afterPack.cjs"
+    "afterPack": "./afterPack.cjs",
+    "fileAssociations": [
+      {
+        "ext": "dc.html",
+        "name": "Umbra 设计稿",
+        "description": "Umbra Studio 设计稿",
+        "role": "Editor",
+        "rank": "Owner"
+      },
+      {
+        "ext": [
+          "md",
+          "markdown",
+          "txt",
+          "html",
+          "htm",
+          "json",
+          "jsonc",
+          "csv",
+          "tsv",
+          "svg",
+          "yml",
+          "yaml",
+          "log",
+          "conf"
+        ],
+        "name": "文本与数据文件",
+        "description": "Umbra Studio 能看能改的文件",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ]
   }
 }
