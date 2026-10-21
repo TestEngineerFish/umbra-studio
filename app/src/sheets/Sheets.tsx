@@ -209,10 +209,25 @@ export function NewProjectSheet({ hub, host, initialDir, onClose, onOpen }: { hu
       <button className="btn primary" disabled={!dir.trim() || !nm || nameBad || !!info?.isProject || busy} onClick={() => void submit()}>{busy ? "正在建…" : "新建项目"}</button>
     </>}
     body={<>
-    <p className="text-muted leading-relaxed">项目就是磁盘上一个目录。选一个目录，它本身成为项目根；里面已有的稿件会被接管，不会被改动。</p>
+    <p className="text-muted leading-relaxed">项目就是磁盘上一个目录。选一个目录，它本身成为项目根 —— <b className="text-text2">你原来的文件一个字节都不会被改</b>。</p>
+    {/* ⚠️⚠️ **这一条是 2026-10-21 补的，补的是一句假回执**（sam 用它打开 `Geek/doc` 之后发现的）。
+        原文写的是「里面已有的稿件会被接管，**不会被改动**…**只加 project.json**」，
+        而实测「新建 + 第一次打开」往那个目录里写了 **23 个文件 · 约 780 KB**，
+        还**改了他的 `.gitignore`**。
+        「原来的文件不被改」是真的，「只加 project.json」是假的 —— **两句话混在一起，
+        假的那半借了真的那半的可信度**。
+        ⚠️ 这些东西该搬走（`11` Q62 / `12` M14-4 的 B 段），**但在搬走之前这句话必须照实说** ——
+        `CLAUDE.md` §8 第 7 条：**一个说谎的数比没有数糟，因为它看起来是读数**；
+        而这里更糟，因为用户是照着这句话决定要不要把自己的文档目录交给我们的。 */}
+    <div className="rounded border border-border bg-panel2 px-3 py-2 leading-relaxed">
+      <b className="text-text2">但它现在会往这个目录里加一批工具文件</b> —— 入口页、8 份界面壳、运行时副本、
+      <code className="font-mono text-[11px]">.umbrastudio/</code>，实测 <b className="text-text2">23 个文件 · 约 780 KB</b>；
+      目录里有 <code className="font-mono text-[11px]">.gitignore</code> 的话，还会往它<b className="text-text2">追加一段</b>把这些排除掉。
+      <br />这些都是生成物，删掉下次打开会重建。<span className="text-muted">正在改成放进软件自己的目录，还没做完。</span>
+    </div>
     <Field label="目录" note={info && info.exists === false ? "目录还不存在，会自动创建" : cap.ok ? undefined : cap.why}><div className="flex gap-2"><input className={inputCls + " flex-1"} value={dir} onChange={(e) => setDir(e.target.value)} onBlur={() => void inspect(dir)} placeholder="/Users/…/我的项目" /><button className="btn" onClick={() => void pick()}>选择</button></div></Field>
     {info?.isProject && <div className="rounded border border-border bg-panel2 px-3 py-2 flex items-center gap-2"><span className="flex-1">这个目录已经是一个项目（有 project.json）。</span><button className="btn sm" onClick={() => { onClose(); onOpen(dir.trim()); }}>直接打开</button></div>}
-    {info && !info.isProject && info.draftCount > 0 && <div className="rounded border border-border bg-panel2 px-3 py-2">这个目录里已有 {info.draftCount} 份稿。新建会把它们接管进项目，稿件不动，只加 project.json。</div>}
+    {info && !info.isProject && info.draftCount > 0 && <div className="rounded border border-border bg-panel2 px-3 py-2">这个目录里已有 {info.draftCount} 份稿。新建会把它们接管进项目，<b className="text-text2">这些稿一个字节不动</b> —— 加进来的是 project.json 和上面说的那批工具文件。</div>}
     <Field label="项目名" note={nameBad ? "只能用英文、数字、- 和 _，且以英文或数字开头" : "也是 MCP 里的项目标识"} err={nameBad}><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="英文 / 数字 / - _" /></Field>
     <Field label="标题"><input className={inputCls} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="给人看的名字，可选" /></Field>
     </>} />;
