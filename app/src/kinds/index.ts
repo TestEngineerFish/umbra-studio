@@ -4,6 +4,7 @@ import { dc } from "./dc";
 import { dir } from "./dir";
 import { fallback } from "./fallback";
 import { image } from "./image";
+import { media } from "./media";
 
 /** **「有哪些格式」这件事只写在这里。** 加一种格式的全部工作是三步：
  *
@@ -28,7 +29,10 @@ import { image } from "./image";
    （草稿暂存、版本历史、差异标红）都得各写一遍。
    而且用户 2026-09-28 定过「新格式一律做成插件」，理由是不想为了一种格式重发 PC 端。
    一种 kind 只能有一个模块 —— 不让出来的话插件注册时当场抛。 */
-const ALL: readonly KindModule[] = [dc, image, dir, fallback];
+/* ⚠️ `media` 一个模块认领**两种** kind（`video` / `audio`，M14-11）——
+   注册表支持一个模块多个 id（`ids: [...]`），而这两种除了用 `<video>` 还是 `<audio>`
+   之外没有任何差别，拆成两个文件只会让同一段话写两遍。 */
+const ALL: readonly KindModule[] = [dc, image, media, dir, fallback];
 for (const m of ALL) register(m);
 
 /** 开发期自检：种类表里声明的每一种都得有模块认领。

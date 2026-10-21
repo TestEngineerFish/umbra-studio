@@ -13,11 +13,15 @@ export function FileCard({ core, host, path, projectDir, onOpen }: { core: Core;
   const [info, setInfo] = useState<ReadFileResult | null>(null);
   const [refs, setRefs] = useState<Array<{ file: string; line: number }> | null>(null);
   const [confirm, setConfirm] = useState(false);
+  /** 用户点过「用纯文本打开」—— 跳过嗅探再读一次（M14-11 / Q76）。
+   *  ⚠️ 换文件时要**清掉**：不清的话下一份文件会继承上一份的「强制按文本」。 */
+  const [forceText, setForceText] = useState(false);
+  useEffect(() => { setForceText(false); }, [path]);
   useEffect(() => {
     setInfo(null); setRefs(null); setConfirm(false);
-    void core.get<ReadFileResult>(`file?path=${encodeURIComponent(path)}`).then((r) => { if (r.ok && r.data) setInfo(r.data); });
+    void core.get<ReadFileResult>(`file?path=${encodeURIComponent(path)}${forceText ? "&asText=true" : ""}`).then((r) => { if (r.ok && r.data) setInfo(r.data); });
     void core.get<{ referencedBy: Array<{ file: string; line: number }> }>(`file_refs?path=${encodeURIComponent(path)}`).then((r) => setRefs(r.data?.referencedBy ?? []));
-  }, [core, path]);
+  }, [core, path, forceText]);
   const cap = host.capabilities().revealInFinder;
   const name = path.split("/").pop() ?? path;
   const rename = async () => {
@@ -49,6 +53,32 @@ export function FileCard({ core, host, path, projectDir, onOpen }: { core: Core;
           <dt className="text-muted">修改</dt><dd>{info ? `${new Date(info.updatedAt).toLocaleString()}（${timeAgo(info.updatedAt)}）` : "…"}</dd>
           <dt className="text-muted">位置</dt><dd className="font-mono break-all">{path}</dd>
         </dl>
+        {/* ── 正文（M14-11 / Q76，用户 2026-10-21：「任何文件都要能看，至少有通用的兜底」）──
+            在这之前这张卡**只有元数据和四个动作** —— 一个 `.log` / `.conf` 打开后看不到一个字。
+            ⚠️ 服务端对 `kind === "other"` 会嗅探（无 NUL + 解得出 UTF-8 就当文本），
+            所以多数情况下这里直接就有正文；嗅探认为是二进制时下面那颗钮是**出路**。 */}
+        {info?.content !== null && info?.content !== undefined && (
+          <div className="border-b border-border">
+            <div className="flex items-baseline gap-2 px-4 pt-3 pb-1">
+              <span className="text-muted">正文</span>
+              {info.lines !== undefined && <span className="font-mono text-muted">{info.lines} 行</span>}
+              {info.truncated && <span style={{ color: "var(--tool-warn)" }}>{info.why}</span>}
+              {!info.truncated && info.why && <span style={{ color: "var(--tool-warn)" }}>{info.why}</span>}
+            </div>
+            {/* 只读。**这张卡不是编辑器** —— 编辑归插件（用户定的边界：Studio 管通用查看）。
+                `whitespace-pre-wrap` 而不是 `pre`：一行几千字的日志横着滚没法看。 */}
+            <pre className="px-4 pb-3 m-0 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all overflow-auto"
+                 style={{ maxHeight: 360 }} data-ud="fallback-text">{info.content}</pre>
+          </div>
+        )}
+        {/* 嗅探说它不是文本 —— 给一条出路，而不是让用户以为这文件打不开。
+            ⚠️ 只在 `other` 这一档给：`.png` 按文本读没有意义，给了这颗钮只会让人点了失望。 */}
+        {info && info.content === null && info.kind === "other" && !forceText && (
+          <div className="p-4 border-b border-border flex items-center gap-2 flex-wrap">
+            <span className="text-muted">{info.why ?? "没给正文"}</span>
+            <button className="btn sm" data-ud="fallback-astext" onClick={() => setForceText(true)}>还是按纯文本打开</button>
+          </div>
+        )}
         <div className="p-4 border-b border-border">
           <div className="flex items-center gap-2 mb-1"><span className="text-muted">被引用</span><span className="font-mono">{refs?.length ?? "…"}</span></div>
           {refs && refs.length === 0 && <p className="text-muted leading-relaxed">没有稿件引用它，改名、移动、删除都不影响任何稿。</p>}

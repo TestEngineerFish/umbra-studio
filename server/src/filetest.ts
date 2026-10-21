@@ -50,7 +50,10 @@ ok("图片尺寸从文件头读（png 1×1 · svg 48×24）",
 ok("md 摘录跳过 frontmatter", l.entries.find((e) => e.name === "需求.md")?.excerpt === "# 日志页需求");
 
 const r1 = await readAnyFile(p, "需求.md");
-ok("读文本：正文 + sha256 + 行数", !!r1.content?.includes("日志页需求") && r1.sha256.length === 64 && r1.lines === 9);
+/* `sha256` 2026-10-21 起是**可选**的（截断时刻意不给，见 `ReadFileResult` 的注释）——
+   这一条是没截断的正常读，所以它**必须**在：`?? ""` 会让「没给」悄悄变成「长度不对」，
+   而那两件事该分得清。 */
+ok("读文本：正文 + sha256 + 行数", !!r1.content?.includes("日志页需求") && r1.sha256?.length === 64 && r1.lines === 9);
 const rimg = await readAnyFile(p, "图.png");
 ok("读二进制：不给正文，但说清为什么", rimg.content === null && !!rimg.why && rimg.width === 1);
 
@@ -784,7 +787,7 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   /* ⚠️ 这一条是这一段的核心：**sha 是原始字节的，不随编码变**。
      不这样的话「按 GBK 读 → 拿它的 sha 去写」会绕过写前校验那道闸。 */
   ok("**sha256 不随编码变**（它是原始字节的 —— 否则按别的编码读就绕过了写前校验）",
-     asGbk.sha256 === asUtf8.sha256, `${asGbk.sha256.slice(0, 12)} vs ${asUtf8.sha256.slice(0, 12)}`);
+     !!asGbk.sha256 && asGbk.sha256 === asUtf8.sha256, `${asGbk.sha256?.slice(0, 12)} vs ${asUtf8.sha256?.slice(0, 12)}`);
 
   /* 盘上一个字节都没动 */
   const after = await readFile(join(DIR, G));
@@ -1297,6 +1300,77 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   await new Promise((r) => setTimeout(r, 20));
   await writeFile(join(TK, "t.json"), JSON.stringify({ color: { light: { danger: "#C92A2A80" } } }, null, 2));
   ok("**直接改 tokens 文件（不走 set_token_value）之后也拿到新值**", (await val()) === "#C92A2A80", await val());
+}
+
+/* ── 未知扩展名的纯文本兜底（M14-11 / `doc/11` Q76，2026-10-21）──────────────
+   用户的要求是一句话：**任何文件都要能看，至少有通用的兜底。**
+   在这之前 `kind === "other"` 的文件打开后**一个字都看不到**（通用文件卡只有元数据和四个动作）。 */
+{
+  const { looksTextual } = await import("./files.js");
+  console.log("\n⑭ 未知扩展名的纯文本兜底");
+
+  /* ── 判准自己（纯函数，不碰盘）── */
+  const sniff: Array<[string, Buffer, boolean]> = [
+    ["空文件算文本", Buffer.alloc(0), true],
+    ["ASCII 日志", Buffer.from("2026-10-21 INFO started\n"), true],
+    ["中文文本", Buffer.from("第一行\n第二行，带标点。\n"), true],
+    /* ⚠️ **这一条是整个判准最容易写错的地方**：样本是**截断**的（只取前 8 KB），
+       而截断点很可能落在一个多字节字符中间。用 `TextDecoder(..., { fatal: true })`
+       一刀切的话，一份完全正常的中文文件会被判成二进制。
+       **「样本是截断的」这件事本身会改判准。** */
+    ["中文被截断在多字节中间照样算文本", Buffer.from("中文内容很长".repeat(900)).subarray(0, 8192), true],
+    ["PNG 头（有 NUL）", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), false],
+    ["全 0 字节", Buffer.alloc(64), false],
+    ["GBK 中文（无 NUL 但不是 UTF-8）", Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0xb2, 0xe2, 0xca, 0xd4, 0xd6, 0xd0, 0xce, 0xc4]), false],
+    ["JPEG 魔数", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]), false],
+  ];
+  let allRight = true;
+  for (const [what, buf, want] of sniff) {
+    if (looksTextual(buf) !== want) { allRight = false; console.log(`    ✗ ${what} → ${!want}`); }
+  }
+  ok("**嗅探判准 8 个样本全对**（含「截断在多字节中间」那条）", allRight);
+
+  /* ── 真读一遍 ── */
+  await writeFile(join(DIR, "服务.log"), "2026-10-21 10:00 启动\n2026-10-21 10:01 就绪\n");
+  const log = await readAnyFile(p, "服务.log");
+  ok("`.log` 这种类型表不认得的，**现在看得到正文了**", log.content !== null && /就绪/.test(log.content ?? ""), { kind: log.kind, lines: log.lines });
+  ok("（样本有效性）它确实走的是 `other` 这一档，不是被某个已有类型认走了", log.kind === "other");
+
+  await writeFile(join(DIR, "二进制.dat"), Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe, 0x00, 0x7f]));
+  const bin = await readAnyFile(p, "二进制.dat");
+  ok("真二进制照旧不给正文，**而且说得出为什么**", bin.content === null && /不是文本/.test(bin.why ?? ""), bin.why);
+
+  /* ⚠️ `asText` 是**嗅探判错时的出路**。没有出路的误判就是「这个文件打不开」——
+     而那正是这一条要消除的症状。 */
+  const forced = await readAnyFile(p, "二进制.dat", undefined, { asText: true });
+  ok("加 `asText` 之后**照样给正文**（用户坚持要看）", forced.content !== null);
+  ok("但**会说一句**「看着不像文本」—— 不说的话用户以为这文件本来就长这样",
+     /不像文本/.test(forced.why ?? ""), forced.why);
+
+  /* ⚠️ 只对 `other` 嗅探：`.png` 的「不是文本」是**类型表说的确定的事**，
+     不该让一份碰巧没有 NUL 的图片把它推翻。 */
+  await writeFile(join(DIR, "假图.png"), "这其实是文本，但扩展名是 png\n");
+  const png = await readAnyFile(p, "假图.png", undefined, { asText: true });
+  ok("**已知类型不受嗅探和 `asText` 影响** —— `.png` 给了 asText 也不按文本读",
+     png.content === null, { kind: png.kind, why: png.why });
+
+  /* ── 超限给开头一段，而不是整个拒绝 ── */
+  const big = "日志行".repeat(2000) + "\n";
+  await writeFile(join(DIR, "大.log"), big.repeat(40));
+  const cut = await readAnyFile(p, "大.log", undefined, { textMax: 4096 });
+  ok("超过上限的未知文件**给开头一段**，不是整个拒绝（看个开头通常就够判断它是什么）",
+     cut.content !== null && cut.truncated === true, { truncated: cut.truncated, why: cut.why });
+  ok("截断的那一段**末尾没有坏字符** —— 切在多字节中间会留一个 U+FFFD，原样画出来是个黑问号",
+     !(cut.content ?? "").endsWith("\uFFFD"));
+  /* ⚠️ **截断了就不给 sha256**（`umbra-plugins` 2026-10-21 问出来的）：
+     拿着整份的 sha256 + 截断的 content 去 `write_file`，写前校验会**通过**，
+     然后把文件截短 —— 一次静默的数据丢失，而回执还说「写成功」。
+     **删掉凭据比多说一句话管用**：少一个字段，那条路就走不通。 */
+  ok("**截断的回包不给 sha256** —— 不然它会变成「把文件截短」那条路的通行证",
+     cut.sha256 === undefined, cut.sha256);
+  ok("（对照）没截断的照旧给 sha256", (await readAnyFile(p, "服务.log")).sha256?.length === 64);
+  ok("而**已知文本类型超限照旧拒绝**（没有顺手改掉它们的行为）",
+     (await readAnyFile(p, "需求.md", undefined, { textMax: 8 })).content === null);
 }
 
 /* ── 收尾：**删掉自己造的文件 ≠ 删掉自己造的状态**（`00` §166）──

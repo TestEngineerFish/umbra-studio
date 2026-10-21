@@ -37,7 +37,16 @@ export interface FileEntry {
   opaque?: boolean;
 }
 export interface ListFilesResult { dir: string; entries: FileEntry[]; types: { dc: number; md: number; image: number; other: number } }
-export interface ReadFileResult { path: string; kind: FileKindS; size: number; updatedAt: string; sha256: string; content: string | null; why?: string; lines?: number; snapshot?: string; width?: number; height?: number }
+export interface ReadFileResult {
+  path: string; kind: FileKindS; size: number; updatedAt: string; sha256: string;
+  content: string | null;
+  /** ⚠️ **给了正文时它也可能有值**（截断了、或「看着不像文本但你坚持要看」）——
+   *  别拿它的有无去判断有没有正文，判 `content === null`。 */
+  why?: string;
+  /** 正文只是开头一段（M14-11）。界面要说一句，不然用户以为这就是全文。 */
+  truncated?: boolean;
+  lines?: number; snapshot?: string; width?: number; height?: number;
+}
 export interface FileSnapshotMeta { version: string; src: string; at: string; bytes: number; note?: string }
 export interface ShellState { selectOn: boolean; preset: number; zoom: number; draftTheme: "light" | "dark"; picked: boolean; busy: boolean; editHint: string | null; checkNote: string | null; apiErr: string | null }
 

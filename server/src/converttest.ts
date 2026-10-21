@@ -120,7 +120,13 @@ console.log("格式转换 · 宿主能力 file.convert（2026-10-18）");
   await mkdir(join(projDir, ".umbrastudio"), { recursive: true });
   await writeFile(join(projDir, ".umbrastudio", "x.png"), "tool-state");
   const tool = await hostCall(PLUGIN_RW, "file.convert", { path: ".umbrastudio/x.png", to: "jpg" });
-  ok(!tool.ok && /工具自己的文件或状态目录/.test(tool.errors[0]?.message ?? "") && !existsSync(join(projDir, ".umbrastudio", "x.jpg")),
+  /* ⚠️ **2026-10-21 改准了一次**（Q77）：原来钉的是「工具自己的文件或状态目录」这**九个字**，
+     而那一批把拒因按判准分了档（`files.ts` 的 `denyReason`：我们的产物 / `.git` 两套话），
+     于是**行为完全没变而这条判据红了** —— 它拒了，只是换了措辞。
+     改成钉**那道闸的三件实事**：拒了 · 拒因点名了这个路径 · 成品一个字节都没落。
+     措辞不钉（`00` §161.5：判据要钉住它声称的那道闸，不钉措辞）。 */
+  ok(!tool.ok && /\.umbrastudio/.test(tool.errors[0]?.message ?? "") && /不转/.test(tool.errors[0]?.message ?? "")
+     && !existsSync(join(projDir, ".umbrastudio", "x.jpg")),
     "工具状态目录（.umbrastudio/）里的东西不转", tool.errors[0]?.message);
 }
 

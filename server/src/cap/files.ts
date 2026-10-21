@@ -56,6 +56,7 @@ defineCap({
       + "⚠️ **范围读不给 sha256**（只读了一段，算不出整份的）—— 要写回请整份读。不能和 offset / limit（按行分页）同时给。`encoding` 只能不给或给 `\"base64\"`（范围读不解码），给别的回 E_BAD_INPUT。模型 / MCP / 前端调用不开放。",
     "`encoding` 给别的编码时**只换读法，盘上那份一个字节都没动**（M10-5，中文 CSV 常被当成 UTF-8 读成乱码）。",
     "⚠️ `sha256` 永远是**原始字节**的，不随编码变 —— 所以按 GBK 读出来的文本，拿这个 sha 回去校验仍然对得上。",
+    "**类型表不认得的扩展名**（`.log` / `.conf` / `.env.example` …）会自动嗅探：没有 NUL 字节且解得出 UTF-8 就当文本给正文；超过上限时给**开头一段**并带 `truncated: true`。嗅探判错时加 `asText: true` 强制按文本读。",
   ].join("\n"),
   input: {
     path: z.string().describe("相对项目根的文件路径"),
@@ -67,9 +68,12 @@ defineCap({
     /* 按字节范围读（2026-10-19）：**只对插件开放**，模型 / MCP / 前端给了就拒（见 run 里）。 */
     byteOffset: z.number().int().min(0).optional().describe("（仅插件）按字节读：从第几个字节起（0 起算）。要和 byteLength 一起给"),
     byteLength: z.number().int().min(1).optional().describe("（仅插件）按字节读：读多少字节（1..上限）。要和 byteOffset 一起给"),
+    /* M14-11 / Q76：「用纯文本打开」那颗钮。⚠️ **只对 `other`（类型表不认得的）有意义** ——
+       它跳过的是嗅探，不是类型表：`.png` 给了 asText 也不会按文本读。 */
+    asText: z.boolean().optional().describe("未知扩展名：跳过「看着像不像文本」的嗅探，直接按文本读。嗅探判错时的出路"),
   },
   http: { route: "file", method: "GET" },
-  run: async ({ path, encoding, offset, limit, byteOffset, byteLength }, c) => {
+  run: async ({ path, encoding, offset, limit, byteOffset, byteLength, asText }, c) => {
     /* ⚠️ **插件这条路不跑 zod**（`host.ts` 直接 `cap.run`，HTTP 门面也不跑）—— 上面那几个 `.int().min()` 对插件不算数，
        字节范围的入参在这里手工核。核不过一律回 E_BAD_INPUT 信封，**不抛**：`hostCall` 会把抛出来的东西包成 E_IO，
        插件就分不清「我参数给错了」和「盘坏了」。 */
@@ -111,8 +115,8 @@ defineCap({
        不让「设置里调大了」把一份大日志整个塞进模型上下文。 */
     const lim = plugin ? await getPluginLimits() : null;
     const r = await readAnyFile(p(c), path, encoding, lim
-      ? { binary: true, binaryMax: lim.binaryReadMaxMB * 1048576, textMax: lim.textReadMaxMB * 1048576 }
-      : {});
+      ? { binary: true, binaryMax: lim.binaryReadMaxMB * 1048576, textMax: lim.textReadMaxMB * 1048576, asText }
+      : { asText });
     if ((offset === undefined && limit === undefined) || r.content === null) return envelope(r);
     const lines = r.content.split("\n");
     const from = offset ?? 1;

@@ -32,7 +32,10 @@ const cases: Array<[string, string, boolean, string]> = [
   ["main.ts",                   BUILTIN.code,   true,  "代码"],
   ["readme.md",                 BUILTIN.md,     true,  "Markdown"],
   ["notes.txt",                 BUILTIN.code,   true,  "纯文本按代码看 —— 归 other 就没了预览和给 AI 读这两样"],
-  ["clip.mp4",                  BUILTIN.other,  false, "没人认领的落到 other，且不是文本"],
+  /* ⚠️ 样本 2026-10-21 从 `clip.mp4` 换成 `scene.glb`（M14-11）：`.mp4` 那天**变成内置 video 了**，
+     而这一行要的是「**没人认领**的那一档」—— 样本本身被认领之后，这条判据测的就不是它声称的事了。
+     **一个「没人要的扩展名」会在某天被人要走。** */
+  ["scene.glb",                 BUILTIN.other,  false, "没人认领的落到 other，且不是文本"],
   ["photo.PNG",                 BUILTIN.image,  false, "大写扩展名也认；图片默认不是文本"],
 ];
 for (const [path, want, textual, why] of cases) {
@@ -42,14 +45,19 @@ for (const [path, want, textual, why] of cases) {
 ok(kindOf("whatever", true) === BUILTIN.dir, "目录靠 isDir 认，不靠名字");
 
 /* ── ② 插件注册：三道闸，每一道对应一种「装个插件把产品搞坏」的具体方式 ── */
-registerKind({ id: "video", label: "视频", icon: "▶", priority: 50, match: (n) => n.endsWith(".mp4"), from: "com.umbra.video" });
-ok(kindOf("clip.mp4") === "video", "插件加的类型立刻生效（运行期注册）");
-ok(isTextualPath("clip.mp4") === false, "插件没声明 textual = 不是文本");
-ok(kindDef("video").label === "视频", "插件类型的标签/图标也进表了");
-ok(allKinds().includes("video"), "allKinds() 是函数，能看到插件加的种类（以前是常量，看不到）");
+/* ⚠️ **示例类型 2026-10-21 从 `video` 改名成 `model3d`**（M14-11）：
+   `video` 那天变成了**内置类型**，而内置类型不许插件重定义 —— 这一节当场抛
+   `video 是内置类型，插件不能重定义`。
+   > **一个「只是举例用的名字」会在某天变成真名字。**
+   换成 `model3d`（`.glb`）：它今天不是内置类型，而且正是「插件该加的那种类型」。 */
+registerKind({ id: "model3d", label: "三维模型", icon: "⬡", priority: 50, match: (n) => n.endsWith(".glb"), from: "com.umbra.model3d" });
+ok(kindOf("scene.glb") === "model3d", "插件加的类型立刻生效（运行期注册）");
+ok(isTextualPath("scene.glb") === false, "插件没声明 textual = 不是文本");
+ok(kindDef("model3d").label === "三维模型", "插件类型的标签/图标也进表了");
+ok(allKinds().includes("model3d"), "allKinds() 是函数，能看到插件加的种类（以前是常量，看不到）");
 
 let threw = "";
-try { registerKind({ id: "video", label: "又一个", icon: "?", priority: 50, match: () => false, from: "other" }); }
+try { registerKind({ id: "model3d", label: "又一个", icon: "?", priority: 50, match: () => false, from: "other" }); }
 catch (e) { threw = (e as Error).message; }
 ok(threw.includes("已经有了"), "闸①：重名当场抛 —— 静默覆盖的症状是「某种文件莫名换了视图」，很难追");
 
@@ -70,9 +78,9 @@ ok(kindOf("x.dc.html") === BUILTIN.dc, "**插件抢不走 .dc.html** —— 那�
 /* ── ③ 卸载：摘干净，不留半截 ── */
 ok(unregisterKindsFrom("evil") === 1, "卸载按插件 id 摘");
 ok(kindOf("x.dc.html") === BUILTIN.dc, "摘完还是对的");
-ok(unregisterKindsFrom("com.umbra.video") === 1, "把视频也摘掉");
-ok(kindOf("clip.mp4") === BUILTIN.other, "插件卸载后退回 other（文件卡），不是打不开");
-ok(!allKinds().includes("video"), "卸载后种类表里也没了");
+ok(unregisterKindsFrom("com.umbra.model3d") === 1, "把三维模型也摘掉");
+ok(kindOf("scene.glb") === BUILTIN.other, "插件卸载后退回 other（文件卡），不是打不开");
+ok(!allKinds().includes("model3d"), "卸载后种类表里也没了");
 
 /* ── ③.4 只读名单里的每一种，都真的走得到代码插件（M10-2 / 设计侧第十二轮 §一.4）──
    ⚠️ 设计侧给的自动只读名单第一条就是 `*.lock`，而当时 `kindOf("Cargo.lock")` 是
@@ -138,6 +146,73 @@ ok(!allKinds().includes("video"), "卸载后种类表里也没了");
     .map((f) => f.slice(appSrc.length + 1));
   if (!files.length) console.log("  · 找不到 app/src，跳过死接口那一关");
   else ok(hits.length === 0, "**没有任何格式模块再声明 `Status`**（读数只有 `meta` 一个出口）", hits.length ? hits.join(", ") : `扫了 ${files.length} 个文件`);
+}
+
+/* ── 视频 / 音频两种内置类型（M14-11 / Q76，2026-10-21）────────────────────── */
+console.log("\n⑨ 视频 / 音频");
+{
+  const { kindOf, isTextualPath, VIDEO_EXT, AUDIO_EXT, KINDS, BUILTIN, PLUGIN_DEFAULT_PRIORITY } = await import("./shared/kinds.js");
+  ok(VIDEO_EXT.every((e) => kindOf(`a${e}`) === "media-video"), `VIDEO_EXT ${VIDEO_EXT.length} 个全认成 media-video`, VIDEO_EXT.join(" "));
+  ok(AUDIO_EXT.every((e) => kindOf(`a${e}`) === "media-audio"), `AUDIO_EXT ${AUDIO_EXT.length} 个全认成 media-audio`, AUDIO_EXT.join(" "));
+
+  /* ⚠️ **这两条是这一节最要紧的，而它们是 2026-10-21 当天补的**（`umbra-plugins` 会话核出来的）。
+     第一版把 id 写成了 `video` / `audio`、priority 80 —— 那会**静默弄坏任何认领它们的第三方插件**：
+     服务端 `store.ts` 对非 bundled 插件认领内置类型直接 `continue`（一种 kind 都登记不上），
+     前端 `loader.ts` 也 `continue` 然后注册 UI 模块时撞上 `media.tsx` 当场抛，
+     而 loader 把它 catch 成「这个插件没能接上」——
+     **插件装着却不起作用，而服务端看一切正常**。 */
+  const vdef = KINDS().find((k) => k.id === BUILTIN.mediaVideo);
+  const adef = KINDS().find((k) => k.id === BUILTIN.mediaAudio);
+  /* 钉的是**关系不是数字**：priority 具体填几可以变，「兜底必须输给插件」不能变。 */
+  ok((vdef?.priority ?? 999) < PLUGIN_DEFAULT_PRIORITY && (adef?.priority ?? 999) < PLUGIN_DEFAULT_PRIORITY,
+     `**兜底的 priority 低于插件默认值** —— 兜底的意思是「没有别人的时候才轮到我」，写高了用户买的媒体插件等于白买`,
+     `兜底 ${vdef?.priority} / ${adef?.priority} · 插件默认 ${PLUGIN_DEFAULT_PRIORITY}`);
+  /* `video` / `audio` 这两个名字**要留给插件**：内置类型只有 bundled 能认领，占住就等于永久关门。 */
+  /* ⚠️ 写成 `BUILTIN.mediaVideo !== "video"` 的话 **TS 在编译期就把它判成恒真**并报
+     「这个比较没意义」—— 构建失败，而那时人往往会**删掉判据**而不是改代码（§158 同族）。
+     过一道 `string[]` 让它变回**运行期**判断：改回去的那一天它红，而不是编译不过。 */
+  const taken = (["video", "audio"] as string[]);
+  ok(!taken.includes(BUILTIN.mediaVideo) && !taken.includes(BUILTIN.mediaAudio),
+     "**`video` / `audio` 这两个 id 没有被内置占掉** —— 它们太通用，属于插件（内置类型只有 bundled 能认领）",
+     `${BUILTIN.mediaVideo} / ${BUILTIN.mediaAudio}`);
+  /* ⚠️⚠️ **这一条钉的是真正生效的那个函数**，上面那条钉的是常量的值 —— 它们曾经分道扬镳：
+     `isBuiltinKind` 查的是 `BUILTIN` 对象的**键**，而第一版只改了**值**，
+     于是「`video` 没被占掉」绿着、而 `isBuiltinKind("video")` 照旧为真，
+     插件认领 `video` 照旧被拒。
+     > **判据测的那个东西，和产品实际用的那个东西，要是同一个。** */
+  const { isBuiltinKind } = await import("./shared/kinds.js");
+  ok(!isBuiltinKind("video" as never) && !isBuiltinKind("audio" as never),
+     "**`isBuiltinKind(\"video\")` 为假** —— 钉的是那个真正挡住插件的函数，不是常量的值");
+  /* ⚠️ **这一条是反面的，而且是最要紧的**：不写 `textual` = 不是文本。
+     写成文本的话 `read_file` 会把一个 MP4 整个 `toString("utf8")` 塞进模型的上下文。 */
+  ok(!isTextualPath("a.mp4") && !isTextualPath("a.mp3"), "**视频音频不是文本** —— read_file 不会把一个 MP4 塞进模型上下文");
+  /* 两组扩展名不许重叠：重叠的话谁赢取决于表里的顺序，而那是**隐式**的 */
+  const dup = VIDEO_EXT.filter((e) => AUDIO_EXT.includes(e));
+  ok(dup.length === 0, "两组扩展名不重叠（重叠的话谁赢取决于表里的顺序，而那是隐式的）", dup.join(" "));
+  /* ⚠️ **只列浏览器真能播的**：列一个播不了的等于把「打不开」包装成「打开了但黑屏」。
+     `.mkv` / `.avi` 是最常被想当然加进来的两个，钉住它们。 */
+  ok(kindOf("a.mkv") === "other" && kindOf("a.avi") === "other",
+     "`.mkv` / `.avi` **不认领** —— 浏览器播不动，落到 other 的纯文本兜底去说实话");
+  /* 和图片同档优先级，但都要高过 code —— 免得哪天有人把 .ogg 塞进 CODE_EXT 就被当代码打开 */
+  ok(kindOf("a.ogg") === "media-audio", "`.ogg` 归音频兜底，不会被别的内置类型抢走");
+
+  /* ⚠️ **真演一遍「装了媒体插件」** —— 上面两条测的是 priority 这个**数字**和 id 这个**字符串**，
+     而要保证的事是「**插件装上之后它赢**」。数字对不等于结果对：
+     匹配走的是 `REG` 的顺序，而 `registerKind` 插进去的位置、`kindOf` 的遍历方式
+     都可能让一个「看着更高」的优先级不生效。
+     **一条端到端的判据顶十条关于数字的判据。** */
+  const { registerKind: reg2, unregisterKindsFrom: unreg2 } = await import("./shared/kinds.js");
+  reg2({
+    id: "video", label: "视频", icon: "▶", priority: 50,          // 插件自己定义，用的就是通用名
+    match: (n) => [".mp4", ".m4v", ".mov", ".webm", ".mkv"].some((e) => n.endsWith(e)),
+    from: "com.umbra.video",
+  });
+  ok(kindOf("clip.mp4") === "video", "**装了媒体插件之后 `.mp4` 归插件**（50 赢过兜底的 5）—— 这才是兜底两个字的意思");
+  ok(kindOf("clip.mkv") === "video", "连兜底**刻意不认领**的 `.mkv` 也归插件了（插件的扩展名更全）");
+  ok(kindOf("song.mp3") === "media-audio", "没被这个插件认领的音频照旧落兜底（两种类型互不干扰）");
+  unreg2("com.umbra.video");
+  ok(kindOf("clip.mp4") === "media-video", "**卸载插件之后退回兜底**，不是打不开");
+  ok(kindOf("clip.mkv") === "other", "而 `.mkv` 退回 other（兜底不认领它，浏览器播不动）");
 }
 
 console.log(fail === 0 ? `\n✓ 类型表 ${pass}/${pass + fail}` : `\n✗ 类型表 ${pass}/${pass + fail}`);

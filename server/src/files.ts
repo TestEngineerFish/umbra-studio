@@ -288,11 +288,20 @@ export interface LineRange { from: number; to: number; total: number; more: bool
 export interface ByteRange { byteOffset: number; byteLength: number; size: number; more: boolean }
 
 export interface ReadFileResult {
-  path: string; kind: FileKind; size: number; updatedAt: string; sha256: string;
+  path: string; kind: FileKind; size: number; updatedAt: string;
+  /** 整份字节的摘要。**截断时不给**（`truncated: true` 那种）——
+   *  不是算不出，是**不想让它被当成写回的凭据**：拿整份的 sha + 截断的 content 去写回，
+   *  写前校验会通过，然后静默把文件截短。同 `ReadFileBytesResult` 的口径。 */
+  sha256?: string;
   /** 文本文件的正文；二进制或超限时为 null */
   content: string | null;
-  /** 没给正文的原因 */
+  /** 没给正文的原因。
+   *  ⚠️ **给了正文时它也可能有值**（M14-11）：截断了、或者「看着不像文本但你坚持要看」——
+   *  所以**不能拿 `why` 的有无去判断有没有正文**，判 `content === null`。 */
   why?: string;
+  /** 正文**只是开头一段**（未知类型超过文本上限时给前 N KB，M14-11）。
+   *  界面要据此说一句，不然用户会以为这就是全文。 */
+  truncated?: boolean;
   lines?: number;
   snapshot?: string;
   /** 图片：原始尺寸 */
@@ -324,7 +333,47 @@ const READ_ENCODINGS = new Set(["utf-8", "gbk", "gb18030", "big5", "shift_jis", 
  *  拿到一份 PDF 的 base64 只会把上下文撑爆，它们照旧拿「不是文本文件」。 */
 /*  `opts.binaryMax`：按字节给的上限（字节）。不传就现读设置（`binaryMaxSetting`）。
  *  `opts.textMax`：文本整份给的上限（字节）。插件那条路传设置里的 `textReadMaxMB`，不传就是 `TEXT_MAX`（别的来源一律这个）。 */
-export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number; textMax?: number } = {}): Promise<ReadFileResult> {
+/** 这堆字节**看着像不像文本**（M14-11 / Q76，给未知扩展名兜底用）。
+ *
+ *  ⚠️ **它只在 `kind === "other"` 这一档用** —— 已知类型按类型表说了算，
+ *  不让嗅探去推翻「`.png` 不是文本」这种确定的事。
+ *
+ *  判准两条，都抄 git 的 `buffer_is_binary` 那一套，但第二条更严一点：
+ *  ① **前 8 KB 里有 NUL（0x00）就不是文本** —— 这一条几乎不误判：
+ *     文本编码里没有哪个合法字符会编出单个 0 字节（UTF-16 会，但它开头有 BOM，
+ *     而带 BOM 的 UTF-16 我们本来也读不了，当二进制是对的）。
+ *  ② 非 fatal 解码之后 **U+FFFD（替换字符）占比超过 10% 就不是文本** ——
+ *     这一条抓的是「没有 NUL 但也不是 UTF-8」的那些（GBK 文本、某些压缩格式）。
+ *
+ *  ⚠️ **为什么不用 `TextDecoder(..., { fatal: true })` 一刀切**：
+ *  样本是**截断**的（只取前 8 KB），而截断点很可能落在一个多字节字符中间 ——
+ *  fatal 模式会因此判一份完全正常的中文文件是二进制。
+ *  **「样本是截断的」这件事本身会改判准**，这是这个函数最容易写错的地方。
+ *
+ *  ⚠️ 空文件**算文本**：它没有任何二进制特征，而「打开一个空文件看到空」
+ *  比「打开一个空文件被告知它是二进制」合理。
+ *
+ *  **导出给判据** —— 判准自己对，和用对了它，是两件各自要测的事。 */
+export function looksTextual(buf: Buffer): boolean {
+  if (buf.length === 0) return true;
+  const head = buf.subarray(0, 8192);
+  if (head.includes(0)) return false;
+  const text = new TextDecoder("utf-8").decode(head);
+  if (!text.length) return true;
+  let bad = 0;
+  for (const ch of text) if (ch === "\uFFFD") bad++;
+  return bad / text.length <= 0.1;
+}
+
+/** 按**字符边界**截断，并把末尾那个可能被切坏的替换字符去掉。
+ *  ⚠️ 直接 `decode(subarray(0, n))` 会在末尾留一个 `U+FFFD`（切在多字节中间），
+ *  而那个字符会**原样画到界面上**变成一个黑问号 —— 看着像文件坏了。 */
+function decodeHead(buf: Buffer, maxBytes: number): string {
+  const out = new TextDecoder("utf-8").decode(buf.subarray(0, maxBytes));
+  return out.endsWith("\uFFFD") ? out.slice(0, -1) : out;
+}
+
+export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number; textMax?: number; asText?: boolean } = {}): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
   const buf = await readFile(abs);
@@ -335,8 +384,45 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
   const snaps = await listSnapshots(p, rel);
   if (snaps.length) out.snapshot = snaps[snaps.length - 1];
   if (out.kind === "image") Object.assign(out, await imageSize(abs));
+  const textMax = opts.textMax ?? TEXT_MAX;
   if (!isTextual(rel)) {
-    out.why = "不是文本文件";
+    /* ── 未知扩展名的纯文本兜底（M14-11 / Q76，用户 2026-10-21 定的「任何文件都要能看」）──
+       `kind === "other"` = 类型表不认得它。**不认得不等于看不了** ——
+       `.log` / `.conf` / `.env.example` / `.ini.bak` 这些全落在这一档，
+       而在这之前它们打开后**一个字都看不到**（通用文件卡只有元数据和四个动作）。
+
+       ⚠️ **只对 `other` 嗅探**：`.png` 的「不是文本」是类型表说的确定的事，
+       不该让一份碰巧没有 NUL 的图片把它推翻。
+       ⚠️ `asText` 是**用户显式要求**那条路（「用纯文本打开」那颗钮）——
+       嗅探必然有误判，而**没有出路的误判就是「这个文件打不开」**，
+       正是这一条要消除的症状。所以显式那条**跳过嗅探**，只保留上限。 */
+    if (out.kind === "other" && (opts.asText || looksTextual(buf))) {
+      if (st.size > textMax) {
+        /* 超限**不再整个拒绝，而是给前面一段** —— 对未知文件「看个开头」
+           通常就够判断它是什么了（日志尤其）。已知文本类型照旧拒，不动它们的行为。 */
+        out.content = decodeHead(buf, textMax);
+        out.truncated = true;
+        out.why = `文件 ${Math.round(st.size / 1024)} KB，只给了前 ${Math.round(textMax / 1024)} KB`;
+        /* ⚠️ **截断了就不给 sha256** —— 和按字节范围读同一个口径（`ReadFileBytesResult`
+           那句「只读了一段，算不出整份的摘要，要写回请整份读」）。
+           理由不是「算不出」（整份的摘要在上面已经算过了），是**不想让它被当成写回的凭据**：
+           拿着整份的 sha256 + 截断的 content 去 `write_file`，写前校验会**通过**，
+           然后把文件截短 —— 而那是一次静默的数据丢失，回执还会说「写成功」。
+           `umbra-plugins` 会话 2026-10-21 问的正是这件事。
+           **删掉凭据比多说一句话管用**：少一个字段，那条路就走不通。 */
+        delete (out as { sha256?: string }).sha256;
+      } else {
+        out.content = buf.toString("utf8");
+      }
+      out.lines = out.content.length ? out.content.split("\n").length : 0;
+      if (opts.asText && !looksTextual(buf)) {
+        /* 用户坚持要按文本看一份嗅探认为是二进制的文件 —— 给他，**但说一句**。
+           不说的话他会以为这份文件本来就长这样。 */
+        out.why = `${out.why ? out.why + "；" : ""}这份文件看着不像文本（按你的要求照样按文本读了）`;
+      }
+      return out;
+    }
+    out.why = out.kind === "other" ? "看着不是文本文件（二进制）" : "不是文本文件";
     if (opts.binary) {
       const max = opts.binaryMax ?? await binaryMaxSetting();
       if (st.size > max) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过二进制读取上限 ${Math.round(max / 1048576)} MB${RANGE_HINT}`;
@@ -344,7 +430,6 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
     }
     return out;
   }
-  const textMax = opts.textMax ?? TEXT_MAX;
   if (st.size > textMax) { out.why = `文件 ${Math.round(st.size / 1024)} KB，超过 ${Math.round(textMax / 1048576)} MB 上限${opts.binary ? RANGE_HINT : ""}`; return out; }
   /* ⚠️ **`sha256` 算的是原始字节，不随编码变**（上面 `sha256(buf)`）——
      所以按 GBK 读出来的文本，拿这个 sha 回去做写前校验仍然是对的。

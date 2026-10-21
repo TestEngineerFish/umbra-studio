@@ -30,6 +30,38 @@ export type FileKind = string;
 export const BUILTIN = {
   dir: "dir", dc: "dc", md: "md", image: "image",
   json: "json", code: "code", html: "html", other: "other",
+  /* 2026-10-21（M14-11 / Q76）。⚠️ **加的是「类型」不是「编辑器」** ——
+     Studio 只管**通用查看**（浏览器原生 `<video>` / `<audio>` 能播就播），
+     逐帧 / 波形 / 频谱这些**专业查看与编辑归插件**（用户 2026-10-21 定的边界）。
+
+     ⚠️ **id 刻意不叫 `video` / `audio`**（2026-10-21 当天改过一次，`umbra-plugins`
+     会话核出来的）。那两个名字**太通用了，属于插件**：
+     ① 内置类型**只有 bundled 插件能认领**（`store.ts` 的 `if (p.bundled)`、
+        `loader.ts` 的 `isBuiltinKind` 分支）—— 占住 `video` 等于**永久关上**
+        第三方媒体插件那扇门；
+     ② 一个认领 `video` 的第三方插件会**静默坏掉**：服务端一种 kind 都登记不上，
+        前端注册 UI 模块时撞上我们的 `media.tsx` 当场抛，而 `loader` 把它
+        catch 成「这个插件没能接上」—— **插件装着却不起作用，服务端看一切正常**；
+     ③ 内置 priority 80 > 插件默认 50，就算 id 不撞也会把 `.mp4` 抢走。
+
+     > 原来的方案是「等插件来了再把 `media.tsx` 让出去」（像当年的 `code` / `html`）。
+     > 那是**一个需要未来的人记得做的事**，而换个 id 不需要任何人记得。
+     > **一个需要人记得的方案和一个不需要记得的方案，选后者。**
+
+     于是：id 带 `media-` 前缀 + **priority 压到 5**（比插件默认的 50 低一个量级）。
+     装了媒体插件 → 它的 `video`(50) 自然赢；没装 → 落到这里用原生播放器。
+     两边都不用改机制，也不用放宽「只有 bundled 能认领内置」那条特权。 */
+  /* ⚠️⚠️ **键和值都要改，而这一点是端到端判据当场抓到的**（2026-10-21）：
+     `isBuiltinKind` 查的是**这个对象的键**（`!!(BUILTIN as Record<string,string>)[id]`），
+     不是值。第一版只把值改成了 `"media-video"` 而键还留着 `video` ——
+     于是 `isBuiltinKind("video")` **照旧为真**，插件认领 `video` 照旧被拒，
+     `umbra-plugins` 报的那个问题**一点都没解决**。
+     而那时**前面 8 条判据全绿**，包括我专门写的「`video` 这个 id 没被内置占掉」——
+     它测的是 `BUILTIN.video` 的**值**，而生效的是**键**。
+     > **判据测的那个东西，和产品实际用的那个东西，要是同一个。**
+     > 救命的是那条「真注册一个插件 kind 看谁赢」的端到端判据：
+     > **一条端到端的判据顶十条关于数字和字符串的判据。** */
+  mediaVideo: "media-video", mediaAudio: "media-audio",
 } as const;
 
 /** 一种类型的底层定义：怎么认出它、叫什么、用什么图标 */
@@ -75,6 +107,12 @@ export interface KindDef {
 
 /** 后缀集合，拿出来是为了让「支持哪些扩展名」一眼看全、也方便别处复用 */
 export const IMAGE_EXT = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".bmp", ".ico"];
+/** 浏览器原生 `<video>` 放得动的那些（M14-11）。**只列能播的** ——
+ *  列一个播不了的（`.mkv` / `.avi`）等于把「打不开」包装成「打开了但黑屏」，
+ *  而后者更难判断是文件坏了还是我们不支持。拿不准的留给 `other` 的纯文本兜底去说实话。 */
+export const VIDEO_EXT = [".mp4", ".m4v", ".webm", ".ogv", ".mov"];
+/** 浏览器原生 `<audio>` 放得动的那些（M14-11）。同上，只列能播的。 */
+export const AUDIO_EXT = [".mp3", ".m4a", ".aac", ".wav", ".ogg", ".oga", ".flac", ".opus"];
 export const CODE_EXT = [
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss", ".less",
   ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".xml",
@@ -110,6 +148,14 @@ const BUILTIN_KINDS: readonly KindDef[] = [
   { id: BUILTIN.md, label: "Markdown", icon: "≡", priority: 90, textual: true, match: (n) => n.endsWith(".md") || n.endsWith(".markdown") },
   /* `.svg` 是图片里唯一的文本 —— 所以这里是函数不是 true */
   { id: BUILTIN.image, label: "图片", icon: "▣", priority: 80, textual: (n) => n.endsWith(".svg"), match: (n) => endsWithAny(n, IMAGE_EXT) },
+  /* ⚠️ **priority 5 是这一条的要害，不是随手填的**：它必须**低于 `PLUGIN_DEFAULT_PRIORITY`(50)**，
+     这样装了媒体插件之后插件自然赢，而这是「兜底」两个字的全部含义 ——
+     兜底的意思是**没有别人的时候才轮到我**。
+     写 80（和图片同档）的话，装了插件也抢不过我们，用户买的插件等于白买。
+     `kindtest` 有一条判据钉着这个不等式，**钉的是关系不是数字**。
+     ⚠️ **不写 `textual`** = 不是文本：`read_file` 不会把一个 MP4 塞进模型的上下文。 */
+  { id: BUILTIN.mediaVideo, label: "视频", icon: "▷", priority: 5, match: (n) => endsWithAny(n, VIDEO_EXT) },
+  { id: BUILTIN.mediaAudio, label: "音频", icon: "♪", priority: 5, match: (n) => endsWithAny(n, AUDIO_EXT) },
   { id: BUILTIN.json, label: "JSON", icon: "{}", priority: 70, textual: true, match: (n) => n.endsWith(".json") || n.endsWith(".jsonc") },
   { id: BUILTIN.html, label: "网页", icon: "◻", priority: 60, textual: true, match: (n) => n.endsWith(".html") || n.endsWith(".htm") },
   { id: BUILTIN.code, label: "代码", icon: "⟨⟩", priority: 10, textual: true, match: (n) => endsWithAny(n, CODE_EXT) },
