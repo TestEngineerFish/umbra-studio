@@ -146,6 +146,26 @@ export const CLI_SPECS: readonly CliSpec[] = [
   },
 ] as const;
 
+/** 外部（CLI / 服务端）报的失败原因 → 一句能看的话。**导出给判据用。**
+ *
+ *  ⚠️ **只认字符串。** `String(对象)` 会得到 `"[object Object]"`，而这是**直接显示给用户的失败原因**。
+ *  原来这里写的是 `String(j.error?.message ?? j.error ?? "没说原因")` ——
+ *  `j.error` 是个没有 `message` 的对象时就会这样。
+ *  2026-10-21 在 `account.ts` 发现同族写法之后扫出来的（FastAPI 的 422 把 `detail` 回成数组），
+ *  **跨端也成立**：Umbra PC 的 `auth.ts:164` 中招，iOS 因为一律用 `as? String` 取而没有
+ *  —— `String()` 是个「永不失败」的转换，**而永不失败意味着它不会告诉你出了问题**。
+ *
+ *  ⚠️ 不是字符串时**把原始 JSON 打出来**，不说「没说原因」：这一条是**诊断信息**，
+ *  而各家 CLI 的事件格式都不一样（`00` §65.6：codex 那三个字段实测全是错的）——
+ *  原文比一句客气话有用得多，用户要拿它去查。 */
+export function failTextOf(err: unknown): string {
+  if (typeof err === "string" && err.trim()) return err;
+  const m = (err as { message?: unknown } | null | undefined)?.message;
+  if (typeof m === "string" && m.trim()) return m;
+  if (err === null || err === undefined) return "没说原因";
+  try { return JSON.stringify(err); } catch { return "没说原因"; }
+}
+
 export function specOf(id: CliId): CliSpec {
   const s = CLI_SPECS.find((x) => x.id === id);
   if (!s) throw new Error(`不认识的 CLI：${id}`);
@@ -555,7 +575,7 @@ function parseCodex(stdout: string, code: number | null, stderr: string): Parsed
       };
     } else if (j.type === "turn.failed") {
       sawTurn = true;
-      failed = String(j.error?.message ?? j.error ?? "没说原因").slice(0, 300);
+      failed = failTextOf(j.error).slice(0, 300);
     }
   }
   const result = texts.join("\n\n");

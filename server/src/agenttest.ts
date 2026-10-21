@@ -336,6 +336,36 @@ async function main() {
     console.log(`   ✗ 通道合并判据异常: ${(e as Error).message}`); failed++;
   }
 
+  console.log("⑧ CLI 报的失败原因不许是 `[object Object]`（2026-10-21）...");
+  try {
+    const { failTextOf } = await import("./local_cli.js");
+    /* ⚠️ 这一条的来历：问 Umbra 实现侧「改密码 400 回什么形状」时，它顺口说了句
+       「422 落到 other 那一档就行」—— 照做会把 `[object Object]` 画给用户，
+       因为 FastAPI 的 422 把 `detail` 回成**数组**。在 `account.ts` 收口之后扫了一遍全仓，
+       `local_cli.ts` 这一处是同族，而且**它的来源最不可控**：各家 CLI 的事件格式都不一样
+       （`00` §65.6：codex 那三个字段实测全是错的）。
+       跨端也成立：Umbra PC 的 `auth.ts:164` 中招，iOS 因为一律 `as? String` 取而没有。 */
+    const obj = failTextOf({ code: "E_X", detail: { why: "深层对象" } });
+    if (!/\[object Object\]/.test(obj) && obj.includes("E_X")) {
+      console.log(`   ✓ **error 是个没有 message 的对象：打原始 JSON，不是 [object Object]** — ${obj}`); passed++;
+    } else { console.log(`   ✗ 失败原因成了：${obj}`); failed++; }
+
+    const arr = failTextOf([{ loc: ["body"], msg: "field required" }]);
+    if (!/\[object Object\]/.test(arr) && arr.includes("field required")) {
+      console.log(`   ✓ error 是数组（FastAPI 422 那种形状）：也打得出原文 — ${arr.slice(0, 48)}`); passed++;
+    } else { console.log(`   ✗ 数组成了：${arr}`); failed++; }
+
+    const okCases = failTextOf("配额用完了") === "配额用完了"
+      && failTextOf({ message: "超时" }) === "超时"
+      && failTextOf(null) === "没说原因"
+      && failTextOf({ message: "   " }).includes("message");   // 空白 message 不算数，退回打原文
+    if (okCases) {
+      console.log("   ✓ 字符串原样用 · 有 message 用 message · 空的说「没说原因」· **空白 message 不算数**"); passed++;
+    } else { console.log("   ✗ 几种常规取法有一种不对"); failed++; }
+  } catch (e) {
+    console.log(`   ✗ 失败原因判据异常: ${(e as Error).message}`); failed++;
+  }
+
   // ── 清理 ──
   await cleanup();
 

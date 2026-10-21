@@ -11988,3 +11988,32 @@ String([{loc:…, msg:…}])  →  "[object Object]"
 
 读数：`tokentest` **50/50**（+2）· 反向验证 1 例报红 · `captest` / `apitest` / `aifailtest` /
 `acquiretest` 退出码全 0。
+
+### 170.8 扫了一遍全仓，`local_cli.ts` 是同族 —— 而它的来源最不可控（2026-10-21）
+
+`account.ts` 收口之后扫全仓，`server/src/local_cli.ts` 有一处同形：
+
+```ts
+failed = String(j.error?.message ?? j.error ?? "没说原因").slice(0, 300);   // 旧
+```
+
+`j` 是 **codex 的 `turn.failed` 事件**。`j.error` 是个没有 `message` 的对象时 →
+`[object Object]`，而这是**直接显示给用户的失败原因**。
+
+⚠️ **它比 `account.ts` 那四处更该修**，因为来源最不可控：各家 CLI 的事件格式都不一样，
+而 §65.6 明写着「**按文档写的适配器字段一律当没验过 —— codex 那三个字段实测全是错的**」。
+也就是说，「`error` 里有 `message`」这个假设本身就是**没验过的**。
+
+修法比 `account.ts` 那边多一步：**不是字符串时把原始 JSON 打出来，而不是说「没说原因」**。
+这一条是**诊断信息**不是 UI 文案 —— 用户要拿它去查，原文比一句客气话有用得多。
+`failTextOf()` 导出给判据用，`agenttest` 新增 ⑧ 节三条（13 → **16 项**），
+反向验证装回旧写法：3 条全红，读数直接打出 `[object Object]`。
+
+**跨端核了一遍**（问实现侧）：Umbra **PC 中招**（`src/services/auth.ts:164` 是
+`String(detail ?? "")`，登录 / 注册 / 找回密码都走它），**iOS 没有**（一律 `as? String` 取，
+取不到就是空串）。PC 那边照这个思路自己修。
+
+> **`String()` 是一个「永不失败」的转换 —— 而永不失败意味着它不会告诉你出了问题。**
+> Swift 的 `as? String` 失败时给 `nil`，**强迫调用方当场决定怎么办**；
+> 同一个服务端契约、同一类数据，两种语言的默认写法一个天生安全、一个天生沉默。
+> 这不是谁更细心，是**默认值站在哪一边**。
