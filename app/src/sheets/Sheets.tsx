@@ -9,31 +9,40 @@ import { toast } from "../ui/Toast";
 /** 弹窗外壳。
  *  **高度必须封顶 + 内容区能滚** —— 内容一多就撑出屏幕、底部按钮够不着，
  *  2026-09-24 用户实测撞到过（设置面板加了「本地 CLI」那一块之后）。
- *  所以这里是三段式：`<Sheet.Head>` 与 `<Sheet.Foot>` 钉住，中间那段自己滚。 */
-function Sheet({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) {
+ *  所以它是三段式：标题条与操作条钉住，中间那段自己滚。
+ *
+ *  ⚠️⚠️ **三段是必填的 props，不是 `children`**（2026-10-21 改，sam 报「新建项目弹窗很丑」）。
+ *  原来三段是 `Sheet.Head` / `Sheet.Body` / `Sheet.Foot` 三个**可选的**子组件，
+ *  而**内边距全住在那三个里，外壳自己一点都没有** —— 于是不用它们的弹窗
+ *  就是零内边距、零段间距。实测三个弹窗里**只有设置面板用了**：
+ *
+ *  | 弹窗 | 实测几何（到弹窗边框的距离） |
+ *  | --- | --- |
+ *  | 新建项目 | 上下左右全是 **1px**（那 1px 还是边框），段间距 **0** |
+ *  | 新建稿件 | 左 1 · 上 1 · 下 1 · **右 59**（内容写死 460 而壳是 520，歪的） |
+ *  | 设置 | 正常 |
+ *
+ *  > **一个需要人记得的方案和一个不需要记得的方案，选后者**（`kinds/media.tsx` 同一句）。
+ *  > 改成必填 props 之后，**漏掉内边距这件事在类型上就不成立了**；
+ *  > 而原来那种漏法**不会有任何东西报警** —— 和 §170.4 那条
+ *  > 「输入框没写 class 就完全看不见」是同一族。 */
+function Sheet({ head, body, foot, onClose, wide }: { head: React.ReactNode; body: React.ReactNode; foot: React.ReactNode; onClose: () => void; wide?: boolean }) {
   useEffect(() => { const on = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; document.addEventListener("keydown", on); return () => document.removeEventListener("keydown", on); }, [onClose]);
   return (
     <div className="fixed inset-0 z-40 bg-black/25 flex items-start justify-center p-4 sm:py-[6vh] overflow-hidden"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div role="dialog" aria-modal="true"
         className={`bg-panel border border-border rounded-lg shadow-2xl flex flex-col text-xs max-h-full min-h-0 ${wide ? "w-[880px] max-w-full" : "w-[520px] max-w-full"}`}>
-        {children}
+        {/* 钉在顶部的标题条 */}
+        <div className="px-5 pt-5 pb-3 shrink-0">{head}</div>
+        {/* 会滚的内容区 —— 弹窗里所有可能变长的东西都在这里 */}
+        <div className="px-5 flex-1 min-h-0 overflow-y-auto flex flex-col gap-4">{body}</div>
+        {/* 钉在底部的操作条：内容再长，「完成」也够得着 */}
+        <div className="px-5 pt-3 pb-5 shrink-0 flex items-center justify-end gap-2 border-t border-border mt-4">{foot}</div>
       </div>
     </div>
   );
 }
-/** 钉在顶部的标题条 */
-Sheet.Head = ({ children }: { children: React.ReactNode }) => (
-  <div className="px-5 pt-5 pb-3 shrink-0">{children}</div>
-);
-/** 会滚的内容区 —— 弹窗里所有可能变长的东西都该放这里 */
-Sheet.Body = ({ children }: { children: React.ReactNode }) => (
-  <div className="px-5 flex-1 min-h-0 overflow-y-auto flex flex-col gap-4">{children}</div>
-);
-/** 钉在底部的操作条：内容再长，「完成」也够得着 */
-Sheet.Foot = ({ children }: { children: React.ReactNode }) => (
-  <div className="px-5 pt-3 pb-5 shrink-0 flex justify-end gap-2 border-t border-border mt-4">{children}</div>
-);
 const Field = ({ label, children, note, err }: { label: string; children: React.ReactNode; note?: string; err?: boolean }) => <label className="flex flex-col gap-1"><span className="text-muted">{label}</span>{children}{note && <span className={err ? "text-err" : "text-muted"}>{note}</span>}</label>;
 const inputCls = "h-8 px-3 rounded border border-border bg-bg outline-none focus:border-accent";
 
@@ -84,7 +93,22 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
     else { toast("新建稿件失败", r.errors?.[0]?.message, "error"); setBusy(false); }
   };
 
-  return <Sheet onClose={onClose}>
+  return <Sheet onClose={onClose}
+    head={<h2 className="text-base font-semibold">新建稿件</h2>}
+    foot={<>
+      {/* 「从现有稿复制…」**不能跟着模板那一组一起消失**，所以它在底部成一个文字链 */}
+      {current && (
+        <button className={`text-[11px] underline underline-offset-2 ${tpl.startsWith("copy:") ? "text-accent" : "text-muted hover:text-text"}`}
+          onClick={() => setTpl(tpl.startsWith("copy:") ? "blank" : `copy:${current}`)}
+          title={tpl.startsWith("copy:") ? "点一下取消" : `复制 ${current}`}>
+          {tpl.startsWith("copy:") ? `✓ 从 ${current.split("/").pop()} 复制` : "从现有稿复制…"}
+        </button>
+      )}
+      <span className="flex-1" />
+      <button className="btn" onClick={onClose}>取消 Esc</button>
+      <button className="btn primary" disabled={blocked} onClick={() => void submit()}>{busy ? "正在建…" : "新建 ⏎"}</button>
+    </>}
+    body={<>
     {/* ⚠️ **Enter 只在文件名输入框里当提交**（issue #124，2026-10-06）。
         原来是在**容器**上统一拦的、不看焦点落在哪里，于是：
           · Tab 到「取消」按 Enter → `preventDefault()` 吃掉按钮自己的激活 → **提交** ——
@@ -93,7 +117,12 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
           · 走到「从现有稿复制…」按 Enter → 没切到复制，用当前模板直接建了。
         只要文件名已经合法（`blocked === false`）以上都会**真落盘**。
         **一个「全局快捷键」挂在容器上，就会把容器里每个控件的回车都吃掉。** */}
-    <div className="w-[460px] max-w-full grid gap-[18px]" onKeyDown={(e) => {
+    {/* ⚠️ 2026-10-21 三颗按钮**挪进了 `foot`**（弹窗外壳改成三段必填 props 那一下），
+        于是它们干脆不在这个 `onKeyDown` 的子树里了 —— #124 那道闸**更紧了一格**，
+        不是放松：原来靠「看焦点是不是 INPUT」拦，现在连事件都到不了这里。
+        ⚠️ 宽度从写死的 `w-[460px]` 改成跟着内容区走：原来 460 在 520 的壳里
+        **右边空 59px**，而那正是「没有内边距」的另一种长相。 */}
+    <div className="grid gap-[18px]" onKeyDown={(e) => {
       if (e.key !== "Enter" || blocked) return;
       /* 焦点在别的控件上时让它走原生行为（按钮激活、单选切换…） */
       const t = e.target as HTMLElement | null;
@@ -101,8 +130,6 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
       e.preventDefault();
       void submit();
     }}>
-      <h2 className="text-base font-semibold">新建稿件</h2>
-
       <div className="grid gap-1.5">
         <label className="text-[11px] text-muted">文件名</label>
         <div className="flex items-center gap-0 h-[34px] rounded border bg-bg overflow-hidden" style={{ borderColor: why ? "var(--tool-err)" : "var(--tool-border)" }}>
@@ -158,21 +185,8 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
         </div>
       )}
 
-      <div className="flex items-center gap-2">
-        {/* 「从现有稿复制…」**不能跟着整组一起消失**，所以它挪到底部成一个文字链 */}
-        {current && (
-          <button className={`text-[11px] underline underline-offset-2 ${tpl.startsWith("copy:") ? "text-accent" : "text-muted hover:text-text"}`}
-            onClick={() => setTpl(tpl.startsWith("copy:") ? "blank" : `copy:${current}`)}
-            title={tpl.startsWith("copy:") ? "点一下取消" : `复制 ${current}`}>
-            {tpl.startsWith("copy:") ? `✓ 从 ${current.split("/").pop()} 复制` : "从现有稿复制…"}
-          </button>
-        )}
-        <span className="flex-1" />
-        <button className="btn" onClick={onClose}>取消 Esc</button>
-        <button className="btn primary" disabled={blocked} onClick={() => void submit()}>{busy ? "正在建…" : "新建 ⏎"}</button>
-      </div>
     </div>
-  </Sheet>;
+    </>} />;
 }
 
 /** 新建 / 导入目录：目录本身成为项目根；已有稿被接管不改动 */
@@ -188,16 +202,20 @@ export function NewProjectSheet({ hub, host, initialDir, onClose, onOpen }: { hu
     const r = await hub.post<{ dir?: string; name?: string }>("create_project", { name: nm, dir: dir.trim(), title: title.trim() || undefined });
     if (r.ok && r.data) { toast("项目创建成功", r.data.name ?? nm, "ok"); onClose(); onOpen(r.data.dir ?? dir.trim()); } else { toast("创建项目失败", r.errors?.[0]?.message, "error"); setBusy(false); }
   };
-  return <Sheet onClose={onClose}>
-    <h2 className="text-base font-semibold">新建项目</h2>
+  return <Sheet onClose={onClose}
+    head={<h2 className="text-base font-semibold">新建项目</h2>}
+    foot={<>
+      <button className="btn" onClick={onClose}>取消</button>
+      <button className="btn primary" disabled={!dir.trim() || !nm || nameBad || !!info?.isProject || busy} onClick={() => void submit()}>{busy ? "正在建…" : "新建项目"}</button>
+    </>}
+    body={<>
     <p className="text-muted leading-relaxed">项目就是磁盘上一个目录。选一个目录，它本身成为项目根；里面已有的稿件会被接管，不会被改动。</p>
     <Field label="目录" note={info && info.exists === false ? "目录还不存在，会自动创建" : cap.ok ? undefined : cap.why}><div className="flex gap-2"><input className={inputCls + " flex-1"} value={dir} onChange={(e) => setDir(e.target.value)} onBlur={() => void inspect(dir)} placeholder="/Users/…/我的项目" /><button className="btn" onClick={() => void pick()}>选择</button></div></Field>
     {info?.isProject && <div className="rounded border border-border bg-panel2 px-3 py-2 flex items-center gap-2"><span className="flex-1">这个目录已经是一个项目（有 project.json）。</span><button className="btn sm" onClick={() => { onClose(); onOpen(dir.trim()); }}>直接打开</button></div>}
     {info && !info.isProject && info.draftCount > 0 && <div className="rounded border border-border bg-panel2 px-3 py-2">这个目录里已有 {info.draftCount} 份稿。新建会把它们接管进项目，稿件不动，只加 project.json。</div>}
     <Field label="项目名" note={nameBad ? "只能用英文、数字、- 和 _，且以英文或数字开头" : "也是 MCP 里的项目标识"} err={nameBad}><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="英文 / 数字 / - _" /></Field>
     <Field label="标题"><input className={inputCls} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="给人看的名字，可选" /></Field>
-    <div className="flex justify-end gap-2"><button className="btn" onClick={onClose}>取消</button><button className="btn primary" disabled={!dir.trim() || !nm || nameBad || !!info?.isProject || busy} onClick={() => void submit()}>{busy ? "正在建…" : "新建项目"}</button></div>
-  </Sheet>;
+    </>} />;
 }
 
 /** 设置：外观三档 + 会话栏位置；项目级设置嵌 S8 壳（?embed=1，走本地 API） */
@@ -852,9 +870,10 @@ function PluginLimitsPanel({ core }: { core: Core }) {
 
 export function SettingsSheet({ core, host, projectUrl, projectCore, layout, setLayout, onClose }: { core: Core | null; host: HostAdapter | null; projectUrl: string | null; projectCore: Core | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
   const s8 = projectUrl ? `${projectUrl}${encodeURIComponent("S8-项目设置.dc.html")}?embed=1` : null;
-  return <Sheet onClose={onClose} wide={!!s8}>
-    <Sheet.Head><h2 className="text-base font-semibold">设置</h2></Sheet.Head>
-    <Sheet.Body>
+  return <Sheet onClose={onClose} wide={!!s8}
+    head={<h2 className="text-base font-semibold">设置</h2>}
+    foot={<button className="btn primary" onClick={onClose}>完成</button>}
+    body={<>
       <div className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-3 items-center">
         {/* 「会话栏在左 / 在右」这一项**删掉了**（M8-18）：会话栏固定在左，
             换边那一态在第八轮有意去掉了。三块区域的显隐在顶栏，不在设置里 ——
@@ -869,7 +888,5 @@ export function SettingsSheet({ core, host, projectUrl, projectCore, layout, set
       {/* iframe 的高度给固定值，别用 vh —— 它在会滚的内容区里，用 vh 会和外层的滚动打架 */}
       {s8 ? <iframe src={s8} title="项目设置" className="w-full border border-border rounded bg-panel shrink-0" style={{ height: 560 }} />
         : <p className="text-muted">打开一个项目后，这里还有设计系统、限额、回收站与危险操作。</p>}
-    </Sheet.Body>
-    <Sheet.Foot><button className="btn primary" onClick={onClose}>完成</button></Sheet.Foot>
-  </Sheet>;
+    </>} />;
 }
