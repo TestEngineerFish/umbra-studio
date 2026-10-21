@@ -341,6 +341,90 @@ function fmtBytes(b: number): string {
  *  竖排、宽 340：邮箱、密码上下两格，下面一行是主钮 +「忘了密码」。失败不用吐司——挂在密码格下面一条三段式，
  *  改完再点登录才消失；试太多时秒数真的在走、主钮置灰写「N 秒后再试」，到 0 自动恢复；连不上那一档给［重试］。
  *  「忘了密码」Studio 自己做（接 /auth/forgot）：密码格收起、钮变「发重置信」；发完不管邮箱有没有账号都回同一句（同 PC 登录窗）。 */
+/** 显示名那一行（`PATCH /auth/me`）。形制照「服务端」那一行：平时是值 + 一颗「改」，点了变输入框 + 保存 / 取消。
+ *
+ *  ⚠️ **空串是合法的值**，不是「没填」—— 服务端的意思是「不要显示名」，界面退回显示邮箱
+ *  （Umbra 主会话 2026-10-21 确认）。所以保存钮**不按空串禁用**。 */
+function DisplayNameRow({ core, value, onSaved }: { core: Core; value: string; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(value);
+  const [busy, setBusy] = useState(false);
+  const [fail, setFail] = useState("");
+  const save = async () => {
+    setBusy(true); setFail("");
+    const r = await core.post<{ saved: boolean }>("account_display_name", { displayName: name });
+    setBusy(false);
+    if (r.ok && r.data?.saved) { setEditing(false); toast("显示名已改"); onSaved(); }
+    else setFail(r.errors?.[0]?.message || "没改成");
+  };
+  if (!editing) {
+    return <div data-ud="account-display-name" className="flex items-center gap-2 text-xs">
+      <span className="text-muted shrink-0">显示名</span>
+      <span className="truncate flex-1 min-w-0">{value || <span className="text-muted">（没设，界面显示邮箱）</span>}</span>
+      <button className="btn" onClick={() => { setName(value); setFail(""); setEditing(true); }}>改</button>
+    </div>;
+  }
+  return <div className="flex flex-col gap-1">
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-muted shrink-0">显示名</span>
+      <input className="flex-1 min-w-0" value={name} maxLength={64} placeholder="留空 = 不要显示名"
+        onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void save(); }} autoFocus />
+      <button className="btn primary" disabled={busy} onClick={() => void save()}>{busy ? "存…" : "保存"}</button>
+      <button className="btn" disabled={busy} onClick={() => { setEditing(false); setFail(""); }}>取消</button>
+    </div>
+    {fail && <span className="text-xs pl-12" style={{ color: "var(--tool-warn)" }}>{fail}</span>}
+  </div>;
+}
+
+/** 改密码那一行（`POST /auth/password`）。
+ *
+ *  ⚠️ **把失败的话画在那一格底下**（服务端 400 `invalid_field` 带 `field`，`"current"` = 当前密码不对）——
+ *  画在表单顶上的话用户得自己猜是哪一栏。
+ *  ⚠️ 成功之后说清「另外几台被下线了」（服务端回的 `logged_out`，**不含这一台**）——
+ *  不说的话，用户在别的设备上被登出会以为是出了故障。
+ *  ⚠️ 这里失败**一个字都不碰登录状态**：当前密码不对是 400，不是会话失效，两件事下一步完全不同。 */
+function PasswordRow({ core }: { core: Core }) {
+  const [editing, setEditing] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [fail, setFail] = useState<{ what: string; field: string } | null>(null);
+  const close = () => { setEditing(false); setCurrent(""); setNext(""); setFail(null); };
+  const save = async () => {
+    setBusy(true); setFail(null);
+    const r = await core.post<{ changed: boolean; loggedOut: number }>("account_password", { current, password: next });
+    setBusy(false);
+    if (r.ok && r.data?.changed) {
+      const n = r.data.loggedOut;
+      toast("密码已改", n > 0 ? `另外 ${n} 台设备已经下线，这一台不用重登` : "这一台不用重登");
+      close();
+    } else {
+      setFail({ what: r.errors?.[0]?.message || "没改成", field: String(r.stats?.field || "") });
+    }
+  };
+  if (!editing) {
+    return <div data-ud="account-password" className="flex items-center gap-2 text-xs">
+      <span className="text-muted shrink-0">密码</span>
+      <span className="flex-1 min-w-0 text-muted truncate">改完其他设备会下线，这一台不用重登</span>
+      <button className="btn" onClick={() => { setFail(null); setEditing(true); }}>改密码</button>
+    </div>;
+  }
+  const errFor = (f: string) => (fail && (fail.field === f || (!fail.field && f === "current")) ? fail.what : "");
+  return <div className="flex flex-col gap-1">
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-muted shrink-0">密码</span>
+      <input className="flex-1 min-w-0" type="password" autoComplete="current-password" placeholder="当前密码"
+        value={current} onChange={(e) => setCurrent(e.target.value)} autoFocus />
+      <input className="flex-1 min-w-0" type="password" autoComplete="new-password" placeholder="新密码"
+        value={next} onChange={(e) => setNext(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && current && next) void save(); }} />
+      <button className="btn primary" disabled={busy || !current || !next} onClick={() => void save()}>{busy ? "改…" : "保存"}</button>
+      <button className="btn" disabled={busy} onClick={close}>取消</button>
+    </div>
+    {errFor("current") && <span className="text-xs pl-12" style={{ color: "var(--tool-warn)" }}>{errFor("current")}</span>}
+    {errFor("password") && <span className="text-xs pl-12" style={{ color: "var(--tool-warn)" }}>{errFor("password")}</span>}
+  </div>;
+}
+
 function PasswordLogin({ core, serverUrl, onSignedIn }: { core: Core; serverUrl: string; onSignedIn: (status: unknown) => void }) {
   type Fail = { kind: "bad" | "locked" | "offline" | "other"; what: string; wait: number };
   const [mode, setMode] = useState<"login" | "forgot" | "sent">("login");
@@ -395,7 +479,7 @@ function PasswordLogin({ core, serverUrl, onSignedIn }: { core: Core; serverUrl:
   const forgot = mode === "forgot";
   const off = busy || left > 0;
   const main = forgot ? "发重置信" : left > 0 ? `${left} 秒后再试` : busy ? "正在登录" : "登录";
-  return <form className="flex flex-col gap-3 w-full max-w-[340px]" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+  return <form data-ud="account-password-login" className="flex flex-col gap-3 w-full max-w-[340px]" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
     {forgot && <span className="text-[12.5px] leading-[1.7]">填登录用的邮箱，重置信发到那里。</span>}
     <label className="flex flex-col gap-1">
       <span className="text-[11px] font-semibold tracking-[.06em] text-muted">邮箱</span>
@@ -428,13 +512,27 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState("");
   const [editServer, setEditServer] = useState(false);
-  // 服务端怎么登录：local（邮箱密码，接账号中心之后就是这一种）/ oidc（打开浏览器）/ unknown（问不到，按浏览器那颗画）。
+  /* 服务端怎么登录：`local`（邮箱密码 —— 接账号中心之后线上就是这一种）/ `oidc`（打开浏览器）/ `unknown`（还没问到）。
+     ⚠️ **判的是 `!== "oidc"` 而不是 `=== "local"`**（2026-10-21 改）：初值是 `unknown`，
+     按 `=== "local"` 判的话**打开设置页的第一帧画的是「打开浏览器登录」**，一个网络往返之后才跳成密码表单；
+     而 `/auth/config` 问不到时（断网）就一直停在错的那一支。
+     回退期间的代价问过 Umbra 主会话：「开了回退开关」和「同时又问不到 /auth/config」是两件坏事同时发生，
+     概率很低，撞上了也只是密码表单登不上、等问到就自己切回去；
+     而闪一下 / 断网停在错的那一支是**天天都会遇到**的。 */
   const [provider, setProvider] = useState("unknown");
   // 存储容量那一行（Umbra 草案 §十一）：只看不管。null = 没登录 / 老服务端，整行不画。
   type Storage = { used: number; limit: number; pct: number; warn: "ok" | "warn" | "critical" | "full"; tier: string | null };
   const [storage, setStorage] = useState<Storage | null>(null);
   const load = useCallback(async () => {
-    const r = await core.get<Status>("account");
+    /* ⚠️ **这里调的是 `account_check` 不是 `account`** —— 它会真去问一次 `/auth/me`。
+       三端契约：令牌是不透明长串、**没有刷新令牌、也没有 exp**，所以「快过期就先刷新」那套
+       （2026-10-17 修 10-17 那个 bug 时加的）在新令牌上**完全不成立**；
+       而界面那个「已登录」只看本机有没有令牌 —— 不问一次就永远不知道它还认不认。
+       `check()` 在没登录时直接回状态、**不发请求**，所以这一下不额外费网络。
+       断网 / 5xx 一律不动登录状态（它内部保证），界面不会卡在「检查中」。
+       另一半由信号层兜着：任何一次打 Umbra 的响应带失效信号都会当场清掉登录（`account.ts` 的 `noteSessionInvalid`）。
+       （Umbra 主会话 2026-10-21 给的做法，和 PC / iOS 一致：启动 / 打开账号页各核一次，之后靠每个请求报信。）*/
+    const r = await core.get<Status>("account_check");
     if (r.ok && r.data) { setSt(r.data); setServer(r.data.serverUrl); }
     const sr = await core.get<{ storage: Storage | null }>("account_storage");
     setStorage(sr.ok && sr.data ? sr.data.storage : null);
@@ -479,7 +577,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     setSt(r.data);
     toast(r.data.serverAi ? "通道 A 已切到服务端 AI（按积分扣）" : "通道 A 回到自填端点");
   };
-  return <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
+  return <section data-ud="account" className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
     <div className="flex flex-col gap-0.5">
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-semibold shrink-0">Umbra 账号</h3>
@@ -497,12 +595,20 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     <div className="flex items-center gap-2">
       {st?.signedIn
         ? <button className="btn" onClick={logout}>退出登录</button>
-        : provider === "local"
+        : provider !== "oidc"
           ? <PasswordLogin core={core} serverUrl={st?.serverUrl || ""} onSignedIn={(d) => { setSt(d as Status); toast("已登录 Umbra 账号"); void load(); }} />
-          : <button className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
-      {busy && provider !== "local" && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
-      {!busy && provider !== "local" && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
+          : <button data-ud="account-oidc-login" className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
+      {busy && provider === "oidc" && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
+      {/* ⚠️ `lastError` **一律显示，不按 provider 过滤**（2026-10-21 改）：它现在承载的是
+          「这条会话为什么失效了」（`noteSessionInvalid` / `check()` 写的），而那是两种登录方式
+          都会发生的事。原来写的是 `provider !== "local"`，于是密码登录模式下
+          **用户只会看到自己突然变回未登录、而一个字的原因都没有**。
+          和密码登录自己的错误不重复：`loginPassword` 失败只抛 `LoginFail`（表单内部画），不写 `lastError`。 */}
+      {!busy && st?.lastError && <span className="text-xs" style={{ color: "var(--tool-warn)" }}>{st.lastError}</span>}
     </div>
+    {/* 登录之后才有的两行（2026-10-21，Q74 ①②）：显示名与改密码。形制照上面「服务端」那一行。 */}
+    {st?.signedIn && <DisplayNameRow core={core} value={st.user?.display_name || ""} onSaved={() => void load()} />}
+    {st?.signedIn && provider !== "oidc" && <PasswordRow core={core} />}
     {st?.signedIn && storage && (
       <div className="flex items-center gap-2 text-xs">
         <span className="text-muted shrink-0">存储</span>

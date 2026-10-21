@@ -4595,7 +4595,53 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
 
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
-const EXPECT_AT_LEAST = 454;
+
+console.log("\n⑬ 设置 › Umbra 账号：画哪一支登录入口（2026-10-21）");
+/* ⚠️ 这一块**原来一条判据都没有** —— 2026-10-21 要改它时才发现（`doc/11` Q74 ③）。
+   那一轮我先以「没判据所以不改」压住了一次，拿到对接说明后才连判据一起做。
+
+   ⚠️ **判据要在两种登录状态下都验到**，因为跑这个脚本的人很可能是**已登录**的：
+   这里按「账号块里有没有『退出登录』」分两支，**每一支都有自己的断言**，
+   并且把走了哪一支打进读数 —— 不这么写就是 `00` §163.4 那个坑
+   （「前提」判据分不清「通过了」和「压根没跑到」）。条数两支一样，所以总数闸不受状态影响。 */
+{
+  /* ⚠️ 走项目菜单，**不按 ⌘,** —— 实测那个快捷键在这里打不开设置（焦点不在挂它的那一层），
+     而「按了没反应」会让这一整节静默跳过。 */
+  await pg.locator('button[aria-haspopup="menu"]').first().click();
+  await pg.waitForTimeout(300);
+  await pg.locator('[role="menu"]').getByText("项目设置…").click();
+  const acct = pg.locator('[data-ud="account"]');
+  await acct.first().waitFor({ state: "visible", timeout: 6000 }).catch(() => {});
+  const acctN = await acct.count();
+  ok(acctN === 1, "从项目菜单打开设置，里面有「Umbra 账号」那一块", `count=${acctN}`);
+
+  const pwForm = await pg.locator('[data-ud="account-password-login"]').count();
+  const oidcBtn = await pg.locator('[data-ud="account-oidc-login"]').count();
+  const nameRow = await pg.locator('[data-ud="account-display-name"]').count();
+  const pwRow = await pg.locator('[data-ud="account-password"]').count();
+  const signedIn = await pg.locator('[data-ud="account"] button', { hasText: "退出登录" }).count() > 0;
+
+  /* ⚠️ 下面每一条都带上 `acctN === 1` —— **第一次跑就吃到了这个坑**：
+     设置页没打开时「两行都不出现」照样是真的，于是那一条**绿着**，
+     而它什么都没验到（`00` §163.4：「前提」判据分不清「通过了」和「压根没跑到」）。
+     把前提写进断言里，前提塌了就红。 */
+  if (signedIn) {
+    ok(acctN === 1 && pwForm === 0 && oidcBtn === 0, "已登录：不画任何登录入口", `密码表单 ${pwForm} · 浏览器钮 ${oidcBtn}`);
+    ok(acctN === 1 && nameRow === 1 && pwRow === 1, "已登录：显示名那一行与改密码那一行都在", `显示名 ${nameRow} · 密码 ${pwRow}`);
+  } else {
+    /* 钉住 2026-10-21 那个改动：判的是 `provider !== "oidc"` 而不是 `=== "local"`。
+       `provider` 初值是 `unknown`（`/auth/config` 还没问到，断网时永远问不到），
+       按 `=== "local"` 判的话这里画的是「打开浏览器登录」—— 而线上永远是密码那条路。 */
+    ok(acctN === 1 && pwForm === 1 && oidcBtn === 0,
+       "未登录且不是 oidc：画**密码表单**，不画「打开浏览器登录」（`unknown` 也按 local 画）",
+       `密码表单 ${pwForm} · 浏览器钮 ${oidcBtn}`);
+    ok(acctN === 1 && nameRow === 0 && pwRow === 0, "未登录：显示名 / 改密码两行都不出现", `显示名 ${nameRow} · 密码 ${pwRow}`);
+  }
+  console.log(`    （这一轮走的是「${signedIn ? "已登录" : "未登录"}」那一支）`);
+  await pg.keyboard.press("Escape");
+}
+
+const EXPECT_AT_LEAST = 457;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

@@ -87,6 +87,47 @@ defineCap({
 });
 
 defineCap({
+  name: "account_password", title: "改密码", scope: "global",
+  summary: "改 Umbra 账号的密码（POST /auth/password）。改完其他设备全部下线、这一台保留；回执说下线了几台。两个密码都不落盘。",
+  input: {
+    current: z.string().describe("当前密码"),
+    password: z.string().describe("新密码"),
+  },
+  faces: ["http"],
+  http: { route: "account_password", method: "POST" },
+  run: async ({ current, password }) => {
+    try {
+      const { loggedOut } = await account.changePassword(current, password);
+      return envelope({ changed: true, loggedOut });
+    } catch (e) {
+      /* `field` 要带出去：设置页把话画在那一格底下。
+         ⚠️ 当前密码不对是 400 `invalid_field`，**不是登录失效** —— 这里一个字都不碰登录状态。 */
+      const f = e instanceof LoginFail ? { fail: e.kind, wait: e.wait, field: e.field } : { fail: "other", wait: 0, field: "" };
+      return envelope({ changed: false, loggedOut: 0 }, [err("E_ACCOUNT_PASSWORD", (e as Error).message)], f);
+    }
+  },
+});
+
+defineCap({
+  name: "account_display_name", title: "改显示名", scope: "global",
+  summary: "改 Umbra 账号的显示名（PATCH /auth/me）。空串合法 —— 意思是不要显示名，界面退回显示邮箱。",
+  input: {
+    displayName: z.string().describe("新的显示名；空串 = 不要显示名，界面退回显示邮箱"),
+  },
+  faces: ["http"],
+  http: { route: "account_display_name", method: "POST" },
+  run: async ({ displayName }) => {
+    try {
+      const user = await account.setDisplayName(displayName);
+      return envelope({ saved: true, user });
+    } catch (e) {
+      const f = e instanceof LoginFail ? { fail: e.kind, wait: 0, field: e.field } : { fail: "other", wait: 0, field: "" };
+      return envelope({ saved: false, user: null }, [err("E_ACCOUNT_DISPLAY_NAME", (e as Error).message)], f);
+    }
+  },
+});
+
+defineCap({
   name: "account_provider", title: "这台服务端怎么登录", scope: "global",
   summary: "问 Umbra 服务端的 /auth/config：oidc（打开浏览器）还是 local（邮箱密码）。问不到回 unknown。",
   input: {},

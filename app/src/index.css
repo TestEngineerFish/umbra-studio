@@ -6,6 +6,30 @@
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--tool-bg); color: var(--tool-text); font-family: var(--tool-sans); font-size: 13px; -webkit-font-smoothing: antialiased; }
 
+/* 输入框的底样式（2026-10-21）。
+   ⚠️ **为什么要有这一条**：Tailwind 的 preflight 把 `input` 的边框重置成 `0`，
+   而本项目的约定是「每个输入框自己写 class」（聊天输入框就显式写着
+   `rounded border border-border bg-bg …`）—— 于是**漏写的那个就完全看不见**：
+   白底上一个 340×32 的白矩形，`border: 0px` + `background: rgb(255,255,255)`。
+   2026-10-21 实测撞到的就是设置页「Umbra 账号」的邮箱 / 密码两格（它们只有 `h-8`），
+   而那正好挡着「用 Umbra 账号登录」这条路 —— **功能全对，用户找不到往哪儿打字**。
+   ⚠️ 放在 **base 层**：带自己 class 的地方（聊天框那种）照旧覆盖它，所以这是兜底不是统一改样式。
+   ⚠️ 排除 checkbox / radio / range / file —— 它们的外观不该被这一条动。 */
+@layer base {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  textarea {
+    border: 1px solid var(--tool-border);
+    background: var(--tool-panel);
+    color: var(--tool-text);
+    border-radius: 6px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+  textarea { padding: 6px 8px; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus-visible,
+  textarea:focus-visible { outline: none; border-color: var(--tool-accent); }
+}
+
 /* 组件基类：和 ui/_ds-tool 的取向一致 —— 边框或阴影二选一，圆角 6，字号 12 */
 @layer components {
   .btn { @apply inline-flex items-center gap-1.5 h-8 px-3 rounded border border-border bg-panel text-xs text-text hover:bg-hover disabled:opacity-40 disabled:cursor-default whitespace-nowrap; }

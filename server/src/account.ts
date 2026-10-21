@@ -135,8 +135,15 @@ export function tokenExpMs(token: string): number | null {
 /** 提前多久就当它快过期、先刷新（毫秒）。请求在路上也要时间，卡着点用会在服务端那头刚好过期。 */
 export const TOKEN_RENEW_SKEW_MS = 60_000;
 
-/** 服务端说「这条会话真的失效了」的那个头（账号中心对接说明 2026-10-21 §二）。 */
+/** 服务端说「这条会话真的失效了」的两个头（三端契约 `contract-session-revoked`，2026-09-28 定）。
+ *  `x-umbra-error: session_invalid` 跟着 401 走；`x-umbra-session: invalid` **可以跟着任何状态码走，包括 200**。 */
 export const SESSION_INVALID_HEADER = "x-umbra-error";
+export const SESSION_HEADER = "x-umbra-session";
+
+/** `x-umbra-session` 的值是不是 `invalid`。**大小写与空白宽容** —— 反代可能会动它（PC `server.ts` 同一句）。 */
+export function isSessionInvalidHeader(v: string | null | undefined): boolean {
+  return String(v || "").trim().toLowerCase() === "invalid";
+}
 
 /** 这个 401 是不是「会话真的失效了」。**纯函数**，判据直接钉它。
  *
@@ -149,6 +156,11 @@ export const SESSION_INVALID_HEADER = "x-umbra-error";
  *  而第一种没有任何东西兜。**选了不清，就必须把「为什么没清」写进 `lastError`** ——
  *  不然这个选择会变成一个查不出来的沉默（`CLAUDE.md` 纪律③ 同族）。 */
 export function isSessionInvalid(r: { status: number; headers?: { get(name: string): string | null } }): boolean {
+  /* ② **任意状态码**（包括 200）带 `x-umbra-session: invalid`。
+     ⚠️ 2026-10-21 从 Umbra 主会话问到的，我原来漏了这一个：Bearer 已经作废、
+     而别的凭据放行时，服务端回的是 **200** 并带这个头 —— 只看 401 的话**永远不知道会话已经没了**。 */
+  if (isSessionInvalidHeader(r.headers?.get(SESSION_HEADER))) return true;
+  /* ① 401 + `x-umbra-error: session_invalid`（跟着 401 走的那条）。 */
   return r.status === 401 && (r.headers?.get(SESSION_INVALID_HEADER) ?? "").trim() === "session_invalid";
 }
 
@@ -161,7 +173,10 @@ class MeFail extends Error {
  *  kind：bad 邮箱或密码不对 · locked 试太多（`wait` 秒后再试，0 = 服务端没说）· offline 连不上 · other 其余（message 用服务端原话）。
  *  `cause` 是给日志看的底层原因，不上界面。 */
 export class LoginFail extends Error {
-  constructor(readonly kind: "bad" | "locked" | "offline" | "other", message: string, readonly wait = 0, readonly cause_ = "") {
+  constructor(readonly kind: "bad" | "locked" | "offline" | "other", message: string, readonly wait = 0, readonly cause_ = "",
+              /** 哪一格不对（服务端 400 `invalid_field` 带的 `field`，例如 `"current"`）。空串 = 不是某一格的事。
+               *  界面把话画在那一格底下 —— 画在表单顶上的话，用户得自己猜是哪一栏（PC `auth.ts` 的 `AuthFail.field` 同位）。 */
+              readonly field = "") {
     super(message);
   }
 }
@@ -179,8 +194,42 @@ export class AccountService {
   private inFlight = 0;
   private loginGen = 0;
 
-  constructor(private oidc = new OidcLogin(), private fetchFn: FetchLike = (u, i) => fetch(u, i) as unknown as ReturnType<FetchLike>,
-              private log: (line: string) => void = () => {}) {}
+  /** 打 Umbra 的那个 fetch，**已经包过一层「回来先报一次信」**（见构造函数）。 */
+  private fetchFn: FetchLike;
+
+  constructor(private oidc = new OidcLogin(), rawFetch: FetchLike = (u, i) => fetch(u, i) as unknown as ReturnType<FetchLike>,
+              private log: (line: string) => void = () => {}) {
+    /* ⚠️ **把报信装在 fetch 本身上，不是在六个调用点各加一行。**
+       `this.fetchFn(` 现在有六处（`/auth/config` · `/auth/login` · `/auth/forgot` ·
+       `/auth/me` · `/auth/logout` · `authedFetch` 那个 `go`），而 `perks` /
+       `fetchLicense` / `buyPlugin` 都走 `authedFetch`。
+       逐个加的话**漏一个就静默复发，而症状和没修一模一样** ——
+       `00` §162（issue #117/#118 的 `setSessionId` 六个调用点）记的就是这一条。
+       包在这里，以后新加的出口也自动覆盖。 */
+    this.fetchFn = async (u, i) => {
+      const r = await rawFetch(u, i);
+      if (isSessionInvalid(r)) await this.noteSessionInvalid(u);
+      return r;
+    };
+  }
+
+  /** 会话失效的**唯一处置点**（PC `auth.ts` 的 `sessionRevoked` 同位）。
+   *
+   *  这一层只做一件事：清本机登录、写 `lastError`、记一行日志。
+   *  **去重靠状态本身而不是一个布尔标志** —— 本机已经没有令牌了就什么都不做。
+   *  （标志会和真实状态分叉：令牌换了而标志没重置，下一次真失效就被它吃掉。）
+   *
+   *  ⚠️ **有刷新令牌时不在这里清**：那是 OIDC 回退路，它有自己的「先用刷新令牌续一次、
+   *  换不到才清」（`renew()`）。在这里抢着清会把那条路的静默续期废掉。
+   *  这个分支随 OIDC 在 Casdoor 下线后一起删。 */
+  private async noteSessionInvalid(where: string): Promise<void> {
+    const a = await getAccount();
+    if (!a.accessToken) return;                     // 已经清过了 —— 天然去重
+    if (a.refreshToken) return;                     // OIDC 回退路：交给 renew()
+    await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
+    this.lastError = "登录已经失效（服务端说这条会话不作数了），重新登录一次";
+    this.log(`[account] 会话失效 → 已清本机登录（信号来自 ${where.replace(/\?.*$/, "")}）`);
+  }
 
   async status(): Promise<AccountStatus> {
     const a = await getAccount();
@@ -387,6 +436,69 @@ export class AccountService {
       try { detail = String(((await r.json()) as { detail?: unknown }).detail ?? ""); } catch { /* 不是 JSON */ }
       throw new LoginFail("other", detail || `没发出去（${r.status}）`);
     }
+  }
+
+  /** 改密码（账号中心对接说明 2026-10-21 要点 5，字面参照 PC 账号页批次 053 §二）：
+   *  `POST /auth/password` `{current, password}` → `{ ok: true, logged_out: <整数> }`。
+   *
+   *  `logged_out` 是**这一次让其他设备下线了几台，不含这一台** —— 这一台的令牌保留
+   *  （Umbra 主会话 2026-10-21 确认）。所以改完**不要**清本机登录。
+   *
+   *  ⚠️ 当前密码不对是 **400 `invalid_field` + `field: "current"`，不是 401** ——
+   *  **它不是会话失效，一个字都不许碰登录状态**。这条写在这里是因为「改密码失败」和
+   *  「登录失效」在界面上长得很像（都是「你的身份有问题」），而下一步完全不同：
+   *  一个是「这一格重填」，一个是「整个重登」。 */
+  async changePassword(current: string, password: string): Promise<{ loggedOut: number }> {
+    let r: Awaited<ReturnType<FetchLike>> | null;
+    try {
+      r = await this.authedFetch("/auth/password", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current, password }) });
+    } catch (e) {
+      throw new LoginFail("offline", "连不上服务器", 0, (e as Error).message);
+    }
+    if (!r) throw new LoginFail("other", "还没登录");
+    if (r.status >= 500) throw new LoginFail("offline", "服务器这会儿不舒服，过一会儿再试", 0, `服务端回 ${r.status}`);
+    if (!r.ok) {
+      let detail = "", field = "", code = "";
+      try {
+        const d = (await r.json()) as { detail?: unknown; field?: unknown; code?: unknown };
+        detail = String(d.detail ?? ""); field = String(d.field ?? ""); code = String(d.code ?? "");
+      } catch { /* 不是 JSON */ }
+      if (r.status === 400 && (code === "invalid_field" || field)) {
+        throw new LoginFail("bad", detail || (field === "current" ? "当前密码不对" : "这一项填得不对"), 0, code, field || "current");
+      }
+      if (r.status === 401) throw new LoginFail("other", "登录已经失效，重新登录一次再改");
+      throw new LoginFail("other", detail || `没改成（${r.status}）`);
+    }
+    const d = (await r.json()) as { logged_out?: unknown };
+    const loggedOut = typeof d.logged_out === "number" && Number.isFinite(d.logged_out) ? d.logged_out : 0;
+    this.log(`[account] 密码已改，另有 ${loggedOut} 台被下线`);
+    return { loggedOut };
+  }
+
+  /** 改显示名：`PATCH /auth/me` `{display_name}` → `{user}`。
+   *  ⚠️ **空串合法** —— 意思是「不要显示名」，界面退回显示邮箱（Umbra 主会话 2026-10-21 确认）。
+   *  所以这里**不许**把空串当成「没填，拒了」。 */
+  async setDisplayName(name: string): Promise<AccountUser> {
+    let r: Awaited<ReturnType<FetchLike>> | null;
+    try {
+      r = await this.authedFetch("/auth/me", { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name: name }) });
+    } catch (e) {
+      throw new LoginFail("offline", "连不上服务器", 0, (e as Error).message);
+    }
+    if (!r) throw new LoginFail("other", "还没登录");
+    if (r.status >= 500) throw new LoginFail("offline", "服务器这会儿不舒服，过一会儿再试", 0, `服务端回 ${r.status}`);
+    if (!r.ok) {
+      let detail = "", field = "";
+      try { const d = (await r.json()) as { detail?: unknown; field?: unknown }; detail = String(d.detail ?? ""); field = String(d.field ?? ""); } catch { /* 不是 JSON */ }
+      if (r.status === 401) throw new LoginFail("other", "登录已经失效，重新登录一次再改");
+      throw new LoginFail(r.status === 400 ? "bad" : "other", detail || `没改成（${r.status}）`, 0, "", field);
+    }
+    const d = (await r.json()) as { user?: AccountUser };
+    if (!d.user || typeof d.user.id !== "number") throw new LoginFail("other", "服务端没回 user");
+    await setAccount({ user: d.user });
+    return d.user;
   }
 
   /** 问服务端怎么登录并记下（设置页据此画「密码表单」还是「打开浏览器」）。问不到回 unknown，不抛。 */

@@ -26,7 +26,7 @@ import { join } from "node:path";
 const STATE = await mkdtemp(join(tmpdir(), "umbra-tokentest-"));
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
 
-const { AccountService, LoginFail, tokenExpMs, TOKEN_RENEW_SKEW_MS, isSessionInvalid } = await import("./account.js");
+const { AccountService, LoginFail, tokenExpMs, TOKEN_RENEW_SKEW_MS, isSessionInvalid, isSessionInvalidHeader } = await import("./account.js");
 type LoginFail = InstanceType<typeof LoginFail>;
 const { OidcLogin } = await import("./oidc.js");
 const { getAccount, setAccount } = await import("./account.js");
@@ -273,6 +273,148 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
   /* ⓕ 令牌是不透明长串：认不出 exp，所以永远不会去「预判过期」 */
   ok(tokenExpMs(TOK) === null && tokenExpMs("opaque.two.parts.only") === null,
      "不透明令牌：`tokenExpMs` 回 null —— 不预判过期，只靠服务端那个头");
+}
+
+
+/* ⑪ **第二个信号**：`x-umbra-session: invalid` 跟着**任何状态码**走，包括 **200**
+      （三端契约 `contract-session-revoked`，2026-09-28 定；2026-10-21 从 Umbra 主会话问到 ——
+      **我原来漏了这一个**）。
+
+   为什么它必须存在：Bearer 已经作废、而别的凭据放行时，服务端回的是 **200** 并带这个头。
+   **只看 401 的话永远不知道会话已经没了** —— 而「不知道」的表现就是界面一直显示「已登录」。
+
+   这一节还顺带钉住一件实现选择：报信是**包在 `fetchFn` 本身上**的，不是在六个调用点各加一行。
+   所以下面故意从 **`/membership`**（走 `authedFetch` 那条路）发信号 ——
+   它和 `/auth/me` 不是同一个调用点，**认到了才说明那层包装真的覆盖了别的出口**。 */
+{
+  const TOK = "opaque-signal-token";
+  const signInOpaque = () => setAccount({ serverUrl: BASE, accessToken: TOK, refreshToken: "", user: { id: 1, name: "sam" } as never, signedInAt: "2026-10-21T00:00:00Z" });
+  /** `/membership` 回什么由 `reply` 说。刷新函数一律先计数再抛。 */
+  const sigWorld = (reply: { status: number; hdr?: Record<string, string> }) => {
+    let refreshes = 0;
+    const fetchFn = async (url: string) => {
+      const path = url.slice(BASE.length);
+      const json = (status: number, body: unknown, hdr: Record<string, string> = {}) =>
+        ({ ok: status < 300, status, json: async () => body, headers: { get: (n: string) => hdr[n.toLowerCase()] ?? null } });
+      if (path === "/auth/config") return json(200, { provider: "local", managed_by: "center" });
+      if (path === "/membership") return json(reply.status, { gift_plugins: [], discount_pct: 100 }, reply.hdr ?? {});
+      return json(404, {});
+    };
+    const oidc = new OidcLogin(async () => { refreshes++; throw new Error("不该刷新"); });
+    return { svc: new AccountService(oidc, fetchFn as never), refreshes: () => refreshes };
+  };
+
+  /* ⓐ 最要紧的一条：**一个 200 响应把我们登出** */
+  await signInOpaque();
+  let w = sigWorld({ status: 200, hdr: { "x-umbra-session": "invalid" } });
+  await w.svc.perks();
+  let st = await w.svc.status();
+  ok(!st.signedIn && !(await getAccount()).accessToken,
+     "**200 带 x-umbra-session: invalid → 清登录**（Bearer 作废而别的凭据放行时，服务端回的就是 200）", st.lastError);
+  ok(w.refreshes() === 0, "而且一次刷新都没发");
+
+  /* ⓑ 反代可能会动这个头的大小写和空白 */
+  await signInOpaque();
+  w = sigWorld({ status: 401, hdr: { "x-umbra-session": "  INVALID  " } });
+  await w.svc.perks();
+  ok(!(await getAccount()).accessToken, "头的值大小写 / 前后空白都宽容（反代会动它）");
+
+  /* ⓒ 阿里云备案拦截：403 + `Server: Beaver`，**不带那两个头** → 更不该清
+        （Umbra 主会话 2026-10-21 点名的线上真实情况） */
+  await signInOpaque();
+  w = sigWorld({ status: 403, hdr: { server: "Beaver" } });
+  await w.svc.perks();
+  ok((await getAccount()).accessToken === TOK, "**403 备案拦截：不清登录**（它说的不是会话的事）");
+
+  /* ⓓ 正常的 200 当然不清 —— 这条是「判准没有宽到把好响应也算失效」 */
+  await signInOpaque();
+  w = sigWorld({ status: 200 });
+  const p = await w.svc.perks();
+  ok(p.ok && (await getAccount()).accessToken === TOK, "干净的 200：照常用，不清登录");
+
+  /* ⓔ 去重：信号来两次，第二次什么都不做（**去重靠状态本身，不是布尔标志**）*/
+  await signInOpaque();
+  w = sigWorld({ status: 200, hdr: { "x-umbra-session": "invalid" } });
+  await w.svc.perks();
+  const after1 = await getAccount();
+  await w.svc.perks();
+  const after2 = await getAccount();
+  ok(!after1.accessToken && !after2.accessToken && after1.signedInAt === after2.signedInAt,
+     "连续两次信号：只清一次，第二次不再动盘上那份");
+
+  /* ⓕ 两个纯函数 */
+  ok(isSessionInvalidHeader("invalid") && isSessionInvalidHeader(" INVALID ")
+     && !isSessionInvalidHeader("valid") && !isSessionInvalidHeader("") && !isSessionInvalidHeader(null),
+     "`isSessionInvalidHeader`：认 invalid，大小写空白宽容，别的一律不算");
+  const res = (status: number, h: Record<string, string>) => ({ status, headers: { get: (n: string) => h[n.toLowerCase()] ?? null } });
+  ok(isSessionInvalid(res(200, { "x-umbra-session": "invalid" })) === true
+     && isSessionInvalid(res(403, { server: "Beaver" })) === false
+     && isSessionInvalid(res(401, { "x-umbra-error": "too_many_attempts" })) === false,
+     "`isSessionInvalid`：200 带会话头算、403 备案拦截不算、401 带别的码不算");
+}
+
+
+/* ⑫ 改密码 / 改显示名（Q74 ①②，契约由 Umbra 主会话 2026-10-21 给：
+      `POST /auth/password` `{current,password}` → `{ok:true, logged_out:<整数>}`，当前密码不对是
+      **400 `invalid_field` + `field:"current"`**；`PATCH /auth/me` `{display_name}` → `{user}`，空串合法）。
+
+   ⚠️ 这一节最要紧的一条是**反面的**：改密码失败**不许碰登录状态**。
+      「当前密码填错了」和「这条会话失效了」在界面上长得很像（都是「你的身份有问题」），
+      而下一步完全不同 —— 一个是「这一格重填」，一个是「整个重登」。
+      把前者当后者的话，用户一打错密码就被踢出登录。 */
+{
+  const TOK = "opaque-op-token";
+  const signInOpaque = () => setAccount({ serverUrl: BASE, accessToken: TOK, refreshToken: "", user: { id: 1, name: "sam", display_name: "老样子" } as never, signedInAt: "2026-10-21T00:00:00Z" });
+  const opWorld = (reply: (path: string, body: Record<string, unknown>) => { status: number; body?: unknown; hdr?: Record<string, string> }) => {
+    const sent: Array<{ path: string; method: string; body: Record<string, unknown> }> = [];
+    const fetchFn = async (url: string, init: { method: string; body?: string }) => {
+      const path = url.slice(BASE.length);
+      const body = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+      sent.push({ path, method: init.method, body });
+      const json = (status: number, b: unknown, hdr: Record<string, string> = {}) =>
+        ({ ok: status < 300, status, json: async () => b, headers: { get: (n: string) => hdr[n.toLowerCase()] ?? null } });
+      if (path === "/auth/config") return json(200, { provider: "local", managed_by: "center" });
+      const r = reply(path, body);
+      return json(r.status, r.body ?? {}, r.hdr ?? {});
+    };
+    return { svc: new AccountService(new OidcLogin(async () => { throw new Error("不该刷新"); }), fetchFn as never), sent };
+  };
+
+  /* ⓐ 改密码成功：回「下线了几台」，而且**这一台的登录一个字没动** */
+  await signInOpaque();
+  let w = opWorld(() => ({ status: 200, body: { ok: true, logged_out: 3 } }));
+  const okRes = await w.svc.changePassword("old pw", "new pw");
+  ok(okRes.loggedOut === 3, "改密码成功：回执带「另外下线了几台」", `logged_out=${okRes.loggedOut}`);
+  ok((await getAccount()).accessToken === TOK, "**改完这一台的令牌保留**（服务端只下别的设备）");
+  ok(w.sent.some((x) => x.path === "/auth/password" && x.method === "POST" && x.body.current === "old pw" && x.body.password === "new pw"),
+     "字段名照服务端：`{current, password}` 发到 POST /auth/password");
+  ok(!JSON.stringify(await getAccount()).includes("new pw"), "两个密码都不落盘");
+
+  /* ⓑ 当前密码不对 → 400 invalid_field + field=current：分档 bad、带 field、**不清登录** */
+  await signInOpaque();
+  w = opWorld(() => ({ status: 400, body: { code: "invalid_field", field: "current", detail: "当前密码不对" } }));
+  let kind = "", field = "", msg = "";
+  try { await w.svc.changePassword("wrong", "new pw"); } catch (e) { kind = (e as LoginFail).kind; field = (e as LoginFail).field; msg = (e as Error).message; }
+  ok(kind === "bad" && field === "current" && msg === "当前密码不对", "当前密码不对：kind=bad、field=current、照服务端那句说", `${kind}/${field}/${msg}`);
+  ok((await getAccount()).accessToken === TOK, "**而且一个字都不碰登录状态**（400 不是会话失效）");
+
+  /* ⓒ 改密码时服务端 5xx → offline 档，也不清登录 */
+  await signInOpaque();
+  w = opWorld(() => ({ status: 503, body: {} }));
+  try { await w.svc.changePassword("a", "b"); } catch (e) { kind = (e as LoginFail).kind; }
+  ok(kind === "offline" && (await getAccount()).accessToken === TOK, "5xx：kind=offline，不清登录");
+
+  /* ⓓ 改显示名：落盘新 user */
+  await signInOpaque();
+  w = opWorld((_p, b) => ({ status: 200, body: { user: { id: 1, name: "sam", display_name: b.display_name } } }));
+  const u = await w.svc.setDisplayName("山姆");
+  ok(u.display_name === "山姆" && (await getAccount()).user?.display_name === "山姆", "改显示名：服务端回的 user 落盘");
+  ok(w.sent.some((x) => x.path === "/auth/me" && x.method === "PATCH" && x.body.display_name === "山姆"), "发的是 PATCH /auth/me `{display_name}`");
+
+  /* ⓔ 空串是合法的值，不是「没填」 */
+  const u2 = await w.svc.setDisplayName("");
+  ok(u2.display_name === "" && w.sent.filter((x) => x.path === "/auth/me").length === 2,
+     "**空串照样发出去**（服务端的意思是「不要显示名」，界面退回显示邮箱）—— 不当成「没填」拦掉");
 }
 
 await rm(STATE, { recursive: true, force: true });
