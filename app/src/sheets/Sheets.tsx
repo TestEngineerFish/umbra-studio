@@ -702,6 +702,73 @@ function StoragePanel({ core, projectCore }: { core: Core; projectCore: Core | n
   );
 }
 
+/** 设置里的「文件树」块（2026-10-21，Q77，服务端 `uiprefs.ts`）。
+ *
+ *  用户 2026-10-21 定的：**点文件也是文件，默认要显示**。
+ *  默认值**由服务端给**（`ui_prefs` 的 `defaults`），这里不抄一份 —— 抄了迟早对不上
+ *  （同 `PluginLimitsPanel` 的 `ranges`）。
+ *
+ *  ⚠️ 这个开关**管不着我们自己产的东西**（`.umbrastudio/` · `_runtime` · `.DS_Store` …）：
+ *  那些由服务端的 `isOurArtifact` 一律隐藏。说清这一点是因为不说的话，
+ *  用户打开开关却没看到 `.umbrastudio/` 会以为开关坏了 —— **一个「没反应」的开关
+ *  比一个没有的开关糟**。
+ */
+function FileTreePanel({ core }: { core: Core }) {
+  const [prefs, setPrefs] = useState<{ showHiddenFiles: boolean } | null>(null);
+  const [defaults, setDefaults] = useState<{ showHiddenFiles: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  type Shape = { prefs: { showHiddenFiles: boolean }; defaults: { showHiddenFiles: boolean } };
+  const load = useCallback(async () => {
+    const r = await core.get<Shape>("ui_prefs").catch(() => null);
+    if (r?.ok && r.data) { setPrefs(r.data.prefs); setDefaults(r.data.defaults); setLoadErr(null); }
+    else setLoadErr(r?.errors?.[0]?.message ?? "读不到界面偏好（核心可能是旧版本）");
+  }, [core]);
+  useEffect(() => { void load(); }, [load]);
+
+  const save = async (next: boolean) => {
+    setBusy(true);
+    const r = await core.post<Shape>("ui_prefs", { showHiddenFiles: next })
+      .catch((e) => ({ ok: false, errors: [{ message: String((e as Error)?.message ?? e) }] } as const));
+    setBusy(false);
+    if (!r.ok || !("data" in r) || !r.data) { toast("没存上", r.errors?.[0]?.message ?? "", "error"); return; }
+    setPrefs(r.data.prefs);
+    /* ⚠️ **存完要让树重列** —— 不发这一下，用户会以为开关没生效
+       （设置面板关掉、再点开目录才看到变化）。 */
+    window.dispatchEvent(new CustomEvent("ud-prefs-changed"));
+  };
+
+  return (
+    <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5" data-ud="prefs">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="text-sm font-semibold shrink-0">文件树</h3>
+        <span className="text-[11px] text-muted flex-1 min-w-[12rem]">目录里显示哪些东西</span>
+      </div>
+      {loadErr && <div className="text-xs text-err">{loadErr}</div>}
+      {prefs && (
+        <div className="flex flex-col gap-1">
+          <label className="flex items-center gap-2 text-xs cursor-pointer" data-ud="prefs-hidden">
+            <input type="checkbox" disabled={busy} checked={prefs.showHiddenFiles}
+              onChange={(ev) => void save(ev.target.checked)} />
+            <span>显示隐藏文件（以 <code className="font-mono">.</code> 开头的）</span>
+            {defaults && prefs.showHiddenFiles === defaults.showHiddenFiles
+              && <span className="text-[11px] text-muted">默认</span>}
+          </label>
+          <p className="text-[11px] text-muted leading-relaxed pl-6">
+            关掉之后 <code className="font-mono">.gitignore</code> / <code className="font-mono">.env</code> 这类文件不在树里显示。
+            Umbra Studio 自己产的东西（<code className="font-mono">.umbrastudio/</code> · <code className="font-mono">_runtime/</code>）
+            <strong>两种情况下都不显示</strong> —— 它们由工具维护，改了会被下一次重建覆盖。
+          </p>
+          <p className="text-[11px] text-muted leading-relaxed pl-6">
+            <code className="font-mono">.git</code> 会列出来让你知道它在，但里面的内容我们不碰，也不计入项目的文件统计。
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PluginLimitsPanel({ core }: { core: Core }) {
   const [cfg, setCfg] = useState<Record<LimitKey, number> | null>(null);
   const [ranges, setRanges] = useState<LimitRanges | null>(null);
@@ -796,6 +863,7 @@ export function SettingsSheet({ core, host, projectUrl, projectCore, layout, set
       </div>
       {core && <AccountPanel core={core} host={host} />}
       {core && <CliPicker core={core} />}
+      {core && <FileTreePanel core={core} />}
       {core && <PluginLimitsPanel core={core} />}
       {core && <StoragePanel core={core} projectCore={projectCore} />}
       {/* iframe 的高度给固定值，别用 vh —— 它在会滚的内容区里，用 vh 会和外层的滚动打架 */}

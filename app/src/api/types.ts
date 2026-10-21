@@ -28,7 +28,14 @@ export const SELECTION_ICON: Record<SelectionKind, string> = { node: "⌖", rang
  *  留 `FileKindS` 这个名字只是为了不改一堆 import；新代码直接用 `FileKind`。 */
 export type { FileKind } from "@shared/kinds";
 export type FileKindS = import("@shared/kinds").FileKind;
-export interface FileEntry { path: string; name: string; kind: FileKindS; isDir: boolean; size: number; updatedAt: string; count?: number; width?: number; height?: number; excerpt?: string; snapshot?: string }
+export interface FileEntry {
+  path: string; name: string; kind: FileKindS; isDir: boolean; size: number; updatedAt: string;
+  count?: number; width?: number; height?: number; excerpt?: string; snapshot?: string;
+  /** **别人的基础设施目录**（`.git`）—— 列出来让人知道它在，但我们不碰、也不计入统计（Q77）。
+   *  ⚠️ **这个标记由服务端给**（`files.ts` 的 `isOpaquePath`）—— 前端不照名字自己猜，
+   *  否则「哪些算基础设施」就有了两份清单，而两份清单迟早对不上。 */
+  opaque?: boolean;
+}
 export interface ListFilesResult { dir: string; entries: FileEntry[]; types: { dc: number; md: number; image: number; other: number } }
 export interface ReadFileResult { path: string; kind: FileKindS; size: number; updatedAt: string; sha256: string; content: string | null; why?: string; lines?: number; snapshot?: string; width?: number; height?: number }
 export interface FileSnapshotMeta { version: string; src: string; at: string; bytes: number; note?: string }

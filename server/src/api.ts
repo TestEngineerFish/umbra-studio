@@ -123,7 +123,7 @@ export interface ApiCtx { project: Project | null; token: string; port: number }
    漏一条的后果很实在 —— `ai_config` 一开始没放进来，首页打开设置时读不到通道 B 的当前配置，
    模型框空着、选中项退回默认值，看着像「没配过」。 */
 const GLOBAL_ROUTES = new Set(["projects", "open_project", "create_project", "inspect_dir", "reveal_dir",
-  "local_clis", "local_cli_models", "ai_config", "ai_channel_b", "plugin_limits"]);
+  "local_clis", "local_cli_models", "ai_config", "ai_channel_b", "plugin_limits", "ui_prefs"]);
 
 /** 作业化会话的中断句柄：jobId → AbortController（作业活在进程里，这张表也是） */
 const chatAborts = new Map<string, AbortController>();
@@ -391,6 +391,23 @@ export async function handleApi(
       }
       const config = await lim.getPluginLimits();
       json(reply, 200, { ok: true, data: { config, ranges: lim.LIMIT_RANGES, limits: lim.limitsView(config) } });
+      return true;
+    }
+    /* 界面偏好（2026-10-21，Q77，`uiprefs.ts`）。和 `plugin_limits` 同形：机器级，首页也要能用。
+       GET 回 `{ prefs, defaults }` —— `defaults` 给界面显示「默认值」，**界面不另抄一份**。
+       POST 收 `{ showHiddenFiles?: boolean }`：非布尔 / 不认的键 → 400 E_BAD_INPUT（走下面的 catch）。
+       ⚠️ **这一条刻意只有 HTTP 门面，没有 MCP 门面**：它是**看的人的偏好**，
+       而 MCP 那一面坐着的是模型。让模型改得动「我要不要看见隐藏文件」是越界 ——
+       用户会看到自己的设置莫名变了，而且那一下没有任何地方会留痕。
+       读也不给：模型知道这个值的唯一用处是解释「为什么我没列出 .env」，
+       而那句话该由 `list_files` 自己说（以后要给的话，给在它的回包里，不是开一条设置接口）。 */
+    if (route === "ui_prefs") {
+      const up = await import("./uiprefs.js");
+      if (req.method === "POST") {
+        if (!originOk(req, ctx.port)) { json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] }); return true; }
+        await up.setUiPrefs(await readBody(req) as Record<string, unknown>);
+      }
+      json(reply, 200, { ok: true, data: { prefs: await up.getUiPrefs(), defaults: up.PREF_DEFAULTS } });
       return true;
     }
     if (route === "ai_config" && req.method === "GET") {

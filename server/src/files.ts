@@ -66,13 +66,112 @@ export function sha256(s: string | Buffer): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
-/** 工具自己产的东西不算用户的文件（索引页、壳页、运行时副本、缩略图目录） */
+/* ── 「这是谁的东西」：三条判准，各答一个问题（Q77，2026-10-21）─────────────────
+ *
+ * ⚠️ **原来只有一个 `isToolArtifact`**，最后一行是
+ *    `rel.split("/").some((seg) => … || seg.startsWith("."))`
+ * —— **一个谓词在回答两个不同的问题**，于是它在其中一个上必然是错的：
+ *    · 「列表里显不显示」      → 点文件**该显示**（`.gitignore` / `.env` 是用户的文件）
+ *    · 「能不能写 / 删 / 挪」   → `.git/HEAD` **绝不能写**
+ *
+ * **根因是判准的性质搞错了**：`startsWith(".")` 是一个**语法判准**（名字长什么样），
+ * 而这里要答的是一个**归属判断**（这是谁的东西）。Unix 的点文件约定说的是
+ * 「默认不列出来」，**从来不是「这是别人的东西」** —— 拿前者猜后者，
+ * 在任何真实项目里都会错，因为 `.env` / `.gitignore` / `.eslintrc`
+ * 全是用户最该改得动的文件。
+ *
+ * ⚠️ 实测（2026-10-21）用户三个项目各有 **2 / 6 / 6** 个点文件被隐藏，
+ * 而**它们不是一类东西**：
+ *   `.umbrastudio/` `.umbradesign/`         我们的产物 —— 改了下次重建就覆盖
+ *   `.git/`                                 git 的 —— 写坏后果最重，且规模无界
+ *   `.image-slots.state.json` `.thumbnail`  **ClaudeDesign 旧宿主**的产物
+ *                                           （`project.ts` 的 `.gitignore` 模板里点着名）
+ *   `.gitignore`                            **用户的** —— 我们只是建项目时拷一份模板
+ *
+ * **所以只拆成两条会得到一句错话**：`.gitignore` 在树里显示出来了 →
+ * 用户点「删除」→ 报「**这是工具自己的文件，不能删**」，而它不是我们的文件。
+ *
+ * ⚠️ 这是 issue #75「**一道闸只守住一条路，等于没守**」的**反面** ——
+ * 一道闸守了两条**不该用同一把尺子**的路。两种病的修法相反（前者合并到一处、
+ * 后者拆开），而判断该合还是该拆的依据只有一条：
+ * **这两个调用点问的是同一个问题吗。**
+ *
+ * ⚠️ **安全方向**：这是从**黑名单**（点开头全禁）改成**白名单**（点名哪些禁）。
+ * 代价可控的依据是读数不是偏好 —— 真有破坏力的只有 `.git/` 与 `.umbrastudio/`
+ * 两个，**都是固定名字**；其余（`_ds-tool` / `_runtime` / `index-data.js`）
+ * 写坏了只是「下次重建覆盖」。
+ * 这和 M14-3 purge 那条「安全线是白名单不是黑名单」同一个原理**而方向相反**：
+ * purge 要白名单是因为「以后新加一种资产」默认该**被保护**；
+ * 这里要白名单是因为「以后新出现一种点文件」默认该**归用户**。
+ * **同一句口号用在相反的方向上 —— 所以它不是口号，是「默认值该站在哪一边」
+ * 每次都要重新答一遍。**
+ */
+
+/** 工具自己产的文件名（索引页、运行时副本、系统垃圾）。 */
 const TOOL_FILES = new Set(["index-data.js", "support.js", "react.production.min.js", "react-dom.production.min.js", ".DS_Store"]);
-function isToolArtifact(rel: string): boolean {
+/** 我们自己产的**目录段**。改里面的东西没有意义 —— 下一次重建就覆盖掉了。 */
+const OUR_SEGS = new Set([UD_DIRNAME, ".umbradesign", "_ds-tool", "_runtime"]);
+/** 别人的基础设施：用户**该看得见它在**，但我们不碰、也不走进去。
+ *  ⚠️ `.git` 为什么不递归：它的规模**与用户的稿无关而且无界增长**。
+ *  2026-10-21 实测这两个项目只有 18 / 206 个文件（它们提交极少）——
+ *  **那不是上限，所以不能拿它当理由**（「判据在没有样本的时候，测的是今天恰好没事」同族）。 */
+const OPAQUE_SEGS = new Set([".git"]);
+
+/** ① 这是**我们自己产的**吗 —— 隐藏 + 拒写。设置开关管不着它。 */
+export function isOurArtifact(rel: string): boolean {
   const name = basename(rel);
   if (TOOL_FILES.has(name)) return true;
   if (isToolPage(name)) return true;
-  return rel.split("/").some((seg) => seg === "_ds-tool" || seg === "_runtime" || seg.startsWith("."));
+  return rel.split("/").some((seg) => OUR_SEGS.has(seg));
+}
+
+/** ② 这是**别人的基础设施**吗 —— 列得出来（用户该知道它在），但拒写、也不递归进去。 */
+export function isOpaquePath(rel: string): boolean {
+  return rel.split("/").some((seg) => OPAQUE_SEGS.has(seg));
+}
+
+/** 写入侧那道闸：**能不能写 / 删 / 挪 / 转**。
+ *  ⚠️ 和改之前**不等价，它收窄了** —— 原来「任何以 `.` 开头的段」一律拒，
+ *  现在只拒点名的那些。放行的那些正是用户自己的点文件（`.gitignore` / `.env` …），
+ *  **而那本来就该是他改得动的**。 */
+function isToolArtifact(rel: string): boolean {
+  return isOurArtifact(rel) || isOpaquePath(rel);
+}
+
+/** ③ **列表里显不显示** —— 只管显示，受设置开关控制（`uiprefs.ts` 的 `showHiddenFiles`）。
+ *  纯函数，**导出给判据**：`showHidden` 由调用方先读设置再传进来，
+ *  这样「判准自己对」和「用对了设置」是两条各自能测的事（§170.3 同族）。 */
+export function isHiddenFromList(rel: string, showHidden: boolean): boolean {
+  if (isOurArtifact(rel)) return true;             // 我们的产物：开关管不着
+  if (showHidden) return false;
+  return rel.split("/").some((seg) => seg.startsWith("."));
+}
+
+/** 不许碰它的**话**：按**哪一条判准拦的**给，**一处定义**（Q77）。
+ *
+ *  ⚠️ **这是拆判准时自己踩到的坑**：判准拆成了三条，而四个调用点的话还是同一句
+ *  「这是工具自己的文件」—— 于是 `.git/HEAD` 被拒时会说它是**我们的**文件，
+ *  而它不是。更要紧的是 `.git` 这一轮**开始在文件树里显示了**（用户选的「显示但折叠」），
+ *  所以用户**更容易点到它** —— 原来这句错话几乎没人看得见，现在看得见了。
+ *
+ *  > **拆了判准不跟着拆话，等于把一个判断错误换成一个表达错误。**
+ *  > 而后者更难发现：代码行为是对的（确实拒了），只有话是错的。
+ *
+ *  返回 `null` = 这个路径可以碰。 */
+export function denyReason(rel: string): { why: string; fix: string } | null {
+  if (isOurArtifact(rel)) {
+    return {
+      why: "这是 Umbra Studio 自己产的文件",
+      fix: "索引页、壳页面、运行时副本由 build_index 生成；改了也会被下一次重建覆盖。",
+    };
+  }
+  if (isOpaquePath(rel)) {
+    return {
+      why: "这是 .git 里的东西 —— 版本控制自己的数据，不是项目内容",
+      fix: "要动它请用 git 命令。Studio 写项目文件走自己的快照与 git 兜底，从不直接改 .git 里的内容。",
+    };
+  }
+  return null;
 }
 
 export interface FileEntry {
@@ -92,6 +191,9 @@ export interface FileEntry {
   excerpt?: string;
   /** 最新快照号：稿是 v<N>，别的文件是 s<N> */
   snapshot?: string;
+  /** **别人的基础设施目录**（`.git`）—— 列出来让用户知道它在，但我们不碰、也不递归进去。
+   *  界面按这个标记把它折叠 / 置灰 / 排到末尾（Q77，用户选的 (b) 显示但默认折叠）。 */
+  opaque?: boolean;
 }
 
 export interface ListFilesResult {
@@ -119,9 +221,14 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
   }
   const entries: FileEntry[] = [];
   const types = { dc: 0, md: 0, image: 0, other: 0 };
+  /* ⚠️ **动态 import**：`uiprefs.ts` 要 `STATE_ROOT`（在 `project.ts`），静态引会绕回本文件成环 ——
+     和上面读 `plugin/limits.ts` 完全同一条路。 */
+  const { showHiddenFiles } = await (await import("./uiprefs.js")).getUiPrefs();
   for (const e of await readdir(abs, { withFileTypes: true })) {
     const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
-    if (isToolArtifact(rel)) continue;
+    /* ⚠️ 这里问的是「**显不显示**」，不是「能不能写」（Q77）——
+       换成 `isToolArtifact` 的话用户的 `.gitignore` 又会在树里消失。 */
+    if (isHiddenFromList(rel, showHiddenFiles)) continue;
     const full = join(abs, e.name);
     let st;
     try { st = statSync(full); } catch { continue; }   // 刚被删掉的，跳过
@@ -130,7 +237,10 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
       size: e.isDirectory() ? 0 : st.size, updatedAt: st.mtime.toISOString(),
     };
     if (e.isDirectory()) {
-      try { entry.count = (await readdir(full)).filter((x) => !isToolArtifact(`${rel}/${x}`)).length; } catch { entry.count = 0; }
+      /* 项数要和**这个用户看到的那个列表**一致，所以用同一把尺子（同一个 `showHiddenFiles`）——
+         否则会出现「写着 3 项、点进去 5 个」。 */
+      if (isOpaquePath(rel)) entry.opaque = true;
+      try { entry.count = (await readdir(full)).filter((x) => !isHiddenFromList(`${rel}/${x}`, showHiddenFiles)).length; } catch { entry.count = 0; }
     } else {
       if (entry.kind === "dc") types.dc++;
       else if (entry.kind === "md") types.md++;
@@ -154,11 +264,15 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
 /** 整个项目的类型统计（S1 的 `project.types`）。 */
 export async function countTypes(p: Project): Promise<{ dc: number; md: number; image: number; other: number }> {
   const t = { dc: 0, md: 0, image: 0, other: 0 };
+  const { showHiddenFiles } = await (await import("./uiprefs.js")).getUiPrefs();
   const walk = async (dirRel: string): Promise<void> => {
     for (const e of await readdir(safeJoin(p, dirRel), { withFileTypes: true })) {
       const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
-      if (isToolArtifact(rel)) continue;
-      if (e.isDirectory()) { await walk(rel); continue; }
+      if (isHiddenFromList(rel, showHiddenFiles)) continue;
+      /* ⚠️ **不走进 `.git`**（Q77）。它的规模与用户的稿无关而且无界增长，
+         而这个函数是**整个项目递归**的 —— 走进去等于拿 git 的 object 数量
+         去算「这个项目有几份稿」，既慢又错。 */
+      if (e.isDirectory()) { if (!isOpaquePath(rel)) await walk(rel); continue; }
       const k = kindOf(rel);
       if (k === "dc") t.dc++; else if (k === "md") t.md++; else if (k === "image") t.image++; else t.other++;
     }
@@ -322,10 +436,10 @@ export async function writeAnyFile(p: Project, rel: string, content: string | Bu
       "`.dc.html` 不走这条路",
       { fix: "设计稿用 write_draft：它会归一化、展开 @ds、注入 __resources、打节点地址、存语义快照、写 changelog。这条路一样都不做。" }));
   }
-  if (isToolArtifact(clean)) {
+  const noWrite = denyReason(clean);
+  if (noWrite) {
     throw new ToolError(err(X.IO, clean, { kind: "file", name: basename(clean) },
-      "这是工具自己产的文件，不该手写",
-      { fix: "索引页、壳页面、运行时副本由 build_index 生成；改了也会被下一次重建覆盖。" }));
+      `${noWrite.why}，不该手写`, { fix: noWrite.fix }));
   }
   /* 落盘前先把别处改的那一版留住（M9-7）。**第二条写入口也要有** ——
      `.md` / 代码 / 文本这些文件比设计稿更常在别的编辑器里改，
@@ -634,10 +748,10 @@ export async function revertFile(p: Project, rel: string, version: string): Prom
 /** 删除（回收站语义，和稿一样）：移进 `.umbrastudio/trash/<时间戳>/`，不是真删 */
 export async function trashFile(p: Project, rel: string): Promise<{ path: string; trashPath: string }> {
   /* ⚠️ 和 `moveFile` 同一道闸（issue #75）：`trash_file(".git/HEAD")` 原来照做。 */
-  if (isToolArtifact(rel)) {
+  const noTrash = denyReason(rel);
+  if (noTrash) {
     throw new ToolError(err(X.IO, rel, { kind: "file", name: basename(rel) },
-      "这是工具自己的文件或隐藏目录，不能删",
-      { fix: "trash_file 只处理项目里用户自己的文件。" }));
+      `${noTrash.why}，不能删`, { fix: noTrash.fix }));
   }
   const abs = mustFile(p, rel);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -679,10 +793,10 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
      在界面上表现为「评论和版本历史全没了」。
      **一道闸只守住一条路，等于没守。** */
   for (const r of [from, to]) {
-    if (isToolArtifact(r)) {
+    const noMove = denyReason(r);
+    if (noMove) {
       throw new ToolError(err(X.IO, r, { kind: "file", name: basename(r) },
-        "这是工具自己的文件或隐藏目录，不能挪进挪出",
-        { fix: "move_file 只处理项目里用户自己的文件。" }));
+        `${noMove.why}，不能挪进挪出`, { fix: noMove.fix }));
     }
   }
   const absFrom = mustFile(p, from);

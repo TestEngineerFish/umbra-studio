@@ -229,6 +229,15 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
     window.addEventListener("ud-renamed", on);
     return () => window.removeEventListener("ud-renamed", on);
   }, [applyRename]);
+  /* 「显示隐藏文件」改了要**立刻重列**（Q77）。
+     ⚠️ 走 `localTick` 而不是自己再写一条拉取：`FileTree` 已经有「盘上变了就重拉
+     **已经展开的那些层**」那套逻辑了，只重拉根会让展开着的子目录显示旧内容。
+     **改设置和盘上变了，对这棵树是同一件事** —— 它该重列哪些层的答案一模一样。 */
+  useEffect(() => {
+    const on = () => setLocalTick((n) => n + 1);
+    window.addEventListener("ud-prefs-changed", on);
+    return () => window.removeEventListener("ud-prefs-changed", on);
+  }, []);
 
   const tree = (
     <FileTree core={core} current={dirMode ? null : file} projectName={project.name}

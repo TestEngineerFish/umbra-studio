@@ -155,7 +155,12 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
     if (list === undefined) return [];
     if (list.length === 0) return [<Empty key={dir + ":empty"} depth={depth} text="空目录" />];
     const out: React.ReactNode[] = [];
-    for (const e of list) {
+    /* `.git` 这类基础设施目录排到**同级末尾**（Q77，用户选的「显示但折叠」）。
+       ⚠️ 排序只按服务端给的 `opaque` 标记，不按名字猜 —— 名单只有一份，在服务端。
+       服务端已经按「目录在前、其余按更新时间倒序」排过了，这里**只把 opaque 的挪到后面**，
+       其余相对顺序不动（`sort` 对相等元素稳定）。 */
+    const ordered = [...list].sort((a, b) => Number(!!a.opaque) - Number(!!b.opaque));
+    for (const e of ordered) {
       const open = expSet.has(e.path);
       const isCur = e.path === current;
       const h = e.isDir ? null : healthOf(e.path);
@@ -209,8 +214,8 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           className={`flex items-center gap-1.5 pr-2 cursor-pointer select-none ${isCur ? "bg-accentSoft text-accent font-semibold" : "hover:bg-hover"} ${
             ctx && "path" in ctx.target && ctx.target.path === e.path ? "ring-1 ring-inset ring-accent" : ""} ${
             flash === e.path ? "ring-1 ring-inset ring-accent" : ""}`}
-          style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT }}
-          title={e.path}
+          style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT, ...(e.opaque ? { opacity: 0.55 } : null) }}
+          title={e.opaque ? `${e.path} —— 版本控制自己的数据。看得见，但 Umbra Studio 不碰它，也不计入项目统计。` : e.path}
           onClick={() => (e.isDir ? toggle(e.path) : onOpenFile(e.path))}
           onDoubleClick={() => (e.isDir ? onOpenDir(e.path) : onOpenFile(e.path, true))}
           onContextMenu={(ev) => {

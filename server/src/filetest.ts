@@ -199,7 +199,24 @@ class Component extends DCLogic {
   await writeFile(join(DIR, ".git", "HEAD"), "ref: refs/heads/master\n");
   const cases: Array<[string, () => Promise<unknown>]> = [
     ["move_file 往 .git/ 里写", () => moveFile(p, "tmp75.txt", ".git/x")],
-    ["move_file 写 .gitattributes", () => moveFile(p, "tmp75.txt", ".gitattributes")],
+    /* ⚠️ **这一条 2026-10-21 从 `.gitattributes` 挪到了 `.git/config`**（Q77）。
+       原来钉的是 `.gitattributes` —— 而它**住在项目根，是用户自己的配置文件**，
+       和 `.gitignore` / `.eslintrc` 同类。Q77 把「显示」和「能不能写」拆开之后
+       它放行了，这条判据因此变红。
+
+       **放行安全的依据是三条已经存在的防线，不是「看着没事」**：
+       ① issue #74 把兜底仓库**搬去了 `STATE_ROOT`** —— 它的 `config` 用户写不到；
+       ② `.gitattributes` 只能**声明**「这些文件走 filter X」，而 `filter.X.clean`
+          的**定义必须在 config 里**（#40 的教训正是「HARDEN 黑名单漏了 filter」，
+          所以 #74 改成了隔离而不是加黑名单）；
+       ③ `GIT_ATTR_FILE` 在 `gitkeep.ts` 的 env 清除名单里。
+       下面 §（#40 / #86）那两条判据**正钉着这条真防线，而且仍然绿** ——
+       所以这里把判据挪到 `.git/config`（**真边界**），不是删掉它。
+
+       > **判据挪位置和判据被放松，差别在于「挪过去之后还红不红」。**
+       > 挪到 `.git/config` 之后它照旧红（拒），说明闸还在，只是边界画对了。
+       > （`00` §100 那条「『未签名』判据挪了三次才对」同族。） */
+    ["move_file 写 .git/config", () => moveFile(p, "tmp75.txt", ".git/config")],
     ["move_file 把 .git/HEAD 挪出来", () => moveFile(p, ".git/HEAD", "x75")],
     ["move_file 写 index-data.js", () => moveFile(p, "tmp75.txt", "index-data.js")],
     ["trash_file 删 .git/HEAD", () => trashFile(p, ".git/HEAD")],

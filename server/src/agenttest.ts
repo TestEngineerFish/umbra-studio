@@ -384,6 +384,24 @@ async function cleanup() {
   if (existsSync(TEST_PROJECT)) {
     await rm(TEST_PROJECT, { recursive: true, force: true });
   }
+  /* ⚠️ **也要清自己造的兜底仓库**（M14-6，2026-10-21 补）。
+     原来这里只 `rm` 项目目录 —— 而 `serveStart` → 写一次文件就会在
+     `STATE_ROOT/.umbrastudio/git/` 下建一个兜底仓库，**它不在项目目录里，删项目删不掉它**。
+     实测这一轮跑完全套之后仓库数 **2 → 3**，多出来的正是 `test-agent-project__…`。
+
+     > **这是 M14-6 漏掉的第八套**（`plugintest` 是第七套，`doc/00` §9⑦ 记着）。
+     > 而两次漏网的形状一模一样：**「有的测装了收尾」不等于「残留不再增长」** ——
+     > 这句话 M14-6 自己写过，然后又漏了两套。
+     > 能根治它的不是再补一套，是**让「我造了兜底仓库」这件事本身被算进收尾自检**。
+
+     ⚠️ 范围传 `TEST_PROJECT` **自己**，不传 `TOOL_ROOT`：后者底下有
+     `projects/`（**用户的项目**）。`onlyDead` 确实会放过还活着的目录，
+     但**最小范围不该靠第二道闸兜** —— 第一道就该只圈住自己造的东西。 */
+  try {
+    const { dropFallbackReposUnder } = await import("./purge.js");
+    const r = await dropFallbackReposUnder(TEST_PROJECT, { onlyDead: true });
+    if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
+  } catch { /* 清理失败不该让一轮通过的回归报失败 */ }
 }
 
 main().catch(async (e) => {

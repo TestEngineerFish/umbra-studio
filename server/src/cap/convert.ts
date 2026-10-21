@@ -3,7 +3,7 @@ import { realpath, stat } from "node:fs/promises";
 import { basename, posix, relative, sep } from "node:path";
 import { envelope, err, ToolError, type Envelope } from "../envelope.js";
 import { X } from "../codes.js";
-import { isToolArtifactPath, recordCreatedFile } from "../files.js";
+import { denyReason, isToolArtifactPath, recordCreatedFile } from "../files.js";
 import { isInside, resolveInside } from "../pathguard.js";
 import type { Project } from "../project.js";
 import { convertEngine, FORMATS, formatOfPath, normalizeTarget } from "../convert/index.js";
@@ -60,9 +60,10 @@ async function resolveSource(proj: Project, rel: unknown): Promise<{ root: strin
   const st = await stat(real);
   if (!st.isFile()) throw bad("path", `${raw} 不是文件`, "转换只认单个文件；目录要逐个转。");
   const relReal = relative(root, real).split(sep).join(posix.sep);
-  if (isToolArtifactPath(relReal)) {
-    throw bad("path", `${relReal} 是工具自己的文件或状态目录里的东西，不转`, "转换只给用户自己的文件用。");
-  }
+  /* 拒因按判准分档（Q77）—— 原来一句话兼管「我们的产物」和 `.git`，
+     而 `.git` 不是「工具自己的文件」。话的出处在 `files.ts` 的 `denyReason`，不在这里抄一份。 */
+  const noConv = denyReason(relReal);
+  if (noConv) throw bad("path", `${relReal}：${noConv.why}，不转`, noConv.fix);
   return { root, abs: real, rel: relReal };
 }
 
