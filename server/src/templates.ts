@@ -10,14 +10,14 @@ import { Project, draftPath as draftPathOf } from "./project.js";
 import { resolveInside } from "./pathguard.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
-import { UD_DIRNAME } from "./statedirs.js";
+import { assetDir } from "./statedirs.js";
 
 /** ⚠️ 这里原来是一个字面量 `".umbrastudio/templates"` —— 和 `project.ts` / `cap/drafts.ts`
  *  那两处各写一遍。M14-4 A 段收口到 `statedirs.ts`：**路径怎么拼只有一处**，
  *  否则 B 段搬去 `records/` 时漏掉这一处 = 「模板静默读不到」，
  *  而「读不到」和「本来就没存过模板」在界面上长得一模一样。
  *  留一个相对形式是因为下面 `resolveInside` 的闸按相对路径判。 */
-const TEMPLATES_DIR = `${UD_DIRNAME}/templates`;
+
 
 export interface TemplateInfo {
   /** 模板名 */
@@ -30,9 +30,22 @@ export interface TemplateInfo {
   elementCount: number;
 }
 
-/** 模板目录的绝对路径 */
+/** 模板目录的绝对路径。
+ *  ⚠️⚠️ **这一处是 A 段漏掉的那一个**（2026-10-21 B3 阶段由浏览器探针抓到）。
+ *  A 段把十来处裸拼收口进 `statedirs.ts`，而这里当时留了一个**相对形式**
+ *  （`".umbrastudio/templates"`），理由是下面 `resolveInside` 的闸按相对路径判 ——
+ *  于是 B1 搬走资产时，**这一处没跟着搬**：打开任意一个目录，
+ *  只要界面列一次模板，就会在用户的目录里建出一个空的 `.umbrastudio/`。
+ *
+ *  > **A 段注释里亲口写着「漏一处就是『一类历史静默读不到』」，而漏的就是它自己那一处。**
+ *  > 原因很具体：收口时按「谁 import 了路径常量」找，而这一处把常量**变了个形**
+ *  > （相对而不是绝对），于是它在那次搜索里长得不像同一件事。
+ *
+ *  ⚠️ 判据为什么抓到它：`apitest` 那一条只走 `open_project`，而**真开浏览器**
+ *  会把界面要的每条路都走一遍（列模板是其中之一）。
+ *  **「HTTP 判据全绿」和「打开界面什么都不写」是两件事。** */
 function templatesDir(p: Project): string {
-  return join(p.dir, TEMPLATES_DIR);
+  return assetDir(p.dir, "templates");
 }
 
 /** 列出项目的所有模板 */

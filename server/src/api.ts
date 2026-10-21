@@ -38,7 +38,7 @@ import { changesSince, diffDrafts, humanTime, listVersions, projectChangesSince,
 import { gunzipSync } from "node:zlib";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { draftPath, listDrafts, type Project } from "./project.js";
+import { draftPath, isDesignProject, listDrafts, type Project } from "./project.js";
 import { resolveDraft } from "./locate.js";
 import { readFile } from "node:fs/promises";
 import { relative, sep } from "node:path";
@@ -122,7 +122,7 @@ export interface ApiCtx { project: Project | null; token: string; port: number }
    扫机器上的 CLI、问它有哪些模型、读写 AI 通道配置（配置本来就是全局的）。
    漏一条的后果很实在 —— `ai_config` 一开始没放进来，首页打开设置时读不到通道 B 的当前配置，
    模型框空着、选中项退回默认值，看着像「没配过」。 */
-const GLOBAL_ROUTES = new Set(["projects", "open_project", "create_project", "inspect_dir", "reveal_dir",
+const GLOBAL_ROUTES = new Set(["projects", "open_project", "create_project", "adopt_project", "inspect_dir", "reveal_dir",
   "local_clis", "local_cli_models", "ai_config", "ai_channel_b", "plugin_limits", "ui_prefs"]);
 
 /** 作业化会话的中断句柄：jobId → AbortController（作业活在进程里，这张表也是） */
@@ -333,13 +333,24 @@ export async function handleApi(
       const target = await buildProject(dir);
       const { serveStart } = await import("./serve.js");
       const s = await serveStart(target);
-      if (!s.indexExists) await buildIndex(target, s.url);   // 第一次打开：部署壳与令牌，否则 S2 / S6 / S8 全 404
+      /* ⚠️⚠️ **这一句 2026-10-21 加了条件**（M14-4 B3，`doc/24` §8.4）。
+         原来是无条件的 —— 于是**打开任意一个目录都会在里面部署 780 KB 的设计工具脚手架**
+         （8 份壳稿 + 运行时副本 + `index.dc.html` + 改他的 `.gitignore`）。
+         sam 2026-10-21 用它打开自己的文档目录 `Geek/doc`，当场踩到。
+
+         现在只有**用户显式接管过的设计项目**（有 `project.json`）才部署。
+         普通目录进「只看」档：能看、能改文件、能圈给 AI，**一个字节都不写**。
+         代价照实说：那种目录里 `.dc.html` 的**预览壳不在**（S2 / S6 / S8 会 404），
+         所以界面上要给一条「接管为设计项目」的出路 —— 不给的话这就从
+         「少写了点东西」变成「这种文件打不开」。 */
+      const design = isDesignProject(target.dir);
+      if (design && !s.indexExists) await buildIndex(target, s.url);   // 部署壳与令牌，否则 S2 / S6 / S8 全 404
       /* ⚠️ `identity` 要带回前端（M14-2，Q68）：这个位置**换了一个目录**时得说一句。
          不说的话用户会在一个昨天新建的目录里看到别人的快照、评论、回收站 ——
          **而静默继承不会报错**，他只会觉得「这软件的历史是乱的」。
          老记录回 `unknown`（没指纹），界面**什么都不说** —— 否则每条老记录都要弹一次窗。 */
       const { identity } = await touchProject(target.dir, target.name, target.title);
-      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity } });
+      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity, designProject: design } });
       return true;
     }
 
@@ -441,6 +452,31 @@ export async function handleApi(
       const r = await createProject(str(b.name, "name"), { dir: typeof b.dir === "string" && b.dir ? b.dir : undefined, title: typeof b.title === "string" && b.title ? b.title : undefined });
       await touchProject(r.dir, r.name, r.title);
       json(reply, 200, { ok: true, data: r });
+      return true;
+    }
+    /* ── 把一个普通目录**接管为设计项目**（M14-4 B3）──
+       「打开一个目录」现在什么都不写（见 `open_project` 那段⚠️）。
+       等用户真的要用到设计稿那一套（建 `.dc.html` / 看预览 / 体检）时，才走这一件。
+       ⚠️ **和 `create_project` 分开，故意的**：那一件还会**建一份空白稿**，
+       而「我只是想让这个已有的目录能预览设计稿」不该凭空多出一份稿。
+       > 把两件事做成一个按钮，等于让「接管」这个动作带上「往你目录里塞东西」。 */
+    if (route === "adopt_project" && req.method === "POST") {
+      if (!originOk(req, ctx.port)) { json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] }); return true; }
+      const b = await readBody(req);
+      const dir = str(b.dir, "dir");
+      if (!existsSync(dir)) throw new Error(`目录不存在：${dir}`);
+      const target = await buildProject(dir);
+      if (!isDesignProject(target.dir)) {
+        const { writeFile: wfP } = await import("node:fs/promises");
+        await wfP(join(target.dir, "project.json"),
+          JSON.stringify({ name: target.name, title: target.title }, null, 2) + "\n", "utf8");
+      }
+      const fresh = await buildProject(dir);
+      const { serveStart: ss } = await import("./serve.js");
+      const sv = await ss(fresh);
+      const built = await buildIndex(fresh, sv.url);
+      await touchProject(fresh.dir, fresh.name, fresh.title);
+      json(reply, 200, { ok: true, data: { dir: fresh.dir, name: fresh.name, title: fresh.title, deployed: built.shells?.length ?? null } });
       return true;
     }
     if (route === "reveal_dir" && req.method === "POST") {

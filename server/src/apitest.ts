@@ -1103,6 +1103,47 @@ console.log("\n⑮ 缩略图走路由（M14-4 B2）");
   ok(r3.status === 404, "**`..` 爬不出缓存目录**（`serveStatic` 的 `isInside`）", String(r3.status));
 }
 
+/* ── 打开一个普通目录：**一个字节都不写**（M14-4 B3）──
+   这是这一整批的验收点，而它**必须在真 HTTP 面上测** —— `open_project` 是
+   HTTP 门面自己的一段逻辑（那句 `if (design && !s.indexExists) await buildIndex(…)`）。
+   ⚠️ 判据是**数盘上的东西**，不是看回执：回执说「打开了」和「它没往里写」是两句话。 */
+console.log("\n⑯ 打开普通目录不写一个字节 · 接管才部署（M14-4 B3）");
+{
+  const { mkdtemp: mkt3, writeFile: wf3, readdir: rd3, readFile: rf3 } = await import("node:fs/promises");
+  const { tmpdir: td3 } = await import("node:os");
+  const { join: join3 } = await import("node:path");
+  const { realpathSync: rp4 } = await import("node:fs");
+  /* 造一个「像用户文档目录那样」的普通目录：几份 .md，没有 project.json */
+  const plain = rp4(await mkt3(join3(td3(), "umbra-plain-")));
+  await wf3(join3(plain, "测试清单.md"), "# 清单\n", "utf8");
+  await wf3(join3(plain, ".gitignore"), "node_modules/\n", "utf8");
+  const before = (await rd3(plain)).sort();
+
+  const o1 = await fetch(`${s.url}__ud/open_project?token=${encodeURIComponent(s.token)}`, {
+    method: "POST", headers: { "content-type": "application/json", origin: s.url.replace(/\/$/, "") },
+    body: JSON.stringify({ dir: plain }),
+  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { designProject?: boolean } }>);
+  ok(o1.ok === true, "普通目录打得开（不是报错，也不是被拦去「新建项目」）");
+  ok(o1.data?.designProject === false, "回执说清它**不是**设计项目", String(o1.data?.designProject));
+  const after = (await rd3(plain)).sort();
+  ok(after.join("|") === before.join("|"), "**打开之后那个目录一个文件都没多**（B3 的全部意义）",
+     after.filter((x) => !before.includes(x)).join(" · ") || `${after.length} 项，和打开前一样`);
+  ok(await rf3(join3(plain, ".gitignore"), "utf8") === "node_modules/\n", "**他的 .gitignore 一个字节都没动**");
+
+  /* 接管之后才部署 —— 对照组。没有它的话上面那条「没多文件」可能只是因为部署整条路都坏了 */
+  const o2 = await fetch(`${s.url}__ud/adopt_project?token=${encodeURIComponent(s.token)}`, {
+    method: "POST", headers: { "content-type": "application/json", origin: s.url.replace(/\/$/, "") },
+    body: JSON.stringify({ dir: plain }),
+  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { deployed?: number | null } }>);
+  const adopted = (await rd3(plain)).sort();
+  ok(o2.ok === true && adopted.includes("project.json"), "**对照组**：接管之后 project.json 才出现", String(o2.ok));
+  ok(adopted.includes("index.dc.html") && adopted.includes("support.js"),
+     "接管之后壳与运行时才部署（不然上一条「没多文件」可能只是整条路坏了）",
+     `${adopted.length - before.length} 个新文件`);
+  ok((o2.data?.deployed ?? 0) > 0, "回执说出部署了几份壳", String(o2.data?.deployed));
+  await rmdirAll(plain, { recursive: true, force: true });
+}
+
 /* ── 收尾：自己造的兜底仓库（M14-6）──
    ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
    而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。

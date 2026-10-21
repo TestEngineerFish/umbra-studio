@@ -3,7 +3,9 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { envelope } from "../envelope.js";
-import { listDrafts } from "../project.js";
+import { X } from "../codes.js";
+import { err, ToolError } from "../envelope.js";
+import { isDesignProject, listDrafts } from "../project.js";
 import { resolveDraft } from "../locate.js";
 import {
   changesSince, diffDrafts, humanTime, listVersions, projectChangesSince,
@@ -155,6 +157,20 @@ defineCap({
   http: { route: "rebuild_index", method: "POST" },
   run: async ({ renderCheck }, c) => {
     const proj = p(c);
+    /* ⚠️⚠️ **这道闸是 B3 的另一半，而它比 `open_project` 那一句更要紧**（2026-10-21）。
+       `open_project` 不再无条件建索引之后，前端 `store/project.ts` 那句
+       「`indexed` 为假就 `rebuild_index`」会**立刻把它补回来** ——
+       于是「打开目录零写入」在界面上根本不成立，而 HTTP 判据全绿
+       （`apitest` 只调 `open_project`，不调这一件）。
+       > **一道闸只守住一条路等于没守**（issue #75 原话）。闸要装在「真正动手的那一层」。
+
+       这件能力**就是**往项目里部署壳与运行时的那条路（MCP 面也走它），
+       所以判准放在这里，三个门面一起守住。 */
+    if (!isDesignProject(proj.dir)) {
+      throw new ToolError(err(X.BAD_INPUT, proj.rel, { kind: "path", name: proj.dir },
+        "这个目录还没接管为设计项目，不建索引",
+        { fix: "建索引会往这个目录里放预览壳与运行时副本（约 780 KB）。要用的话先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`）。只看文件不需要它。" }));
+    }
     const url = c.port ? `http://127.0.0.1:${c.port}/` : null;
     const r = await buildIndex(proj, url, { renderCheck });
     return envelope(r, [], { drafts: r.drafts, ...r.byHealth });

@@ -67,7 +67,7 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, o
   const removeRow = async (dir: string) => {
     const r = await core.post<{ removed: boolean }>("recent_remove", { dir });
     if (!r.ok) { toast("没移除", r.errors?.[0]?.message ?? "", "error"); return; }
-    toast("已从列表移除", "目录和里面的文件一个字节都没动；再「导入目录」就又回来了", "ok");
+    toast("已从列表移除", "目录和里面的文件一个字节都没动；再「打开目录」就又回来了", "ok");
     setProjects((xs) => (xs ?? []).filter((x) => x.dir !== dir));
   };
   const forget = async (dir: string) => {
@@ -125,7 +125,7 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, o
         <span className="text-[11px] text-muted mr-2">{host.kind === "desktop" ? "桌面" : "浏览器"}</span>
         <button className="btn ghost sm" onClick={onMarket} data-ud="home-market" title="插件商城：上架的插件、已装、积分">商城</button>
         <button className="btn ghost sm" onClick={onSettings}>设置</button>
-        <button className="btn sm" onClick={onImport} title="选一个目录：已是项目就直接打开；只是一堆 .dc.html 就接管成新项目">导入目录</button>
+        <button className="btn sm" onClick={onImport} title="选一个目录直接打开 —— 我们不会往里写任何东西">打开目录</button>
         <button className="btn sm primary" onClick={onNewProject}>新建项目</button>
       </header>
       <main className="flex-1 overflow-auto"><div className="max-w-5xl mx-auto px-6 py-8">

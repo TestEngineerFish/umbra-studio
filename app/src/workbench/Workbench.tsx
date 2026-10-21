@@ -36,9 +36,44 @@ import { normalize, openTab, type Tab } from "./tabs";
 /** 没声明 `Provider` 的格式用它兜底。**定义在模块级** —— 理由见用它的地方 */
 const PassThrough = ({ children }: { ctx: ViewContext; children: React.ReactNode }) => <>{children}</>;
 
+/** 「这个目录还没接管为设计项目」那一条横条（M14-4 B3）。
+ *
+ *  ⚠️ **它是 B3 那半边的出路，不是装饰。** B3 让「打开一个目录」**一个字节都不写**，
+ *  代价是：这种目录里 `.dc.html` 的预览壳（S2 / S6 / S8）不在，预览会 404。
+ *  不给出路的话，这就从「少写了点东西」变成「**这种文件打不开**」——
+ *  而后者比前者严重得多。
+ *
+ *  形制照 S1 那条「索引过期」齐边横条（设计侧第三轮），不新造一种。
+ *  ⚠️ 文案要说清**两件事**：为什么它现在什么都没写（这是优点），
+ *  以及点下去会写什么（这是代价）。只说一半的横条会让人要么不敢点、要么点完后悔。 */
+function AdoptBar({ project, core, onAdopted }: { project: ProjectHandle; core: Core; onAdopted: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  if (project.designProject !== false || done) return null;
+  const adopt = async () => {
+    setBusy(true);
+    const r = await core.post<{ deployed: number | null }>("adopt_project", { dir: project.dir });
+    setBusy(false);
+    if (!r.ok) { toast("接管失败", r.errors?.[0]?.message ?? "", "error"); return; }
+    setDone(true); onAdopted();
+    toast("已接管为设计项目", `部署了预览壳与运行时副本，现在 .dc.html 能预览了`, "ok");
+  };
+  return (
+    <div data-ud="adopt-bar" className="shrink-0 h-8 px-3 flex items-center gap-2 text-[11px] border-b border-border bg-panel2">
+      <span className="text-muted truncate flex-1 min-w-0">
+        这是一个<b className="text-text2">普通目录</b> —— 我们<b className="text-text2">没往里写任何东西</b>。
+        要预览 <code className="font-mono">.dc.html</code> 设计稿的话，得先放几样工具文件进来。
+      </span>
+      <button className="btn sm" disabled={busy} data-ud="adopt-btn" onClick={() => void adopt()}>
+        {busy ? "正在接管…" : "接管为设计项目"}
+      </button>
+    </div>
+  );
+}
+
 export function Workbench({ project, host, layout, setLayout, onHome, onSettings }: { project: ProjectHandle; host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void }) {
   const core = useMemo(() => new Core(project.url, project.token, project.ws), [project]);
-  const store = useProject(core, project.dir);
+  const store = useProject(core, project.dir, project.designProject);
   /** 页签三态（M8-28）。存量是 `string[]`，`normalize` 认它 */
   const [tabs, setTabsRaw] = useState<Tab[]>(() => normalize(mem.get(`us.tabs.${project.dir}`, [])));
   const setTabs = useCallback((next: Tab[]) => { setTabsRaw(next); mem.set(`us.tabs.${project.dir}`, next); }, [project.dir]);
@@ -614,6 +649,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               node: (
                 <Wrap ctx={ctx} key={kind}>
                 <div className="flex-1 min-w-0 flex flex-col">
+            <AdoptBar project={project} core={core} onAdopted={() => setLocalTick((t) => t + 1)} />
             <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file}
               /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
                  图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。

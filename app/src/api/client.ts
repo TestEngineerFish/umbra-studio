@@ -2,7 +2,14 @@
  *  启动数据由核心在托管 /__app/ 时注进 window.__UD_APP（server/src/serve.ts）。 */
 /** 托管本页的核心：属于某个项目（name/dir 有值）或是桌面壳的 hub（hub=true，只有全局路由） */
 export interface Boot { url: string; token: string; name: string | null; title: string | null; dir: string | null; ws: string; front: "app" | "legacy"; hub?: boolean }
-export interface ProjectHandle { url: string; token: string; ws: string; name: string; title: string; dir: string }
+export interface ProjectHandle {
+  url: string; token: string; ws: string; name: string; title: string; dir: string;
+  /** 这个目录是**用户显式接管过的设计项目**吗（M14-4 B3）。
+   *  `false` = 普通目录，我们一个字节都没往里写，`.dc.html` 的预览壳也不在。
+   *  `undefined` = 这条路没报（老的调用点），**当「不知道」而不是当 false** ——
+   *  当 false 会让所有现成项目都弹那条接管横条。 */
+  designProject?: boolean;
+}
 /** 信封里的一条诊断：`fix` 是给人看的改法，比 message 更可操作（doc/00 §二） */
 export interface Err { code?: string; message: string; fix?: string; level?: string }
 /** `stats`：能力自带的附加结果（如账号登录失败的分档 `{fail, wait}`） */

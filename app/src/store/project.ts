@@ -5,7 +5,7 @@ import { toast } from "../ui/Toast";
 
 /** 一个项目在前端的状态：稿件列表 / 当前稿 / 诊断 / 评论 / 变更 / 源码，以及拉取它们的函数。
  *  和旧前端 fetchDrafts / fetchDiagnostics / fetchComments / fetchChanges 同一份 API 用法。 */
-export function useProject(core: Core, dir: string) {
+export function useProject(core: Core, dir: string, designProject?: boolean) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [indexed, setIndexed] = useState(true);
   const [selected, setSelectedRaw] = useState<string | null>(null);
@@ -24,7 +24,14 @@ export function useProject(core: Core, dir: string) {
     if (!r.ok || !r.data) { toast("获取稿件列表失败", r.errors?.[0]?.message, "error"); return; }
     if (r.data.indexed === false && !autoIndexed.current) {   // 从没建过索引：壳、桥、健康读数都靠它，先建一次（只试一次）
       autoIndexed.current = true;
-      try { await core.post("rebuild_index", {}); return fetchDrafts(); } catch { /* 建不了就用文件名 */ }
+      /* ⚠️ **这一句 2026-10-21 加了条件**（M14-4 B3）：它原来是「没索引就自动建一个」，
+         而建索引=往用户目录里部署 780 KB。于是「打开目录零写入」在服务端做到了，
+         界面一挂载就**又给补回来**。
+         现在只有**已经接管过的设计项目**才自动重建；普通目录走工作台顶部那条横条
+         （服务端那边 `rebuild_index` 也装了同一道闸，两边都守）。 */
+      if (designProject !== false) {
+        try { await core.post("rebuild_index", {}); return fetchDrafts(); } catch { /* 建不了就用文件名 */ }
+      }
     }
     setIndexed(r.data.indexed !== false);
     setDrafts((prev) => {

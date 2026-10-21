@@ -63,26 +63,32 @@ export default function App() {
   const open = useCallback(async (dir: string) => {
     if (!hub) return;
     if (project && dir === project.dir) { setPage("work"); return; }
-    const r = await hub.post<ProjectHandle & { app: string; identity?: string }>("open_project", { dir });
+    const r = await hub.post<ProjectHandle & { app: string; identity?: string; designProject?: boolean }>("open_project", { dir });
     if (!r.ok || !r.data) { toast("打开项目失败", r.errors?.[0]?.message ?? "", "error"); return; }
     /* ⚠️ **这个位置换了一个目录**（M14-2，Q68）：同名重建会让它静默继承旧的快照 / 评论 / 回收站，
        而静默继承**不会报错** —— 用户只会觉得「这软件的历史是乱的」。所以这一句必须说。
        只在 `replaced`（指纹齐、但对不上）时说；老记录没指纹回 `unknown`，**一个字都不说**。 */
     if (r.data.identity === "replaced")
       toast("这个位置换了一个目录", "和上次打开的不是同一个（新建的同名目录也算）。它的历史从这次重新算，旧的那份还留着。", "error");
-    setProject({ url: r.data.url, token: r.data.token, ws: r.data.ws, name: r.data.name, title: r.data.title, dir: r.data.dir });
+    setProject({ url: r.data.url, token: r.data.token, ws: r.data.ws, name: r.data.name, title: r.data.title, dir: r.data.dir, designProject: r.data.designProject });
     setPage("work"); bump((v) => v + 1);
   }, [hub, project]);
   /** 导入目录：已是项目直接开；只是一堆稿 / 空目录进新建面板接管 */
   const importDir = useCallback(async () => {
     if (!host || !hub) return;
-    const dir = await host.pickDirectory({ title: "导入目录：已是项目就直接打开，否则接管为新项目" });
+    const dir = await host.pickDirectory({ title: "打开目录" });
     if (!dir) { if (!host.capabilities().pickDirectory.ok) setSheet({ kind: "newProject" }); return; }
-    const r = await hub.get<{ isProject: boolean }>("inspect_dir?dir=" + encodeURIComponent(dir));
-    if (r.ok && r.data?.isProject) void open(dir); else setSheet({ kind: "newProject", dir });
+    /* 同上：**打开目录就是打开**，不再按「是不是项目」分流到新建面板。
+       首页那颗「新建项目」还在，那是用户**明说要建一个新项目**的入口。 */
+    void open(dir);
   }, [host, hub, open]);
   useEffect(() => host?.onEvent?.((e) => {
-    if (e.type === "open-dir") void (async () => { const r = await hub!.get<{ isProject: boolean }>("inspect_dir?dir=" + encodeURIComponent(e.dir)); if (r.ok && r.data?.isProject) void open(e.dir); else setSheet({ kind: "newProject", dir: e.dir }); })();
+    /* ⚠️ **直接打开，不再拦去「新建项目」**（M14-4 B3，2026-10-21）。
+       原来：不是项目 → 弹新建项目面板 → 用户照做 → 我们往他的目录里写 780 KB。
+       sam 想做的只是「用 Studio 看一份 .md」，而我们让他把自己的文档目录
+       变成了一个设计项目。**「打开」和「接管」是两件事，原来被做成了一件。**
+       现在打开就是打开（一个字节不写），要预览设计稿时工作台里那条横条再问。 */
+    if (e.type === "open-dir") void open(e.dir);
     if (e.type === "go-home") setPage("home");
     if (e.type === "dirty-restart") toast("上次没有正常退出", "如果当时有没落盘的改动，请在稿的版本历史里核对一下", "error");
   }), [host, hub, open]);

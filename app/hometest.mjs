@@ -137,6 +137,50 @@ await menu.getByText("从列表移除").click();
 await pg.waitForTimeout(600);
 ok((await listRecentProjects()).recents.length === 0, "失效的那条也移除掉了");
 
+/* ── ⑥ 打开一个**普通目录**：零写入 + 工作台里有「接管」那条出路（M14-4 B3）──
+   ⚠️ 这一节的意义在**第二条**：B3 让打开目录一个字节都不写，
+   代价是那种目录里 `.dc.html` 的预览壳不在。**不给出路的话，
+   这就从「少写了点东西」变成「这种文件打不开」** —— 所以横条本身要有判据。 */
+console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
+{
+  const plain = await realpath(await mkdtemp(join(tmpdir(), "umbra-home-plain-")));
+  await writeFile(join(plain, "一份文档.md"), "# 文档\n");
+  /* ⚠️ **样本里必须有一份 `.dc.html`**（2026-10-22 反向验证逼出来的）：
+     第一版只放了一份 `.md`，于是 `drafts` 回 `indexed: true`（没有稿要索引），
+     前端那句「没索引就自动建一个」**压根没跑** —— 两道闸全拆掉它也绿。
+     > **判据在没有样本的时候，测的是「今天恰好没事」**（今天第三次）。
+     放一份稿进去，「自动建索引」那条路才真的会被走到。 */
+  await writeFile(join(plain, "别人发来的.dc.html"),
+    '<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><div>一份稿</div></x-dc></body></html>\n');
+  const before = (await import("node:fs")).readdirSync(plain).sort();
+  /* ⚠️ 行上的名字来自 `buildProject`（没有 project.json 就用**目录名**兜底），
+     **不是** `touchProject` 传的那个显示名 —— 第一版按后者找行，当场超时。 */
+  const plainName = plain.split("/").pop();
+  await touchProject(plain, plainName, plainName);
+  await pg.reload({ waitUntil: "domcontentloaded" });
+  await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().waitFor({ timeout: 15000 });
+  await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().click();
+  const bar = pg.locator('[data-ud="adopt-bar"]');
+  await bar.waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+  ok(await bar.isVisible(), "**工作台里有「这是普通目录」那条横条**（接管的唯一出路）");
+  /* ⚠️ **要等一会儿再数**（反向验证逼出来的）：自动建索引是异步的，
+     横条一出现就数的话，它还没落盘 —— **两道闸全拆掉这一条也绿**。
+     「打开之后没多文件」要说的是「过了一会儿也没多」。 */
+  await pg.waitForTimeout(2500);
+  const after = (await import("node:fs")).readdirSync(plain).sort();
+  const extra = after.filter((x) => !before.includes(x));
+  ok(extra.length === 0, "**打开之后那个目录一个文件都没多**",
+    extra.join(" · ") || `${after.length} 项，和打开前一样`);
+  /* 对照组：点了接管才写 —— 没有它的话上一条可能只是因为部署整条路都坏了 */
+  await pg.locator('[data-ud="adopt-btn"]').click();
+  await pg.waitForTimeout(2500);
+  const adopted = (await import("node:fs")).readdirSync(plain).sort();
+  ok(adopted.includes("project.json") && adopted.includes("index.dc.html"),
+    "**对照组**：点了「接管为设计项目」才把壳写进去", `${adopted.length - before.length} 个新文件`);
+  ok(!(await bar.isVisible()), "接管完那条横条自己退场（不留一条点了没反应的提示）");
+  await rm(plain, { recursive: true, force: true });
+}
+
 /* ── 收尾：真实「最近打开」一个字节都没碰 ── */
 console.log("\n收尾");
 const realAfter = existsSync(realWorkspace) ? readFileSync(realWorkspace, "utf8") : null;

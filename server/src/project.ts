@@ -31,6 +31,25 @@ export const RUNTIME_DIR = join(TOOL_ROOT, "runtime");
  *     把用户的 key 写进 .app 等于写完就自毁；② 装在 `/Applications` 或 Windows 的 `Program Files`
  *     还要再叠一层写权限问题。壳在 `app.isPackaged` 时把这个环境变量指到 `userData`。
  */
+/** 这个目录是**用户显式接管过的设计项目**吗（M14-4 B3，`doc/24` §8.4 的分档）。
+ *
+ *  ### 为什么要分这一档
+ *  `.dc.html` 里写的是 `<script src="./support.js">` —— **相对引用**，而
+ *  `support.js` / `react*.min.js` 就躺在那份稿旁边。这不是实现偷懒，是产品定位：
+ *  **「一份文件同时是设计稿、规范出处和可运行原型」**，双击它要能自己跑起来。
+ *  所以「运行时副本 + 壳页面」这一类（`doc/24` 的 ⓒ 档）**必须落在项目里**。
+ *
+ *  但它和「打开任意目录看一眼」完全不重叠：看一份 `.md`、一张图、一个文件夹，
+ *  **一个字节的 ⓒ 都不需要**。而 2026-10-21 sam 用「新建项目」打开 `Geek/doc`，
+ *  我们往他的文档目录部署了 780 KB 的设计工具脚手架 —— 他要的只是看一份 `.md`。
+ *
+ *  ### 判准：`project.json` 在不在
+ *  它是**用户显式接管**留下的那一个标记（`create_project` / `adopt_project` 写它），
+ *  而**打开一个目录不写它**。
+ *  ⚠️ 别拿「`.dc.html` 多不多」之类的启发式判 —— 那会让「我只是想看一眼别人发来的稿」
+ *  变成「我们在他的下载文件夹里铺了一摊」。**显式胜过聪明。** */
+export const isDesignProject = (dir: string): boolean => existsSync(join(resolve(dir), "project.json"));
+
 export const STATE_ROOT = process.env.UMBRASTUDIO_STATE_DIR
   ? resolve(process.env.UMBRASTUDIO_STATE_DIR)
   : TOOL_ROOT;
