@@ -844,7 +844,9 @@ export async function trashFile(p: Project, rel: string): Promise<{ path: string
   await mkdir(dirname(to), { recursive: true });
   await writeFile(to, await readFile(abs));
   await rm(abs);
-  return { path: rel, trashPath: relative(p.dir, to).split(sep).join("/") };
+  /* ⚠️ 相对**回收站根**，不相对项目根（M14-4 B1；理由写在 `refs.ts` 的同一处）。
+     两条删除路径的回收站布局必须同一套 —— `listTrash` 只按一种读。 */
+  return { path: rel, trashPath: relative(assetDir(p.dir, "trash"), to).split(sep).join("/") };
 }
 
 export interface MoveFileResult {

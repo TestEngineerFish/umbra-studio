@@ -77,8 +77,14 @@ for (const n of wasHttpOnly) {
 
   const dir = await mkdtemp(join(tmpdir(), "umbrastudio-captest-"));
   await writeFile(join(dir, "project.json"), JSON.stringify({ name: "captest", title: "能力回归" }));
-  await mkdir(join(dir, ".umbrastudio", "templates"), { recursive: true });
-  await writeFile(join(dir, ".umbrastudio", "templates", "样板.dc.html"),
+  /* ⚠️ 模板的落点**从 `assetDir` 取，不写死** —— M14-4 B1 把它搬进了
+     `records/<ID>/templates/`，写死路径的夹具会让这一条红在「找不到模板」上，
+     而它要测的是「选模板建出来的不是空白稿」。
+     **夹具跟着实现走是对的**：这里测的不是「模板放在哪」。 */
+  const { assetDir } = await import("./statedirs.js");
+  const tplDir = assetDir(dir, "templates");
+  await mkdir(tplDir, { recursive: true });
+  await writeFile(join(tplDir, "样板.dc.html"),
     '<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><div data-tpl-mark="来自模板">标记</div></x-dc></body></html>\n');
   const proj = await buildProject(dir);
   /* **两个门面各跑一次**：同一份声明，via 不同，结果必须一样 —— 
@@ -390,9 +396,9 @@ for (const n of wasHttpOnly) {
    仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
    **「有的测装了收尾」不等于「残留不再增长」。** */
 {
-  const { dropFallbackReposUnder, deadFallbackReposUnder } = await import("./purge.js");
+  const { dropLeftoversUnder, deadLeftoversUnder } = await import("./purge.js");
   const { tmpdir: td0 } = await import("node:os");
-  const r = await dropFallbackReposUnder(td0(), { onlyDead: true });
+  const r = await dropLeftoversUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
   /* ⚠️ **清完之后再数一次 —— 这一条测的是仪器本身。**（2026-10-21 新加）
      上面那句「清掉 N 个」**认不出来的那些既不删也不报**，于是
@@ -419,14 +425,39 @@ for (const n of wasHttpOnly) {
     const sampleGd = gitDirOfProject(sample);
     ok(ex2(sampleGd), "样本自己先成立：临时项目真的有了一个兜底仓库", sampleGd.split("/").pop() ?? "");
     await rmt(sample, { recursive: true, force: true });   // 目录没了 = 这个仓库从此是死的
-    const r2 = await dropFallbackReposUnder(td0(), { onlyDead: true });
+    const r2 = await dropLeftoversUnder(td0(), { onlyDead: true });
     ok(!ex2(sampleGd), "**清理认得出「解过符号链接的临时目录」里的死仓库**（这一条测的是仪器本身）",
        ex2(sampleGd) ? "✗ 还在 —— 清理按一种路径写法比，而仓库自报的是另一种" : `清掉 ${r2.removed.length} 个`);
   }
 
-  const stillDead = await deadFallbackReposUnder(td0());
-  ok(stillDead.length === 0, "**收尾之后临时目录下一个死仓库都不剩**",
+  /* ⚠️ **记录目录那一半也要自带样本**（M14-4 B1，2026-10-21）。
+     B1 之后残留多了一类：`STATE_ROOT/.umbrastudio/records/<ID>/`。
+     和仓库那一半同一个做法 —— 自己造一个再看清理认不认得，
+     否则这一条在「这一轮恰好没造出记录」时测的还是「今天恰好没事」。 */
+  {
+    const { mkdtemp: mkt2, rm: rmt2, writeFile: wf3, mkdir: mk3 } = await import("node:fs/promises");
+    const { existsSync: ex3, realpathSync: rp3 } = await import("node:fs");
+    const { recordDirOf } = await import("./records.js");
+    const sample2 = await mkt2(join(rp3(td0()), "us-recsample-"));
+    await wf3(join(sample2, "project.json"), JSON.stringify({ name: "recsample" }));
+    const recDir = recordDirOf(sample2);
+    await mk3(join(recDir, "snapshots"), { recursive: true });   // 真写一点东西进去
+    ok(ex3(recDir), "样本自己先成立：临时项目真的有了一个记录目录", recDir.split("/").pop() ?? "");
+    await rmt2(sample2, { recursive: true, force: true });
+    const r3 = await dropLeftoversUnder(td0(), { onlyDead: true });
+    ok(!ex3(recDir), "**清理认得出临时目录里的死记录**（B1 新增的那一类残留）",
+       ex3(recDir) ? "✗ 还在" : `清掉记录 ${r3.records.length} 条`);
+  }
+
+  const stillDead = await deadLeftoversUnder(td0());
+  ok(stillDead.length === 0, "**收尾之后临时目录下一个死仓库 / 死记录都不剩**",
      stillDead.length ? stillDead.join(" · ") : "0 个");
+  /* ⚠️ 索引里没有、而盘上有的记录目录 —— **只可能是「写索引失败了」**，
+     而那比「多占点地方」严重得多：那条记录谁也打不开，用户的历史够不着。 */
+  const { unindexedRecordDirs } = await import("./records.js");
+  const orphanDirs = unindexedRecordDirs();
+  ok(orphanDirs.length === 0, "**没有「索引里没有而盘上有」的记录目录**（有的话说明写索引那一步失败过）",
+     orphanDirs.length ? orphanDirs.join(" · ") : "0 个");
   /* 和开头那次比。**这一条不依赖任何匹配逻辑** —— 多出来就是红，不管为什么。 */
   const { readdir: rd2 } = await import("node:fs/promises");
   let reposAfter: string[] = [];

@@ -1,16 +1,17 @@
 /** 钉在节点上的评论（doc/12 M6-2，决策 doc/11 Q14）。
  *
- * 存 <项目>/.umbrastudio/comments.json —— 和会话一样属于项目，不进稿。
+ * 存 `STATE_ROOT/.umbrastudio/records/<ID>/comments.json`（M14-4 B1 之前在
+ * `<项目>/.umbrastudio/comments.json`）—— 和会话一样属于项目，不进稿，**也不进用户的目录**。
  * 一条评论 = 稿 + 节点地址 + 一句话；可标「已处理」；会话面板能把它一键发给 AI（走方式 ②）。
  * 节点地址会随内容变（doc/09 §二）：改过的节点旧地址找不到时，评论仍保留，只是钉子画不出来 ——
  * 界面上标「节点已变」，不静默丢。
  */
 import { existsSync } from "node:fs";
 import { readFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { writeAtomic } from "./normalize.js";
-import { commentsFile, udDirOf } from "./statedirs.js";
+import { commentsFile } from "./statedirs.js";
 
 export interface Comment {
   id: string;
@@ -48,7 +49,10 @@ export async function listComments(projectDir: string, draft?: string): Promise<
 }
 
 async function save(projectDir: string, all: Comment[]): Promise<void> {
-  await mkdir(udDirOf(projectDir), { recursive: true });
+  /* ⚠️ 建的是**评论文件自己的父目录**，不是项目里的 `.umbrastudio/`（B1）。
+     原来这两个恰好是同一个，搬走之后就不是了 —— 照旧建那个的话，
+     会在用户目录里凭空造一个空的 `.umbrastudio/`，而评论写在别处。 */
+  await mkdir(dirname(file(projectDir)), { recursive: true });
   await writeAtomic(file(projectDir), JSON.stringify(all, null, 1) + "\n");
 }
 

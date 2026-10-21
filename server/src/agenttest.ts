@@ -398,8 +398,8 @@ async function cleanup() {
      `projects/`（**用户的项目**）。`onlyDead` 确实会放过还活着的目录，
      但**最小范围不该靠第二道闸兜** —— 第一道就该只圈住自己造的东西。 */
   try {
-    const { dropFallbackReposUnder } = await import("./purge.js");
-    const r = await dropFallbackReposUnder(TEST_PROJECT, { onlyDead: true });
+    const { dropLeftoversUnder } = await import("./purge.js");
+    const r = await dropLeftoversUnder(TEST_PROJECT, { onlyDead: true });
     if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
   } catch { /* 清理失败不该让一轮通过的回归报失败 */ }
 }

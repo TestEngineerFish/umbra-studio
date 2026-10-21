@@ -5,10 +5,24 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { isInside } from "./pathguard.js";
 import { assetDir } from "./statedirs.js";
+import { adoptRecordDir, existingRecordIdFor, recordsRoot } from "./records.js";
+
+/** 包里装这个项目**旁数据**的那一层的名字（M14-4 B1）。
+ *
+ *  ⚠️ **搬迁和导出必须同一次做完**（`doc/24` §19.1）：B1 把快照 / 评论 / 回收站 /
+ *  模板 / 草稿 / 会话搬进 `STATE_ROOT/.umbrastudio/records/<ID>/` 之后，
+ *  `tar -C projectDir .` **一版快照都打不到**，而回执照样报 `versionCount: N` ——
+ *  **假回执，而且要到「在另一台机器上导入、发现历史全没了」那一刻才暴露**。
+ *  （issue #35 / #111 同族：假回执比没有回执糟。）
+ *
+ *  所以包里多一层。名字以 `.umbrastudio-` 开头、不是项目里会有的东西；
+ *  **老包里没有这一层，照样导得进来**（那时历史本来就在项目目录里）。 */
+const RECORD_IN_TAR = ".umbrastudio-record";
 
 export interface ExportResult {
   exportPath: string;
@@ -59,10 +73,26 @@ export async function exportProject(
     throw new Error(`"${dirname(outputPath)}" 这个目录不存在`);
   }
 
-  // 用系统 tar 打包
-  await new Promise<void>((res, rej) => {
-    execFile("tar", ["-czf", out, "-C", projectDir, "."], (err) => (err ? rej(err) : res()));
-  });
+  /* 旁数据在我们自己的目录里（B1），要**一起打进包**，否则导出的是一个没有历史的壳。
+     ⚠️ 这里**只查不建**（`existingRecordIdFor`）—— 导出一个从没写过东西的项目，
+     不该顺手给它造一条记录。 */
+  const recId = existingRecordIdFor(projectDir);
+  const recDir = recId ? join(recordsRoot(), recId) : null;
+  const hasRecord = !!recDir && existsSync(recDir);
+  /* ⚠️ 为什么要先拷一份而不是直接 `-C <records> <id>`：包里那一层得叫 `RECORD_IN_TAR`，
+     而 `<id>` 是随机的 —— 导入方要认得出它。`tar` 的改名选项 GNU 和 BSD 不是同一个
+     （`--transform` / `-s`），**拷一份是两边都成立的那条路**。记录目录很小。 */
+  const stage = hasRecord ? await mkdtemp(join(tmpdir(), "umbra-export-")) : null;
+  try {
+    if (stage && recDir) await cp(recDir, join(stage, RECORD_IN_TAR), { recursive: true });
+    const args = ["-czf", out, "-C", projectDir, "."];
+    if (stage) args.push("-C", stage, RECORD_IN_TAR);
+    await new Promise<void>((res, rej) => {
+      execFile("tar", args, (err) => (err ? rej(err) : res()));
+    });
+  } finally {
+    if (stage) await rm(stage, { recursive: true, force: true });
+  }
 
   const sizeStat = await stat(out);
   const projectName = basename(projectDir);
@@ -76,7 +106,13 @@ export async function exportProject(
   if (existsSync(snapRoot)) {
     for (const sub of await readdir(snapRoot, { withFileTypes: true })) {
       if (!sub.isDirectory()) continue;
-      versionCount += (await readdir(join(snapRoot, sub.name))).filter((f) => f.endsWith(".json")).length;
+      /* ⚠️ **只数 `v<N>.json`**（2026-10-21 改，判据当场抓到）：
+         每个快照目录里还有一份 `meta.json`，原来 `.endsWith(".json")` 把它也算成一版 ——
+         于是 3 版的项目回执报「6 版」，**整整翻倍**。
+         这条和 B1 无关，是导出回执**本来就在说谎**的另一半：
+         判据第一次跑就是「包里 3 版 · 回执说 6 版」。
+         > 数一个数的时候，先问「我数的这些，是不是都是我要数的那种东西」。 */
+      versionCount += (await readdir(join(snapRoot, sub.name))).filter((f) => /^v\d+\.json$/.test(f)).length;
     }
   }
 
@@ -93,7 +129,7 @@ export async function exportProject(
 export async function importProject(
   tarPath: string,
   targetDir: string,
-): Promise<{ imported: boolean; projectName: string; draftCount: number }> {
+): Promise<{ imported: boolean; projectName: string; draftCount: number; restoredRecord: boolean }> {
   /* ⚠️ `tar -xzf -` 是**读 stdin** —— 以 `-` 开头的路径会被当成选项
      （和 #86 的 `--output=` 同一族：**任何原样拼进命令行的外部字符串**）。 */
   if (tarPath.startsWith("-")) {
@@ -123,6 +159,15 @@ export async function importProject(
     throw e;
   }
 
+  /* 包里那一层旁数据收编成**这个目录**的记录（B1）。
+     ⚠️ 收编之后它就**不在项目目录里**了（`adoptRecordDir` 是 rename 不是 copy）——
+     不搬走的话，导入会在用户的目录里留下一个 `.umbrastudio-record/`，
+     那正是 Q62 要消除的那件事。
+     ⚠️ 老包里没有这一层 → `restoredRecord` 为 false，照实回。 */
+  const fromTar = join(target, RECORD_IN_TAR);
+  let restoredRecord = false;
+  if (existsSync(fromTar)) { adoptRecordDir(target, fromTar); restoredRecord = true; }
+
   const projectName = basename(target);
   const drafts = (await readdir(target)).filter((f) => f.endsWith(".dc.html"));
 
@@ -130,5 +175,6 @@ export async function importProject(
     imported: true,
     projectName,
     draftCount: drafts.length,
+    restoredRecord,
   };
 }

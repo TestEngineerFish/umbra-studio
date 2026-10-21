@@ -244,7 +244,17 @@ class Component extends DCLogic {
 }
 
 const tr = await trashFile(p, "conf.json");
-ok("删除是进回收站，不是真删", tr.trashPath.includes(".umbrastudio/trash/"));
+/* ⚠️ 原来钉的是 `.umbrastudio/trash/` 这个**字面路径**，而 M14-4 B1 把回收站搬去了
+   `STATE_ROOT/.umbrastudio/records/<ID>/trash/` —— 行为完全没变而判据红了。
+   钉的东西换成这一条闸的**三件实事**：源文件不在了 · 被删的那一份**真的还在**（拿得回来）·
+   而且它**不在用户的项目目录里**（B1 的全部意义）。
+   **路径是实现细节，「删了还拿得回来」才是这条判据声称的那件事。** */
+const { assetDir: adTrash } = await import("./statedirs.js");
+const trashAbs = join(adTrash(DIR, "trash"), tr.trashPath);
+ok("删除是进回收站，不是真删",
+  !existsSync(join(DIR, "conf.json")) && existsSync(trashAbs), { trashPath: tr.trashPath, 在不在: existsSync(trashAbs) });
+ok("**回收站不在用户的项目目录里了**（B1）", !trashAbs.startsWith(DIR + "/"), trashAbs);
+ok("`trashPath` 相对回收站根，**不含 `..`**（原来会算出 `../../../..` 那种）", !tr.trashPath.includes(".."), tr.trashPath);
 
 /* 防穿越的做法是把 `.` `..` 段整个吃掉，不是报错 —— 所以判据是「写出来的东西落在项目里」，
    不是「抛了异常」。第一版断言写成后者，实现正确却红了。 */
@@ -742,8 +752,11 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
 
   /* 坏掉的草稿要自己清掉并说一句 —— 留着的话每次打开都弹一条恢复不了的提示 */
   const { writeFile: wf2, mkdir: mk2 } = await import("node:fs/promises");
-  await mk2(join(DIR, ".umbrastudio", "staged"), { recursive: true });
-  await wf2(join(DIR, ".umbrastudio", "staged", `${F}.json`), "{坏的", "utf8");
+  /* ⚠️ 落点从 `assetDir` 取，不写死（B1 把草稿搬进 `records/<ID>/staged/`）——
+     这一条测的是「坏掉的草稿会自己清掉」，不是「草稿放在哪」。 */
+  const { assetDir: ad2 } = await import("./statedirs.js");
+  await mk2(ad2(DIR, "staged"), { recursive: true });
+  await wf2(join(ad2(DIR, "staged"), `${F}.json`), "{坏的", "utf8");
   const bad2 = await getStagedDraft(proj, F);
   ok("**坏掉的草稿自己清掉并说一句**（不留一条永远消不掉的提示）",
      bad2.has === false && !!bad2.note, bad2.note ?? "");
@@ -882,8 +895,11 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      手工把 A 的草稿文件搬到 B 的名字下，模拟旧数据撞号。 */
   await stageDraft(proj2, A, "A 的草稿第二次\n");
   const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
-  const aFile = join(DIR, ".umbrastudio", "staged", `${pathKey(A)}.json`);
-  const bFile = join(DIR, ".umbrastudio", "staged", `${pathKey(B)}.json`);
+  /* ⚠️ 落点从 `assetDir` 取（B1 把草稿搬进了 `records/<ID>/staged/`）——
+     这一条测的是「草稿里记的路径和问的不一样就不给」，不是「草稿放在哪」。 */
+  const { assetDir: adStaged } = await import("./statedirs.js");
+  const aFile = join(adStaged(DIR, "staged"), `${pathKey(A)}.json`);
+  const bFile = join(adStaged(DIR, "staged"), `${pathKey(B)}.json`);
   await wf(bFile, await rf(aFile, "utf8"), "utf8");
   const spoofed = await getStagedDraft(proj2, B);
   ok("**草稿里记的路径和问的不一样就不给**（这一道和编码无关，是最后一层）",
@@ -1386,13 +1402,13 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
    ⚠️ 用户真实项目的仓库**碰不到** —— 它们不在临时目录下。 */
 await rm(DIR, { recursive: true, force: true });
 {
-  const { dropFallbackReposUnder } = await import("./purge.js");
+  const { dropLeftoversUnder } = await import("./purge.js");
   const { tmpdir: td9 } = await import("node:os");
-  const r = await dropFallbackReposUnder(td9(), { onlyDead: true });
+  const r = await dropLeftoversUnder(td9(), { onlyDead: true });
   /* 收尾自检：清完之后**一个死的都不该剩**。
      ⚠️ 这一条不是「清掉了 N 个」—— 那种读数在「本来就没有」时也成立（§166 同族）。
      `unidentifiable` 是 2026-10-20 之前建的那一批，**我们认不出来**，照实带在读数里。 */
-  const after = await dropFallbackReposUnder(td9(), { onlyDead: true });
+  const after = await dropLeftoversUnder(td9(), { onlyDead: true });
   ok(`（收尾）自己造的兜底仓库清干净了`, after.removed.length === 0,
      { 这一轮清掉: r.removed.length, 腾出KB: Math.round(r.freedBytes / 1024), 还活着的临时项目: r.keptAlive, 认不出的老仓库: r.unidentifiable });
 }

@@ -20,6 +20,7 @@
  *  以及 B 段「哪些搬进 `records/` 哪些搬进 `cache/`」都从这里读。
  */
 import { join, sep } from "node:path";
+import { recordDirOf } from "./records.js";
 
 /** 项目 / 工具自己的配置目录名（M7-1 改名，`11` Q28）。
  *  ⚠️ **定义在这里而不是 `project.ts`**：`project.ts` 自己要用下面的 `assetDir`（模板那一处），
@@ -41,14 +42,26 @@ export type CacheKind = typeof CACHE_KINDS[number];
  *  别处一律用下面带 kind 的那几个，否则 B 段又变成「十几处各拼一次」。 */
 export const udDirOf = (projectDir: string): string => join(projectDir, UD_DIRNAME);
 
-/** ⓐ 资产目录。 */
-export const assetDir = (projectDir: string, what: AssetKind): string => join(projectDir, UD_DIRNAME, what);
+/** ⓐ 资产目录。**B1 之后它不在用户的目录里了** —— `STATE_ROOT/.umbrastudio/records/<随机 ID>/<kind>`。
+ *
+ *  ⚠️ 这一行就是 A 段存在的理由：A 段把十来处裸拼收口到这里（**零行为变化**），
+ *  B1 只改这一行，十来处跟着搬。原来那种「十几处各改一遍」的搬迁，
+ *  **漏一处就是「一类历史静默读不到」**，而「读不到」和「本来就没有」在界面上长得一模一样。
+ *
+ *  ⚠️ 仍然是**同步**的，所以 20 多个调用点一个字都不用改（`records.ts` 文件头解释了为什么）。 */
+export const assetDir = (projectDir: string, what: AssetKind): string => join(recordDirOf(projectDir), what);
+
+/** B1 之前资产在哪。**只给「看看旧的那份还在不在」用**（旧目录不迁也不删，Q72）。 */
+export const legacyAssetDir = (projectDir: string, what: AssetKind): string => join(projectDir, UD_DIRNAME, what);
 
 /** ⓑ 缓存目录。 */
 export const cacheDir = (projectDir: string, what: CacheKind): string => join(projectDir, UD_DIRNAME, what);
 
-/** 评论是**一个文件**不是目录（所以单列，不塞进 `AssetKind` 里假装它是目录）。 */
-export const commentsFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "comments.json");
+/** 评论是**一个文件**不是目录（所以单列，不塞进 `AssetKind` 里假装它是目录）。
+ *  它也是 ⓐ 资产，B1 跟着搬进记录目录。 */
+export const commentsFile = (projectDir: string): string => join(recordDirOf(projectDir), "comments.json");
+/** B1 之前评论在哪。只给「看看旧的那份还在不在」用。 */
+export const legacyCommentsFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "comments.json");
 
 /** 索引数据（ⓑ）。 */
 export const indexDataFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "index-data.json");

@@ -133,9 +133,9 @@ await rm(DIR, { recursive: true, force: true });
    仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
    **「有的测装了收尾」不等于「残留不再增长」。** */
 {
-  const { dropFallbackReposUnder } = await import("./purge.js");
+  const { dropLeftoversUnder } = await import("./purge.js");
   const { tmpdir: td0 } = await import("node:os");
-  const r = await dropFallbackReposUnder(td0(), { onlyDead: true });
+  const r = await dropLeftoversUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
 }
 console.log(`\n${bad === 0 ? "✓" : "✗"} 跨版本净变更 ${pass}/${pass + bad}\n`);

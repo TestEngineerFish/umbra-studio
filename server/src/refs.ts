@@ -518,7 +518,15 @@ export async function deleteDraft(
   await mkdir(dirname(trashPath), { recursive: true });
   await rename(abs, trashPath);
 
-  const trashRel = trashPath.slice(p.dir.length + 1).split(sep).join("/");
+  /* ⚠️ **`trashPath` 现在相对「回收站根」，不相对项目根**（M14-4 B1）。
+     B1 之后回收站住在 `STATE_ROOT/.umbrastudio/records/<ID>/trash/`，
+     原来那句 `abs.slice(p.dir.length + 1)` 会算出
+     `../../../../Users/…/records/…` 这种**从项目里往外数**的路径 ——
+     既没法看，`restoreDraft` 的 `resolve(p.dir, …)` 也解不回来。
+     换成相对回收站根之后，值就是 `<时间戳>/<原相对路径>`：**比原来短、而且稳定**，
+     并且 `restoreDraft` / `purgeTrash` 那道「必须在回收站里」的闸从
+     `resolve(项目根, …)` 变成 `resolve(回收站根, …)` —— **闸口更小了，不是更松**。 */
+  const trashRel = relative(assetDir(p.dir, "trash"), trashPath).split(sep).join("/");
   return {
     path,
     trashPath: trashRel,
@@ -550,7 +558,7 @@ export async function listTrash(
         if (ent.isDirectory()) { await walk(abs); continue; }
         const originalPath = relative(tsDir, abs).split(sep).join("/");
         items.push({
-          trashPath: abs.slice(p.dir.length + 1).split(sep).join("/"),
+          trashPath: relative(trashRoot, abs).split(sep).join("/"),
           originalPath,
           originalName: basename(originalPath),
           deletedAt: ts.name,
@@ -589,7 +597,7 @@ export async function restoreDraft(
      「必须在某棵子树里」就进了 `resolve` + 写操作。 */
   const trashRoot = assetDir(p.dir, "trash");
   const trashRel = trashPath.split("\\").join("/");
-  const trashAbs = resolve(p.dir, trashRel);
+  const trashAbs = resolve(trashRoot, trashRel);
   if (!isInside(trashRoot, trashAbs) || trashAbs === trashRoot) {
     throw new Error(`只能恢复回收站里的条目：${trashRel}`);
   }
@@ -680,7 +688,7 @@ export async function purgeTrash(p: Project, trashPath: string): Promise<{ remov
      不是同一份判定**，于是「哪个函数守了、哪个没守」要逐个去看。 */
   const rel = trashPath.split("\\").join("/");
   const trashRoot = assetDir(p.dir, "trash");
-  const abs = resolve(p.dir, rel);
+  const abs = resolve(trashRoot, rel);
   if (!isInside(trashRoot, abs) || abs === trashRoot) {
     throw new Error(`只能彻底删除回收站里的条目：${rel}`);
   }

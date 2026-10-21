@@ -104,9 +104,9 @@ async function main() {
        而按前缀列清单漏一个就静默复发、症状和没修一模一样。
        ⚠️ `onlyDead`：目录还在的不动；用户真实项目的仓库不在临时目录下，碰不到。 */
     try {
-      const { dropFallbackReposUnder } = await import("./purge.js");
-      const r = await dropFallbackReposUnder(tmpdir(), { onlyDead: true });
-      const after = await dropFallbackReposUnder(tmpdir(), { onlyDead: true });
+      const { dropLeftoversUnder } = await import("./purge.js");
+      const r = await dropLeftoversUnder(tmpdir(), { onlyDead: true });
+      const after = await dropLeftoversUnder(tmpdir(), { onlyDead: true });
       if (after.removed.length) console.log(`  ✗ （收尾）兜底仓库没清干净，还剩 ${after.removed.length} 个`);
       else console.log(`  ✓ （收尾）自己造的兜底仓库清干净了（这一轮 ${r.removed.length} 个 · ${Math.round(r.freedBytes / 1024)} KB · 认不出的老仓库 ${r.unidentifiable} 个）`);
     } catch { /* 清不掉也不该让回归报失败 */ }
@@ -430,13 +430,21 @@ async function step7_restoreFromTrash() {
       ["restore 项目外的目录（rename 对目录同样生效）", () => restoreDraft(p, `../${basename(sibling)}`)],
       ["restore 项目外的绝对路径", () => restoreDraft(p, sibling)],
       ["restore 项目内一份正常的稿（会被静默挪到项目根）", () => restoreDraft(p, "登录页.dc.html")],
-      ["restore 回收站根自己", () => restoreDraft(p, ".umbrastudio/trash")],
+      ["restore 回收站根自己", () => restoreDraft(p, ".")],
     ];
+    /* ⚠️ **拒因的口径这一轮宽了一个**（M14-4 B1），而这是闸变紧不是变松：
+       `trashPath` 现在相对**回收站根**解析（原来相对项目根）。
+       于是「restore 项目内一份正常的稿」这个攻击**连名字都写不出来了** ——
+       `登录页.dc.html` 解成 `<回收站根>/登录页.dc.html`，那里没有这个文件，
+       所以拒因变成「回收站文件…不存在」。
+       **攻击从「被闸拦住」变成了「表达不出来」**，这是更强的一档。
+       下面那三条「东西没被挪动」的断言不动 —— 拒因可以换措辞，后果不行。 */
     for (const [what, run] of evil) {
       let why = "";
       try { await run(); } catch (e) { why = String((e as Error)?.message ?? e); }
-      expect(/只能恢复回收站里的条目|回收站路径里没有原文件/.test(why), `**拒绝 ${what}**：${why || "✗ 没拒"}`);
+      expect(/只能恢复回收站里的条目|回收站路径里没有原文件|回收站文件 .* 不存在/.test(why), `**拒绝 ${what}**：${why || "✗ 没拒"}`);
     }
+    expect(existsSync(join(p.dir, "登录页.dc.html")), "**那份正常的稿还在原位**（被拒 ≠ 没被挪走，分开验）");
     expect(existsSync(join(sibling, "标记.txt")), "**兄弟项目还在原地**（被拒 ≠ 没留下东西，分开验）");
     expect((await listDrafts(p)).length === draftsBefore, `项目里也没多出稿（${draftsBefore} 份没变）`);
     await rm(sibling, { recursive: true, force: true });
@@ -586,6 +594,43 @@ async function step9b_exportImportGuards() {
   expect((imp?.draftCount ?? 0) > 0, `**导入到空目录照常能用**：${imp?.draftCount ?? "✗"} 份稿`);
   const leftovers = (await readdir(box)).filter((f) => f.startsWith(".import-"));
   expect(leftovers.length === 0, `**没留下半个项目的临时目录**：${leftovers.join(" / ") || "(干净)"}`);
+
+  /* ── ⑥⑦⑧⑨ **回执不许说谎**（M14-4 B1，`doc/24` §19.1）──
+     B1 把快照搬进 `STATE_ROOT/.umbrastudio/records/<ID>/` 之后，
+     `tar -C projectDir .` **一版快照都打不到，而回执照样报 `versionCount: N`** ——
+     假回执，而且要到「在另一台机器上导入、发现历史全没了」那一刻才暴露。
+     ⚠️ 所以判据**不能只看回执的那个数**（那正是说谎的那一方）——
+     要去**包里数**，再看**导入之后拿不拿得回来**。
+     > 一个会说谎的数，只能用「它声称的那件事」来验，不能用它自己验。 */
+  const { execFile: ef } = await import("node:child_process");
+  const inTar = await new Promise<string>((res, rej) =>
+    ef("tar", ["-tzf", good], (e, out) => (e ? rej(e) : res(out))));
+  const snapsInTar = inTar.split("\n").filter((l) => /\.umbrastudio-record\/snapshots\/.+\/v\d+\.json$/.test(l.trim()));
+  expect((exp?.versionCount ?? 0) > 0, `（前提）这个项目确实有快照，回执报 ${exp?.versionCount ?? 0} 版`);
+  expect(snapsInTar.length === (exp?.versionCount ?? -1),
+    `**包里真的有那么多版本**：包里 ${snapsInTar.length} 版 · 回执说 ${exp?.versionCount ?? "✗"} 版`);
+  /* ⚠️ 这一条**改了两次才对**，两次都是判据自己的毛病，而报出来的红和「产品坏了」一模一样：
+     ① 第一版用 `basename(oneDraft)` 查版本 —— 那份稿在 `Components/` 底下，必然 0 版；
+     ② 第二版改成相对路径，还是 0 版 —— 因为 `listDrafts()[0]` **那一份本来就没有快照**
+        （整个项目只有 3 个稿有）。
+     所以别去猜「哪一份该有版本」，**直接数导入之后那边一共有几版**，
+     和导出回执报的数对上。这也正是用户关心的那句话：**历史全跟过来了没有。** */
+  const { assetDir: ad9 } = await import("./statedirs.js");
+  const countVers = async (dir: string): Promise<number> => {
+    if (!existsSync(dir)) return 0;
+    let n = 0;
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) n += await countVers(join(dir, e.name));
+      else if (/^v\d+\.json$/.test(e.name)) n++;
+    }
+    return n;
+  };
+  const back = await countVers(ad9(fresh, "snapshots"));
+  expect(back === (exp?.versionCount ?? -1),
+    `**导入之后历史真的跟过来了**：新项目这边 ${back} 版 · 导出时 ${exp?.versionCount ?? "✗"} 版`);
+  expect(imp?.restoredRecord === true, "回执照实说「包里带了历史，已经收编」");
+  expect(!existsSync(join(fresh, ".umbrastudio-record")),
+    "**包里那一层没留在用户的目录里**（收编进 records/ 了，不是原地解开）");
 
   await rm(box, { recursive: true, force: true });
 }

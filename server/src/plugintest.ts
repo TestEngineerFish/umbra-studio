@@ -17,6 +17,8 @@ import { buildProject } from "./project.js";
 import { BUILTIN, kindOf, registerKind, unregisterKindsFrom } from "./shared/kinds.js";
 
 let pass = 0, fail = 0;
+/** 这一套自己造的临时项目 —— **收尾要先删掉它们再扫残留**（见文件末尾那一段） */
+const MY_TMPS: string[] = [];
 const ok = (c: boolean, what: string, detail = "") => {
   if (c) { pass++; console.log(`  ✓ ${what}${detail ? " — " + detail : ""}`); }
   else { fail++; console.log(`  ✗ ${what}${detail ? " — " + detail : ""}`); }
@@ -67,6 +69,7 @@ if (started) {
      —— 纪律④ 要的对照组。
      ⚠️ 项目用临时目录，**不碰 `projects/`** —— 那是用户自己的东西（纪律⑥）。 */
   const TMP = join(tmpdir(), `umbrastudio-plugintest-${Date.now()}`);
+  MY_TMPS.push(TMP);
   await rm(TMP, { recursive: true, force: true });
   await mkdir(TMP, { recursive: true });
   await writeFile(join(TMP, "project.json"), JSON.stringify({ name: "plugintest", title: "插件回归" }));
@@ -224,6 +227,7 @@ if (started) {
       ok(["com.umbra.markdown.outline", "com.umbra.markdown.replace_section"].every((n) => mdSb.caps.some((c) => c.name === n)),
         "**它那两件能力照旧报上来**", mdSb.caps.map((c) => c.name).join(" / "));
       const T2 = join(tmpdir(), `umbrastudio-mdtest-${Date.now()}`);
+      MY_TMPS.push(T2);
       await mkdir(T2, { recursive: true });
       await writeFile(join(T2, "project.json"), JSON.stringify({ name: "mdtest", title: "md 回归" }));
       await writeFile(join(T2, "文档.md"), "# 标题\n\n开头\n\n## 第二节\n\n旧正文\n\n## 第三节\n\n尾\n", "utf8");
@@ -596,10 +600,19 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
    而仓库数 **2 → 3**。`captest` 的清理排在它前面，所以清不到它 ——
    > **「有的测装了收尾」不等于「残留不再增长」**（M14-6 原话，这是它的第二次）。 */
 {
-  const { dropFallbackReposUnder } = await import("./purge.js");
+  /* ⚠️ **自己造的临时项目要先删掉，再扫**（M14-6 §20.6.2 那条「删夹具排在清理之后」的第二次）。
+     这一套原来**一个临时项目都没删** —— 于是 `onlyDead: true` 的扫描看到目录还活着就跳过，
+     六轮下来报六次「清掉 0 个」，而 `STATE_ROOT` 里的记录和仓库一直在涨。
+     M14-4 B1 之后这件事多了一类残留（记录目录），所以当场补上。 */
+  const { rm: rm9 } = await import("node:fs/promises");
+  for (const d of MY_TMPS) await rm9(d, { recursive: true, force: true });
+  const { dropLeftoversUnder, deadLeftoversUnder } = await import("./purge.js");
   const { tmpdir: td9 } = await import("node:os");
-  const r = await dropFallbackReposUnder(td9(), { onlyDead: true });
-  if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
+  const r = await dropLeftoversUnder(td9(), { onlyDead: true });
+  const left = await deadLeftoversUnder(td9());
+  console.log(`  · （收尾）清掉自己造的：兜底仓库 ${r.removed.length} 个 · 记录 ${r.records.length} 条 · 临时项目 ${MY_TMPS.length} 个`);
+  /* 「我删掉了 0 个」和「现在一个都不剩」是两句话（`purge.ts` §223） */
+  if (left.length) { console.log(`  ✗ （收尾自检）还剩 ${left.length} 个死条目：${left.slice(0, 4).join(" ")}`); fail++; }
 }
 console.log(fail === 0 ? `\n✓ 插件机制 ${pass}/${pass + fail}` : `\n✗ 插件机制 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

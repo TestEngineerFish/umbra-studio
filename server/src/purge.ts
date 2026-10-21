@@ -34,6 +34,7 @@ import { STATE_ROOT } from "./project.js";
 import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME } from "./statedirs.js";
 import { gitDirOfProject } from "./gitkeep.js";
 import { listRecentProjects, removeRecentProject } from "./workspace.js";
+import { deadRecordsUnder, dropOrphanRecords, dropRecord, dropRecordsUnder, existingRecordIdFor, recordsRoot } from "./records.js";
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 
@@ -129,17 +130,24 @@ async function dropFallbackRepo(dir: string): Promise<number> {
  *  ⚠️ 只认 `identity === "missing"`（路径压根不在）。
  *  **`replaced` 不在这一档里** —— 那个位置有东西，只是换了一个，
  *  删它的历史得走 ③（要确认）。 */
-export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: string; name: string }>; freedBytes: number; left: number }> {
+export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: string; name: string }>; freedBytes: number; orphanRecords: number; left: number }> {
   const { recents } = await listRecentProjects();
   const stale = recents.filter((r) => r.identity === "missing");
   let freedBytes = 0;
   const removed: Array<{ dir: string; name: string }> = [];
   for (const r of stale) {
     freedBytes += await dropFallbackRepo(r.dir);
+    freedBytes += await sizeOf(join(recordsRoot(), existingRecordIdFor(r.dir) ?? "\u0000"));
     await removeRecentProject(r.dir);
     removed.push({ dir: r.dir, name: r.name });
   }
-  return { removed, freedBytes, left: (await listRecentProjects()).recents.length };
+  /* ⚠️ 记录目录**也要跟着清**（B1）：快照 / 评论 / 回收站从 2026-10-21 起住在
+     `records/<ID>/`，不清的话「清掉已失效的记录」会**只清掉名字、留下几十 MB 的历史**，
+     而回执报的 `freedBytes` 只算了兜底仓库 —— 又一次「数对不上事实」。
+     `dropOrphanRecords` 按「它指着的目录还在不在」判，所以它也会顺手清掉
+     更早以前留下的孤儿（没有对应「最近打开」条目的那些）。 */
+  const orphans = dropOrphanRecords();
+  return { removed, freedBytes, orphanRecords: orphans.ids.length + orphans.unindexed.length, left: (await listRecentProjects()).recents.length };
 }
 
 /** ③ 忘掉这一个：一条记录 + 它的 git 兜底仓库。**历史真的没了，所以要 `confirm`**。
@@ -154,10 +162,19 @@ export async function forgetProject(dir: string, confirm: boolean): Promise<{
   if (confirm !== true) {
     throw bad("confirm", "这一件会把我们为这个项目存的历史删掉，退不回来", "确认之后再调一次：confirm: true");
   }
-  const freedBytes = await dropFallbackRepo(dir);
+  let freedBytes = await dropFallbackRepo(dir);
+  /* B1 之后历史全在我们这边 —— **这一件现在才真的把它删掉**。
+     ⚠️ 用 `existingRecordIdFor`（只查不建）：对一个从没写过东西的项目调「忘掉」，
+     不该顺手给它造一条记录再删掉。 */
+  const recId = existingRecordIdFor(dir);
+  if (recId) {
+    freedBytes += await sizeOf(join(recordsRoot(), recId));
+    dropRecord(recId);
+  }
   const { removed } = await removeRecentProject(dir);
-  /* ⚠️ **照实说还有什么没删**：今天快照 / 评论 / 回收站还在用户的项目目录里
-     （M14-4 才搬过来），而这一件**没有权力**删用户目录里的东西。
+  /* ⚠️ **照实说还有什么没删**：B1 之前写下的那一份旁数据还在用户的项目目录里
+     （Q72 拍板不做存量迁移 —— 旧目录留在原地，**不迁也不删**），
+     而这一件**没有权力**删用户目录里的东西。
      不说的话用户会以为「忘掉」= 全删干净了。 */
   const ud = join(resolve(dir), UD_DIRNAME);
   const stillOnDisk = existsSync(ud) && ASSET_ENTRIES.some((n) => existsSync(join(ud, n))) ? ud : null;
@@ -206,6 +223,10 @@ const underAny = (wt: string, roots: string[]): boolean =>
  *  ⚠️ 为什么不能用 `dropFallbackReposUnder` 的 `removed.length === 0` 代替 ——
  *  **匹配不上的那些它既不删也不报**，于是两次都是 0。
  *  **「清掉 0 个」有两种可能：本来就没有，或者我们压根没认出来。** */
+export async function deadLeftoversUnder(root: string): Promise<string[]> {
+  return [...await deadFallbackReposUnder(root), ...deadRecordsUnder(root).map((id) => `record:${id}`)];
+}
+
 export async function deadFallbackReposUnder(root: string): Promise<string[]> {
   const { repoMetaOfGitDir } = await import("./gitkeep.js");
   const gitRoot = join(STATE_ROOT, UD_DIRNAME, "git");
@@ -222,12 +243,27 @@ export async function deadFallbackReposUnder(root: string): Promise<string[]> {
   return dead;
 }
 
-export async function dropFallbackReposUnder(root: string, opts?: { onlyDead?: boolean }): Promise<{
-  removed: string[]; freedBytes: number; unidentifiable: number; keptAlive: number;
+/** 清掉**我们为这个目录树下的项目存的东西**：git 兜底仓库 + 记录目录（M14-4 B1 起）。
+ *
+ *  ⚠️ **2026-10-21 从 `dropFallbackReposUnder` 改名成这个**，而改名本身是这次修法的一半：
+ *  B1 把快照 / 评论 / 回收站搬进 `records/<ID>/` 之后，**十几套跑在真 `STATE_ROOT`
+ *  上的回归每轮都会多攒一条记录**（样本项目在临时目录、每轮新路径）——
+ *  正是 M14-6 那条「595 个仓库 / 94 MB」的重演。
+ *
+ *  做法上有两条路：在 8 个收尾点各加一行，或者**把它并进这一个函数**。
+ *  选后者，理由是失败模式不对称：
+ *  - 各加一行 → **漏一个就静默复发**，而症状（状态目录慢慢变大）要几周才看得出来；
+ *  - 并进来 + 改名 → 8 个调用点**编译期就必须跟着改**，漏不掉。
+ *
+ *  > **让「漏掉」变成编译错误，比让「漏掉」变成一条要人记得的纪律可靠。** */
+export async function dropLeftoversUnder(root: string, opts?: { onlyDead?: boolean }): Promise<{
+  removed: string[]; freedBytes: number; unidentifiable: number; keptAlive: number; records: string[];
 }> {
   const { repoMetaOfGitDir } = await import("./gitkeep.js");
   const gitRoot = join(STATE_ROOT, UD_DIRNAME, "git");
-  const out = { removed: [] as string[], freedBytes: 0, unidentifiable: 0, keptAlive: 0 };
+  const out = { removed: [] as string[], freedBytes: 0, unidentifiable: 0, keptAlive: 0, records: [] as string[] };
+  /* 记录目录跟着清。`onlyDead: false` 时连「目录还在」的记录一起清 —— 和仓库那边同一个口径 */
+  for (const id of dropRecordsUnder(root, opts).removed) out.records.push(id);
   const roots = rootForms(root);
   let names: string[] = [];
   try { names = await readdir(gitRoot); } catch { return out; }
