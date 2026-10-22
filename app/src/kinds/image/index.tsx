@@ -80,6 +80,30 @@ function Toolbar() {
   const d = useImg();
   const [busy, setBusy] = useState(false);
 
+  /** 「转成 PNG 再编辑」（issue #148，geek-99 定的 (c)）。
+   *
+   *  ⚠️ 走**服务端** `file_convert`（sips / 真编码），**不走画布** ——
+   *  画布那条路正是「写出 PNG 字节而扩展名还是 .gif」的来源（#132 为此禁掉了裁剪）。
+   *  ⚠️ 成品**在原文件旁边**、重名顺延、**永不覆盖**（那是 `file.convert` 的既有口径），
+   *  所以原图一个字节都不动 —— 这一点要在 title 里说出来，不然用户不敢点。
+   *  ⚠️ 转完**直接打开成品** —— 不打开的话用户还得自己去树里找，
+   *  而「转好了」和「我现在能编辑了」之间就差这一步。 */
+  const toPng = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await d.core.post<{ output?: string; state?: string; error?: string }>("file_convert", { path: d.path, to: "png" });
+      if (!r.ok || !r.data?.output) {
+        /* ⚠️ **照实说转不了**，别假装成功（geek-99 原话：「编不了的就明说，不要假装写成功」）。
+           真会发生：机器上没有能转这条边的工具（`file.convert` 会说是哪一条）。 */
+        toast("转不成 PNG", r.data?.error ?? r.errors?.[0]?.message ?? "这台机器上没有能转这种图的工具", "error");
+        return;
+      }
+      toast("转好了，打开的是新文件", `${r.data.output} —— 原图一个字节都没动`, "ok");
+      d.open(r.data.output);
+    } finally { setBusy(false); }
+  };
+
   /** 一颗小方钮（旋转 / 翻转 / 复位共用） */
   const Mini = ({ icon, title, onClick }: { icon: string; title: string; onClick: () => void }) => (
     <button onClick={onClick} title={title} data-ud={`img-${icon}`}
@@ -168,6 +192,22 @@ function Toolbar() {
           d.cropping ? "bg-accentSoft text-accent font-semibold border-accent" : "bg-panel2 text-text2 border-border hover:text-text"}`}>
         ⬚ 裁剪{d.cropping ? "中" : ""}
       </button>
+      {/* ── 「转成 PNG 再编辑」：给**存不回原格式**的那几种一条出路（issue #148，geek-99 定的 (c)）──
+          ⚠️ 原来这里只有一个禁用的裁剪钮 + 一句解释 —— 而**说清原因不等于给了出路**：
+          用户想裁一张 avif / gif，只能自己去别的软件转一遍再回来。
+          > **一个禁用的按钮加一句解释，解决的是「为什么不行」，没解决「那我该怎么办」。**
+          ⚠️ 转换走的是**服务端** `file_convert`（sips / 真编码），不是画布 ——
+          画布那条路正是「写出 PNG 字节而扩展名是 .gif」的来源。
+          ⚠️ 顺带：`file_convert` 这件能力**在界面上原来一个入口都没有**（`app/src` 里
+          `file_convert` / `list_convert_targets` 零命中）—— 又一次「能力在而够不着」
+          （`doc/00` §9 那条「能力表是给模型看的，不是给人看的」）。 */}
+      {!d.isSvg && !canEncode(d.path) && (
+        <button onClick={() => void toPng()} disabled={busy} data-ud="img-to-png"
+          title="在旁边转出一份 PNG 再编辑它 —— 原图一个字节都不动"
+          className="inline-flex items-center gap-1.5 h-[22px] px-2 rounded-sm border shrink-0 bg-panel2 text-text2 border-border hover:text-text disabled:opacity-40">
+          转成 PNG 再编辑
+        </button>
+      )}
       {d.cropping && (
         <>
           <Mini icon="rot-ccw" title="左转 90°" onClick={() => d.api.current?.rotate(-90)} />

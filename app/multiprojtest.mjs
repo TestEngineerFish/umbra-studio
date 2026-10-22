@@ -385,6 +385,104 @@ const realAfter = existsSync(realWorkspace) ? readFileSync(realWorkspace, "utf8"
 ok(realAfter === realBefore, "**真实的 workspace.json 一个字节都没动**（全程临时 STATE_ROOT）",
    realBefore === null ? "本来就没有" : `${realBefore.length} 字节`);
 
+/* ══════════════════════════════════════════════════════════════════════
+   ⑩ 存不回原格式的图片：禁用 + 说出原因 + **给出路**（issue #148 / #132）
+
+   ⚠️ `canvas.toBlob` **实测**只真能编 png / jpeg / webp —— avif / gif / bmp / ico
+   全部退回 `image/png`（本轮在 Electron 自带 Chromium 上量过）。
+   写回原扩展名就是「扩展名说 GIF、内容是 PNG」，动图还只剩第一帧 ——
+   **在本软件里看着正常（浏览器按内容嗅探），拿到别的工具里才坏**。
+   #132 为此禁掉了这几种的裁剪，而**那道闸原来一条判据都没有**：
+   它接在三处（保存时拒 · 裁剪钮 disabled · tooltip 说原因），
+   下一个人把任何一处拆掉都不会有东西红。
+   > **一道接在三处的闸，要三条判据** —— 少一条就少守一条路。
+   ⚠️ 这一节还钉**出路**那颗钮（geek-99 2026-10-22 定的 (c)）：
+   **一个禁用的按钮加一句解释，解决的是「为什么不行」，没解决「那我该怎么办」。**
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑩ 存不回原格式的图片（issue #148 / #132）");
+{
+  /* 1×1 的 gif 与 png（base64 字面，不依赖任何工具） */
+  const GIF = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const { writeFile: wf10 } = await import("node:fs/promises");
+  const { Buffer: Buf10 } = await import("node:buffer");
+  await wf10(join(A, "动图.gif"), Buf10.from(GIF, "base64"));
+  await wf10(join(A, "位图.png"), Buf10.from(PNG, "base64"));
+
+  /* 回到 A 那个项目，刷一次树 */
+  await pg.goto(url);
+  await pg.waitForTimeout(1500);
+  const rowA = pg.locator('[data-ud="project-row"]').first();
+  if (await rowA.count()) { await rowA.click(); await pg.waitForTimeout(2000); }
+
+  /** ⚠️ **所有查找都限定在「当前显示的那个工作台」里**。
+   *  第一版用全局 `[role="treeitem"]`，而 M15-1 S2 是「**全部挂上、只显示一个**」——
+   *  那一行**在 DOM 里但不可见**（它属于隐藏的那个工作台），点它超时 30 秒，
+   *  报的是「element is not visible」，看着像产品把文件树藏了。
+   *  > 产品侧为这件事做过收口（`app/src/workbench/scope.ts`），
+   *  > **而判据侧的同类查找没跟着改** —— 一条教训只修一边，等于只修了一半。 */
+  const WB = '[data-ud="workbench-slot"][data-active] ';
+  /** 打开一份文件并把编辑栏展开（裁剪钮在编辑栏上） */
+  const openAndEdit = async (name) => {
+    const r = pg.locator(`${WB}[role="treeitem"]`).filter({ hasText: name }).first();
+    if (!(await r.count())) return false;
+    await r.click(); await pg.waitForTimeout(900);
+    const t = pg.locator(`${WB}[data-ud="toggle-edit"]`);
+    if (await t.count() && (await t.getAttribute("aria-pressed")) !== "true") { await t.click(); await pg.waitForTimeout(500); }
+    return true;
+  };
+
+  /* ── 三处闸**各一条源码级判据**（geek-99 2026-10-22 的要求）──
+     ⚠️ 为什么以源码级为主：这三处的价值是「下一个人拆掉任何一处会红」，
+     而端到端那一半要**项目里真有一张 gif、树刷出来了、编辑栏展开了**三个前提同时成立。
+     前提不成立时它会说「**没验到**」而不是「通过」—— 但那样这道闸就一条判据都没有了。
+     > **一条判据如果依赖三个前提，它就有三种「今天恰好没跑到」。**
+     所以：闸在不在 → 源码级（必跑）；闸长什么样 → 端到端（跑得到就验）。 */
+  const src10 = await readFile(new URL("./src/kinds/image/index.tsx", import.meta.url), "utf8");
+  const edit10 = await readFile(new URL("./src/kinds/image/Edit.tsx", import.meta.url), "utf8");
+  const code10 = src10.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  ok(/export function canEncode/.test(edit10) && /"webp"/.test(edit10) && !/"avif"/.test(edit10.split("return ext ===")[1] ?? ""),
+     "**闸① `canEncode` 只放行 png / jpg / jpeg / webp**（实测 canvas 对 avif / gif / bmp / ico 全退回 PNG）");
+  ok(/disabled=\{d\.isSvg \|\| !canEncode\(d\.path\)\}/.test(code10),
+     "**闸② 裁剪钮按它禁用**");
+  ok(/if \(!canEncode\(d\.path\)\)/.test(code10),
+     "**闸③ 保存那条路上再拦一次**（钮禁用之外的第三处 —— MCP / 插件够得到那条路）");
+  ok(/存不回原格式/.test(src10) && /PNG 字节/.test(src10),
+     "**而且 tooltip 说出了原因**（禁用而不解释和「点了没反应」是同一个病）");
+  ok(/data-ud="img-to-png"/.test(code10) && /file_convert/.test(code10),
+     "**出路那颗钮在，而且走服务端 `file_convert` 不走画布**（画布正是写出错字节的来源）");
+  ok(/!d\.isSvg && !canEncode\(d\.path\)/.test(code10),
+     "**出路钮只对「存不回去」的那几种出现**（png 上也挂就成了一句谁都有的废话）");
+
+  if (!(await openAndEdit("动图.gif"))) {
+    console.log("  · 端到端那两条**没验到**（树里没刷出那张 gif）—— 不是通过");
+  } else {
+    const crop = pg.locator(`${WB}[data-ud="img-crop-toggle"]`);
+    ok(await crop.count() === 1 && await crop.isDisabled(),
+       "**gif 的裁剪钮是禁用的**（#132 的闸之一）", `钮 ${await crop.count()} 个 · disabled=${await crop.count() ? await crop.isDisabled() : "n/a"}`);
+    const tip = await crop.count() ? (await crop.getAttribute("title")) ?? "" : "";
+    ok(/存不回原格式/.test(tip) && /PNG 字节/.test(tip),
+       "**而且 tooltip 说出了原因**（禁用而不解释和「点了没反应」是同一个病）", tip.slice(0, 50));
+    const topng = pg.locator(`${WB}[data-ud="img-to-png"]`);
+    ok(await topng.count() === 1,
+       "**「转成 PNG 再编辑」那颗钮出现了**（禁用 + 一句解释没解决「那我该怎么办」）",
+       `${await topng.count()} 个`);
+    const t2 = await topng.count() ? (await topng.getAttribute("title")) ?? "" : "";
+    ok(/原图一个字节都不动/.test(t2), "那颗钮说清了原图不会被动（不然用户不敢点）", t2.slice(0, 40));
+  }
+
+  /* ⚠️ **反方向**：png 能存回去，所以裁剪**不该**禁用、那颗出路钮**不该**出现 ——
+     不然这道闸就从「拦住存不回去的」变成「谁都不给裁」。 */
+  if (await openAndEdit("位图.png")) {
+    const crop2 = pg.locator(`${WB}[data-ud="img-crop-toggle"]`);
+    ok(await crop2.count() === 1 && !(await crop2.isDisabled()),
+       "**png 的裁剪钮不禁用**（别过度拦截 —— 过度拦截和漏放一样是缺陷）");
+    ok(await pg.locator(`${WB}[data-ud="img-to-png"]`).count() === 0,
+       "**png 上那颗「转成 PNG」不出现**（它成了一句谁都有的废话就没意义了）");
+  }
+
+}
+
 await br.close();
 await rm(STATE, { recursive: true, force: true });
 await rm(A, { recursive: true, force: true });
