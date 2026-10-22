@@ -45,6 +45,7 @@ import { randomBytes } from "node:crypto";
 import { join, resolve } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { UD_DIRNAME } from "./statedirs.js";
+import { tmpNameFor } from "./tmpfiles.js";
 
 /** 所有记录的根。`STATE_ROOT/.umbrastudio/records/` */
 export const recordsRoot = (): string => join(STATE_ROOT, UD_DIRNAME, "records");
@@ -86,7 +87,10 @@ function load(): RecordIndex {
 
 function save(ix: RecordIndex): void {
   mkdirSync(recordsRoot(), { recursive: true });
-  const tmp = indexFile() + ".tmp";
+  /* 临时名走唯一出处（M14-9）。原来是写死的 `index.json.tmp`：**没有 pid 也没有随机串**，
+     两个进程同时存记录时第二个的 rename 会报 ENOENT —— 而那正是 `normalize.ts`
+     里注释了半屏的那个坑，这里又犯了一次。 */
+  const tmp = tmpNameFor(indexFile());
   writeFileSync(tmp, JSON.stringify(ix, null, 2) + "\n", "utf8");
   renameSync(tmp, indexFile());
   cache = ix;

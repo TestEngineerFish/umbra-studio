@@ -3,6 +3,12 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createPublicKey, verify as edVerify } from "node:crypto";
 import { join } from "node:path";
 import { STATE_ROOT } from "../project.js";
+/* ⚠️ 临时文件名走 `normalize.ts` 那一个出处（M14-9）——
+   原来这里自己拼 `.${pid}.tmp`，于是清理那一头**认不出它是我们的**：
+   实测 `STATE_ROOT` 下躺着 `clock.json.287.tmp`（0 字节）和 `clock.json.37369.tmp`
+   （54 字节、内容完整合法），两个 pid 都早已不在，而没有任何人会清它们。
+   > **一种垃圾有两种命名，清理就必然漏掉一种。** */
+import { tmpNameFor } from "../tmpfiles.js";
 import { publisherKeyPath } from "./pubkey.js";
 
 /** 授权：**装了 ≠ 能用**（M11-12 · 需求 `doc/20` §四）。
@@ -84,7 +90,7 @@ export async function saveLicenseText(raw: string): Promise<LicenseCheck> {
   const r = verifyLicenseText(raw);
   if (!r.ok) return r;
   await mkdir(join(STATE_ROOT, ".umbrastudio"), { recursive: true });
-  const tmp = `${LICENSE_FILE}.${process.pid}.tmp`;
+  const tmp = tmpNameFor(LICENSE_FILE);
   await writeFile(tmp, raw, "utf8");
   await rename(tmp, LICENSE_FILE);            // 原子替换，同 clock.json
   return r;
@@ -125,7 +131,7 @@ export async function nowMonotonic(): Promise<{ now: Date; rolledBack: boolean }
 async function writeWatermark(ms: number): Promise<void> {
   try {
     await mkdir(join(STATE_ROOT, ".umbrastudio"), { recursive: true });
-    const tmp = `${WATERMARK_FILE}.${process.pid}.tmp`;
+    const tmp = tmpNameFor(WATERMARK_FILE);
     await writeFile(tmp, JSON.stringify({ seen: ms, at: new Date(ms).toISOString() }), "utf8");
     await rename(tmp, WATERMARK_FILE);          // 原子替换：要么旧的完整，要么新的完整
   } catch { /* 写不下也不该挡住用户用插件 —— 下一次再试 */ }

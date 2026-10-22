@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { RUNTIME_DIR, expandDsAlias, fixDsDepth, type Project } from "./project.js";
 import { NODE_ATTR, stampNodes } from "./nodeid.js";
+import { sweepTmpIn, tmpNameFor } from "./tmpfiles.js";   // 临时文件的唯一出处（M14-9）
 
 export const MARK_OPEN = "<!-- umbradesign:resources -->";
 export const MARK_CLOSE = "<!-- /umbradesign:resources -->";
@@ -150,10 +151,12 @@ export function missingRuntime(draftAbs: string): string[] {
  *  非法 utf8 序列被替换成 U+FFFD，文件还在、还能打开、只是花了。
  *  **「写坏了」和「没写」长得完全不一样，而前者更难发现。** */
 export async function writeAtomic(abs: string, content: string | Uint8Array): Promise<void> {
-  await mkdir(dirname(abs), { recursive: true });
-  /* 临时文件名要唯一：同一份稿两次写入并发时（实测：属性面板失焦落盘 + 横条「落盘」钮同时触发），
-     共用一个 .tmp 会让第二次 rename 报 ENOENT。各写各的临时文件，rename 是原子的，后到的赢。 */
-  const tmp = `${abs}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.umbrastudio.tmp`;
+  const dir = dirname(abs);
+  await mkdir(dir, { recursive: true });
+  /* 顺手把这个目录里上一轮留下的孤儿清掉（每进程每目录一次，失败不抛）。
+     ⚠️ **不 await 在落盘前面** —— 清垃圾慢了不该让用户的保存等着。 */
+  void sweepTmpIn(dir);
+  const tmp = tmpNameFor(abs);
   if (typeof content === "string") await writeFile(tmp, content, "utf8");
   else await writeFile(tmp, content);
   const { rename, rm } = await import("node:fs/promises");

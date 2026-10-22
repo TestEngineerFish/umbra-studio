@@ -24,6 +24,7 @@ const { touchProject, listRecentProjects, removeRecentProject } = await import("
 const { ensureRepo, gitDirOfProject, commitPaths } = await import("./gitkeep.js");
 const { STATE_ROOT, TOOL_ROOT } = await import("./project.js");
 const { assetDir, cacheDir, commentsFile, indexDataFile } = await import("./statedirs.js");
+const { recordDirOf } = await import("./records.js");
 
 const BOX = await mkdtemp(join(tmpdir(), "umbra-purgebox-"));
 let bad = 0, n = 0;
@@ -210,6 +211,116 @@ async function makeProject(name: string): Promise<string> {
   ok("而且标着 `missing`（界面据此灰掉、给「忘掉它」）", row?.missing === true, row?.missing);
   const live = r.data.projects.find((x) => x.dir === 活着);
   ok("（对照）活着那条照常列出来、没有 `missing`", !!live && live.missing === undefined);
+}
+
+/* ── ⑤ 原子写留下的 `.tmp` 孤儿有人清了（M14-9，2026-10-22）──
+   成因不是逻辑缺陷，是原子写的必然代价：`writeFile(tmp)` → `rename()` 之间
+   进程结束，tmp 就留下了。实测 `STATE_ROOT` 下躺着两个（`doc/24` §19.5），
+   而**没有任何人会清它们** —— `purge` 的白名单不含 `*.tmp`，而白名单本身是对的。
+
+   ⚠️⚠️ **原来写在 `doc/24` 的修法是错的**：那里写「B1 之后 `records/<key>/`
+   就是现成的去处」，而 `rename` 要求源和目标**在同一个文件系统** ——
+   用户的项目可能在外置盘 / 网络盘上，那时 `STATE_ROOT` 和项目必然不同卷。
+   挂一个 RAM 盘实测：`EXDEV: cross-device link not permitted`。
+   > **tmp 必须和目标同目录，不是没做，是和原子性互斥。**
+   所以这一节测的全是「清」：三条路（写的时候顺手扫 · 清缓存时递归扫 · 启动时扫状态目录）。
+
+   ⚠️ **判准只认我们自己造的后缀 `.umbrastudio.tmp`**，不认 `.tmp` ——
+   这是在**用户的项目目录**里删文件，而他目录里的 `.tmp` 可能是别人的东西。
+   每一条「该删的删了」后面都配一条「不该删的没删」。 */
+console.log("\n⑤ 原子写的 .tmp 孤儿");
+{
+  const { sweepTmpIn, sweepTmpUnder, isOurTmp, tmpNameFor } = await import("./tmpfiles.js");
+  const { writeAtomic } = await import("./normalize.js");
+  const { utimes } = await import("node:fs/promises");
+
+  const dir = await makeProject("tmp孤儿");
+  const old = new Date(Date.now() - 60 * 60 * 1000);          // 一小时前
+  /** 造一个「上一轮留下的」孤儿：名字走真命名 + 把 mtime 推old */
+  const makeOrphan = async (at: string, body = "半截内容") => {
+    const q = tmpNameFor(at);
+    await writeFile(q, body, "utf8");
+    await utimes(q, old, old);
+    return q;
+  };
+
+  ok("（前提）判准认得我们自己的后缀，也认得「这不是我们的」",
+     isOurTmp("稿.dc.html.123.abc.umbrastudio.tmp") && !isOurTmp("用户自己的.tmp") && !isOurTmp("稿.dc.html"));
+
+  /* ── ⓐ 写的时候顺手扫同目录 ── */
+  {
+    const orphan = await makeOrphan(join(dir, "稿.dc.html"));
+    const 别人的 = join(dir, "用户自己的东西.tmp");
+    await writeFile(别人的, "这是用户的，不许动", "utf8");
+    await utimes(别人的, old, old);
+    ok("（样本自己先成立）孤儿和用户那份 .tmp 都真的在盘上", existsSync(orphan) && existsSync(别人的));
+    /* 往同一个目录写一次 —— `writeAtomic` 第一次写这个目录时会顺手扫 */
+    await writeAtomic(join(dir, "新写的.txt"), "x");
+    /* ⚠️ **要等一会儿再数**：那一扫是 `void` 出去的（清垃圾不该让保存等着）。
+       不等的话这条判据测的是「它还没跑完」，而那和「它没装」长得一样 ——
+       昨天 B3 那条判据就是这么假绿的。 */
+    await new Promise((r) => setTimeout(r, 300));
+    ok("**写一次就把同目录里上一轮的孤儿清掉了**（产生垃圾的那一层知道该去哪扫）", !existsSync(orphan));
+    ok("**而用户自己的 `.tmp` 一个字节都没动**（判准只认我们造的后缀）", existsSync(别人的));
+  }
+
+  /* ── ⓑ 太新的不碰：那可能是另一个进程正在写的 ── */
+  {
+    const fresh = tmpNameFor(join(dir, "另一个进程正在写.dc.html"));
+    await writeFile(fresh, "正在写", "utf8");
+    const removed = await sweepTmpIn(dir, { force: true });
+    ok("**刚建出来的 tmp 不碰**（同机器上可能有另一个 Studio 进程正在写它）",
+       existsSync(fresh), { 这一轮清掉: removed });
+    /* ⚠️ 这一条是上一条的**反面对照**：把它推老，同一个扫描就该删它 ——
+       没有它的话「不碰」可能只是因为扫描整个不工作。
+       ⚠️ **先把它重新写一遍再推老** —— 不然上一条红的时候（闸被拆了，它已经被删了）
+       这里 `utimes` 当场 ENOENT 抛出去，**整套测试在第 6 条上崩掉，后面 7 条一条都不报**。
+       反向验证的时候实测到的：读数变成一个 node 堆栈，而不是「哪几条红了」。
+       > **产品坏了的时候，判据要照样把话说完。** */
+    await writeFile(fresh, "正在写", "utf8");
+    await utimes(fresh, old, old);
+    await sweepTmpIn(dir, { force: true });
+    ok("**对照组**：同一个 tmp 推老之后，同一次扫描就删它了（「不碰」不是因为扫描不工作）", !existsSync(fresh));
+  }
+
+  /* ── ⓒ 清缓存那一档连孤儿一起清，而且**不混进 `removed` 那一列** ── */
+  {
+    const dir2 = await makeProject("tmp随清缓存");
+    await mkdir(join(dir2, "子目录"), { recursive: true });
+    const a = await makeOrphan(join(dir2, "根上的.dc.html"));
+    const b = await makeOrphan(join(dir2, "子目录", "深一层的.dc.html"));
+    const c = await makeOrphan(join(assetDir(dir2, "snapshots"), "记录目录里的.json"));
+    const 别人的 = join(dir2, "子目录", "别人的.tmp");
+    await writeFile(别人的, "用户的", "utf8");
+    await utimes(别人的, old, old);
+    const r = await clearProjectCache(dir2);
+    ok("**清缓存把三个孤儿都清了**（项目根 · 子目录 · 记录目录里）",
+       r.tmpOrphans === 3 && !existsSync(a) && !existsSync(b) && !existsSync(c), { 清掉: r.tmpOrphans });
+    ok("用户自己的 `.tmp` 照旧不动", existsSync(别人的));
+    ok("**孤儿不混进「删掉了哪几样」那一列**（那一列是「你点名要清的缓存」）",
+       !r.removed.some((x) => x.includes(".tmp")), { removed: r.removed });
+    /* ⚠️ **去盘上看，不看回执**：`r.kept` 是产品自己算出来的那一列，
+       拿它当判据等于「问它自己有没有删错」—— 而那正好是出错时它会答错的那个问题。
+       上一条孤儿的判据也是 `existsSync`，口径要一致。 */
+    const 还在的 = ASSET_ENTRIES.filter((x) => existsSync(join(recordDirOf(dir2), x)));
+    ok("资产那六样照旧一个都没动（去盘上数的，不是读它的回执）",
+       还在的.length === ASSET_ENTRIES.length, { 盘上还在: 还在的.length, 应该: ASSET_ENTRIES.length });
+  }
+
+  /* ── ⓓ 启动时扫状态目录：跳过 git/（递归扫描的成本在走过多少目录）── */
+  {
+    const st = join(STATE_ROOT, ".umbrastudio");
+    await mkdir(st, { recursive: true });
+    const clock = await makeOrphan(join(st, "clock.json"), "{\"seen\":1}");   // 实测那两个孤儿就长这样
+    const gitDir = join(st, "git", "假仓库");
+    await mkdir(gitDir, { recursive: true });
+    const inGit = await makeOrphan(join(gitDir, "git 自己的东西"));
+    const r = await sweepTmpUnder(STATE_ROOT);
+    ok("**启动时那一扫清掉了状态目录里的孤儿**（`doc/24` §19.5 量到的就是这一种）",
+       !existsSync(clock), { 清掉: r.removed, 走过目录: r.dirs });
+    ok("**`git/` 下面整个跳过**（我们从不往那里原子写，而那下面是几千个目录）", existsSync(inGit));
+    await rm(inGit, { force: true });
+  }
 }
 
 /* ── 收尾 ── */

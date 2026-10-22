@@ -32,6 +32,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME, cacheRoot } from "./statedirs.js";
+import { sweepTmpUnder } from "./tmpfiles.js";
 import { gitDirOfProject } from "./gitkeep.js";
 import { listRecentProjects, removeRecentProject } from "./workspace.js";
 import { recordDirOf } from "./records.js";
@@ -85,6 +86,11 @@ export interface CacheCleared {
   freedBytes: number;
   /** **一个字节都没动的那几样** —— 回执里要说出来，不然用户不知道他的历史还在不在 */
   kept: string[];
+  /** 顺手清掉的原子写孤儿（`*.umbrastudio.tmp`），几个（M14-9）。
+   *  ⚠️ **它不在 `removed` 里，故意的**：`removed` 那一列是「你点名要清的缓存」，
+   *  而这个是「我们自己留下的垃圾」—— 混进去会让「清缓存删了 5 样」这种读数
+   *  变得说不清是删了什么。 */
+  tmpOrphans: number;
 }
 
 /** ① 清缓存。**只删点名的那几样**，算不出来的一个都不碰。 */
@@ -112,10 +118,20 @@ export async function clearProjectCache(dir: string): Promise<CacheCleared> {
     await rm(t, { recursive: true, force: true });
     removed.push(name);
   }
+  /* ── 顺手清掉原子写留下的孤儿（M14-9，2026-10-22）──
+     ⚠️ 这是**用户主动要求清理**时才走的那条路，所以这里敢做一次递归扫描；
+     写那一层（`writeAtomic`）只扫它自己正在写的那个目录，不走全量 walk。
+     ⚠️ **判准是「我们自己造的那个后缀」**，不是 `.tmp` ——
+     用户目录里的 `.tmp` 可能是别人的东西，而这是在**他的项目目录**里删文件。
+     ⚠️ 不进 `removed`：那一列是「你点名要清的缓存」。 */
+  const tmpProject = await sweepTmpUnder(root);
+  const tmpRecord = await sweepTmpUnder(recordDirOf(root));
+  const tmpOrphans = tmpProject.removed + tmpRecord.removed;
+
   /* 「一个字节都没碰」那一列：资产现在在记录目录下，不在项目里 */
   const aRoot = recordDirOf(root);
   const kept = ASSET_ENTRIES.filter((n) => existsSync(join(aRoot, n)));
-  return { removed, freedBytes, kept };
+  return { removed, freedBytes, kept, tmpOrphans };
 }
 
 /** 删掉一个项目的 git 兜底仓库。回腾出的字节数。
