@@ -320,6 +320,73 @@ function tinyPng(w: number, h: number): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ⑮ 转换工具不许读文档里引用的项目外文件（issue #172 / PC #126）
+
+   `cap/convert.ts` 自己写明了这条线：「不判这一条，`file.convert("链/id_rsa","txt")`
+   就能把项目外的文件转一份放进项目 —— **等于读了它**」。
+   而 `resolveSource` 只核了**源文件本身**的真实路径 ——
+   可转换工具会按**文档里的引用**自己去读别的文件，**那一步宿主看不见**：
+   pandoc 把 `![](任意路径)` 嵌进 docx、LibreOffice 把 `file:///…` 的链接图片渲染进 pdf。
+
+   ⚠️⚠️ **三样加固的代码 2026-10-22 已经同步进来了（PC #126），而这边一条判据都没有。**
+   `office.ts` 的注释甚至写着「测试钉着 `--sandbox` 在里面」—— **那句话当时是假的**。
+   > **把一条不存在的判据写进注释，等于给未来的人一个假的安全感。**
+   后果不是今天错，是「下次有人顺手把 `--sandbox` 优化掉，全套回归照旧全绿」。
+
+   ⚠️ 全是**纯函数**判据：不需要机器上真装 pandoc / LibreOffice。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑮ 转换工具不许读文档里引用的项目外文件（issue #172）");
+{
+  const O = await import("./convert/converters/office.js");
+  const M = await import("./convert/converters/mac.js");
+
+  /* ── pandoc：`--sandbox` 一律在，而且**排在最前面** ── */
+  const pa = O.pandocArgs("md", "docx", "/项目/x.md", "/项目/x.docx");
+  ok(pa.includes("--sandbox"), "**pandoc 参数里有 `--sandbox`**（不然 md 里 `![](任意路径)` 会被读进成品）", pa.join(" "));
+  ok(pa[0] === "--sandbox", "而且排在最前面（放在 `-f` 之后也行，但定下来比留着歧义好）", String(pa[0]));
+  /* 四条边都要有 —— 一条漏了就是一条没关的门 */
+  const allEdges = (["docx", "odt", "epub"] as const).every((to) => O.pandocArgs("md", to, "i", "o").includes("--sandbox"))
+    && O.pandocArgs("html", "docx", "i", "o").includes("--sandbox");
+  ok(allEdges, "md→docx/odt/epub 与 html→docx **每一条边**都带它（漏一条就是一扇没关的门）");
+
+  /* ── 版本太旧不退回「不加 sandbox 的跑法」──
+     ⚠️ 这一条是**反方向**的：它要求「做不到就不做」，而不是「做不到就凑合」。
+     凑合的代价是悄悄回到有洞的那条路，而用户看不出区别。 */
+  ok(O.pandocHasSandbox([2, 15, 0]) && O.pandocHasSandbox([3, 1, 0]), "2.15 / 3.1 认得出支持 sandbox");
+  ok(!O.pandocHasSandbox([2, 14, 2]) && !O.pandocHasSandbox([1, 19, 0]),
+     "**2.14 / 1.19 判成不支持** —— 这几条边干脆不登记，不退回不加 sandbox 的跑法");
+  ok(/2\.15/.test(O.pandocTooOld("2.14.2")) && /2\.14\.2/.test(O.pandocTooOld("2.14.2")),
+     "版本太旧的话**把要求和现状都说出来**（只说「太旧」用户不知道该升到哪）", O.pandocTooOld("2.14.2"));
+  ok(O.parsePandocVersion("pandoc 3.1.11\nFeatures: …")?.[0] === 3, "版本号解析得出来", JSON.stringify(O.parsePandocVersion("pandoc 3.1.11")));
+
+  /* ── LibreOffice：加固项真写进 registrymodifications.xcu，而且**别的项照留** ── */
+  const names = O.LO_HARDENING.map((h) => h[1]);
+  ok(names.includes("BlockUntrustedRefererLinks"), "加固清单里有 `BlockUntrustedRefererLinks`（禁止加载外部链接资源）", names.join(" · "));
+  ok(names.includes("MacroSecurityLevel"), "也把宏安全级拉到最高", names.join(" · "));
+  const fresh = O.hardenXcu(null);
+  ok(names.every((n) => fresh.includes(n)), "没有现成配置时**新建一份**，清单里每一项都在");
+  /* ⚠️ 这一条是分寸所在：我们**不碰用户自己那份 LibreOffice 配置**里别的东西 */
+  const mine = '<?xml version="1.0"?><oor:items xmlns:oor="x"><item oor:path="/org.openoffice.Office.Common/Misc"><prop oor:name="用户自己的项" oor:op="fuse"><value>42</value></prop></item></oor:items>';
+  const merged = O.hardenXcu(mine);
+  ok(merged.includes("用户自己的项") && names.every((n) => merged.includes(n)),
+     "**合并而不是覆盖** —— 用户自己那份配置里别的项一个不动");
+  /* ⚠️ **第一版判准是错的**：我写的是「每个名字在结果里恰好出现一次」，
+     而 `LO_HARDENING` 里**有两个 `Link`**（`/…/Security` 和 `/…/Filter` 下的同名项，
+     读数一眼看得出：`… · Link · Link · …`）—— 于是它红了，而产品是对的。
+     > **「幂等」的定义是「做两次等于做一次」，不是「每个名字只出现一次」** ——
+     > 我测的是后者，而那是我顺手想出来的一个**近似**，它在样本里不成立。 */
+  const twice = O.hardenXcu(merged);
+  ok(twice === merged, "**幂等** —— 合并两次和合并一次结果一模一样（不会把同一项写两遍）",
+     twice === merged ? `${merged.length} 字节` : `${merged.length} → ${twice.length} 字节`);
+
+  /* ── textutil：html 进来带 `-noload` ── */
+  const ta = M.textutilArgs("html", "docx", "i", "o");
+  ok(ta.includes("-noload"), "**textutil 转 html 时带 `-noload`**（不去取页面引用的资源）", ta.join(" "));
+  ok(!M.textutilArgs("rtf", "docx", "i", "o").includes("-noload"),
+     "非 html 的源不带它（那个开关只对 html 有意义，乱加等于让别的边跟着变）");
+}
+
 stopAllVerbSandboxes();
 await rm(STATE, { recursive: true, force: true });
 console.log(fail === 0 ? `\n✓ 格式转换 ${pass}/${pass + fail}` : `\n✗ 格式转换 ${pass}/${pass + fail}`);
