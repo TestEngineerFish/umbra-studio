@@ -214,9 +214,13 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
        而那种实现**按 Enter 就能把那一问跳过去**（`blocked === false` 时直接提交）。 */
     ok(await pg.locator('input[placeholder^="例如"]').count() === 0,
        "那一问**挡在表单前面**（文件名框还没出现，所以 Enter 跳不过去）");
-    ok(/753 KB|754 KB/.test(txt) && /226 KB/.test(txt),
-       "**把会写多少照实说出来**（量出来的数，不是「只加一个文件」那种话）",
-       (txt.match(/\d+ KB/g) ?? []).join(" · "));
+    /* ⚠️ 这一条**只能说明界面把数显示出来了，不能说明那个数是真的** ——
+       它读的就是 `Sheets.tsx` 里的字面量，**判据引用了它要检查的东西就是循环**。
+       「那个数是真的」由 `apitest` ⑰ 真接管一个干净目录、数盘上的字节来对账。
+       这里钉的是另一件事：**那一问里有具体的量**，而不是「会加一些文件」这种话。 */
+    ok(/约 750 KB/.test(txt) && /226 KB/.test(txt) && /17 个文件/.test(txt),
+       "**把会写多少照实说出来**（有文件数也有字节，不是「只加一个文件」那种话）",
+       (txt.match(/[约 ]*\d+ (KB|个文件)/g) ?? []).join(" · "));
     await pg.keyboard.press("Escape");
     await pg.waitForTimeout(400);
     const a2 = walkPlain();

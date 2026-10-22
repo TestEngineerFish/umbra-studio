@@ -1219,6 +1219,69 @@ console.log("\n⑯ 打开普通目录不写一个字节 · 接管才部署（M14
    ⚠️ 这一条是**实测补的**：filetest / lifecycletest 装了收尾之后，跑完一整轮
    仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
    **「有的测装了收尾」不等于「残留不再增长」。** */
+/* ── ⑰ 接管弹窗上那几个数**是不是真的**（2026-10-22）──
+   ⚠️⚠️ **`hometest` 那条「照实说出会写多少」是循环的** —— 它从渲染出来的 DOM 里
+   读 753 KB，而那个 753 KB 就是写在 `Sheets.tsx` 里的字面量。
+   **一条判据引用了它要检查的东西，就是循环**（§91 原话）：改了部署清单，
+   界面上的数当场过期，而那条判据照样绿。
+   所以这里**真接管一个干净的普通目录，数盘上的文件和字节**，再和界面上写的那几个数对账。
+   > **一个数写在界面上就会过期 —— 要让它过期的那一刻有东西报红。** */
+console.log("\n⑰ 接管弹窗上那几个数是真的（非循环对账）");
+{
+  const { mkdtemp: mkt5, writeFile: wf5, readFile: rf5 } = await import("node:fs/promises");
+  const { tmpdir: td5 } = await import("node:os");
+  const { join: j5 } = await import("node:path");
+  const { readdirSync: rds5, statSync: sts5, realpathSync: rp5 } = await import("node:fs");
+  const { serveStart: ss5 } = await import("./serve.js");
+  const { buildIndex: bi5 } = await import("./indexpage.js");
+  const { buildProject: bp5 } = await import("./project.js");
+
+  const walk5 = (d: string, base = d): Array<[string, number]> => {
+    const out: Array<[string, number]> = [];
+    for (const e of rds5(d, { withFileTypes: true })) {
+      const q = j5(d, e.name);
+      if (e.isDirectory()) out.push(...walk5(q, base));
+      else out.push([q.slice(base.length + 1), sts5(q).size]);
+    }
+    return out;
+  };
+
+  const d5 = rp5(await mkt5(j5(rp5(td5()), "umbra-adoptcount-")));
+  await wf5(j5(d5, "我的笔记.md"), "# 笔记\n", "utf8");
+  const b5 = new Set(walk5(d5).map((x) => x[0]));
+  /* 接管 = 写 project.json + buildIndex（`api.ts` 的 adopt_project 就这两步） */
+  await wf5(j5(d5, "project.json"), JSON.stringify({ name: "adoptcount" }, null, 2) + "\n", "utf8");
+  const pr5 = await bp5(d5);
+  const sv5 = await ss5(pr5);
+  await bi5(pr5, sv5.url);
+  const new5 = walk5(d5).filter((x) => !b5.has(x[0]));
+  const files5 = new5.length;
+  const kb5 = Math.round(new5.reduce((a, x) => a + x[1], 0) / 1024);
+  /* 运行时副本那四件 —— 「建一份稿本来也要写的那 226 KB」说的就是它们 */
+  const RT = ["support.js", "react.production.min.js", "react-dom.production.min.js", j5(".umbradesign", "select-bridge.js")];
+  const rtKb5 = Math.round(new5.filter((x) => RT.includes(x[0])).reduce((a, x) => a + x[1], 0) / 1024);
+
+  const sheet = await rf5(j5(TOOL_ROOT, "app", "src", "sheets", "Sheets.tsx"), "utf8");
+  const said = (re: RegExp) => Number(re.exec(sheet)?.[1] ?? NaN);
+  const saidTotal = said(/<b className="text-text2">约 (\d+) KB<\/b><\/span>/);
+  const saidFiles = said(/(\d+) 个文件 · 都是生成物/);
+  const saidRt = said(/运行时副本 4 份<\/b>\s*\n?\s*<span[^>]*>(\d+) KB/);
+  const saidShells = said(/预览壳 8 份<\/b>\s*\n?\s*<span[^>]*>约 (\d+) KB/);
+  ok(!Number.isNaN(saidTotal) && !Number.isNaN(saidFiles) && !Number.isNaN(saidRt),
+     "（前提）从弹窗源码里**真的抽出了**那三个数（抽不出来的话下面几条测的是 NaN）",
+     `${saidFiles} 个 · ${saidTotal} KB · 运行时 ${saidRt} KB`);
+  ok(saidFiles === files5, "**接管弹窗说的文件数 = 实测文件数**", `界面 ${saidFiles} · 实测 ${files5}`);
+  /* ⚠️ 容差 12 KB 不是放松，是**那个数本来就浮动**：实测 749–759 KB，
+     随目录里已有几份稿变（入口页要装索引数据、壳要注入 `__resources`）。
+     所以界面上写的是「约 750 KB」——**写一个精确到个位的数反而是假精度**。
+     而**文件数不浮动**（上面那条按等号钉）。 */
+  ok(Math.abs(saidTotal - kb5) <= 12, "**接管弹窗说的总字节 ≈ 实测总字节**（±12 KB，那个数随稿件数浮动 749–759）", `界面约 ${saidTotal} KB · 实测 ${kb5} KB`);
+  ok(Math.abs(saidRt - rtKb5) <= 2, "**「运行时副本 4 份」那个数 = 实测那四件的字节**（这一项不浮动，按等号钉）", `界面 ${saidRt} KB · 实测 ${rtKb5} KB`);
+  const shellsKb5 = Math.round(new5.filter((x) => /^(S\d|IconGlyph)/.test(x[0]) || x[0] === "icons.js").reduce((a, x) => a + x[1], 0) / 1024);
+  ok(Math.abs(saidShells - shellsKb5) <= 12, "**「预览壳 8 份」那个数 ≈ 实测那 8 份 + 图标表**", `界面约 ${saidShells} KB · 实测 ${shellsKb5} KB`);
+  await rmdirAll(d5, { recursive: true, force: true });
+}
+
 /* ⚠️ **先自检夹具的身份还在**，再删它。
    **这一条是上面那条教训的判据化**：整轮跑完夹具必须还是一个设计项目 ——
    有哪一节把它悄悄删了 / 改了，这里当场红，而不是等到下一个人

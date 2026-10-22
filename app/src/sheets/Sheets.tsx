@@ -144,13 +144,18 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
         这是一个<b className="text-text2">普通目录</b> —— 我们到现在<b className="text-text2">一个字节都没往里写</b>。
         要在这里建设计稿，得先放几样工具文件进来。
       </p>
-      {/* ⚠️ 这些数是**量出来的**（2026-10-22，`doc/24` §24.1 的表），不是估的。
+      {/* ⚠️ 这些数是**量出来的**（2026-10-22），不是估的。
           一个说谎的数比没有数糟，因为它看起来是读数 —— 而上一个版本的「只加 project.json」
-          正是这么来的。 */}
+          正是这么来的。
+          ⚠️ **写「约」不是含糊，是照实**：实测 749–759 KB，随目录里已有几份稿浮动
+          （入口页要装索引数据，壳要注入 `__resources`）。
+          写一个精确到个位的数反而是假精度。**文件数是 17 个，那个不浮动。**
+          ⚠️ `apitest` ⑰ 真接管一个干净目录、数盘上的字节，和这几个数对账 ——
+          `hometest` 那条只证明界面显示了这些数（**那是循环的**，它读的就是这里的字面量）。 */}
       <div className="rounded border border-border bg-panel2 divide-y divide-border text-[11px]">
         <div className="px-3 py-2 flex items-baseline gap-2">
           <b className="text-text2 w-[88px] shrink-0">预览壳 8 份</b>
-          <span className="text-muted w-[52px] shrink-0 text-right font-mono">420 KB</span>
+          <span className="text-muted w-[52px] shrink-0 text-right font-mono">约 420 KB</span>
           <span className="flex-1 leading-relaxed">属性面板、点选、就地编辑、版本对比、项目设置用它们。<b className="text-text2">没有它们这几样会 404</b></span>
         </div>
         <div className="px-3 py-2 flex items-baseline gap-2">
@@ -160,7 +165,7 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
         </div>
         <div className="px-3 py-2 flex items-baseline gap-2">
           <b className="text-text2 w-[88px] shrink-0">入口页 + 索引</b>
-          <span className="text-muted w-[52px] shrink-0 text-right font-mono">105 KB</span>
+          <span className="text-muted w-[52px] shrink-0 text-right font-mono">约 100 KB</span>
           <span className="flex-1 leading-relaxed">稿件索引那一页</span>
         </div>
         <div className="px-3 py-2 flex items-baseline gap-2">
@@ -170,7 +175,7 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
         </div>
         <div className="px-3 py-2 flex items-baseline gap-2 bg-panel">
           <b className="text-text2 w-[88px] shrink-0">合计</b>
-          <span className="w-[52px] shrink-0 text-right font-mono"><b className="text-text2">753 KB</b></span>
+          <span className="w-[52px] shrink-0 text-right font-mono"><b className="text-text2">约 750 KB</b></span>
           <span className="flex-1 text-muted leading-relaxed">17 个文件 · 都是生成物，删掉下次打开会重建</span>
         </div>
       </div>
