@@ -24,6 +24,7 @@ import { serveOf } from "./serve.js";
 import { readCheck, sha256, type CheckRecord } from "./check.js";
 import { renderCheck } from "./render.js";
 import { indexDataFile } from "./statedirs.js";
+import { ensureExcluded } from "./gitexclude.js";
 
 export type Health = "ok" | "warn" | "error" | "unchecked";
 
@@ -509,7 +510,24 @@ export function injectIndexData(src: string, data: IndexData, api?: { base: stri
   return src.slice(0, at) + "\n" + block + src.slice(at);
 }
 
-/** 让租户的 `.gitignore` 跟得上我们**实际部署了什么**。
+/** ⚠️⚠️ **这一件 2026-10-22 废掉了（B3）** —— 它往用户项目里的 `.gitignore`
+ *  **追加一段**，而这一整批的起因之一正是「我们改了他的 `.gitignore`」。
+ *  而且它让我写出了一句假话：接管弹窗上写着「`.gitignore` 也不动」，
+ *  而实测**有 `.gitignore` 的目录接管时它会被改**（14 → 415 字节）——
+ *  那句话假的原因是**我量接管时的样本里没有 `.gitignore`**
+ *  （第五次「判据在没有样本的时候测的是今天恰好没事」，而这次它让假话进了界面）。
+ *  设计侧是靠「两段互相矛盾」发现的，**不是靠量**。
+ *
+ *  换成 `gitexclude.ts`：写进那个仓库的 **`.git/info/exclude`** ——
+ *  只在本机生效、不进版本、不是用户的文件。
+ *  > **「不要改用户的文件」和「不要让他的 git 变脏」不是一对矛盾** ——
+ *  > git 自己就留了一个本机专用的排除位置。
+ *
+ *  函数留着**只为一件事**：它下面那段注释解释了「为什么不靠模板」，
+ *  而那条理由对新做法一样成立（部署了什么只有 `build_index` 自己知道）。
+ *  ⚠️ **没有调用方了** —— 真要删掉的话连那段理由一起删，所以先留着。
+ *
+ *  原注释：让租户的 `.gitignore` 跟得上我们**实际部署了什么**。
  *
  *  为什么不靠模板：`doc/_模板-租户 .gitignore` 是新建项目时拷一次的，
  *  之后我们加了 S7 和 IconGlyph，模板和已有项目就都落后了 ——
@@ -648,14 +666,13 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
     if (need) { await copyFile(from, to); shells.push(rel(p, to)); }
   }
 
-  /* 部署清单 = 我们真的往项目目录里写过的东西。交给 .gitignore 那一段。 */
-  const ignored = await ensureIgnored(p, [
-    "index.dc.html", "index-data.js", "_ds-tool/", "_runtime/", ".umbrastudio/", ".umbra" + "design/",   // 旧名：迁移后留着不删，也不该进用户仓库
-    "react.production.min.js", "react-dom.production.min.js", "support.js",
-    ...SHELLS,
-    ...SHELL_ASSETS,
-  ]);
-  if (ignored) prep.steps.push(`更新 ${ignored} 的工具产物忽略段`);
+  /* ⚠️ **排除规则写进那个仓库的 `.git/info/exclude`，不碰他的 `.gitignore`**（B3，2026-10-22）。
+     不在 git 仓库里就什么都不写；`.git` 是文件（worktree / submodule）时按 gitdir 指向去找，
+     指不到也不写。**失败一律是「没帮上」，不是「报错」** —— 见 `gitexclude.ts` 文件头。 */
+  const ex = await ensureExcluded(p.dir);
+  const ignored = ex.file;
+  if (ex.file) prep.steps.push(`排除规则写进 ${ex.file}（不动你的 .gitignore）`);
+  else if (ex.why) prep.steps.push(`没写排除规则：${ex.why}`);
 
   const byHealth: Record<Health, number> = { ok: 0, warn: 0, error: 0, unchecked: 0 };
   for (const d of data.drafts) byHealth[d.health]++;

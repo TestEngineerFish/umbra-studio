@@ -33,6 +33,7 @@ import { basename, join, resolve, sep } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { ASSET_KINDS, CACHE_KINDS, UD_DIRNAME, cacheRoot } from "./statedirs.js";
 import { sweepTmpUnder } from "./tmpfiles.js";
+import { dropExcluded } from "./gitexclude.js";
 import { gitDirOfProject } from "./gitkeep.js";
 import { listRecentProjects, removeRecentProject } from "./workspace.js";
 import { recordDirOf } from "./records.js";
@@ -180,6 +181,8 @@ export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: strin
  *  **把两件事做成一个按钮，等于让「整理列表」这个动作带上破坏力。** */
 export async function forgetProject(dir: string, confirm: boolean): Promise<{
   forgot: boolean; freedBytes: number; removedRecord: boolean; stillOnDisk: string | null;
+  /** `.git/info/exclude` 里我们那一段撤掉了没有（B3）。没有 git 仓库时就是 false */
+  excludeDropped: boolean;
 }> {
   if (confirm !== true) {
     throw bad("confirm", "这一件会把我们为这个项目存的历史删掉，退不回来", "确认之后再调一次：confirm: true");
@@ -193,6 +196,12 @@ export async function forgetProject(dir: string, confirm: boolean): Promise<{
     freedBytes += await sizeOf(join(recordsRoot(), recId));
     dropRecord(recId);
   }
+  /* ⚠️ **顺手把 `.git/info/exclude` 里我们那一段撤掉**（B3，geek-99 要求「有清理入口就删」）。
+     「忘掉这个项目」是**唯一一个说得通的撤销点** —— 它的语义就是
+     「我们为它存的东西全清掉」，而那一段正是我们为它写下的东西之一。
+     ⚠️ 它**不在用户的项目目录里**（在 `.git/info/`），所以不违反
+     「不碰用户目录」—— 而且那一段本来就是我们写的，只删带我们标记的那一段。 */
+  const ex = await dropExcluded(dir);
   const { removed } = await removeRecentProject(dir);
   /* ⚠️ **照实说还有什么没删**：B1 之前写下的那一份旁数据还在用户的项目目录里
      （Q72 拍板不做存量迁移 —— 旧目录留在原地，**不迁也不删**），
@@ -200,7 +209,7 @@ export async function forgetProject(dir: string, confirm: boolean): Promise<{
      不说的话用户会以为「忘掉」= 全删干净了。 */
   const ud = join(resolve(dir), UD_DIRNAME);
   const stillOnDisk = existsSync(ud) && ASSET_ENTRIES.some((n) => existsSync(join(ud, n))) ? ud : null;
-  return { forgot: true, freedBytes, removedRecord: removed, stillOnDisk };
+  return { forgot: true, freedBytes, removedRecord: removed, stillOnDisk, excludeDropped: ex.removed };
 }
 
 /** 清掉**指向某个目录树下**的全部 git 兜底仓库（M14-6）。

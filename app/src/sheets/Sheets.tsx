@@ -46,6 +46,19 @@ function Sheet({ head, body, foot, onClose, wide }: { head: React.ReactNode; bod
 const Field = ({ label, children, note, err }: { label: string; children: React.ReactNode; note?: string; err?: boolean }) => <label className="flex flex-col gap-1"><span className="text-muted">{label}</span>{children}{note && <span className={err ? "text-err" : "text-muted"}>{note}</span>}</label>;
 const inputCls = "h-8 px-3 rounded border border-border bg-bg outline-none focus:border-accent";
 
+/** 接管那张表的一行。**文件数是必填的** —— 设计侧第 59 封 §零 A 抓到的那条：
+ *  原来那张表只有「预览壳 8 份」这种混在标签里的数，于是**分项加不到合计**，
+ *  而我自己从来没把它加一遍。
+ *  > 把文件数变成一个必填的 prop，「忘了数」在类型上就不成立了
+ *  > （和弹窗三段必填 props 同一个做法）。 */
+const Row = ({ n, label, kb, why }: { n: number; label: string; kb: string; why: React.ReactNode }) => (
+  <div className="px-3 py-2 flex items-baseline gap-2">
+    <b className="text-text2 w-[96px] shrink-0">{label} {n} 个</b>
+    <span className="text-muted w-[52px] shrink-0 text-right font-mono">{kb}</span>
+    <span className="flex-1 leading-relaxed">{why}</span>
+  </div>
+);
+
 /** 新建稿件：走 create_draft（唯一写入口），建完自动选中 */
 interface TemplateRow { id: string; name: string; sub?: string }
 
@@ -153,44 +166,46 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
           ⚠️ `apitest` ⑰ 真接管一个干净目录、数盘上的字节，和这几个数对账 ——
           `hometest` 那条只证明界面显示了这些数（**那是循环的**，它读的就是这里的字面量）。 */}
       <div className="rounded border border-border bg-panel2 divide-y divide-border text-[11px]">
-        <div className="px-3 py-2 flex items-baseline gap-2">
-          <b className="text-text2 w-[88px] shrink-0">预览壳 8 份</b>
-          <span className="text-muted w-[52px] shrink-0 text-right font-mono">约 420 KB</span>
-          <span className="flex-1 leading-relaxed">属性面板、点选、就地编辑、版本对比、项目设置用它们。<b className="text-text2">没有它们这几样会 404</b></span>
-        </div>
-        <div className="px-3 py-2 flex items-baseline gap-2">
-          <b className="text-text2 w-[88px] shrink-0">运行时副本 4 份</b>
-          <span className="text-muted w-[52px] shrink-0 text-right font-mono">226 KB</span>
-          <span className="flex-1 leading-relaxed"><code className="font-mono">support.js</code> 和两个 React。稿自己按相对路径引它们，<b className="text-text2">没有它们这份稿双击打开是白屏</b></span>
-        </div>
-        <div className="px-3 py-2 flex items-baseline gap-2">
-          <b className="text-text2 w-[88px] shrink-0">入口页 + 索引</b>
-          <span className="text-muted w-[52px] shrink-0 text-right font-mono">约 100 KB</span>
-          <span className="flex-1 leading-relaxed">稿件索引那一页</span>
-        </div>
-        <div className="px-3 py-2 flex items-baseline gap-2">
-          <b className="text-text2 w-[88px] shrink-0">project.json</b>
-          <span className="text-muted w-[52px] shrink-0 text-right font-mono">一行</span>
-          <span className="flex-1 leading-relaxed">「这个目录是设计项目」的标记</span>
-        </div>
+        {/* ⚠️⚠️ **每一行都写文件数，而且加起来必须等于 17**（设计侧第 59 封 §零 A）。
+            原来这张表只有四行：`8 + 4 + 2 + 1 = 15 ≠ 17` ——
+            我把 `icons.js`（图标表）**折进了「预览壳」那一行**而没有数它，
+            又**整个漏掉了 `_ds-tool/tokens.css`**（皮肤）。
+            > **一张「合计」对得上、而分项加不起来的表，是一张还没被人加过的表。**
+            设计侧是**把数加了一遍**发现的 —— 那是我自己从来没做的一步。 */}
+        <Row n={8} label="预览壳" kb="413 KB" why={<>属性面板、点选、就地编辑、版本对比、项目设置用它们。<b className="text-text2">没有它们这几样会 404</b></>} />
+        <Row n={1} label="图标表" kb="8 KB" why={<><code className="font-mono">icons.js</code> —— 预览壳里的图标靠它，缺了那几份稿<b className="text-text2">一个图标都画不出来</b></>} />
+        {/* ⚠️ 「4 份」而正文只列了 3 样（`support.js` 和两个 React）—— 漏的是点选桥，
+            设计侧也点出来了。**一个写着「4 份」而只列了 3 样的说明，比不列更坏**。 */}
+        <Row n={4} label="运行时副本" kb="226 KB" why={<><code className="font-mono">support.js</code>、两个 React、点选桥。稿自己按相对路径引它们，<b className="text-text2">没有它们这份稿双击打开是白屏</b></>} />
+        <Row n={2} label="入口页 + 索引" kb="100 KB" why="稿件索引那一页" />
+        <Row n={1} label="皮肤" kb="2 KB" why={<><code className="font-mono">_ds-tool/tokens.css</code> —— 稿里按这个相对路径引它</>} />
+        <Row n={1} label="project.json" kb="一行" why="「这个目录是设计项目」的标记" />
         <div className="px-3 py-2 flex items-baseline gap-2 bg-panel">
-          <b className="text-text2 w-[88px] shrink-0">合计</b>
+          <b className="text-text2 w-[96px] shrink-0">合计 17 个</b>
           <span className="w-[52px] shrink-0 text-right font-mono"><b className="text-text2">约 750 KB</b></span>
-          <span className="flex-1 text-muted leading-relaxed">17 个文件 · 都是生成物，删掉下次打开会重建</span>
+          <span className="flex-1 text-muted leading-relaxed">都是生成物，删掉下次打开会重建</span>
         </div>
       </div>
       <p className="text-muted leading-relaxed">
         <b className="text-text2">你原来的文件一个字节都不会被改</b>，<code className="font-mono text-[11px]">.gitignore</code> 也不动
-        —— 排除规则写在我们自己那边。快照、评论、回收站这些也都不在这个目录里。
+        —— 这个目录在 git 仓库里的话，排除规则记在本机那份 <code className="font-mono text-[11px]">.git/info/exclude</code> 里（不进版本）。
+        快照、评论、回收站这些也都不在这个目录里。
       </p>
       {/* ⚠️ 这一段回答的是用户一定会想的那句「我就建一份稿，非得改造整个目录吗」。
           不答的话他只会觉得这是个强制推销。答案是**算得出来的**，所以把算式给他。 */}
+      {/* ⚠️ **默认只留一句，算账收进可展开里**（设计侧 §5）：
+          「正文 3 太长，用户还没问就先答了」。那段算账一个字没删，只是不默认占屏。 */}
       <p className="text-muted leading-relaxed">
-        不接管只建那一份行不行？<b className="text-text2">建一份稿本身就要写上面那 226 KB 的运行时副本</b>，
-        而预览壳不在的话属性面板和点选会 404 ——
-        那等于写了 226 KB 只换来半个能用的编辑器，所以这里不给那条路。
-        只是<b className="text-text2">看、改已有的文件、圈给 AI</b> 一直不需要接管。
+        只是<b className="text-text2">看、改已有的文件、圈给 AI</b>，一直不需要接管。
       </p>
+      <details className="text-muted leading-relaxed">
+        <summary className="cursor-pointer hover:text-text">为什么不能只建这一份？</summary>
+        <p className="mt-1.5">
+          <b className="text-text2">建一份稿本身就要写上面那 226 KB 的运行时副本</b>，
+          而预览壳不在的话属性面板和点选会 404 ——
+          那等于写了 226 KB 只换来半个能用的编辑器，所以这里不给那条路。
+        </p>
+      </details>
     </>} />;
 
   return <Sheet onClose={onClose}
@@ -326,9 +341,10 @@ export function NewProjectSheet({ hub, host, initialDir, onClose, onOpen }: { hu
         `CLAUDE.md` §8 第 7 条：**一个说谎的数比没有数糟，因为它看起来是读数**；
         而这里更糟，因为用户是照着这句话决定要不要把自己的文档目录交给我们的。 */}
     <div className="rounded border border-border bg-panel2 px-3 py-2 leading-relaxed">
-      <b className="text-text2">但它会往这个目录里加一批工具文件</b> —— 入口页、8 份界面壳、运行时副本，
-      实测 <b className="text-text2">18 个文件 · 约 754 KB</b>；
-      目录里有 <code className="font-mono text-[11px]">.gitignore</code> 的话，还会往它<b className="text-text2">追加一段</b>把这些排除掉。
+      <b className="text-text2">但它会往这个目录里加一批工具文件</b> —— 入口页、8 份预览壳、运行时副本，
+      实测 <b className="text-text2">18 个文件 · 约 750 KB</b>。
+      <br /><b className="text-text2">你的 <code className="font-mono text-[11px]">.gitignore</code> 不动</b> ——
+      这个目录在 git 仓库里的话，排除规则记在本机那份 <code className="font-mono text-[11px]">.git/info/exclude</code> 里（不进版本）。
       <br />这些都是生成物，删掉下次打开会重建。
       <span className="text-muted">快照、评论、回收站、缓存<b className="text-text2">不在</b>这个目录里（在软件自己那边）。</span>
     </div>

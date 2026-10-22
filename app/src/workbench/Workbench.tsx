@@ -69,7 +69,12 @@ function ReadOnlyBar({ core, editable, onUnlocked }: { core: Core; editable?: bo
   return (
     <div data-ud="readonly-bar" className="shrink-0 h-8 px-3 flex items-center gap-2 text-[11px] border-b border-border bg-panel2">
       <span className="text-muted truncate flex-1 min-w-0">
-        <b className="text-text2">只读预览</b> —— 这些文件不在你的项目里，所以我们默认<b className="text-text2">不动它们</b>（连 AI 也不行）。
+        {/* ⚠️ **「这些文件不在你的项目里」改掉了**（设计侧第 59 封 §3）：
+            用户此刻看到的正是这个目录，**在他眼里这就是他的项目** ——
+            这句话会让他困惑；而且我们真正的理由也不是这个。
+            照我们自己那句「在我们还不确定你想不想让我们改的时候，先别改」来写。
+            > **一句解释，说的必须是真实的理由，而不是一个听起来像理由的事实。** */}
+        <b className="text-text2">只读预览</b>：这是随手打开的目录，我们默认<b className="text-text2">不动里面的文件</b>（连 AI 也不行）。
       </span>
       <button className="btn sm" disabled={busy} data-ud="unlock-btn" onClick={() => void unlock()}>
         {busy ? "正在解锁…" : "开始编辑"}
@@ -92,9 +97,14 @@ function ReadOnlyBar({ core, editable, onUnlocked }: { core: Core; editable?: bo
  *  而「新建稿件」那一问也要知道同一件事。两份 state 的话接管完一边翻面一边不翻，
  *  症状是「横条退场了，而新建稿件还在问要不要接管」。
  *  现在由 `Workbench` 持有，这里只收 props。 */
-function AdoptBar({ project, core, designProject, onAdopted }: { project: ProjectHandle; core: Core; designProject?: boolean; onAdopted: () => void }) {
+function AdoptBar({ project, core, designProject, hasDrafts, onAdopted }: { project: ProjectHandle; core: Core; designProject?: boolean; hasDrafts: boolean; onAdopted: () => void }) {
   const [busy, setBusy] = useState(false);
   if (designProject !== false) return null;
+  /* ⚠️ **只有目录里真有 `.dc.html` 才出这条**（设计侧第 59 封 §4）。
+     纯 md / 纯图片的目录永远不出 —— 否则用户看文档时会被一条**和他无关**的横条一直挂着。
+     没有 `.dc.html` 却想新建稿件的人，走「新建稿件 → 先接管这个目录？」那条路就会遇到接管。
+     > **一条给不出下一步的提示，挂在那里就只是噪音。** */
+  if (!hasDrafts) return null;
   const adopt = async () => {
     setBusy(true);
     const r = await core.post<{ deployed: number | null }>("adopt_project", { dir: project.dir });
@@ -106,7 +116,11 @@ function AdoptBar({ project, core, designProject, onAdopted }: { project: Projec
   return (
     <div data-ud="adopt-bar" className="shrink-0 h-8 px-3 flex items-center gap-2 text-[11px] border-b border-border bg-panel2">
       <span className="text-muted truncate flex-1 min-w-0">
-        这是一个<b className="text-text2">普通目录</b> —— 我们<b className="text-text2">没往里写任何东西</b>。
+        {/* ⚠️ **「没往里写任何东西」改掉了**（设计侧 §零 C）：这条横条是**解锁之后**才出的，
+            那时用户可能已经通过我们改过他的文件 —— 这句话就成了假的。
+            改成「还没放过**自己的**文件」：那句话在解锁之后依然为真。
+            > **一句在某一段成立的话，挪到下一段就可能变成假的** —— 三段拆分之后要逐句重读。 */}
+        这是一个<b className="text-text2">普通目录</b>，我们<b className="text-text2">还没往里放过自己的文件</b>。
         要预览 <code className="font-mono">.dc.html</code> 设计稿的话，得先放几样工具文件进来。
       </span>
       <button className="btn sm" disabled={busy} data-ud="adopt-btn" onClick={() => void adopt()}>
@@ -826,7 +840,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                  所以在还只读的时候摆一颗「接管为设计项目」，等于让人先点一个
                  **会往他目录里写 750 KB** 的按钮来解除一个「不动你文件」的保护。顺序反了。 */}
               <ReadOnlyBar core={core} editable={editable} onUnlocked={() => { setUnlockedHere(true); setLocalTick((t) => t + 1); }} />
-              {editable !== false && <AdoptBar project={project} core={core} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />}
+              {editable !== false && <AdoptBar project={project} core={core} designProject={designProject} hasDrafts={store.drafts.length > 0} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />}
             <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file} isDirty={projDirty.has}
               /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
                  图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。
@@ -992,8 +1006,8 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
               const bad = r.data?.failed ?? [];
               /* ⚠️ **成了几份、败了几份要分开说**：一个「已复制」里藏着三份没进来，
                  就是又一条假回执（§23.1 那一族）。 */
-              if (bad.length) toast(`复制了 ${n} 份，${bad.length} 份没成`, bad.map((x) => `${x.path}：${x.why}`).join("\n"), "error");
-              else toast(`已复制 ${n} 份`, d.destDir || "项目根", "ok");
+              if (bad.length) toast(`复制了 ${n} 项，${bad.length} 项没成`, bad.map((x) => `${x.path}：${x.why}`).join("\n"), "error");
+              else toast(`已复制 ${n} 项`, d.destDir || "项目根", "ok");
               await store.fetchDrafts();
               setLocalTick((t) => t + 1);
               if (n === 1 && r.data?.written[0]) open(r.data.written[0]);

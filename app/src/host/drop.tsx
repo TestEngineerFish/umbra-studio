@@ -38,6 +38,25 @@ export function pathsFromDrop(host: HostAdapter, e: DragEvent | React.DragEvent)
   return host.pathsForDrop(Array.from(dt.files));
 }
 
+/** 拖进来的**全都是文件夹**吗（设计侧第 59 封 §1：文件和文件夹的说法要分两句）。
+ *
+ *  ⚠️ **渲染进程没有 fs，所以这件事不能「看路径猜」** —— 没扩展名不等于是目录
+ *  （`Makefile`、`LICENSE` 都没有）。用 `webkitGetAsEntry().isDirectory`：
+ *  它是 drop 事件里**同步可用**的，而且问的是系统给的真实类型。
+ *  ⚠️ **必须在 drop 事件的同步段里调** —— `dataTransfer` 一出事件处理器就失效，
+ *  异步之后再问拿到的是空。所以它和 `pathsFromDrop` 一起在那一刻取完。
+ *  ⚠️ 问不出来（没有 `items`、或者浏览器不给）就回 `false` ——
+ *  **宁可说那句对文件成立的话**，因为拖文件是绝大多数。 */
+export function allDirsInDrop(e: DragEvent | React.DragEvent): boolean {
+  const dt = (e as DragEvent).dataTransfer ?? (e as React.DragEvent).dataTransfer;
+  if (!dt?.items?.length) return false;
+  const entries = Array.from(dt.items)
+    .filter((it) => it.kind === "file")
+    .map((it) => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null));
+  if (!entries.length || entries.some((x) => !x)) return false;
+  return entries.every((x) => x!.isDirectory);
+}
+
 /** 「正在往这里拖文件」。
  *
  *  ⚠️ **`dragleave` 会在子元素之间来回触发**（鼠标从一个子节点移到另一个子节点，
@@ -124,8 +143,10 @@ export function useWindowFileDrop(onDrop: (e: DragEvent) => void, enabled = true
  *  「在新窗口打开」什么都不动 · 「在当前窗口打开」会离开当前项目 ·
  *  「复制进来」会往他的项目里写文件。最靠右的主按钮是当前上下文里最可能的那个，
  *  但**会写文件的那一项一定带上会写到哪里**。 */
-export function DropAsk({ paths, kind, destLabel, host, onClose, onOpenHere, onNewWindow, onCopy }: {
+export function DropAsk({ paths, kind, destLabel, allDirs, host, onClose, onOpenHere, onNewWindow, onCopy }: {
   paths: string[];
+  /** 拖进来的全是文件夹吗 —— 只影响正文那一句的说法（设计侧 §1） */
+  allDirs?: boolean;
   /** `"outside"` = 落在工作台别处（场景 ①） · `"tree"` = 落在文件列里（场景 ③） */
   kind: "outside" | "tree";
   /** 场景 ③ 的目标目录给人看的名字（项目根写「项目根」） */
@@ -156,7 +177,12 @@ export function DropAsk({ paths, kind, destLabel, host, onClose, onOpenHere, onN
         <div className="px-5 flex flex-col gap-3">
           <p className="leading-relaxed">
             拖进来的是 <b className="text-text2 break-all">{one}</b>
-            {paths.length > 1 && <span className="text-muted">（{paths.map((x) => x.split("/").pop()).join(" · ")}）</span>}。
+            {/* ⚠️ **最多列 3 个名字**（设计侧 §1）：拖 12 个进来时那一串会把弹窗撑开，
+                而第 4 个之后的名字对「要不要打开」这个决定没有帮助。 */}
+            {paths.length > 1 && (
+              <span className="text-muted">（{paths.slice(0, 3).map((x) => x.split("/").pop()).join(" · ")}
+                {paths.length > 3 ? ` 等 ${paths.length} 项` : ""}）</span>
+            )}。
           </p>
           {kind === "tree" ? (
             <p className="text-muted leading-relaxed">
@@ -166,7 +192,10 @@ export function DropAsk({ paths, kind, destLabel, host, onClose, onOpenHere, onN
             </p>
           ) : (
             <p className="text-muted leading-relaxed">
-              <b className="text-text2">打开它不会复制任何文件</b> —— 我们只是以它所在的位置为根来看。
+              {/* ⚠️ **文件和文件夹要分两句**（设计侧 §1）：「以它所在的位置为根」
+                  只对文件成立；拖进来是文件夹时，根就是它自己。 */}
+              <b className="text-text2">打开它不会复制任何文件</b> —— 我们
+              {allDirs ? <>直接以这{paths.length > 1 ? "几" : "个"}个文件夹为根来看。</> : <>只是以它所在的文件夹为根来看。</>}
               <br />要把它<b className="text-text2">复制进当前项目</b>的话，把它拖到左边的<b className="text-text2">文件列</b>里。
             </p>
           )}
@@ -178,10 +207,18 @@ export function DropAsk({ paths, kind, destLabel, host, onClose, onOpenHere, onN
         </div>
         <div className="px-5 pt-3 pb-5 mt-4 flex items-center justify-end gap-2 border-t border-border">
           <button className="btn" onClick={onClose}>取消 Esc</button>
-          {canWin && <button className="btn" data-ud="drop-newwin" onClick={onNewWindow}>在新窗口里打开</button>}
+          {/* ⚠️⚠️ **主钮是「在新窗口里打开」**（设计侧第 59 封裁的）：它是**不破坏任何东西**的那一个。
+              ⚠️ 而设计侧给的后果句「当前项目会关掉」**我没照抄，因为它在 M15-1 S2 之后不成立了** ——
+              它审的是 S2 之前的行为（那时候打开另一个项目确实会顶掉当前那个）。
+              现在「在当前窗口打开」实际做的是**把它加到这个窗口**，当前项目不关。
+              所以那颗次钮**改名**叫「加到这个窗口」，后果句去掉。
+              > **照抄一条正确的裁定，可能写出一句错的话** —— 裁定基于的那个行为变了。 */}
           {kind === "outside" && onOpenHere && (
-            <button className="btn primary" data-ud="drop-here" onClick={onOpenHere}>在当前窗口打开</button>
+            <button className="btn" data-ud="drop-here" onClick={onOpenHere}>加到这个窗口</button>
           )}
+          {canWin
+            ? <button className="btn primary" data-ud="drop-newwin" onClick={onNewWindow}>在新窗口里打开</button>
+            : null}
           {kind === "tree" && onCopy && (
             <button className="btn primary" data-ud="drop-copy" onClick={onCopy}>复制进来</button>
           )}

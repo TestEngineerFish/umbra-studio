@@ -43,9 +43,25 @@ function RowMenu({ p, onReveal, onRemove, onForget }: {
         <PopItem label="从列表移除" hint="不动文件" onPick={() => { pop.close("pick"); onRemove(); }} />
         {sure ? (
           <>
+            {/* ⚠️⚠️ **这一段 2026-10-22 重写了，而原来那版有两处和实际行为对不上。**
+                ① **它把要删的东西说少了。** 原文只写「版本历史（git 兜底仓库）」，
+                   而 `forgetProject` 实际 `dropRecord` 掉**整个 `records/<ID>/`**：
+                   快照 · 评论 · 回收站 · 模板 · 暂存草稿 · **AI 会话** —— 一样都没提。
+                   > **一个二次确认把要删的东西说少了，比没有确认糟** ——
+                   > 用户是照着那句话按下「真的忘掉」的，而他以为保住的评论和会话已经没了。
+                ② 「目录里那份 `.umbrastudio/` 也不动」**指着一个不存在的东西**
+                   （B1/B2 之后项目里没有它了），而这句话留着**反过来暗示我们往他目录里放了一个** ——
+                   恰恰是我们花两天移走的那件事。旧那一份还可能在，但回执里有 `stillOnDisk`
+                   专门报它，字面该跟着那个字段说、不该写死。
+
+                ⚠️ **顺序按「最容易让人意外」排**（设计侧第 59 封 §9 裁的）：
+                AI 会话排第一 —— 它是最不像「版本历史」、而确实会被删掉的那一样。 */}
             <div className="px-2 py-1.5 text-[11px] leading-relaxed text-muted whitespace-normal">
-              会删掉：<b className="text-text2">这条打开记录</b> + <b className="text-text2">我们为它存的版本历史</b>（git 兜底仓库）。退不回来。
-              <br />你目录里的文件<b className="text-text2">一个字节都不动</b>；目录里那份 <code className="font-mono">.umbrastudio/</code> 也不动。
+              会删掉我们为它存的<b className="text-text2">全部历史</b>，退不回来：
+              <br />· <b className="text-text2">AI 会话</b> · 节点评论 · 稿件的版本快照
+              <br />· 没落盘的草稿 · 回收站 · 模板
+              <br />· 这条打开记录，以及我们为它单独存的 git 兜底仓库
+              <br /><br />你目录里的文件<b className="text-text2">一个字节都不动</b>，删的全是我们自己目录里的东西。
             </div>
             <PopItem label="真的忘掉" danger onPick={() => { pop.close("pick"); onForget(); }} />
           </>

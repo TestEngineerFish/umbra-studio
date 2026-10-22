@@ -10,7 +10,7 @@ import { dirtyStore, guardUnsaved } from "./ui/dirty";
 import { auditKindsOrThrow } from "./kinds";
 import { loadPlugins } from "./kinds/plugin/loader";
 import { Workbench } from "./workbench/Workbench";
-import { DropAsk, pathsFromDrop, useWindowFileDrop } from "./host/drop";
+import { DropAsk, allDirsInDrop, pathsFromDrop, useWindowFileDrop } from "./host/drop";
 
 /** 两个核心句柄：hub（托管本页的服务，首页与全局路由走它）与 project（当前项目自己的服务）。
  *  浏览器入口（npm run ui -- <项目>）时两者是同一个服务；桌面壳里 hub 不属于任何项目，项目服务由 open_project 按需起。 */
@@ -34,10 +34,19 @@ export default function App() {
     return [{ handle: h, core: new Core(h.url, h.token, h.ws) }];
   });
   const [activeDir, setActiveDir] = useState<string | null>(() => (b && b.dir ? b.dir : null));
-  /** 一个窗口里最多并存几个（`doc/25` 取舍 C，geek-99 定「先给 4 并标【判断】」）。
-   *  ⚠️ **这个数没有量过** —— 没有「几个项目开始卡」的读数，它是一个保守的起点。
-   *  S2 做完要量一次「开 4 个」的内存与切换耗时，太重就降（那次读数补进 `doc/25` §四 C）。 */
-  const MAX_PROJECTS = 4;
+  /** 一个窗口里最多并存几个（`doc/25` 取舍 C）。
+   *
+   *  **4 → 6，依据是量出来的**（2026-10-22，S2 做完之后）：
+   *  并存 1 → 4 时 DOM 节点 142 → 532，**每多一个项目只多 130 个**；
+   *  JS 堆在 `performance.memory` 的取整精度下看不出变化；切换 35–64 ms。
+   *  geek-99 据此把上限从 4 调到 6。
+   *
+   *  ⚠️ **那次读数只在它量到的范围内成立**，三件没量到的照实记在 `doc/25` §四 C：
+   *  ① 隐藏的工作台每个还占**一条 WS**，而空闲时的开销没量；
+   *  ② 样本是每个项目 12 个文件的小目录，**没量过并存两个几千文件的项目**；
+   *  ③ `performance.memory` 取整太粗，真实内存差要用别的办法量。
+   *  > **「6 很便宜」是一个有范围的结论，不是一个性质。** */
+  const MAX_PROJECTS = 6;
   const [page, setPage] = useState<"home" | "work" | "market">(() => (location.pathname.endsWith("/home") || !(b && b.name) ? "home" : "work"));
   const [layout, setLayoutRaw] = useState<LayoutState>(loadLayout);
   /** 打开项目之后要自动选中的那一份（「打开方式」打开单个文件时用，M14-5）。
@@ -45,7 +54,7 @@ export default function App() {
   const [openAt, setOpenAt] = useState<string | null>(null);
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
   /** 从系统里拖进来、还没决定怎么处理的那几个路径（场景 ①，M14-5 下半） */
-  const [dropped, setDropped] = useState<string[] | null>(null);
+  const [dropped, setDropped] = useState<{ paths: string[]; allDirs: boolean } | null>(null);
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
   /** 当前这个项目的 **handle + core 绑在一起那个对象**（M15-1 S1）。
@@ -184,7 +193,8 @@ export default function App() {
       return;
     }
     if (!project || page !== "work") { void open(paths[0]!); return; }
-    setDropped(paths);
+    /* ⚠️ `allDirsInDrop` **必须在这一刻问**（drop 事件的同步段里）—— 见它的注释 */
+    setDropped({ paths, allDirs: allDirsInDrop(e) });
   }, [host, project, page, open]);
   useWindowFileDrop(onFileDrop);
 
@@ -272,17 +282,20 @@ export default function App() {
             </div>
           ))}
       {dropped && host && (
-        <DropAsk paths={dropped} kind="outside" host={host}
+        <DropAsk paths={dropped.paths} allDirs={dropped.allDirs} kind="outside" host={host}
           onClose={() => setDropped(null)}
-          onOpenHere={() => { const ps = dropped; setDropped(null); void open(ps[0]!); }}
+          onOpenHere={() => { const ps = dropped.paths; setDropped(null); void open(ps[0]!); }}
           onNewWindow={() => {
-            const ps = dropped; setDropped(null);
+            const ps = dropped.paths; setDropped(null);
             void host.openInNewWindow(ps).then((okWin) => {
-              /* ⚠️ 开不成要说出来 —— 回执是 `false` 时静静什么都不发生，
-                 就是又一条「点了没反应」。 */
               if (okWin) return;
-              toast("没能开新窗口", "已经在当前窗口里打开了", "error");
-              void open(ps[0]!);
+              /* ⚠️⚠️ **不再自动退回当前窗口**（设计侧第 59 封 §零 D）。
+                 原来开不成就 `open(ps[0])` —— 那是**替用户做了他恰恰没点的那个动作**：
+                 他点的是「在新窗口里打开」，而我们把它变成了「加到这个窗口」。
+                 > **一个降级方案，如果做的是用户刚刚避开的那件事，那它不是降级，是改主意。**
+                 现在只说一句，并把那颗钮给回他 —— 让他自己点。 */
+              setDropped({ paths: ps, allDirs: false });
+              toast("没能开新窗口", "当前项目还开着，什么都没动 —— 可以选「加到这个窗口」", "error");
             });
           }} />
       )}

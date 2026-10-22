@@ -1265,13 +1265,25 @@ console.log("\n⑰ 接管弹窗上那几个数是真的（非循环对账）");
   const sheet = await rf5(j5(TOOL_ROOT, "app", "src", "sheets", "Sheets.tsx"), "utf8");
   const said = (re: RegExp) => Number(re.exec(sheet)?.[1] ?? NaN);
   const saidTotal = said(/<b className="text-text2">约 (\d+) KB<\/b><\/span>/);
-  const saidFiles = said(/(\d+) 个文件 · 都是生成物/);
-  const saidRt = said(/运行时副本 4 份<\/b>\s*\n?\s*<span[^>]*>(\d+) KB/);
-  const saidShells = said(/预览壳 8 份<\/b>\s*\n?\s*<span[^>]*>约 (\d+) KB/);
+  /* ⚠️ 表结构变了（设计侧第 59 封 §零 A：每一行都要写文件数），所以这里跟着改。
+     **而它红在这一刻是对的** —— 它钉的是「界面上那个数 = 实测」，
+     表一改它就该来问一次。顺带现在能钉得更紧：**分项加起来也要等于合计**。 */
+  const saidFiles = said(/合计 (\d+) 个/);
+  const rowCounts = [...sheet.matchAll(/<Row n=\{(\d+)\}/g)].map((m) => Number(m[1]));
+  /* 表改成了 `<Row n={…} label="…" kb="…" …/>`，所以按 label 抽 */
+  const rowKb = (label: string) => said(new RegExp(`<Row n=\\{\\d+\\} label="${label}" kb="(\\d+) KB"`));
+  const saidRt = rowKb("运行时副本");
+  const saidShells = rowKb("预览壳");
   ok(!Number.isNaN(saidTotal) && !Number.isNaN(saidFiles) && !Number.isNaN(saidRt),
      "（前提）从弹窗源码里**真的抽出了**那三个数（抽不出来的话下面几条测的是 NaN）",
      `${saidFiles} 个 · ${saidTotal} KB · 运行时 ${saidRt} KB`);
   ok(saidFiles === files5, "**接管弹窗说的文件数 = 实测文件数**", `界面 ${saidFiles} · 实测 ${files5}`);
+  /* ⚠️ **分项也要加得起来**（设计侧把数加了一遍才发现原来 8+4+2+1=15≠17）。
+     > 一张「合计」对得上、而分项加不起来的表，是一张还没被人加过的表。 */
+  const rowSum = rowCounts.reduce((a, b) => a + b, 0);
+  ok(rowCounts.length > 0 && rowSum === files5,
+     "**那张表的分项加起来 = 实测文件数**（不是只有合计那一行对）",
+     `${rowCounts.join(" + ")} = ${rowSum} · 实测 ${files5}`);
   /* ⚠️ 容差 12 KB 不是放松，是**那个数本来就浮动**：实测 749–759 KB，
      随目录里已有几份稿变（入口页要装索引数据、壳要注入 `__resources`）。
      所以界面上写的是「约 750 KB」——**写一个精确到个位的数反而是假精度**。
@@ -1279,7 +1291,14 @@ console.log("\n⑰ 接管弹窗上那几个数是真的（非循环对账）");
   ok(Math.abs(saidTotal - kb5) <= 12, "**接管弹窗说的总字节 ≈ 实测总字节**（±12 KB，那个数随稿件数浮动 749–759）", `界面约 ${saidTotal} KB · 实测 ${kb5} KB`);
   ok(Math.abs(saidRt - rtKb5) <= 2, "**「运行时副本 4 份」那个数 = 实测那四件的字节**（这一项不浮动，按等号钉）", `界面 ${saidRt} KB · 实测 ${rtKb5} KB`);
   const shellsKb5 = Math.round(new5.filter((x) => /^(S\d|IconGlyph)/.test(x[0]) || x[0] === "icons.js").reduce((a, x) => a + x[1], 0) / 1024);
-  ok(Math.abs(saidShells - shellsKb5) <= 12, "**「预览壳 8 份」那个数 ≈ 实测那 8 份 + 图标表**", `界面约 ${saidShells} KB · 实测 ${shellsKb5} KB`);
+  /* ⚠️ 「预览壳」那一行现在**不含图标表**了（设计侧要求 `icons.js` 单列一行），
+     所以这里也要把它从实测里分出来 —— **判据的分组要和界面的分组一致**，
+     不然它会红在「我们按两种方式切同一堆文件」上。 */
+  const iconsKb5 = Math.round(new5.filter((x) => x[0] === "icons.js").reduce((a, x) => a + x[1], 0) / 1024);
+  ok(Math.abs(saidShells - (shellsKb5 - iconsKb5)) <= 12, "**「预览壳」那一行的数 ≈ 实测那 8 份（不含图标表）**",
+     `界面 ${saidShells} KB · 实测 ${shellsKb5 - iconsKb5} KB（8 份壳）+ ${iconsKb5} KB（图标表单列）`);
+  ok(Math.abs(rowKb("图标表") - iconsKb5) <= 2, "**「图标表」那一行的数 = 实测 `icons.js`**",
+     `界面 ${rowKb("图标表")} KB · 实测 ${iconsKb5} KB`);
   await rmdirAll(d5, { recursive: true, force: true });
 }
 
@@ -1472,6 +1491,129 @@ console.log("\n⑲ 只读预览 + 一键解锁（M14-7）");
     await md9(ad9(legacy3, "staged"), { recursive: true });
     ok(isEditable(legacy3) === false, "**只有 chats / staged 不算**（聊过天、打过字 ≠ 落过盘）");
     for (const d of [legacy, legacy2, legacy3]) await rm9(d, { recursive: true, force: true });
+  }
+}
+
+/* ── ⑳ 排除规则写进 `.git/info/exclude`，不碰用户的 `.gitignore`（B3，2026-10-22）──
+   ⚠️⚠️ **这一节的第一条是一句假话的判据化。** 接管弹窗上原来写着
+   「`.gitignore` 也不动」，而实测**有 `.gitignore` 的目录接管时它会被改**
+   （14 → 415 字节）—— 那句话假的原因是**我量接管时的样本里没有 `.gitignore`**
+   （第五次「判据在没有样本的时候，测的是今天恰好没事」，
+   而这一次它让假话进了用户看得见的界面）。
+   **所以这一节的样本里必须有 `.gitignore`** —— 这就是它存在的全部理由。
+   ⚠️ 设计侧是靠「§5 和 §6 两段互相矛盾」发现它的，**不是靠量** ——
+   内部一致性检查抓得到样本抓不到的东西。 */
+console.log("\n⑳ 排除规则进 .git/info/exclude，不碰用户的 .gitignore（B3）");
+{
+  const { mkdtemp: mkA, writeFile: wfA, mkdir: mdA, readFile: rfA, rm: rmA } = await import("node:fs/promises");
+  const { tmpdir: tdA } = await import("node:os");
+  const { join: jA } = await import("node:path");
+  const { existsSync: exA, realpathSync: rpA, readFileSync: rfsA } = await import("node:fs");
+  const { ensureExcluded, dropExcluded, gitDirFor } = await import("./gitexclude.js");
+  const { buildIndex: biA } = await import("./indexpage.js");
+  const { buildProject: bpA } = await import("./project.js");
+  const { serveStart: ssA } = await import("./serve.js");
+
+  /** 造一个**真的 git 仓库**（`git init`），里面一个项目目录。 */
+  const mkRepo = async (tag: string) => {
+    const repo = rpA(await mkA(jA(rpA(tdA()), `umbra-b3-${tag}-`)));
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    return repo;
+  };
+
+  /* ⓐ **接管一个有 `.gitignore` 的目录 → 那个文件一个字节都不许动** */
+  {
+    const repo = await mkRepo("有gitignore");
+    await wfA(jA(repo, ".gitignore"), "node_modules/\n", "utf8");
+    const gi0 = rfsA(jA(repo, ".gitignore"), "utf8");
+    await wfA(jA(repo, "我的笔记.md"), "# 笔记\n", "utf8");
+    await wfA(jA(repo, "project.json"), JSON.stringify({ name: "b3" }), "utf8");
+    const pr = await bpA(repo);
+    const sv = await ssA(pr);
+    await biA(pr, sv.url);
+    ok(rfsA(jA(repo, ".gitignore"), "utf8") === gi0,
+       "**接管之后他的 `.gitignore` 一个字节都没动**（原来会被追加 14 → 415 字节）",
+       `${gi0.length} 字节，没变`);
+    /* 排除规则去了该去的地方 */
+    const ex = jA(repo, ".git", "info", "exclude");
+    ok(exA(ex) && /umbra-studio/.test(rfsA(ex, "utf8")),
+       "**排除规则写进了 `.git/info/exclude`**（只在本机生效、不进版本、不是用户的文件）");
+    /* ⚠️ **真问 git**：那 17 个生成物不出现在 `git status` 里。
+       这一条是整节的要点 —— 前两条是「写对了地方」，这一条才是「他看不到那一屏红」。
+       **只断言文件写对了的话，排除规则写错内容也会绿。** */
+    const { execFileSync: ex2 } = await import("node:child_process");
+    const st = ex2("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: repo, encoding: "utf8" });
+    const noisy = st.split("\n").filter((l) => l.trim())
+      .filter((l) => /index\.dc\.html|index-data\.js|^.. S\d|IconGlyph|icons\.js|_ds-tool|support\.js|react(-dom)?\.production|umbradesign|umbrastudio/.test(l));
+    ok(noisy.length === 0, "**`git status` 里一个生成物都不出现**（真问 git，不是看我们写了什么）",
+       noisy.join(" · ") || st.split("\n").filter((l) => l.trim()).join(" · ") || "干净");
+    /* 对照组：`project.json` **该出现** —— 它是「这是设计项目」的标记，该进版本 */
+    ok(/project\.json/.test(st), "**对照组：`project.json` 照旧出现在 `git status` 里**（它该进版本，不在排除清单里）",
+       (st.match(/.*project\.json.*/) ?? [""])[0].trim());
+    /* 撤销：「忘掉」会调它 */
+    const d = await dropExcluded(repo);
+    ok(d.removed && !/umbra-studio/.test(rfsA(ex, "utf8")), "**撤得掉**（「忘掉这个项目」顺手清那一段）");
+    await rmA(repo, { recursive: true, force: true });
+  }
+
+  /* ⓑ **不在 git 仓库里 → 一个字节都不写** */
+  {
+    const plain = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-非git-")));
+    await wfA(jA(plain, "我的笔记.md"), "# 笔记\n", "utf8");
+    const before = (await (await import("node:fs/promises")).readdir(plain)).sort();
+    const r = await ensureExcluded(plain);
+    const after = (await (await import("node:fs/promises")).readdir(plain)).sort();
+    ok(r.file === null && /不在任何 git 仓库/.test(r.why ?? ""),
+       "**不在 git 仓库里就什么都不写**，而且说出原因", r.why);
+    ok(after.join("|") === before.join("|"), "**那个目录一个字节都没多**",
+       after.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
+    await rmA(plain, { recursive: true, force: true });
+  }
+
+  /* ⓒ **`.git` 是文件的那种（worktree / submodule）：按 gitdir 指向去找**
+     ⚠️ 这一条是 geek-99 点名的那个边界。不处理的话 `readFileSync` 读到
+     `gitdir: …` 一行，而代码把它当目录去 `join(dot, "info")` —— 写到一个
+     **不存在的路径**下，`mkdir -p` 还会把它建出来：于是在用户的项目里
+     **凭空多出一个 `.git/info/` 目录**。 */
+  {
+    const host = await mkRepo("worktree宿主");
+    const sub = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-子-")));
+    /* 手搓一个 `.git` 文件指向宿主那个真 GIT_DIR —— 和 worktree / submodule 同形 */
+    await wfA(jA(sub, ".git"), `gitdir: ${jA(host, ".git")}\n`, "utf8");
+    const g = gitDirFor(sub);
+    ok(g.gitDir === jA(host, ".git"), "**`.git` 是文件时按 `gitdir:` 指向找到真 GIT_DIR**", g.gitDir ?? "(null)");
+    const r = await ensureExcluded(sub);
+    ok(r.file === jA(host, ".git", "info", "exclude"),
+       "**排除规则写进宿主那个 GIT_DIR**，不是在子目录里凭空建一个 `.git/info/`", r.file ?? "(null)");
+    ok(!exA(jA(sub, ".git", "info")),
+       "**子目录里没有被建出 `.git/info/`**（把 `.git` 文件当目录用就会这样）");
+    /* 指不到就不写 */
+    const bad = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-坏指向-")));
+    await wfA(jA(bad, ".git"), "gitdir: /没有这个路径/xyz\n", "utf8");
+    const rb = await ensureExcluded(bad);
+    ok(rb.file === null && /认不出来/.test(rb.why ?? ""), "**指向不存在就不写，并说出原因**", rb.why);
+    for (const d of [host, sub, bad]) await rmA(d, { recursive: true, force: true });
+  }
+
+  /* ⓓ 幂等：写两次只有一段 */
+  {
+    const repo = await mkRepo("幂等");
+    await wfA(jA(repo, "x.md"), "x", "utf8");
+    await ensureExcluded(repo);
+    await ensureExcluded(repo);
+    const txt = await rfA(jA(repo, ".git", "info", "exclude"), "utf8");
+    ok((txt.match(/<umbra-studio>/g) ?? []).length === 1, "**写两次只有一段**（整段替换，幂等）",
+       `${(txt.match(/<umbra-studio>/g) ?? []).length} 段`);
+    /* 别人写的东西不许动 */
+    await wfA(jA(repo, ".git", "info", "exclude"), "我自己的规则/\n\n" + txt, "utf8");
+    await ensureExcluded(repo);
+    const t2 = await rfA(jA(repo, ".git", "info", "exclude"), "utf8");
+    ok(/我自己的规则\//.test(t2), "**`info/exclude` 里别人写的东西一个字没动**");
+    await dropExcluded(repo);
+    const t3 = await rfA(jA(repo, ".git", "info", "exclude"), "utf8");
+    ok(/我自己的规则\//.test(t3) && !/umbra-studio/.test(t3), "**撤掉我们那一段之后，别人那一行还在**", JSON.stringify(t3.trim()));
+    await rmA(repo, { recursive: true, force: true });
   }
 }
 
