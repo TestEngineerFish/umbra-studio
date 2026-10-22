@@ -62,6 +62,12 @@ function RowMenu({ p, onReveal, onRemove, onForget }: {
               <br />· 没落盘的草稿 · 回收站 · 模板
               <br />· 这条打开记录，以及我们为它单独存的 git 兜底仓库
               <br /><br />你目录里的文件<b className="text-text2">一个字节都不动</b>，删的全是我们自己目录里的东西。
+              {/* ⚠️ **盘没接上时要先说这一句**（issue #183）：这一行长得和「目录没了」
+                  一模一样，而用户很可能只是忘了插硬盘 —— 他会照着「反正已经没了」的
+                  理解按下「真的忘掉」，而那块盘上的项目好好的。
+                  > **一个二次确认，要把「你可能误会了」也说出来，不只说「会删什么」。** */}
+              {p.unreachable && <><br /><br /><b className="text-err">这个项目所在的盘现在没接上</b> ——
+                它多半还在那块盘上。先插上 / 连上再看一眼，确认真的不要它的历史了再忘掉。</>}
             </div>
             <PopItem label="真的忘掉" danger onPick={() => { pop.close("pick"); onForget(); }} />
           </>
@@ -78,7 +84,12 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, o
   const [stars, setStars] = useState<string[]>(() => mem.get("us.stars", [])); const [starOnly, setStarOnly] = useState(false);
   /** 失效的记录被点到：**不去打开它**（那会得到一句「打开项目失败」，等于什么都没说明），
    *  而是说清发生了什么和能做什么 —— 用户 2026-10-20 要的就是这一句。 */
-  const sayMissing = () => toast("这个目录已经不在了", "可能被删掉或移走了。这条记录还留着；行尾 ⋯ 菜单里的「忘掉这个项目」会把它和我们为它存的版本历史一起清掉。", "error");
+  /** ⚠️ **两句话，不是一句**（issue #183）。原来只有「这个目录已经不在了」，
+   *  而外接盘 / NAS 没挂上时读出来也是「不在」—— 对用户是**错误信息**，
+   *  他的项目好好地在那块盘上，而那句话后面还跟着「忘掉这个项目」的指引。 */
+  const sayMissing = (p: ProjectRow) => p.unreachable
+    ? toast("这个项目所在的盘现在没接上", "可能是移动硬盘没插、网络盘没连上，或者这个位置的权限变了。接上之后它就能打开 —— 这条记录和它的版本历史都还在，「清掉已失效的记录」不会动它。", "error")
+    : toast("这个目录已经不在了", "可能被删掉或移走了。这条记录还留着；行尾 ⋯ 菜单里的「忘掉这个项目」会把它和我们为它存的版本历史一起清掉。", "error");
   /** 只从列表去掉。**和「忘掉」是两回事** —— 服务端那两件能力的 summary 也是这么分的。 */
   const removeRow = async (dir: string) => {
     const r = await core.post<{ removed: boolean }>("recent_remove", { dir });
@@ -133,7 +144,7 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, o
 
   const reveal = (p: ProjectRow) => void host.revealInFinder(p.dir).catch((e: Error) => toast("打开目录失败", e.message, "error"));
   const Star = ({ p }: { p: ProjectRow }) => <button className={`ib ${stars.includes(p.dir) ? "text-warn" : ""}`} onClick={(e) => { e.stopPropagation(); toggleStar(p.dir); }} title={stars.includes(p.dir) ? "取消星标" : "星标"}>{stars.includes(p.dir) ? "★" : "☆"}</button>;
-  const Thumb = ({ p }: { p: ProjectRow }) => <div className="bg-canvas text-muted text-[11px] grid place-items-center overflow-hidden h-full w-full">{p.thumb ? <img src={p.thumb} alt="" className="h-full w-full object-cover object-top" /> : p.missing ? "目录不在" : p.drafts ? `${p.drafts} 份稿` : "空项目"}</div>;
+  const Thumb = ({ p }: { p: ProjectRow }) => <div className="bg-canvas text-muted text-[11px] grid place-items-center overflow-hidden h-full w-full">{p.thumb ? <img src={p.thumb} alt="" className="h-full w-full object-cover object-top" /> : p.missing ? (p.unreachable ? "盘没接上" : "目录不在") : p.drafts ? `${p.drafts} 份稿` : "空项目"}</div>;
   return (
     <div className="h-full flex flex-col">
       <header className="h-11 px-4 flex items-center gap-3 border-b border-border bg-panel shrink-0">
@@ -155,23 +166,23 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, o
         {projects === null ? <div className="text-muted text-xs py-10 text-center">正在读项目列表…</div>
           : rows.length === 0 ? <div className="text-muted text-xs py-10 text-center leading-relaxed">{projects.length ? "没有匹配的项目" : <>还没有项目<br />「新建项目」从一个目录起步，或「导入目录」接管已有的稿件目录</>}</div>
           : view === "grid" ? (
-            <ul className="grid grid-cols-2 lg:grid-cols-3 gap-3">{rows.map((p) => <li key={p.dir} data-ud="project-row" data-name={p.name} className={`group rounded-lg border bg-panel cursor-pointer overflow-hidden hover:border-borderStrong ${p.current ? "border-accent" : "border-border"} ${p.missing ? "opacity-55" : ""}`} onClick={() => (p.missing ? sayMissing() : onOpen(p.dir))}><div className="h-28"><Thumb p={p} /></div><div className="px-3 py-2 flex items-start gap-2"><div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate flex items-center gap-1" title={p.dir}>
+            <ul className="grid grid-cols-2 lg:grid-cols-3 gap-3">{rows.map((p) => <li key={p.dir} data-ud="project-row" data-name={p.name} className={`group rounded-lg border bg-panel cursor-pointer overflow-hidden hover:border-borderStrong ${p.current ? "border-accent" : "border-border"} ${p.missing ? "opacity-55" : ""}`} onClick={() => (p.missing ? sayMissing(p) : onOpen(p.dir))}><div className="h-28"><Thumb p={p} /></div><div className="px-3 py-2 flex items-start gap-2"><div className="min-w-0 flex-1"><div className="text-sm font-semibold truncate flex items-center gap-1" title={p.dir}>
                     <span className="truncate">{p.name}</span>
                     {/* ⚠️ 光把路径顶上来还不够 —— 要让人知道**为什么**这张卡显示的是路径。
                         不说的话他只会觉得「这张卡格式怎么和别的不一样」。 */}
                     {isDup(p) && <span className="shrink-0 text-[10px] font-normal text-warn border border-warnBorder rounded px-1" title={`有 ${nameCount.get(p.name)} 个项目叫「${p.name}」，这一行显示的是目录`}>同名</span>}
                     {/* ⚠️ 网格卡原来**一个字都不说**（列表视图早就有「找不到」那一列，而网格没有）——
                         同一条记录在两种视图下说法不同，是比两边都不说更糟的一种。 */}
-                    {p.missing && <span className="shrink-0 text-[10px] font-normal text-err border border-err/40 rounded px-1" title="这个目录已经不在了">找不到</span>}
+                    {p.missing && <span className="shrink-0 text-[10px] font-normal text-err border border-err/40 rounded px-1" title={p.unreachable ? "这个项目所在的盘没接上" : "这个目录已经不在了"}>{p.unreachable ? "盘没接上" : "找不到"}</span>}
                   </div><div className="text-[11px] text-muted truncate font-mono" data-ud="grid-sub">{isDup(p) ? shortDir(p.dir) : p.title && p.title !== p.name ? p.title : shortDir(p.dir)}</div></div><div className="flex items-center shrink-0" onClick={(e) => e.stopPropagation()}><Star p={p} /><RowMenu p={p} onReveal={() => reveal(p)} onRemove={() => void removeRow(p.dir)} onForget={() => void forget(p.dir)} /></div></div></li>)}</ul>
           ) : (
             <div className="rounded-lg border border-border bg-panel overflow-hidden">
               <div className="grid grid-cols-[56px_minmax(0,1fr)_110px_72px_72px] items-center px-3 h-8 text-[11px] text-muted border-b border-border"><span /><span>名称</span><span>最近打开</span><span>稿件</span><span /></div>
-              {rows.map((p) => <div key={p.dir} data-ud="project-row" data-name={p.name} className={`grid grid-cols-[56px_minmax(0,1fr)_110px_72px_72px] items-center px-3 h-14 border-b border-border last:border-0 cursor-pointer hover:bg-hover group ${p.current ? "bg-accentSoft/40" : ""} ${p.missing ? "opacity-55" : ""}`} onClick={() => (p.missing ? sayMissing() : onOpen(p.dir))} title={p.dir}>
+              {rows.map((p) => <div key={p.dir} data-ud="project-row" data-name={p.name} className={`grid grid-cols-[56px_minmax(0,1fr)_110px_72px_72px] items-center px-3 h-14 border-b border-border last:border-0 cursor-pointer hover:bg-hover group ${p.current ? "bg-accentSoft/40" : ""} ${p.missing ? "opacity-55" : ""}`} onClick={() => (p.missing ? sayMissing(p) : onOpen(p.dir))} title={p.dir}>
                 <div className="w-11 h-9 rounded overflow-hidden border border-border"><Thumb p={p} /></div>
                 <div className="min-w-0 pr-3"><div className="text-sm font-semibold truncate">{p.name}{p.title && p.title !== p.name && <span className="font-normal text-muted"> · {p.title}</span>}</div><div className="text-[11px] text-muted truncate font-mono">{p.dir}</div></div>
                 <span className="text-[11px] text-muted">{p.lastOpened ? timeAgo(p.lastOpened) : "—"}</span>
-                <span className="text-[11px] text-muted">{p.missing ? <span className="text-err">找不到</span> : `${p.drafts ?? "—"} 份`}</span>
+                <span className="text-[11px] text-muted">{p.missing ? <span className="text-err">{p.unreachable ? "盘没接上" : "找不到"}</span> : `${p.drafts ?? "—"} 份`}</span>
                 {/* ⚠️ 失效那条**不给「在访达中显示」** —— 目录都没了，点了只会打开一个空窗（或者什么都不发生）。
                     给的是真能做的那件事：忘掉它。第一下只「上膛」，第二下才真删（见 `armed`）。 */}
                 {/* ⚠️ `⋯` **不跟着 hover 隐藏**（星标和它一起常驻）：

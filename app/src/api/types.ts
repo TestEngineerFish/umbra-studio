@@ -70,7 +70,7 @@ export interface ChatNote {
 export interface ChatFail { kind: string; message: string; action: string; topupUrl: string; hint: string }
 export interface ChatUsage { totalTokens?: number; totalCostUSD?: number }
 
-export interface ProjectRow { name: string; title: string; dir: string; drafts?: number; lastOpened?: string | null; missing?: boolean; thumb?: string | null; current?: boolean; generatedAt?: string | null }
+export interface ProjectRow { name: string; title: string; dir: string; drafts?: number; lastOpened?: string | null; missing?: boolean; /** 盘没挂上（issue #183）：**不是「没了」**，说法和出路都不同 */ unreachable?: boolean; thumb?: string | null; current?: boolean; generatedAt?: string | null }
 export interface DirInfo { dir: string; exists: boolean; isDir: boolean; isProject: boolean; draftCount: number; suggestedName: string }
 
 export const baseName = (p: string) => (p ? p.split("/").pop()!.split("\\").pop()! : "");

@@ -152,10 +152,19 @@ async function dropFallbackRepo(dir: string): Promise<number> {
 /** ② 清掉已失效的记录：目标目录已经不在的那几条。
  *  ⚠️ 只认 `identity === "missing"`（路径压根不在）。
  *  **`replaced` 不在这一档里** —— 那个位置有东西，只是换了一个，
- *  删它的历史得走 ③（要确认）。 */
-export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: string; name: string }>; freedBytes: number; orphanRecords: number; adoptedRecords: number; left: number }> {
+ *  删它的历史得走 ③（要确认）。
+ *  ⚠️⚠️ **`unreachable` 也不在这一档里**（issue #183）：外接盘 / NAS 没挂上时
+ *  `existsSync` 同样为假，而那个项目好好地在那块盘上。原来这两种挤在 `missing`
+ *  一档里，于是一键清理会把**盘没接上的项目**的 git 兜底历史（外部改动的唯一记录）
+ *  一起 `rm -rf`，而回执说的是「那些目录本来就没了」。
+ *  > **一个一键按钮的安全性，取决于它那个判准有多少种成因。**
+ *  跳过的那几条**单列在回执里**（`skippedUnreachable`）—— 不说的话用户会以为
+ *  「清理没生效」而反复点。 */
+export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: string; name: string }>; freedBytes: number; orphanRecords: number; adoptedRecords: number; skippedUnreachable: Array<{ dir: string; name: string }>; left: number }> {
   const { recents } = await listRecentProjects();
   const stale = recents.filter((r) => r.identity === "missing");
+  /* 盘没挂上的那几条：**一个字节都不动**，但要在回执里说出来 */
+  const unreachable = recents.filter((r) => r.identity === "unreachable");
   let freedBytes = 0;
   const removed: Array<{ dir: string; name: string }> = [];
   for (const r of stale) {
@@ -178,6 +187,7 @@ export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: strin
     removed, freedBytes,
     orphanRecords: orphans.ids.length + orphans.unindexed.length,
     adoptedRecords: orphans.adopted.length,
+    skippedUnreachable: unreachable.map((r) => ({ dir: r.dir, name: r.name })),
     left: (await listRecentProjects()).recents.length,
   };
 }

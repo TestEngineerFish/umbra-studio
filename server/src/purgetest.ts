@@ -345,6 +345,54 @@ ok("（收尾）临时样本目录删掉了", !existsSync(BOX));
   ok("**（收尾）用户真实的兜底仓库目录里没有我造的任何一个**", 真仓库里有我的 === 0, { 查的: realGit, 找到: 真仓库里有我的 });
 }
 
+/* ── ⑦ 盘没挂上 ≠ 目录没了（issue #183）──
+   ⚠️ 原来 `missing` 的判据只有「`existsSync` 为假」，而那**分不开两件事**。
+   于是一键「清掉已失效的记录」会把**外接盘 / NAS 没挂上**的项目的
+   git 兜底历史（外部改动的唯一记录）一起删掉，而回执说的是「那些目录本来就没了」。
+   ⚠️ 这一节的样本**不需要真的外接盘**：判准问的是「从这个路径往上，第一个
+   还存在的祖先是谁」—— `/Volumes/<一个不存在的盘名>/某项目` 的上级不在、
+   而 `/Volumes` 在，这就是「中间整段没挂上」的形状。 */
+console.log("\n⑦ 盘没挂上 ≠ 目录没了（issue #183）");
+{
+  const { readFile: rdf2, writeFile: wrf2 } = await import("node:fs/promises");
+  const WS = join(STATE_ROOT, ".umbrastudio", "workspace.json");
+  const 没了 = await makeProject("盘测试-真删掉");
+  await touchProject(没了, "盘测试-真删掉");
+  await ensureRepo(没了);
+  await commitPaths(没了, ["稿.dc.html"], "第一版");
+  const gdGone = gitDirOfProject(没了);
+
+  /* 够不着那条：直接写进 workspace.json（那个路径造不出来，也不该造） */
+  const 盘上 = process.platform === "win32"
+    ? "Q:\\umbra-unreachable-test\\某项目"
+    : join("/Volumes", "umbra-盘没接上-" + Math.random().toString(36).slice(2, 8), "某项目");
+  await ensureRepo(盘上);                       // 兜底仓库住在 STATE_ROOT，和那块盘无关
+  const gdAway = gitDirOfProject(盘上);
+  const ws = JSON.parse(await rdf2(WS, "utf8")) as { recents: Array<Record<string, unknown>> };
+  ws.recents.unshift({ dir: 盘上, name: "某项目", title: "某项目", lastOpened: new Date().toISOString(), dev: 1, ino: 12345, birthtimeMs: 1 });
+  await wrf2(WS, JSON.stringify(ws, null, 2) + "\n", "utf8");
+
+  await rm(没了, { recursive: true, force: true });
+  const rec = (await listRecentProjects(50)).recents;
+  const idOf = (d: string) => rec.find((r) => r.dir === d)?.identity;
+  ok("**上级还在、自己不在 → `missing`**（真被删了 / 移走了）", idOf(没了) === "missing", idOf(没了));
+  ok("**中间整段都不在 → `unreachable`**（那一块没挂上）", idOf(盘上) === "unreachable", idOf(盘上));
+  ok("（前提）两个兜底仓库都建起来了", existsSync(gdGone) && existsSync(gdAway));
+
+  const r = await clearStaleRecords();
+  ok("**只清了真没了那条**", r.removed.length === 1 && r.removed[0]?.dir === 没了, r.removed.map((x) => x.dir));
+  ok("**盘没接上那条的兜底历史一个字节都没动**", existsSync(gdAway), gdAway);
+  ok("真没了那条的兜底仓库清掉了（这一档的本职没丢）", !existsSync(gdGone));
+  ok("**回执里把跳过的那条说出来了**（不说的话用户会以为清理没生效而反复点）",
+     r.skippedUnreachable.length === 1 && r.skippedUnreachable[0]?.dir === 盘上, r.skippedUnreachable);
+  const left = (await listRecentProjects(50)).recents;
+  ok("它还在列表里，而且还是 `unreachable`",
+     left.find((x) => x.dir === 盘上)?.identity === "unreachable",
+     left.map((x) => `${x.name}:${x.identity}`));
+  /* 收尾：把我塞进列表的那条撤掉 */
+  await removeRecentProject(盘上);
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    ⑥ 两个核心进程交替写索引（issue #189）
 

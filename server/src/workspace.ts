@@ -49,7 +49,13 @@ interface RecentEntry {
  *
  *  > ⚠️ **不可靠的信号用来「报警」是安全的，用来「认人」才危险。**
  *  > 所以这四档只用来决定「要不要问一句」，不用来决定「这是谁」。 */
-export type RecentIdentity = "same" | "replaced" | "unknown" | "missing";
+/** ⚠️ `unreachable` 是 2026-10-22 加的第五档（issue #183）。
+ *  `missing` 原来的判据只有「`existsSync` 为假」，而那**分不开两件事**：
+ *  目录被删了，和**它所在的盘此刻没挂上**（移动硬盘 / NAS / iCloud「仅在线」/
+ *  win 的盘符没接上 / 上级目录权限变了 —— `existsSync` 遇 EACCES 也回 false）。
+ *  后者说「这个目录已经不在了」是**错误信息**，而据此去清它的历史是**丢数据**。
+ *  > **一个判准同时回答两个问题，它必然在其中一个上是错的**（Q77 那条的第 2 次）。 */
+export type RecentIdentity = "same" | "replaced" | "unknown" | "missing" | "unreachable";
 
 /** 现在量一次这个目录的指纹。`null` = **量不到**（不在、不是目录、或者这个平台给不出 inode）。
  *
@@ -73,8 +79,41 @@ function fingerprintOf(dir: string): { dev: number; ino: number; birthtimeMs: nu
  *  把一堆**本来就是它**的记录判成 `replaced`（白问一句，M14-4 之后还会**不继承**
  *  → 用户的快照历史够不着了），**而一个真的替换它也抓不到**。
  *  一个既帮不上忙、又会误伤的信号，记下来备查就好。 */
+/** 够不着，还是真没了（issue #183）。
+ *
+ *  判准**不猜平台的挂载点长什么样**（`/Volumes`、`/media/<user>`、`/mnt`、
+ *  `/run/media`、UNC 共享、win 盘符…… 列举法迟早漏一种），而是问一个更基本的问题：
+ *  **从这个路径往上走，第一个还存在的祖先是谁。**
+ *
+ *  | 第一个存在的祖先 | 说明什么 |
+ *  | --- | --- |
+ *  | 它的**直接上级**（或更深） | 上级在、它自己不在 → **真被删了 / 移走了** |
+ *  | 要走到**文件系统根**才找到 | 中间整段都不在 → 那一整块没挂上 → **够不着** |
+ *
+ *  ⚠️ 还有一种：`statSync` 抛 `EACCES` / `EPERM`（权限变了）——
+ *  那也是「够不着」而不是「没了」，**而 `existsSync` 把它报成 false**。
+ *  ⚠️ **默认方向是「够不着」而不是「没了」**，因为两边代价不对称：
+ *  判成够不着 → 界面多说一句「盘没接上」，用户插上盘就好了；
+ *  判成没了 → 一键清理把他的历史删掉，**没有东西兜**。 */
+function reachability(dir: string): "missing" | "unreachable" {
+  const abs = resolve(dir);
+  /* 权限问题：看得到名字、读不到属性 —— 这不是「没了」 */
+  try { statSync(abs); } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === "EACCES" || code === "EPERM") return "unreachable";
+  }
+  let cur = dirname(abs);
+  let steps = 0;
+  while (true) {
+    if (existsSync(cur)) return steps === 0 ? "missing" : "unreachable";
+    const up = dirname(cur);
+    if (up === cur) return "unreachable";     // 走到根都不在：整块没挂上
+    cur = up; steps++;
+  }
+}
+
 function identityOf(r: RecentEntry): RecentIdentity {
-  if (!existsSync(resolve(r.dir))) return "missing";
+  if (!existsSync(resolve(r.dir))) return reachability(r.dir);
   const now = fingerprintOf(r.dir);
   if (!now) return "unknown";                       // 不是目录 / 平台给不出 inode
   if (typeof r.ino !== "number") return "unknown";  // 老条目

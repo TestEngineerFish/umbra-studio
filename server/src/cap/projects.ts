@@ -117,13 +117,16 @@ defineCap({
        ⚠️ `identity: "replaced"` 的**不算失效** —— 那个位置有东西，只是换了一个，
        它会被 `describe` 正常列出来（打开时才说那句话）。 */
     for (const r of recents) {
-      if (r.identity !== "missing") continue;
+      /* ⚠️ `unreachable` 也要给一行（issue #183）——「盘没接上」和「目录没了」
+         都读不出内容，但**说法和出路完全不同**：前者插上盘就好了，
+         而「忘掉这个项目」会把他的历史删掉。 */
+      if (r.identity !== "missing" && r.identity !== "unreachable") continue;
       /* ⚠️ **按「`rows` 里有没有这一行」判，不能按 `seen`**（判据第一次就抓到这个）：
          `describe` 是 `seen.add(dir)` **在 try 之前**，读不出来才进 `catch` ——
          所以失效的目录**已经在 `seen` 里了**，照 `seen` 过滤等于这一段永远不执行，
          而「没有 missing 行」和「这一段写了但跳过了」长得一模一样。 */
       if (rows.some((x) => x.dir === r.dir)) continue;
-      rows.push({ name: r.name, title: r.title, dir: r.dir, missing: true, drafts: 0, lastOpened: r.lastOpened });
+      rows.push({ name: r.name, title: r.title, dir: r.dir, missing: true, unreachable: r.identity === "unreachable" || undefined, drafts: 0, lastOpened: r.lastOpened });
     }
     return envelope({ projectsRoot: projectsRoot(), projects: rows }, [], { count: rows.length });
   },
