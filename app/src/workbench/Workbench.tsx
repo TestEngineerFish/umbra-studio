@@ -959,7 +959,13 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                 </ToolbarBar>
               </div>
             )}
-            <div className="flex-1 min-h-0 flex relative">
+            {/* ⚠️ `data-ud="detail"` 是**排查入口**（issue #192 顺手加的）：
+                这一块有三条分支（市场 / 「从左边的目录里选一个文件」/ 格式模块的 View），
+                而「它现在是哪一条」原来**没有任何稳定的办法问**。
+                排查 #192 时我猜了三轮选择器，最后量到的是目录树的文字。
+                > **一块有多条分支的区域，要有一个能问「你现在是哪一条」的入口** ——
+                > 否则排查只能靠猜 DOM 结构，而 DOM 结构会跟着布局改。 */}
+            <div data-ud="detail" className="flex-1 min-h-0 flex relative">
               {market ? <Market core={core} onClose={() => setMarket(false)} onSettings={onSettings} />
                 : !dirMode && !file ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted text-xs text-center px-6 leading-relaxed bg-canvas">

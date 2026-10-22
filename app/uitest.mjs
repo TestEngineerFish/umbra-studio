@@ -499,6 +499,26 @@ const makeDcSample = async () => {
 /** 打开判据自己那份画布样本。**不赌「树里第一份是什么」。**
  *  没建成 / 打不开就回 false —— 调用方说「这一条没验到」，不是报产品的错。 */
 const openDcSample = async () => {
+  /* ⚠️⚠️ **先把市场关掉**（issue #192 的真因，2026-10-22 定住）。
+     `Workbench` 的详情区有三条分支：`market` / 「从左边的目录里选一个文件」/ `mod.View`。
+     市场开着时它显示的是**市场**，而**页签条是另一块**（它读 `tabs` 不读 `file`）——
+     于是「当前页签是那份稿」和「iframes: 0」同时成立，看着像矛盾，
+     其实是两块各说各话。
+     那之后所有「打开一份稿、看详情区」的判据都在市场页上跑：点选分派 ·
+     编辑档开属性区 · 评论档弹评论框 · 切稿过场 · 暂存区 · 评论钉 **9 条全红**，
+     而**产品是好的**。
+     ⚠️ 打开市场的是「✎ 永远显示」那一节（它点「去市场」），而它没关。
+     ⚠️⚠️ **更要紧的一条教训**：市场那一节的收尾里我加过一条「市场关掉了」的断言，
+     读数是「0 个市场容器还在」—— 我据此**把「市场开着」这条线索排除了**，
+     而那条断言只对**它所在的那一刻**成立，中间又有节把市场打开了。
+     > **一条「我已经关掉了」的断言，只对它所在的那一刻成立。**
+     所以修法不是「让每一节都记得关」，而是让这个 helper **自己保证**那个状态：
+     > **一个「让世界进入某个状态」的 helper，应该自己保证那个状态，
+     > 而不是假设前面的人清理过。** */
+  if (await pg.locator('[data-ud="market"]').count()) {
+    await pg.locator('[data-ud="market"] button[title="关闭"]').first().click().catch(() => {});
+    await pg.waitForTimeout(500);
+  }
   if (!(await pg.locator('[role="treeitem"]').filter({ hasText: DC_SAMPLE }).count())) {
     if (!(await makeDcSample())) return false;
   }
@@ -1236,6 +1256,13 @@ console.log("\n浮层：不越界 / 点外面收起 / 不被 overflow 裁掉（M
         活动slot: document.querySelectorAll('[data-ud="workbench-slot"][data-active]').length,
         当前页签: document.querySelector('[data-ud="tab"][data-current]')?.getAttribute("data-path") ?? null,
         浮层: document.querySelectorAll('[data-ud="popover"]').length,
+        /* ⚠️ **这一项才是该问的**（issue #192 绕了三圈才明白）：
+           `View.tsx` 的 `pool` 初值永远至少一项，所以 `pool.map` 必然渲染至少一个 iframe ——
+           **`iframes: 0` 只能意味着 `mod.View` 压根没挂载**。
+           而 `Workbench` 那个分支有三条路：`market` / 「从左边的目录里选一个文件」/ `mod.View`。
+           > **问「有几个 iframe」答不出「那里现在是什么」。** */
+        详情区: document.querySelector('[data-ud="workbench-slot"][data-active] [data-ud="detail"]')
+          ?.innerText?.replace(/\s+/g, " ").slice(0, 90) ?? "（找不到 data-ud=detail）",
       };
     });
     console.log("  · #192 明细:", JSON.stringify(detail));
