@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { boot as readBoot, Core, type ProjectHandle } from "./api/client";
+import { boot as readBoot, Core, type ProjectEntry, type ProjectHandle } from "./api/client";
 import { getHost } from "./host";
 import { applyTheme, loadLayout, saveLayout, type LayoutState } from "./layout/layout";
 import { Home } from "./pages/Home";
@@ -29,9 +29,18 @@ export default function App() {
   const [dropped, setDropped] = useState<string[] | null>(null);
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
-  /** 项目自己那个服务的句柄 —— 设置页里「清掉当前项目的缓存」要打它（`scope: "project"`）。
-   *  ⚠️ 桌面壳里 **hub 不属于任何项目**，用 hub 调项目域的能力会被门面拒掉。 */
-  const projectCore = useMemo(() => (project ? new Core(project.url, project.token, project.ws) : null), [project]);
+  /** 当前这个项目的 **handle + core 绑在一起那个对象**（M15-1 S1）。
+   *
+   *  ⚠️ 原来这里和 `Workbench` 里**各自 `new Core(…)` 了一次** —— 同一个项目两个客户端实例。
+   *  那今天不出错（它们指向同一台服务），但它是「`core` 和 `project` 是两个独立的值」
+   *  这件事的第二个证据：**谁要用就自己造一个**，而没有任何东西保证他们造的是同一个项目的。
+   *  现在收成一个出处：窗口持有它，`Workbench` 和设置页**读同一个**。
+   *  ⚠️ 设置页里「清掉当前项目的缓存」要打它（`scope: "project"`）——
+   *  桌面壳里 **hub 不属于任何项目**，用 hub 调项目域的能力会被门面拒掉。 */
+  const activeEntry = useMemo<ProjectEntry | null>(
+    () => (project ? { handle: project, core: new Core(project.url, project.token, project.ws) } : null),
+    [project]);
+  const projectCore = activeEntry?.core ?? null;
   /* 刷新 / 关窗前拦一下没落盘的改动（`00` §一二一）。挂一次，整个应用生效。 */
   useEffect(() => guardUnsaved(), []);
   useEffect(() => { applyTheme(layout.theme); const mq = window.matchMedia("(prefers-color-scheme: dark)"); const on = () => applyTheme(layout.theme); mq.addEventListener("change", on); return () => mq.removeEventListener("change", on); }, [layout.theme]);
@@ -176,7 +185,10 @@ export default function App() {
         ? <div className="h-full flex min-h-0"><Market core={hub} onClose={() => setPage("home")} onSettings={() => setSheet({ kind: "settings" })} /></div>
         : page === "home" || !project
         ? <Home core={hub} host={host} onOpen={(d) => void open(d)} onNewProject={() => setSheet({ kind: "newProject" })} onImport={() => void importDir()} onSettings={() => setSheet({ kind: "settings" })} onMarket={() => setPage("market")} projectsVersion={projectsVersion} />
-        : <Workbench key={project.dir} project={project} host={host} openAt={openAt} onOpenedAt={() => setOpenAt(null)} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
+        /* ⚠️ `key={project.dir}` **S1 刻意留着** —— 拿掉它是 S2 的事，
+           而拿掉的那一刻 `Workbench` 里 32 处 `project.*` 同时变成可疑点
+           （理由全文在 `ProjectEntry` 的注释里）。S1 只换「`core` 从哪来」，**零行为变化**。 */
+        : <Workbench key={project.dir} entry={activeEntry!} host={host} openAt={openAt} onOpenedAt={() => setOpenAt(null)} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
       {dropped && host && (
         <DropAsk paths={dropped} kind="outside" host={host}
           onClose={() => setDropped(null)}

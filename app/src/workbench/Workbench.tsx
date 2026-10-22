@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Core, type ProjectHandle } from "../api/client";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Core, type ProjectEntry, type ProjectHandle } from "../api/client";
 import { draftTitle, type Picked, type Selection } from "../api/types";
 import { ChatRail } from "../chat/ChatRail";
 import { composeStash } from "../chat/Stash";
@@ -115,10 +115,25 @@ function AdoptBar({ project, core, designProject, onAdopted }: { project: Projec
   );
 }
 
-export function Workbench({ project, host, layout, setLayout, onHome, onSettings, openAt, onOpenedAt }: { project: ProjectHandle; host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void;
+export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, openAt, onOpenedAt }: {
+  /** 当前这个项目的**身份与客户端绑在一起的那个对象**（M15-1 S1）。
+   *
+   *  ⚠️ 原来这里收的是 `project: ProjectHandle`，`core` 由本组件自己
+   *  `useMemo(() => new Core(project.url, …), [project])` 造 —— 那意味着
+   *  **「这个 core 是哪个项目的」是一条要靠依赖数组维持的约定**。
+   *  单项目时它不可能错（只有一个项目）；并存之后它错起来的症状是
+   *  **「改动落在另一个项目的文件上，而界面一句话都不说」**（issue #20 那一条）。
+   *  收一个绑好的对象 = **把那个 bug 变成编译错误**，理由全文在 `ProjectEntry` 的注释里。 */
+  entry: ProjectEntry;
+  host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void;
   /** 进来就自动打开这一份（「打开方式」打开单个文件时，M14-5）。**优先级最高** */
   openAt?: string | null; onOpenedAt?: () => void }) {
-  const core = useMemo(() => new Core(project.url, project.token, project.ws), [project]);
+  /* ⚠️ **这两行是 S1 的全部**：解开成本地的 `project` / `core` 两个名字，
+     于是下面那 32 处 `project.*` 和 7 处 `core.*` **一个字都不用改** ——
+     S1 刻意是**零行为变化**（和 M14-4 A 段同一个做法：先把出处收口，再改行为）。
+     变的只有一件事：它们现在**来自同一个对象**，不可能指着两个不同的项目。 */
+  const project = entry.handle;
+  const core = entry.core;
   /** 这个目录接管过没有。`project.designProject` 是进来时的读数，
    *  接管之后 `project` 这个 prop 不会自己变（它来自 `open_project` 的那一次回执），
    *  所以本地记一次翻面。**两个用它的地方（横条 · 新建稿件那一问）读的是同一份。** */
