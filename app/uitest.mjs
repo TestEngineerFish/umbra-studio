@@ -1144,10 +1144,40 @@ console.log("\n浮层：不越界 / 点外面收起 / 不被 overflow 裁掉（M
      事件被 iframe 吃掉，外面的 document 监听收不到。浮层开着时让 iframe 不接事件。
      只测「点外面」的话这一半测不出来（M8-28 实测：修完第一半之后它还在）。 */
   if (await openByName(".dc.html")) {
-    await pg.waitForTimeout(1500);
+    /* ⚠️ **等 iframe 真挂上，而不是定时等**（issue #192）。
+       原来是 `waitForTimeout(1500)` 然后直接 `locator("iframe").first().boundingBox()` ——
+       而 dc 的 `View` 要先算出稿的 src 才会渲染 iframe（`pool` 在那之前是空的），
+       于是机器一忙就等不到，`boundingBox()` 卡满 30 秒**抛出**，
+       **它后面的节一条都跑不到**（实测：135 条之后全部没跑，而汇总行看不出区别）。
+       > `doc/00` §113 那条「抢跑的判据会把慢误报成坏」—— 当时**只修了一处**，
+       > 而这里是同一个病的又一处。**一条教训只修一处，等于记了没用。**
+       ⚠️ 探针实测：同一份稿在干净会话里 iframe 2 个、壳里 26 个元素 ——
+       **产品没问题，是判据抢跑**。 */
+    for (let i = 0; i < 60; i++) {
+      if (await pg.locator("iframe").count()) break;
+      await pg.waitForTimeout(250);
+    }
+    await pg.waitForTimeout(300);
     await pg.locator('[data-ud="tabbar"] button[title="更多"]').click();
     await pg.waitForTimeout(400);
-    const fr = await pg.locator("iframe").first().boundingBox();
+    /* ⚠️ **先打印一次明细**（issue #192）：这一行超时过（等 `iframe` 30 秒），
+       而「页面上到底有几个 iframe、可见几个、详情区现在显示的是什么」
+       靠读数说不出来。`doc/00` §145.4 那条「新入口：先打印一次明细」。 */
+    const detail = await pg.evaluate(() => {
+      const ifr = [...document.querySelectorAll("iframe")];
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      return {
+        iframes: ifr.length,
+        可见: ifr.filter(vis).length,
+        各自: ifr.map((e) => `${e.getAttribute("data-shell") ?? e.getAttribute("data-plugin") ?? "?"}:${vis(e) ? "可见" : "不可见"}`),
+        slots: document.querySelectorAll('[data-ud="workbench-slot"]').length,
+        活动slot: document.querySelectorAll('[data-ud="workbench-slot"][data-active]').length,
+        当前页签: document.querySelector('[data-ud="tab"][data-current]')?.getAttribute("data-path") ?? null,
+        浮层: document.querySelectorAll('[data-ud="popover"]').length,
+      };
+    });
+    console.log("  · #192 明细:", JSON.stringify(detail));
+    const fr = detail.iframes ? await pg.locator("iframe").first().boundingBox().catch(() => null) : null;
     if (fr && await pg.locator('[data-ud="popover"]').count() === 1) {
       await pg.mouse.click(fr.x + fr.width / 2, fr.y + fr.height / 2);
       await pg.waitForTimeout(500);
