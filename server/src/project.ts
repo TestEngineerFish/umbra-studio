@@ -6,10 +6,10 @@
  *  - 租户目录必须自包含：运行时副本与稿同层（不是 _runtime/ 子目录）。
  *  - git 自动探测租户目录下有没有 .git，不手填。
  */
-import { readdir, readFile, stat, rename, cp } from "node:fs/promises";
+import { readdir, readFile, stat, rename, cp, mkdir } from "node:fs/promises";
 import { hasRepo } from "./gitkeep.js";
 import { isInside, resolveInside, plainNameProblem } from "./pathguard.js";
-import { existsSync, cpSync } from "node:fs";
+import { existsSync, cpSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve, relative, dirname, basename, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { X } from "./codes.js";
@@ -60,16 +60,60 @@ export const STATE_ROOT = process.env.UMBRASTUDIO_STATE_DIR
  *  所有 `import { UD_DIRNAME } from "./project.js"` 照旧能用。 */
 export { UD_DIRNAME } from "./statedirs.js";
 const LEGACY_UD_DIRNAME = ".umbra" + "design";
+
+/** `.umbradesign/` 里**不是旧配置**的那些东西 —— 它们不该跟着改名搬走。
+ *
+ *  现在只有点选桥一件：`ensureRuntimeBeside` 把它放在 `.umbradesign/` 下，
+ *  因为 S2 预览壳里写死的是 `./.umbradesign/select-bridge.js`，
+ *  而**那个目录名是格式与协议级标识，改名那一轮刻意没动**（`00` §四十九）。 */
+const PROTOCOL_IN_LEGACY = new Set(["select-bridge.js"]);
+
+/** 旧配置目录里真正需要搬的那几项（也就是除了协议级标识以外的全部）。 */
+function legacyPayload(oldDir: string): string[] {
+  try { return readdirSync(oldDir).filter((n) => !PROTOCOL_IN_LEGACY.has(n)); } catch { return []; }
+}
+
+/** 把旧配置目录 `.umbradesign/` 搬成新名 `.umbrastudio/`（改名那一轮的兼容路，`00` §四十九）。
+ *
+ *  ⚠️⚠️ **2026-10-22 之前它在每一个写过稿的项目上都会触发，而它本该几乎永不触发。**
+ *  两件事叠起来才成这样，单看任何一件都没问题：
+ *
+ *  | | |
+ *  | --- | --- |
+ *  | ① 前提被别处改了 | `.umbradesign/` 今天**不只是旧配置目录** —— 点选桥住在那里（见上）。于是「旧目录在不在」对**每个写过稿的目录**都成立 |
+ *  | ② 守卫被别处翻面了 | 守卫是「新目录不在才搬」。**B1/B2 把项目里的 `.umbrastudio/` 搬空之后，它从几乎永假变成了永真** |
+ *
+ *  后果有两层，第二层才是要紧的：
+ *  · 每个项目里多一个 `.umbrastudio/select-bridge.js`（19 KB，**读它的人是零个**）；
+ *  · **这是 B3「打开普通目录零写入」的一个破口** —— 一个普通目录里只要有
+ *    别人发来的、自带 `.umbradesign/` 的稿（现实里发一份稿就是连这个目录一起发），
+ *    `buildProject()` 第一句就往他的目录里建一个 `.umbrastudio/`。实测确证过。
+ *
+ *  > **一个判准的前提被别处改掉了，而它自己不会报错。**
+ *  > 而 B3 那条判据当时全绿 —— 它的样本里没有 `.umbradesign/`，
+ *  > 也就是**判据在没有样本的时候，测的是「今天恰好没事」**（第四次）。
+ *
+ *  修法是让它只搬**真正是旧配置的那几项**：一个只剩协议级标识的 `.umbradesign/`
+ *  现在是「没什么要搬的」，于是一个字节都不写。
+ *  ⚠️ 这里刻意用**排除名单**而不是白名单，和「清除缓存」那边相反 ——
+ *  两边的代价不对称：**清除缓存漏一项是删掉用户的东西，搬迁漏一项是静默失忆**
+ *  （历史在盘上，新代码去新位置找不到就当「没有」）。搬多了只是几个字节。 */
 export function migrateUdDirSync(dir: string): boolean {
   const oldDir = join(dir, LEGACY_UD_DIRNAME), newDir = join(dir, UD_DIRNAME);
   if (!existsSync(oldDir) || existsSync(newDir)) return false;
-  cpSync(oldDir, newDir, { recursive: true });
+  const names = legacyPayload(oldDir);
+  if (!names.length) return false;
+  mkdirSync(newDir, { recursive: true });
+  for (const n of names) cpSync(join(oldDir, n), join(newDir, n), { recursive: true });
   return true;
 }
 export async function migrateUdDir(dir: string): Promise<boolean> {
   const oldDir = join(dir, LEGACY_UD_DIRNAME), newDir = join(dir, UD_DIRNAME);
   if (!existsSync(oldDir) || existsSync(newDir)) return false;
-  await cp(oldDir, newDir, { recursive: true });
+  const names = legacyPayload(oldDir);
+  if (!names.length) return false;
+  await mkdir(newDir, { recursive: true });
+  for (const n of names) await cp(join(oldDir, n), join(newDir, n), { recursive: true });
   return true;
 }
 migrateUdDirSync(STATE_ROOT);   // 工具自己的 ai_config / workspace / outgoing 记录
@@ -259,8 +303,7 @@ export function fixDsDepth(p: Project, src: string, depth: number): string {
 
 // ──────────────────────── M1-1: create_project ───────────────────────
 
-import { mkdir } from "node:fs/promises";
-import { writeAtomic } from "./normalize.js";
+import { writeAtomic } from "./normalize.js";   // mkdir 在文件头一起导入了（改名兼容路也要用）
 
 export interface CreateProjectOpts {
   /** 项目目录绝对路径。不给时默认 projects/<name> */

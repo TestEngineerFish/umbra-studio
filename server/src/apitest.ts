@@ -13,7 +13,7 @@
  *  跑：npm --prefix server run apitest
  */
 import { serveStart } from "./serve.js";
-import { buildProject } from "./project.js";
+import { buildProject, TOOL_ROOT } from "./project.js";
 import { start as startJob } from "./jobs.js";
 import { projectJobKey } from "./api.js";
 import { mkdtemp, rm as rmdirAll, writeFile as wfFix } from "node:fs/promises";
@@ -1077,7 +1077,14 @@ console.log("\n插件沙箱限额接口（plugin_limits）");
    夹具还在的时候它算「活着」，于是**不清**；等下面跑完我再删目录，
    仓库就留下了。连跑六轮攒了 6 个，而**每一轮的收尾都报「清掉 0 个」**。
    > 顺序错一行，收尾就从「清干净」变成「每轮留一个」，而读数长得一模一样。 */
-await rmdirAll(FIXTURE, { recursive: true, force: true });
+/* ⚠️⚠️ **这一句 2026-10-22 从这里挪到了文件最末尾。**
+   它原来夹在中间，于是**它后面每一节跑的都是一个「项目目录已经被删掉」的项目** ——
+   ⑮ 没事（缓存住在 STATE_ROOT，和项目目录在不在无关）、⑯ 自己另建目录也没事，
+   所以**从来没有判据会红**。而 2026-10-22 新加「普通目录里建稿要先接管」那道闸时，
+   对着夹具发的请求回的正是「这个目录还没接管」（目录都没了，`project.json` 当然不在）——
+   **三条新判据全绿，而它们量的是一个被删掉的夹具，不是我要测的那个普通目录。**
+   > **一个清理语句放错位置，会把它后面所有判据的被测对象悄悄换掉。**
+   现在挪到收尾那一段去，和「清掉自己造的兜底仓库」一前一后。 */
 
 /* ── 缩略图走路由（M14-4 B2）── `/__cache/<种类>/<文件>`
    B2 把缓存搬进 `records/<ID>/cache/` 之后，S1 索引页那个 `<img src={thumb}>`
@@ -1117,18 +1124,71 @@ console.log("\n⑯ 打开普通目录不写一个字节 · 接管才部署（M14
   const plain = rp4(await mkt3(join3(td3(), "umbra-plain-")));
   await wf3(join3(plain, "测试清单.md"), "# 清单\n", "utf8");
   await wf3(join3(plain, ".gitignore"), "node_modules/\n", "utf8");
+  /* ⚠️⚠️ **这两行是 2026-10-22 补的样本，而缺了它们这一节在一个真缺陷上全绿。**
+     「别人发来一份设计稿」现实里就是这个样子：稿 + `support.js` + `.umbradesign/select-bridge.js`
+     （那个目录名是格式与协议级标识，一起发过来的）。
+     而 `buildProject()` 第一句 `migrateUdDir(dir)` 看见 `.umbradesign/` 就把它
+     整个拷成 `.umbrastudio/` —— **于是「打开普通目录零写入」在这个样本上不成立**。
+     两件事叠起来才成这样：① 那个目录名今天不只是「旧配置目录」；
+     ② B1/B2 把项目里的 `.umbrastudio/` 搬空之后，「新目录不在才搬」这个守卫
+     **从几乎永假翻成了永真**。
+     > **判据在没有样本的时候，测的是「今天恰好没事」。** */
+  await wf3(join3(plain, "别人发来的.dc.html"),
+    '<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><div>稿</div></x-dc></body></html>\n', "utf8");
+  await (await import("node:fs/promises")).mkdir(join3(plain, ".umbradesign"), { recursive: true });
+  await (await import("node:fs/promises")).copyFile(
+    join3(TOOL_ROOT, "runtime", "select-bridge.js"), join3(plain, ".umbradesign", "select-bridge.js"));
   const before = (await rd3(plain)).sort();
 
   const o1 = await fetch(`${s.url}__ud/open_project?token=${encodeURIComponent(s.token)}`, {
     method: "POST", headers: { "content-type": "application/json", origin: s.url.replace(/\/$/, "") },
     body: JSON.stringify({ dir: plain }),
-  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { designProject?: boolean } }>);
+  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { designProject?: boolean; url?: string; token?: string } }>);
+  /* ⚠️⚠️ **项目级路由认的是「这台服务是为哪个目录起的」，不是请求体里的 `dir`**
+     （`api.ts`：`project: cap.scope === "project" ? ctx.project : null`）。
+     所以要测「在这个普通目录里建稿」，必须打**它自己那台服务** ——
+     `open_project` 的回执给的就是那台的 url 与 token。
+     第一版我把 `dir` 塞进请求体发给夹具那台，于是量的是夹具（而且夹具当时已经被删了）。
+     > **参数名对了不等于它被读了。** */
+  const pu = (o1.data?.url ?? "").replace(/\/$/, "");
+  const pt = o1.data?.token ?? "";
+  const ppost = (route: string, body: unknown) => fetch(`${pu}/__ud/${route}?token=${encodeURIComponent(pt)}`, {
+    method: "POST", headers: { "content-type": "application/json", origin: pu }, body: JSON.stringify(body),
+  });
   ok(o1.ok === true, "普通目录打得开（不是报错，也不是被拦去「新建项目」）");
   ok(o1.data?.designProject === false, "回执说清它**不是**设计项目", String(o1.data?.designProject));
   const after = (await rd3(plain)).sort();
   ok(after.join("|") === before.join("|"), "**打开之后那个目录一个文件都没多**（B3 的全部意义）",
      after.filter((x) => !before.includes(x)).join(" · ") || `${after.length} 项，和打开前一样`);
   ok(await rf3(join3(plain, ".gitignore"), "utf8") === "node_modules/\n", "**他的 .gitignore 一个字节都没动**");
+
+  /* ── 「新建稿件」那道闸（2026-10-22）──
+     ⚠️⚠️ **它原来是 B3 的一条后门，而 B3 自己的判据看不见它**：
+     打开目录零写入，而在同一个目录里建一份稿**静默写 5 个文件 · 227 KB**
+     （稿 1 KB + 运行时副本 4 份 226 KB），写完还是半残的 —— 预览壳不在，
+     编辑档那个 iframe 404。
+     ⚠️ 闸装在 `cap/drafts.ts`（三个门面汇流处）而不是前端：
+     装在前端的话 AI 一句「在这个目录里建一份稿」就绕过去了（#75 原话）。 */
+  {
+    const before2 = (await rd3(plain)).sort();
+    const cd = await ppost("create_draft", { path: "新稿.dc.html", source: "blank" })
+      .then((r) => r.json() as Promise<{ ok: boolean; errors?: Array<{ message?: string; fix?: string; locator?: { name?: string } }> }>);
+    /* ⚠️ 连「拒的是哪个目录」一起钉住 —— 不然它在**别的**目录上被拒也绿（刚栽过一次） */
+    ok(cd.ok === false && cd.errors?.[0]?.locator?.name === plain,
+       "**普通目录里建稿被拦住**（原来静默写 227 KB），而且拒的就是这个目录",
+       `${cd.ok} · ${cd.errors?.[0]?.locator?.name ?? "(没说是哪个)"}`);
+    /* ⚠️ 钉的是**拒因告诉了用户该怎么办**，不是「拒了」—— 只断言 ok:false 的话，
+       任何别的毛病（路由名错了、参数缺了）也会让它绿（§161.5 那一族）。 */
+    const why = `${cd.errors?.[0]?.message ?? ""} ${cd.errors?.[0]?.fix ?? ""}`;
+    ok(why.includes("接管"), "拒因说得出出路（「先接管为设计项目」），不是干巴巴一句「不行」", why.slice(0, 60));
+    const after2 = (await rd3(plain)).sort();
+    ok(after2.join("|") === before2.join("|"), "**被拒的那一下一个字节都没写**（不是写了一半再报错）",
+       after2.filter((x) => !before2.includes(x)).join(" · ") || "一个都没多");
+    /* `duplicate_draft` 是同一条路的另一个入口 —— 目录里那份别人发来的稿，复制一下也会写运行时 */
+    const dd = await ppost("duplicate_draft", { path: "别人发来的.dc.html" })
+      .then((r) => r.json() as Promise<{ ok: boolean }>);
+    ok(dd.ok === false, "「复制一份稿」也走同一道闸（一道闸只守住一条路等于没守）", String(dd.ok));
+  }
 
   /* 接管之后才部署 —— 对照组。没有它的话上面那条「没多文件」可能只是因为部署整条路都坏了 */
   const o2 = await fetch(`${s.url}__ud/adopt_project?token=${encodeURIComponent(s.token)}`, {
@@ -1141,6 +1201,14 @@ console.log("\n⑯ 打开普通目录不写一个字节 · 接管才部署（M14
      "接管之后壳与运行时才部署（不然上一条「没多文件」可能只是整条路坏了）",
      `${adopted.length - before.length} 个新文件`);
   ok((o2.data?.deployed ?? 0) > 0, "回执说出部署了几份壳", String(o2.data?.deployed));
+  /* ⚠️ **这一条是上面那道闸的对照组**：接管之后同一个请求要能成。
+     没有它的话，「建稿被拒」可能只是因为建稿这条路整个坏了 —— 而那一样会绿。 */
+  {
+    const cd2 = await ppost("create_draft", { path: "新稿.dc.html", source: "blank" })
+      .then((r) => r.json() as Promise<{ ok: boolean; errors?: Array<{ message?: string }> }>);
+    ok(cd2.ok === true, "**对照组**：接管之后同一个「建稿」请求就成了（闸不是把功能拆了）", String(cd2.ok) + " " + (cd2.errors?.[0]?.message ?? ""));
+    ok((await rd3(plain)).includes("新稿.dc.html"), "而且稿真的落盘了");
+  }
   await rmdirAll(plain, { recursive: true, force: true });
 }
 
@@ -1151,11 +1219,25 @@ console.log("\n⑯ 打开普通目录不写一个字节 · 接管才部署（M14
    ⚠️ 这一条是**实测补的**：filetest / lifecycletest 装了收尾之后，跑完一整轮
    仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
    **「有的测装了收尾」不等于「残留不再增长」。** */
+/* ⚠️ **先自检夹具的身份还在**，再删它。
+   **这一条是上面那条教训的判据化**：整轮跑完夹具必须还是一个设计项目 ——
+   有哪一节把它悄悄删了 / 改了，这里当场红，而不是等到下一个人
+   在它后面加一节、发现自己的判据在量一个空目录。 */
+ok((await import("node:fs")).existsSync(joinFix(FIXTURE, "project.json")),
+   "**整轮跑完，夹具还是一个设计项目**（没有哪一节把它悄悄删掉或改掉）", FIXTURE);
+
+/* 夹具目录在这里才删 —— 顺序要紧：`dropLeftoversUnder` 的判准是
+   「指向临时目录、**而那个目录已经不在了**」，夹具还在就算「活着」于是不清。
+   > 顺序错一行，收尾就从「清干净」变成「每轮留一个」，而读数长得一模一样。 */
+await rmdirAll(FIXTURE, { recursive: true, force: true });
 {
   const { dropLeftoversUnder } = await import("./purge.js");
   const { tmpdir: td0 } = await import("node:os");
   const r = await dropLeftoversUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
 }
+/* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
+   **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
+
 console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
 process.exit(fail === 0 ? 0 : 1);

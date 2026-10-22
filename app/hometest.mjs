@@ -18,7 +18,7 @@
  *  用法：`node app/hometest.mjs`（自己起服务、自己收尾，不用先开终端）
  */
 import { mkdtemp, writeFile, realpath, rm, mkdir } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -152,7 +152,26 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
      放一份稿进去，「自动建索引」那条路才真的会被走到。 */
   await writeFile(join(plain, "别人发来的.dc.html"),
     '<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><div>一份稿</div></x-dc></body></html>\n');
-  const before = (await import("node:fs")).readdirSync(plain).sort();
+  /* ⚠️⚠️ **这两行是 2026-10-22 补的，而缺了它们这一节在一个真缺陷上全绿。**
+     「别人发来一份设计稿」现实里就是这个样子：稿 + `support.js` + `.umbradesign/select-bridge.js`
+     （那个目录名是格式与协议级标识，发稿时一起发过来）。
+     而 `buildProject()` 第一句 `migrateUdDir(dir)` 看见 `.umbradesign/` 就整个拷成
+     `.umbrastudio/` —— **于是「打开普通目录零写入」在这个样本上不成立**。
+     成因是两件事叠的：① 那个目录名今天不只是「旧配置目录」；
+     ② B1/B2 把项目里的 `.umbrastudio/` 搬空之后，「新目录不在才搬」这个守卫
+     **从几乎永假翻成了永真**。
+     > **一个判准的前提被别处改掉了，而它自己不会报错。**
+     > 而判据的样本里没有那个前提，于是它测的是「今天恰好没事」（第四次）。 */
+  await mkdir(join(plain, ".umbradesign"), { recursive: true });
+  await writeFile(join(plain, ".umbradesign", "select-bridge.js"), "/* 发稿时一起带过来的点选桥 */\n");
+  const walkPlain = () => {
+    const out = [];
+    const rec = (d, pre) => { for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (e.isDirectory()) rec(join(d, e.name), pre + e.name + "/"); else out.push(pre + e.name); } };
+    rec(plain, "");
+    return out.sort();
+  };
+  const before = walkPlain();
   /* ⚠️ 行上的名字来自 `buildProject`（没有 project.json 就用**目录名**兜底），
      **不是** `touchProject` 传的那个显示名 —— 第一版按后者找行，当场超时。 */
   const plainName = plain.split("/").pop();
@@ -167,10 +186,44 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
      横条一出现就数的话，它还没落盘 —— **两道闸全拆掉这一条也绿**。
      「打开之后没多文件」要说的是「过了一会儿也没多」。 */
   await pg.waitForTimeout(2500);
-  const after = (await import("node:fs")).readdirSync(plain).sort();
+  /* ⚠️ **递归数，不是只数顶层**：上面那个破口多出来的是 `.umbrastudio/select-bridge.js`，
+     只数顶层的话它显示成「多了一个 `.umbrastudio`」—— 能看出来，但
+     「多了一个空目录」和「多了 19 KB」在读数上该分得清。 */
+  const after = walkPlain();
   const extra = after.filter((x) => !before.includes(x));
-  ok(extra.length === 0, "**打开之后那个目录一个文件都没多**",
+  ok(extra.length === 0, "**打开之后那个目录一个文件都没多**（样本里带着 `.umbradesign/`）",
     extra.join(" · ") || `${after.length} 项，和打开前一样`);
+  /* ── 「新建稿件」先问一句要不要接管（2026-10-22）──
+     ⚠️ 这一条测的是**够不够得着那一问**，所以从真入口点进去：
+     目录列列头那颗 `⋯`（和在空白处右键是同一张菜单）→「新建稿件…」。
+     服务端那道闸 `apitest` ⑯ 已经钉了；这里钉的是**界面在他点下去之前问了没有** ——
+     只有服务端闸的话，用户看到的是「新建失败」而不是「要不要接管」。 */
+  {
+    const b2 = walkPlain();
+    await pg.locator('[data-ud="tree-more"]').first().click();
+    await pg.waitForTimeout(400);
+    const mk = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
+      .filter({ hasText: /新建稿件/ }).first();
+    ok(await mk.count() > 0, "（前提）普通目录里**有**「新建稿件…」这一项（不是把入口藏掉）");
+    await mk.click();
+    await pg.waitForTimeout(600);
+    const dlg = pg.locator('[role="dialog"]').first();
+    const txt = await dlg.innerText().catch(() => "");
+    ok(/接管/.test(txt), "**先问的是「要不要接管这个目录」**，不是直接给文件名表单", txt.slice(0, 24).replace(/\n/g, " "));
+    /* ⚠️ 钉住「文件名那一格还没出现」—— 不然一个「表单上加了一条横条」的实现也会绿，
+       而那种实现**按 Enter 就能把那一问跳过去**（`blocked === false` 时直接提交）。 */
+    ok(await pg.locator('input[placeholder^="例如"]').count() === 0,
+       "那一问**挡在表单前面**（文件名框还没出现，所以 Enter 跳不过去）");
+    ok(/753 KB|754 KB/.test(txt) && /226 KB/.test(txt),
+       "**把会写多少照实说出来**（量出来的数，不是「只加一个文件」那种话）",
+       (txt.match(/\d+ KB/g) ?? []).join(" · "));
+    await pg.keyboard.press("Escape");
+    await pg.waitForTimeout(400);
+    const a2 = walkPlain();
+    ok(a2.join("|") === b2.join("|"), "**取消之后那个目录一个字节都没动**",
+       a2.filter((x) => !b2.includes(x)).join(" · ") || "一个都没多");
+  }
+
   /* 对照组：点了接管才写 —— 没有它的话上一条可能只是因为部署整条路都坏了 */
   await pg.locator('[data-ud="adopt-btn"]').click();
   await pg.waitForTimeout(2500);

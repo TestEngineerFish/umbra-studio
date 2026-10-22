@@ -46,16 +46,19 @@ const PassThrough = ({ children }: { ctx: ViewContext; children: React.ReactNode
  *  形制照 S1 那条「索引过期」齐边横条（设计侧第三轮），不新造一种。
  *  ⚠️ 文案要说清**两件事**：为什么它现在什么都没写（这是优点），
  *  以及点下去会写什么（这是代价）。只说一半的横条会让人要么不敢点、要么点完后悔。 */
-function AdoptBar({ project, core, onAdopted }: { project: ProjectHandle; core: Core; onAdopted: () => void }) {
+/*  ⚠️ **接管过没有这件事只有一份** —— 2026-10-22 之前它在 `AdoptBar` 自己的 `done` 里，
+ *  而「新建稿件」那一问也要知道同一件事。两份 state 的话接管完一边翻面一边不翻，
+ *  症状是「横条退场了，而新建稿件还在问要不要接管」。
+ *  现在由 `Workbench` 持有，这里只收 props。 */
+function AdoptBar({ project, core, designProject, onAdopted }: { project: ProjectHandle; core: Core; designProject?: boolean; onAdopted: () => void }) {
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
-  if (project.designProject !== false || done) return null;
+  if (designProject !== false) return null;
   const adopt = async () => {
     setBusy(true);
     const r = await core.post<{ deployed: number | null }>("adopt_project", { dir: project.dir });
     setBusy(false);
     if (!r.ok) { toast("接管失败", r.errors?.[0]?.message ?? "", "error"); return; }
-    setDone(true); onAdopted();
+    onAdopted();
     toast("已接管为设计项目", `部署了预览壳与运行时副本，现在 .dc.html 能预览了`, "ok");
   };
   return (
@@ -75,7 +78,12 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
   /** 进来就自动打开这一份（「打开方式」打开单个文件时，M14-5）。**优先级最高** */
   openAt?: string | null; onOpenedAt?: () => void }) {
   const core = useMemo(() => new Core(project.url, project.token, project.ws), [project]);
-  const store = useProject(core, project.dir, project.designProject);
+  /** 这个目录接管过没有。`project.designProject` 是进来时的读数，
+   *  接管之后 `project` 这个 prop 不会自己变（它来自 `open_project` 的那一次回执），
+   *  所以本地记一次翻面。**两个用它的地方（横条 · 新建稿件那一问）读的是同一份。** */
+  const [adoptedHere, setAdoptedHere] = useState(false);
+  const designProject = adoptedHere ? true : project.designProject;
+  const store = useProject(core, project.dir, designProject);
   /** 页签三态（M8-28）。存量是 `string[]`，`normalize` 认它 */
   const [tabs, setTabsRaw] = useState<Tab[]>(() => normalize(mem.get(`us.tabs.${project.dir}`, [])));
   const setTabs = useCallback((next: Tab[]) => { setTabsRaw(next); mem.set(`us.tabs.${project.dir}`, next); }, [project.dir]);
@@ -655,7 +663,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               node: (
                 <Wrap ctx={ctx} key={kind}>
                 <div className="flex-1 min-w-0 flex flex-col">
-            <AdoptBar project={project} core={core} onAdopted={() => setLocalTick((t) => t + 1)} />
+            <AdoptBar project={project} core={core} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />
             <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file}
               /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
                  图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。
@@ -806,7 +814,7 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
             spans: ["nav", "detail", "chat"],
           } : undefined}
         />
-      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
+      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} projectDir={project.dir} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
       {guardNode}
     </div>
   );

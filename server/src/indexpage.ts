@@ -23,7 +23,7 @@ import { listVersions } from "./history.js";
 import { serveOf } from "./serve.js";
 import { readCheck, sha256, type CheckRecord } from "./check.js";
 import { renderCheck } from "./render.js";
-import { indexDataFile, udDirOf } from "./statedirs.js";
+import { indexDataFile } from "./statedirs.js";
 
 export type Health = "ok" | "warn" | "error" | "unchecked";
 
@@ -566,8 +566,6 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
   }
 
   const data = await collectIndex(p);
-  const udDir = udDirOf(p.dir);
-  await mkdir(udDir, { recursive: true });
 
   const dataFile = indexDataFile(p.dir);
   /* ⚠️ 建的是**这个文件自己的父目录**，不是项目里的 `.umbrastudio/`（M14-4 B2）。
@@ -579,15 +577,17 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
   const jsFile = join(p.dir, "index-data.js");
   await writeAtomic(jsFile, `/* 由 build_index 生成，勿手改 */\nwindow.__UD_INDEX = ${JSON.stringify(data)};\n`);
 
-  // 预览点选桥：壳在 iframe 载入后注入它（doc/00 §十九）。放 .umbrastudio/ 下 ——
-  // 它是工具行为，不是设计事实，不进稿也不进设计系统目录。
-  const srcBridge = join(TOOL_ROOT, "runtime", "select-bridge.js");
-  let bridgeFile: string | null = null;
-  if (existsSync(srcBridge)) {
-    const dst = join(udDir, "select-bridge.js");
-    await copyFile(srcBridge, dst);
-    bridgeFile = rel(p, dst);
-  }
+  /* 预览点选桥：壳在 iframe 载入后注入它（doc/00 §十九）。
+     ⚠️⚠️ **这里原来往项目的 `.umbrastudio/` 里又拷了一份，而读它的人是零个**
+     （2026-10-22 量「接管一个普通目录写多少」时撞到的）。
+     S2 预览壳里写死的是 `const BRIDGE = "./.umbradesign/select-bridge.js"` ——
+     **`.umbradesign/` 是格式与协议级标识，改名那一轮刻意没动**（`00` §四十九），
+     而这一句跟着改名改成了 `.umbrastudio/`，于是写的和读的不是同一个路径。
+     真正被读的那一份由 `ensureRuntimeBeside` 放在 `.umbradesign/` 下（下面那句），
+     所以**功能一直是好的**，坏的只是「多写 19 KB 到用户目录」+ 回执指着一个没人读的文件。
+     > **一个只被写、不被读的文件不会报错，只会长在别人的目录里。**
+     ⚠️ 顺带这还是 B1/B2 之后项目里**还会出现 `.umbrastudio/` 的唯一原因** ——
+     去掉它，接管一个目录就不再在项目里建那个目录了。 */
 
   // 工具皮肤 token：拷到**与设计稿里 href 相同的相对路径**（./_ds-tool/tokens.css）。
   // 这样 ui/ 下直接打开和当入口页用是同一个 href —— 不改写路径，也不留 404。
@@ -618,6 +618,10 @@ export async function buildIndex(p: Project, serveUrl: string | null, opts?: Bui
   await writeAtomic(indexFile, prep.content);
   prep.steps.push("注入 window.__UD_INDEX 索引数据");
   const runtimeCopied = await ensureRuntimeBeside(indexFile);
+  /* 回执里的 `bridgeFile` 指**真正被壳读到的那一份**（`ensureRuntimeBeside` 放的）。
+     指着一个没人读的文件的回执，和不说一样。 */
+  const bridgeAbs = join(p.dir, ".umbradesign", "select-bridge.js");
+  const bridgeFile: string | null = existsSync(bridgeAbs) ? rel(p, bridgeAbs) : null;
 
   // 其余壳页面：同一条落盘路，同样注入
   const shells: string[] = [];

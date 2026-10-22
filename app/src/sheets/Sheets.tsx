@@ -58,8 +58,14 @@ interface TemplateRow { id: string; name: string; sub?: string }
  *  最要紧的一条是**文件名下面实时写出完整路径** ——
  *  「点『新建』之前就能知道结果」。重名或非法字符当场变红说原因，钮变灰。
  */
-export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
+export function NewDraftSheet({ core, current, dir, projectDir, designProject, onClose, onCreated, onAdopted }: {
   core: Core; current: string | null; dir: string; onClose: () => void; onCreated: (file: string) => void;
+  /** 项目根的**绝对**路径（`adopt_project` 要它）。`dir` 是项目内的相对目录，两回事 */
+  projectDir: string;
+  /** 这个目录接管过没有（`project.json` 在不在）。`false` = 普通目录，先问一句 */
+  designProject?: boolean;
+  /** 接管成功之后通知工作台（它要把 `designProject` 翻过来、横条退场） */
+  onAdopted?: () => void;
 }) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"page" | "component">("page");
@@ -67,6 +73,8 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [existing, setExisting] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  /** 这一次已经接管过了（父组件的 `designProject` 还没刷到的时候靠它翻面） */
+  const [adoptedHere, setAdoptedHere] = useState(false);
 
   useEffect(() => {
     void core.get<{ templates?: TemplateRow[] }>("templates").then((r) => setTemplates(r.data?.templates ?? [])).catch(() => {});
@@ -81,6 +89,37 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
   const why = illegal ? '名字里不能有 \\ / : * ? " < > |' : dup ? "这个目录里已经有同名的稿了" : "";
   const blocked = !fileName || !!why || busy;
 
+  /* ── 第一段：这个目录还没接管，先问一句（M14-4 收尾，2026-10-22）──
+     ⚠️⚠️ **「新建稿件」原来是 B3 那道闸的一条后门。** B3 让「打开一个普通目录」
+     一个字节都不写，而在同一个目录里建一份稿，实测**静默写 5 个文件 · 227 KB**
+     （那份稿 1 KB + 运行时副本 4 份 226 KB），而且写完还是半残的：
+     预览壳 `S2-单稿预览壳.dc.html` 不在 → **编辑档那个 iframe 404**。
+
+     ### 为什么是「问」而不是「写进去再提醒」
+     提醒是事后的。这件事的代价（往他的目录里写 227 KB）在他点下去之前就定了，
+     **而他点「新建稿件」的时候脑子里想的是「建一份稿」，不是「改造这个目录」**。
+
+     ### 为什么是两段，而不是在表单上加一条横条
+     表单上按 Enter 就提交（`blocked === false` 时），**横条是可以被 Enter 跳过的** ——
+     那就又回到「写完才知道」。两段式让那一问**必须被看见一次**；
+     而接管是**每个目录一次**的事，之后这一段就不出现了。
+     （这和首页「忘掉这个项目」的二次确认是同一个形制，不新造一种。）
+
+     ### 为什么没有第三颗按钮「只建这一份，先不接管」
+     算一下就知道那个选项没有意义：**它已经要写 227 KB**，而接管总共才
+     753 KB —— 多出来的 526 KB 换来的是属性面板、点选、就地编辑、版本对比全都能用。
+     > **那颗按钮用全部功能换了几乎没有的代价。**
+     不接管也照旧能做的事一条没少：看、改已有的文件、圈给 AI —— 那些路上没有这道闸。 */
+  const needAdopt = designProject === false && !adoptedHere;
+  const adopt = async () => {
+    setBusy(true);
+    const r = await core.post<{ deployed: number | null }>("adopt_project", { dir: projectDir });
+    setBusy(false);
+    if (!r.ok) { toast("接管失败", r.errors?.[0]?.message ?? "", "error"); return; }
+    setAdoptedHere(true); onAdopted?.();
+    toast("已接管为设计项目", "预览壳与运行时副本都放好了，接着填稿名", "ok");
+  };
+
   const submit = async () => {
     if (blocked) return;
     setBusy(true);
@@ -92,6 +131,62 @@ export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
     if (r.ok) { toast(`已新建 ${fileName}`, dir || "项目根", "ok"); onCreated(full); onClose(); }
     else { toast("新建稿件失败", r.errors?.[0]?.message, "error"); setBusy(false); }
   };
+
+  if (needAdopt) return <Sheet onClose={onClose}
+    head={<h2 className="text-base font-semibold">先接管这个目录？</h2>}
+    foot={<>
+      <span className="flex-1" />
+      <button className="btn" onClick={onClose}>取消 Esc</button>
+      <button className="btn primary" data-ud="adopt-then-new" disabled={busy} onClick={() => void adopt()}>{busy ? "正在接管…" : "接管并继续"}</button>
+    </>}
+    body={<>
+      <p className="leading-relaxed">
+        这是一个<b className="text-text2">普通目录</b> —— 我们到现在<b className="text-text2">一个字节都没往里写</b>。
+        要在这里建设计稿，得先放几样工具文件进来。
+      </p>
+      {/* ⚠️ 这些数是**量出来的**（2026-10-22，`doc/24` §24.1 的表），不是估的。
+          一个说谎的数比没有数糟，因为它看起来是读数 —— 而上一个版本的「只加 project.json」
+          正是这么来的。 */}
+      <div className="rounded border border-border bg-panel2 divide-y divide-border text-[11px]">
+        <div className="px-3 py-2 flex items-baseline gap-2">
+          <b className="text-text2 w-[88px] shrink-0">预览壳 8 份</b>
+          <span className="text-muted w-[52px] shrink-0 text-right font-mono">420 KB</span>
+          <span className="flex-1 leading-relaxed">属性面板、点选、就地编辑、版本对比、项目设置用它们。<b className="text-text2">没有它们这几样会 404</b></span>
+        </div>
+        <div className="px-3 py-2 flex items-baseline gap-2">
+          <b className="text-text2 w-[88px] shrink-0">运行时副本 4 份</b>
+          <span className="text-muted w-[52px] shrink-0 text-right font-mono">226 KB</span>
+          <span className="flex-1 leading-relaxed"><code className="font-mono">support.js</code> 和两个 React。稿自己按相对路径引它们，<b className="text-text2">没有它们这份稿双击打开是白屏</b></span>
+        </div>
+        <div className="px-3 py-2 flex items-baseline gap-2">
+          <b className="text-text2 w-[88px] shrink-0">入口页 + 索引</b>
+          <span className="text-muted w-[52px] shrink-0 text-right font-mono">105 KB</span>
+          <span className="flex-1 leading-relaxed">稿件索引那一页</span>
+        </div>
+        <div className="px-3 py-2 flex items-baseline gap-2">
+          <b className="text-text2 w-[88px] shrink-0">project.json</b>
+          <span className="text-muted w-[52px] shrink-0 text-right font-mono">一行</span>
+          <span className="flex-1 leading-relaxed">「这个目录是设计项目」的标记</span>
+        </div>
+        <div className="px-3 py-2 flex items-baseline gap-2 bg-panel">
+          <b className="text-text2 w-[88px] shrink-0">合计</b>
+          <span className="w-[52px] shrink-0 text-right font-mono"><b className="text-text2">753 KB</b></span>
+          <span className="flex-1 text-muted leading-relaxed">17 个文件 · 都是生成物，删掉下次打开会重建</span>
+        </div>
+      </div>
+      <p className="text-muted leading-relaxed">
+        <b className="text-text2">你原来的文件一个字节都不会被改</b>，<code className="font-mono text-[11px]">.gitignore</code> 也不动
+        —— 排除规则写在我们自己那边。快照、评论、回收站这些也都不在这个目录里。
+      </p>
+      {/* ⚠️ 这一段回答的是用户一定会想的那句「我就建一份稿，非得改造整个目录吗」。
+          不答的话他只会觉得这是个强制推销。答案是**算得出来的**，所以把算式给他。 */}
+      <p className="text-muted leading-relaxed">
+        不接管只建那一份行不行？<b className="text-text2">建一份稿本身就要写上面那 226 KB 的运行时副本</b>，
+        而预览壳不在的话属性面板和点选会 404 ——
+        那等于写了 226 KB 只换来半个能用的编辑器，所以这里不给那条路。
+        只是<b className="text-text2">看、改已有的文件、圈给 AI</b> 一直不需要接管。
+      </p>
+    </>} />;
 
   return <Sheet onClose={onClose}
     head={<h2 className="text-base font-semibold">新建稿件</h2>}
@@ -211,6 +306,12 @@ export function NewProjectSheet({ hub, host, initialDir, onClose, onOpen }: { hu
     body={<>
     <p className="text-muted leading-relaxed">项目就是磁盘上一个目录。选一个目录，它本身成为项目根 —— <b className="text-text2">你原来的文件一个字节都不会被改</b>。</p>
     {/* ⚠️⚠️ **这一条是 2026-10-21 补的，补的是一句假回执**（sam 用它打开 `Geek/doc` 之后发现的）。
+        ⚠️ **数字 2026-10-22 重新量过**（B 段做完之后）：23 个文件 / 780 KB → **18 个 / 754 KB**。
+        少掉的那 5 个是 `.umbrastudio/` 那一摊（快照、评论、缓存…）—— 它们搬进软件自己的目录了。
+        剩下的 18 个搬不走，而且**不该搬**：壳页面和运行时副本是 ⓒ 档（`doc/24` §八），
+        稿自己按相对路径引它们，搬走等于「双击这份稿是白屏」。
+        > **一个数写在界面上就会过期 —— 所以每次动了落点都要回来重量一次，
+        > 而不是等用户发现它不对。**
         原文写的是「里面已有的稿件会被接管，**不会被改动**…**只加 project.json**」，
         而实测「新建 + 第一次打开」往那个目录里写了 **23 个文件 · 约 780 KB**，
         还**改了他的 `.gitignore`**。
@@ -220,10 +321,11 @@ export function NewProjectSheet({ hub, host, initialDir, onClose, onOpen }: { hu
         `CLAUDE.md` §8 第 7 条：**一个说谎的数比没有数糟，因为它看起来是读数**；
         而这里更糟，因为用户是照着这句话决定要不要把自己的文档目录交给我们的。 */}
     <div className="rounded border border-border bg-panel2 px-3 py-2 leading-relaxed">
-      <b className="text-text2">但它现在会往这个目录里加一批工具文件</b> —— 入口页、8 份界面壳、运行时副本、
-      <code className="font-mono text-[11px]">.umbrastudio/</code>，实测 <b className="text-text2">23 个文件 · 约 780 KB</b>；
+      <b className="text-text2">但它会往这个目录里加一批工具文件</b> —— 入口页、8 份界面壳、运行时副本，
+      实测 <b className="text-text2">18 个文件 · 约 754 KB</b>；
       目录里有 <code className="font-mono text-[11px]">.gitignore</code> 的话，还会往它<b className="text-text2">追加一段</b>把这些排除掉。
-      <br />这些都是生成物，删掉下次打开会重建。<span className="text-muted">正在改成放进软件自己的目录，还没做完。</span>
+      <br />这些都是生成物，删掉下次打开会重建。
+      <span className="text-muted">快照、评论、回收站、缓存<b className="text-text2">不在</b>这个目录里（在软件自己那边）。</span>
     </div>
     <Field label="目录" note={info && info.exists === false ? "目录还不存在，会自动创建" : cap.ok ? undefined : cap.why}><div className="flex gap-2"><input className={inputCls + " flex-1"} value={dir} onChange={(e) => setDir(e.target.value)} onBlur={() => void inspect(dir)} placeholder="/Users/…/我的项目" /><button className="btn" onClick={() => void pick()}>选择</button></div></Field>
     {info?.isProject && <div className="rounded border border-border bg-panel2 px-3 py-2 flex items-center gap-2"><span className="flex-1">这个目录已经是一个项目（有 project.json）。</span><button className="btn sm" onClick={() => { onClose(); onOpen(dir.trim()); }}>直接打开</button></div>}
