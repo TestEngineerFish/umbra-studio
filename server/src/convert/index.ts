@@ -15,6 +15,7 @@
  *  命令行、工具路径、输出位置全在宿主这边定（`doc/20` P1 / `11` Q40：插件不许起子进程）。
  */
 import { join } from "node:path";
+import { readdirSync, rmSync } from "node:fs";
 import { STATE_ROOT } from "../project.js";
 import { ConvertEngine } from "./engine.js";
 import { ToolBox } from "./tools.js";
@@ -46,11 +47,49 @@ export function buildConverters(tools: ToolBox, loProfileDir: string): Converter
 let shared: ConvertEngine | null = null;
 let sharedTools: ToolBox | null = null;
 
+/** LibreOffice 的配置目录 —— **按进程分**（issue #174）。
+ *
+ *  ⚠️⚠️ 原来是固定一份 `libreoffice-profile`，而 `office.ts` 的注释自己写着
+ *  「共用配置会撞锁，命令行那边**静默退出、什么都不转**」。那句话成立的前提是
+ *  「同时只有一个 soffice」—— 而它靠的是 `maxParallel: 1`，**那个闸在 `Gate` 里，只管本进程**。
+ *  Studio 同时跑着好几个核心进程共用一个 `STATE_ROOT`：桌面壳里的、`npm run ui` 的、
+ *  通道 B 给本地 CLI 起的那台 MCP server、外部 MCP 客户端起的那台。
+ *  于是两个 `soffice` 用**同一个** `-env:UserInstallation` → 后起的撞锁**退出码 0**、
+ *  什么都不转 → 找不到成品 → 报「LibreOffice 没有转出文件」。
+ *  > **用户看到的那句话和真实原因（另一个进程在用）毫无关系。**
+ *  ⚠️ UmbraPC 只有一个主进程，所以这是 **Studio 多进程特有的**。
+ *
+ *  ⚠️ 为什么不用跨进程文件锁：那要改 `office.ts`，而它是 `COPIED_FROM_PC` 的**逐字副本**
+ *  （`converttest` 逐份比对），得先改 PC 再同步过来。按进程分只动 Studio 这一侧。 */
+const loProfileDir = (): string => join(STATE_ROOT, ".umbrastudio", "convert", `libreoffice-profile-${process.pid}`);
+
+/** 清掉**进程已经不在了**的那些 profile 目录。
+ *  ⚠️ 判准是 `process.kill(pid, 0)` 抛 `ESRCH`（进程不存在），**不是按时间**——
+ *  按时间的话「一个跑了一整天的壳」的目录会被另一个进程当成陈旧的删掉，
+ *  而那正好是**它正在用的那一个**。
+ *  ⚠️ 失败一律忽略：这是顺手打扫，不该让转换起不来。 */
+function sweepDeadProfiles(): void {
+  const root = join(STATE_ROOT, ".umbrastudio", "convert");
+  let names: string[] = [];
+  try { names = readdirSync(root); } catch { return; }
+  for (const n of names) {
+    const m = /^libreoffice-profile-(\d+)$/.exec(n);
+    if (!m || !m[1]) continue;
+    const pid = Number(m[1]);
+    if (pid === process.pid) continue;
+    try { process.kill(pid, 0); continue; } catch (e) {
+      if ((e as { code?: string }).code !== "ESRCH") continue;   // EPERM = 活着但不是我的，别删
+    }
+    try { rmSync(join(root, n), { recursive: true, force: true }); } catch { /* 顺手打扫 */ }
+  }
+}
+
 /** 进程里共用的那一个（插件、MCP、应用内会话都用它，闸门才是全局的 —— 两路同时转视频不会各开两个 ffmpeg）。 */
 export function convertEngine(): ConvertEngine {
   if (shared) return shared;
+  sweepDeadProfiles();
   sharedTools = new ToolBox();
-  shared = new ConvertEngine(buildConverters(sharedTools, join(STATE_ROOT, ".umbrastudio", "convert", "libreoffice-profile")));
+  shared = new ConvertEngine(buildConverters(sharedTools, loProfileDir()));
   return shared;
 }
 

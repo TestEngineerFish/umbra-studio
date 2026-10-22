@@ -65,10 +65,35 @@ export interface CliSpec {
   loginHint: string;
   /** 已知的坑与限制，直接显示给用户 */
   note: string;
+  /** **这家的 AI 能不能用它自带的工具直接改文件**（issue #166）。
+   *
+   *  ⚠️ 为什么要做成一个字段而不是只写在 `note` 里：#29 把这件事在 codex
+   *  （`--sandbox read-only`）和 cursor-agent（关不掉 → 照实写 + 事后兜底）上处理完了，
+   *  而 **gemini / opencode 两支没跟上** —— 因为那两次处理留下的痕迹只是
+   *  各自 `note` 里的一句话，**没有任何东西在问「第五家呢」**。
+   *  > **一件要对每一家都回答的问题，必须是一个字段，不能是一句话** ——
+   *  > 字段少一个会编译失败，话少一句不会有任何反应。
+   *
+   *  | 值 | 意思 | 谁 |
+   *  | --- | --- | --- |
+   *  | `blocked` | 它自带的写工具被我们关掉了，改稿只能走我们的 MCP | claude（只放行我们的工具）· codex（`--sandbox read-only`，实测 MCP 照样调得到而它自己改不动） |
+   *  | `unavoidable` | 关不掉（它的沙箱是「工作区内可读写」），只能照实说 + 事后兜底 | cursor-agent |
+   *  | `open` | **默认全放行，而且我们没给它我们的 MCP** —— 用户让它改稿时它**只有**自带写工具可用 | gemini（`--yolo` = 自动批准所有动作）· opencode（默认 edit / bash 不问） |
+   *
+   *  `blocked` 之外的，`note` 里**必须**说出来 —— 有判据钉着（`apitest`）。
+   *  那种改动绕过纪律①（归一化 / `@ds` 展开 / `__resources` / 节点地址 / 快照），
+   *  **没有快照、退不回去**；兜底只有事后的 `bypassedDrafts()`（会话里记一条）。 */
+  directWrite: "blocked" | "unavoidable" | "open";
 }
+
+/** `directWrite !== "blocked"` 的那几家，`note` 里必须出现这句话的核心部分。
+ *  ⚠️ **收口成一个常量**，这样「说了没说」是一件可以检查的事，
+ *  而不是「我以为我写了」。 */
+export const DIRECT_WRITE_WARN = "可能用自带工具直接改文件";
 
 export const CLI_SPECS: readonly CliSpec[] = [
   {
+    directWrite: "blocked" as const,
     id: "claude",
     label: "Claude Code",
     bin: "claude",
@@ -82,6 +107,7 @@ export const CLI_SPECS: readonly CliSpec[] = [
     note: "唯一能纯命令行给 MCP 的（--mcp-config），不往你的目录写任何东西。用量与花费都报。",
   },
   {
+    directWrite: "unavoidable" as const,
     id: "cursor-agent",
     label: "Cursor CLI",
     bin: "cursor-agent",
@@ -102,9 +128,13 @@ export const CLI_SPECS: readonly CliSpec[] = [
        我们自己的写入口按契约拒了落盘 —— **「文件没变」的原因不是 plan 模式**（纪律④）。
        ⚠️ 去掉 `--trust` 它**根本不跑**（「Workspace Trust Required」直接退出），
        那种「文件没被改」是假的通过。 */
-    note: "MCP 要在项目里放 .cursor/mcp.json —— 我们会写这一个键，你原有的别的 server 不动。不报 token 用量。⚠️ 这家的 AI **可能用自带工具直接改文件**（实测 --sandbox enabled 挡不住），那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code（它只放行 Umbra 的工具）。",
+    /* ⚠️ **反引号** —— 这一行原来是双引号，而里面有 `${...}`：判据第一次跑就抓到了，
+       不然**用户会在设置页读到字面的 `${DIRECT_WRITE_WARN}`**。
+       > 一个模板串写成普通字符串，TypeScript 不会说一句话。 */
+    note: `MCP 要在项目里放 .cursor/mcp.json —— 我们会写这一个键，你原有的别的 server 不动。不报 token 用量。⚠️ 这家的 AI **${DIRECT_WRITE_WARN}**（实测 --sandbox enabled 挡不住），那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code（它只放行 Umbra 的工具）。`,
   },
   {
+    directWrite: "blocked" as const,
     id: "codex",
     label: "Codex CLI",
     bin: "codex",
@@ -119,6 +149,7 @@ export const CLI_SPECS: readonly CliSpec[] = [
     note: "事件流最干净（mcp_tool_call 带 server/tool/arguments/result）。跑的时候不加载你的全局配置 —— 只有 Umbra 这一台 MCP，省下三万 token 的无关工具表。",
   },
   {
+    directWrite: "open" as const,
     id: "gemini",
     label: "Gemini CLI",
     bin: "gemini",
@@ -129,9 +160,10 @@ export const CLI_SPECS: readonly CliSpec[] = [
     verified: false,
     modelHint: "gemini-2.5-pro / gemini-2.5-flash",
     loginHint: "终端跑一次 gemini 走 Google 登录",
-    note: "【没实测】而且它只输出纯文本，没有 JSON 事件 —— 界面上看不到工具行，只能看到最后一段话。MCP 要 gemini mcp add 写进全局 settings。",
+    note: `【没实测】而且它只输出纯文本，没有 JSON 事件 —— 界面上看不到工具行，只能看到最后一段话。MCP 要 gemini mcp add 写进全局 settings。⚠️ 这家的 AI **${DIRECT_WRITE_WARN}**：我们传的是 --yolo（自动批准所有动作，包括它内置的 write_file / replace / run_shell_command），而这一支**不注入我们的 MCP** —— 也就是你让它改稿时，它**只有**自带写工具可用。那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code 或 Codex（那两家它自己改不动）。`,
   },
   {
+    directWrite: "open" as const,
     id: "opencode",
     label: "opencode",
     bin: "opencode",
@@ -143,7 +175,7 @@ export const CLI_SPECS: readonly CliSpec[] = [
     listModelsArgs: ["models"],
     modelHint: "anthropic/claude-sonnet-4 等 provider/model",
     loginHint: "opencode auth 配一个 provider",
-    note: "【没实测】按文档：opencode run --format json。MCP 配在项目的 opencode.json。",
+    note: `【没实测】按文档：opencode run --format json。MCP 配在项目的 opencode.json。⚠️ 这家的 AI **${DIRECT_WRITE_WARN}**：按它的文档默认权限是全部放行（edit / bash 不问）。那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code 或 Codex。`,
   },
 ] as const;
 

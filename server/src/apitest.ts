@@ -1800,6 +1800,55 @@ console.log("\n㉑ 通道 B 的 MCP 入口（issue #165）");
   ok(twice === pp, "**幂等** —— 已经在里面的不会被加第二遍", `${pp.length} → ${twice.length} 字节`);
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ㉒ 本地 CLI「会不会自带写工具直接改稿」要对**每一家**都回答（issue #166 / #173 / #174）
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n㉒ 本地 CLI 的 directWrite + 转换那两条（#166 / #173 / #174）");
+{
+  const LC2 = await import("./local_cli.js");
+
+  /* ── #166：**一件要对每一家都回答的问题，必须是一个字段** ──
+     #29 在 codex 和 cursor-agent 上处理完了，而 gemini / opencode 两支没跟上 ——
+     因为那两次处理留下的痕迹只是各自 `note` 里的一句话，
+     **没有任何东西在问「第五家呢」**。 */
+  ok(LC2.CLI_SPECS.every((c) => !!c.directWrite),
+     "**每一家都填了 `directWrite`**（字段少一个会编译失败，话少一句不会有任何反应）",
+     LC2.CLI_SPECS.map((c) => `${c.id}:${c.directWrite}`).join(" · "));
+  const risky = LC2.CLI_SPECS.filter((c) => c.directWrite !== "blocked");
+  ok(risky.length > 0, "（前提）确实有几家关不住 —— 不然下一条是空集上的全称命题",
+     risky.map((c) => c.id).join(" · "));
+  const silent = risky.filter((c) => !c.note.includes(LC2.DIRECT_WRITE_WARN));
+  ok(silent.length === 0,
+     "**关不住的那几家，`note` 里都说出来了**（用户在设置页读的就是它）",
+     silent.length ? `没说的：${silent.map((c) => c.id).join(" · ")}` : risky.map((c) => c.id).join(" · "));
+  /* ⚠️ 反方向：关得住的那几家**不该**挂这句警告 —— 不然它变成一句谁都有的废话。 */
+  const overWarned = LC2.CLI_SPECS.filter((c) => c.directWrite === "blocked" && c.note.includes(LC2.DIRECT_WRITE_WARN));
+  ok(overWarned.length === 0, "而关得住的那几家**不挂**这句警告（不然它成了一句谁都有的废话）",
+     overWarned.map((c) => c.id).join(" · ") || "claude / codex 都没挂");
+  /* gemini 这一支的特殊之处：它连我们的 MCP 都没有，所以「只有自带写工具可用」 */
+  const gem = LC2.CLI_SPECS.find((c) => c.id === "gemini");
+  ok(gem?.directWrite === "open" && /只有/.test(gem?.note ?? ""),
+     "gemini 那条说清了「**只有**自带写工具可用」（它这一支不注入我们的 MCP）");
+
+  /* ── #173：转换不许造出一份没走 write_draft 的设计稿 ── */
+  const { kindOf: k22 } = await import("./shared/kinds.js");
+  ok(k22("首页.dc.html") === "dc", "（前提）`首页.dc.html` 确实被认成设计稿 —— 这是缺陷成立的原因");
+  const { readFileSync: rf22 } = await import("node:fs");
+  const { join: j22 } = await import("node:path");
+  const { TOOL_ROOT: TR22 } = await import("./project.js");
+  const convSrc = rf22(j22(TR22, "server", "src", "cap", "convert.ts"), "utf8");
+  ok(/kindOf\(predicted\) === "dc"/.test(convSrc),
+     "**`file.convert` 在成品名是 `.dc.html` 时拒掉**（源文件叫 `首页.dc.txt` 转 html 就会撞上）");
+  ok(/write_draft/.test(convSrc), "而且拒因里说清了「设计稿只能从 `write_draft` 那条路生成」");
+
+  /* ── #174：LibreOffice 的配置目录按进程分 ── */
+  const idxSrc22 = rf22(j22(TR22, "server", "src", "convert", "index.ts"), "utf8");
+  ok(/libreoffice-profile-\$\{process\.pid\}/.test(idxSrc22),
+     "**LibreOffice 的配置目录带 pid**（原来固定一份，两个核心进程同时转 Office 时后起的撞锁静默退出）");
+  ok(/ESRCH/.test(idxSrc22),
+     "清旧目录按「进程还在不在」判而**不是按时间**（按时间会删掉一个跑了一整天的壳正在用的那个）");
+}
+
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 
