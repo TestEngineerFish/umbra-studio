@@ -449,6 +449,196 @@ for (const n of wasHttpOnly) {
   ok(added.length === 0, "**跑完一轮没给自己留下兜底仓库**（和开头那次逐个比，不靠路径匹配）",
      added.length ? added.join(" · ") : `${reposAfter.length} 个，和开头一样`);
 }
+/* ══════════════════════════════════════════════════════════════════════
+   ⑯ 品牌名散不散（品牌收口，2026-10-22）
+
+   ⚠️ **为什么这一节住在 `captest`**：它的职责一直是「测的不是功能，是**散不散** ——
+   声明了就两面都有、名字不打架」（本文件头那段）。品牌名正好是这个问题的新一例。
+
+   ⚠️ **为什么必须有这一节**：`brand.ts` 只能让**能 import 它的人**读到它。
+   而有两种消费者 import 不了 TS —— `shell/package.json`（electron-builder 的构建配置）
+   和 `app/index.html`（首屏 `<title>`）。它们只能是字面量。
+   > **「单一来源」对 import 不了它的消费者来说是一句空话，除非有人去对账。**
+   下面每一条都是在对账，而不是在复制。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑯ 品牌名散不散（2026-10-22）");
+{
+  const { readFileSync: rf } = await import("node:fs");
+  const { join: jn } = await import("node:path");
+  const B = await import("./shared/brand.js");
+  /* ⚠️ 用 `TOOL_ROOT` 不是 `process.cwd()` —— npm 跑脚本时 cwd 是 `server/`，
+     拿 cwd 拼出来的路径查不到 `shell/package.json`，而那会是一条**永远绿**的自检
+     （`identitytest` 栽过同一条，`doc/00` §166）。 */
+  const { TOOL_ROOT: R } = await import("./project.js");
+  const pkgRaw = rf(jn(R, "shell", "package.json"), "utf8");
+  const pkg = JSON.parse(pkgRaw) as {
+    description?: string;
+    build?: { productName?: string; appId?: string; artifactName?: string;
+              mac?: { extendInfo?: Record<string, unknown> };
+              fileAssociations?: { description?: string }[] };
+  };
+  const bld = pkg.build ?? {};
+  const ext = (bld.mac?.extendInfo ?? {}) as Record<string, string>;
+
+  /* ── ⓐ 显示层：英文系统的 Finder / Dock 读 Info.plist 这两个键 ── */
+  ok(ext["CFBundleDisplayName"] === B.displayNameEn,
+     "`CFBundleDisplayName` 等于 `displayNameEn`（英文系统的 Finder / Dock 显示它）",
+     `${ext["CFBundleDisplayName"]} vs ${B.displayNameEn}`);
+  ok(ext["CFBundleName"] === B.displayNameEn,
+     "`CFBundleName` 等于 `displayNameEn`（菜单栏兜底，`setName` 失败时就靠它）",
+     `${ext["CFBundleName"]}`);
+
+  /* ── ⓑ 「打开方式」右键菜单里那两行 + 包描述 ── */
+  /* ⚠️ 这两条**分开数**：第一版把包描述也混进了「那两行」里，于是 `=== 2` 对不上而红 ——
+     **判据红了而产品是对的**。两件事问的不是同一个问题，就不该用同一个数组。 */
+  const assoc = (bld.fileAssociations ?? []).map((a) => a.description ?? "");
+  const allDesc = [pkg.description ?? "", ...assoc];
+  const badDesc = allDesc.filter((d) => d.includes(B.codename));
+  ok(badDesc.length === 0, "包描述与「打开方式」那两行不再出现内部代号",
+     badDesc.length ? badDesc.join(" · ") : `${allDesc.length} 条都干净`);
+  ok(assoc.length === 2 && assoc.every((d) => d.startsWith(B.studioName)),
+     "「打开方式」那两行都以 `studioName` 开头（右键菜单里用户直接读它）",
+     assoc.join(" | "));
+  /* ⚠️ `server/package.json` 也要对账 —— 它是**第三个** import 不了 TS 的消费者，
+     而它的 `description` 会出现在 MCP 客户端的包信息里。
+     不钉的话它就是一处「没人看着的字面量」，下一次改名会漏掉它。 */
+  const srvPkg = JSON.parse(rf(jn(R, "server", "package.json"), "utf8")) as { description?: string };
+  ok((srvPkg.description ?? "").startsWith(B.studioName) && !(srvPkg.description ?? "").includes(B.codename),
+     "`server/package.json` 的 `description` 以 `studioName` 开头、不含内部代号",
+     srvPkg.description ?? "（没有）");
+
+  /* ── ⓒ 文件系统层：**冻结**，而且要证明它是冻结的 ──
+     ⚠️ 这两条是**反方向**的判据：它们要求这几个值**不等于**品牌名。
+     写成「等于旧值」的话，以后有人把旧值也改了、判据跟着改，就什么都没拦住。
+     所以钉的是**那条不变量本身**：数据与身份不随显示名走。 */
+  ok(bld.appId === "com.umbrastudio.app", "`appId` 冻结（换了它等于换一个应用：登录项 / TCC 授权 / 钥匙串全部重来）", String(bld.appId));
+  ok(!(bld.productName ?? "").includes(B.productName),
+     "`build.productName` **不含**新品牌名 —— 它决定 `.app` 文件名，改它会在用户 `/Applications` 里留下孤儿",
+     String(bld.productName));
+
+  const mainRaw = rf(jn(R, "shell", "main.mjs"), "utf8");
+  const legacy = /const LEGACY_DATA_DIR = "([^"]+)"/.exec(mainRaw)?.[1] ?? "";
+  ok(legacy !== "" && !legacy.includes(B.productName) && legacy !== B.studioName && legacy !== B.studioNameEn,
+     "**`userData` 的目录名不等于任何品牌名派生值**（改一次名就搬一次用户的历史 = 静默丢数据）",
+     legacy || "没找到 LEGACY_DATA_DIR");
+  ok(/app\.setPath\("userData"/.test(mainRaw),
+     "**`main.mjs` 显式 `setPath(\"userData\")`** —— 不再靠「应用名顺手当目录名」那个默认行为",
+     "在");
+
+  /* ── ⓓ 分发物文件名：ASCII ──
+     ⚠️ 理由是实测的：win 的分发物是 `.zip`，而 `ziptest` 钉着「中文文件名要靠 bit 11，
+     不是所有解压器都认」。`${...}` 是 electron-builder 自己的占位符，不是 JS 模板串。 */
+  ok((bld.artifactName ?? "").startsWith(B.studioNameEn),
+     "`artifactName` 以 `studioNameEn`（ASCII）开头", String(bld.artifactName));
+
+  /* ── ⓔ `productNameEn` 的露出面 ──
+     sam 2026-10-22：英文名定下来之前 `Changweique` **不对外露出**，英文环境也显示中文名。
+     所以它在仓库里**只许出现在两处**：`brand.ts` 自己，和上面那个 `artifactName`。
+     ⚠️ 这一条是**白名单不是黑名单**（§M14-3 同一条理由）——
+     黑名单的话「以后哪里又用了一次」不会有任何东西红。 */
+  const { execFileSync } = await import("node:child_process");
+  let hits: string[] = [];
+  try {
+    hits = execFileSync("git", ["grep", "-l", B.productNameEn, "--", "*.ts", "*.tsx", "*.mjs", "*.cjs", "*.json", "*.html", "*.css"],
+                        { cwd: R, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  } catch { /* git grep 一个都没找到时退非零 */ }
+  const allowEn = new Set(["server/src/shared/brand.ts", "shell/package.json", "server/src/captest.ts"]);
+  const leak = hits.filter((f) => !allowEn.has(f));
+  ok(leak.length === 0, `**\`${B.productNameEn}\` 没有露出到白名单以外**（英文名还没定，露出一次用户就会记住它）`,
+     leak.length ? leak.join(" · ") : `只在 ${hits.length} 处白名单文件里`);
+
+  /* ── ⓕ 中文间距规则（geek-99 2026-10-22，全端统一）──
+     「长尾雀」挨着汉字或中文标点**不留空格**，挨着英文或数字留**一个**空格。
+     ⚠️ 这条规则**原来只是一句话** —— 而一句话管不住几十处文案。
+     这里把它变成读数：`长尾雀` + 空格 + 汉字/中文标点 = 红。 */
+  /* ⚠️⚠️ **第一版是假判据**：用 `git grep -E '长尾雀 +[\x{4e00}-...]'`，而 git 的 ERE
+     **不认 `\x{...}`** —— 它打印 `fatal: invalid character range` 退非零，
+     被我自己写的 `catch` 吃成 `[]`，读数「0 处」**绿**。
+     > **「量到零」的两种可能里，先排除仪器是零**（纪律④）——
+     > 而这一次把仪器故障翻译成「世界是零」的，正是我自己那个 `catch`。
+     改成**自己读文件扫**：没有外部命令，就没有「命令失败」这一档。 */
+  const spaceBad: string[] = [];
+  {
+    const { readdirSync: rdd, readFileSync: rfs, statSync: stt } = await import("node:fs");
+    const bad = new RegExp(B.productName + "[ \u3000]+[\u4e00-\u9fa5，。、；：？！「」（）]");
+    const walk = (dir: string): void => {
+      for (const e of rdd(dir)) {
+        if (e === "node_modules" || e === "dist" || e === ".git" || e === "out" || e === "projects") continue;
+        const f = jn(dir, e);
+        if (stt(f).isDirectory()) { walk(f); continue; }
+        if (!/\.(ts|tsx|mjs|cjs|html)$/.test(e)) continue;
+        if (f.endsWith("captest.ts")) continue;              // 本判据自己写着那个样子
+        /* ⚠️ 剥注释再扫：`brand.ts` 的注释里**故意**写着反例（「不是『长尾雀 账号』」），
+           而间距只在**用户看得见的文案**里有意义。不剥的话这条判据会把
+           「解释规则的那句话」报成「违反规则」—— §107 那条「分不清界面文案和
+           解释它的注释」的第 4 次。HTML 用 `<!-- -->`，`codeOf` 不认，照原文扫。 */
+        const body = /\.(ts|tsx|mjs|cjs)$/.test(e) ? stripComments(rfs(f, "utf8")) : rfs(f, "utf8");
+        body.split("\n").forEach((ln, i) => {
+          if (bad.test(ln)) spaceBad.push(`${f.slice(R.length + 1)}:${i + 1}`);
+        });
+      }
+    };
+    for (const d of ["server/src", "app/src", "app", "shell", "ui"]) {
+      try { walk(jn(R, d)); } catch { /* 目录不在就跳过 */ }
+    }
+  }
+  ok(spaceBad.length === 0, "**「长尾雀」后面紧跟汉字时没有多余空格**（原来给英文词留的那个空格，换成汉字就是错的）",
+     spaceBad.length ? spaceBad.slice(0, 4).join(" · ") : `扫过的文件里 0 处`);
+
+  /* ── ⓖ 首屏 `<title>`：HTML 读不了 TS，只能对账 ── */
+  const idx = rf(jn(R, "app", "index.html"), "utf8");
+  ok(new RegExp(`<title>${B.studioName}</title>`).test(idx),
+     "`app/index.html` 的 `<title>` 等于 `studioName`（首屏那一帧用户就看见它）",
+     /<title>([^<]*)<\/title>/.exec(idx)?.[1] ?? "没有 title");
+
+  /* ── ⓗ 残留：用户看得见的代码里不该再有硬写的产品全名 ──
+     ⚠️ 白名单里每一项都有理由，加新的必须显式加 —— 这是闸该有的样子。 */
+  /* ⚠️ **第一版按「行首是不是注释符」判，而它漏了两种**：行尾注释
+     （`icons.ts:79` 的 `// Umbra Studio`）和块注释的**续行**
+     （`Workbench.tsx:690` 那行以中文开头）。于是三条合法命中全报成缺陷。
+     > **判据测的那个东西，和产品实际用的那个东西，要是同一个**（`doc/00` §172.7）——
+     > 产品用的是**会执行的代码**，所以判据该先把注释剥掉，而不是猜哪一行像注释。
+     用顶层 `stripComments()`（⑮ 已经在用的那一个）。 */
+  const stillOld: string[] = [];
+  {
+    const { readdirSync: rdd, readFileSync: rfs, statSync: stt } = await import("node:fs");
+    const needle = `${B.codename} Studio`;
+    /** 白名单，每一项都有理由；加新的必须显式加 —— 这是闸该有的样子。 */
+    const allow = (rel: string) =>
+      rel === "server/src/shared/brand.ts"     // 定义处：注释里讲历史
+      || rel === "server/src/captest.ts"       // 本判据自己
+      || rel === "server/src/filetest.ts"      // 测试项目名 `Umbra_design`，不是产品名
+      || rel === "server/src/agenttest.ts"     // 打桩夹具稿的正文，不是产品文案
+      /* ⚠️ 下面两处是**有意保留**的，不是漏改 —— 它们不是「名字」，是**键和身份**：
+         · `gitexclude.ts` 的 `OPEN` 是写进用户 `.git/info/exclude` 的**段落匹配标记**。
+           改了就认不出已经写进去的那一段 → 幂等失效 → 每次接管**重复追加**。
+           （geek-99 2026-10-22 也明确把它划进「不改」那一类。）
+         · `gitkeep.ts` 的 `-c user.name=` 是**写进 git 提交对象的作者身份**。
+           改了之后同一个兜底仓库里会有两种作者名，而**已有的提交改不回来**。
+         > **一个字符串是不是「名字」，看改了它之后坏掉的是观感还是数据。** */
+      || rel === "server/src/gitexclude.ts"
+      || rel === "server/src/gitkeep.ts";
+    const walk = (dir: string): void => {
+      for (const e of rdd(dir)) {
+        if (e === "node_modules" || e === "dist" || e === ".git" || e === "out" || e === "projects") continue;
+        const f = jn(dir, e);
+        if (stt(f).isDirectory()) { walk(f); continue; }
+        if (!/\.(ts|tsx)$/.test(e)) continue;
+        const rel = f.slice(R.length + 1);
+        if (allow(rel)) continue;
+        stripComments(rfs(f, "utf8")).split("\n").forEach((ln, i) => {
+          if (ln.includes(needle)) stillOld.push(`${rel}:${i + 1}`);
+        });
+      }
+    };
+    for (const d of ["server/src", "app/src"]) {
+      try { walk(jn(R, d)); } catch { /* 不在就跳过 */ }
+    }
+  }
+  ok(stillOld.length === 0, `**\`${B.codename} Studio\` 不再出现在会执行的 TS 代码里**（白名单之外）`,
+     stillOld.length ? stillOld.slice(0, 4).join(" · ") : "0 处");
+}
+
 /* ── 剥注释只许有一份实现（2026-10-22，geek-99 定）──
    ⚠️ 「判据分不清『代码』和『解释它的注释』」这条教训犯过 **5 次**，
    而每次的修法都是「在那一处内联一个正则」—— 于是同一件事长出了**三份实现**。

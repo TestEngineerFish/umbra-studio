@@ -4,6 +4,8 @@
  *  ⚠️ 下载只认 https、有上限、有超时，**任何一步失败不落一个字节**：临时文件在 `finally` 里删，
  *  真正落盘的是 `installFromFile`（它自己也是「验不过就全撤」）。
  */
+
+import { platformName, productName } from "../shared/brand.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,9 +78,9 @@ export function planAcquire(p: { signedIn: boolean; builtin: boolean; update?: b
   if (p.builtin && p.update) {
     return isHttpsUrl(p.packageUrl) ? { ...none, install: true } : { ...none, refuse: "内置插件有新版本，但发布方还没放安装包" };
   }
-  if (p.builtin) return { ...none, refuse: "内置插件随 Umbra 一起，不用买也不用装" };
+  if (p.builtin) return { ...none, refuse: `内置插件随${productName}一起，不用买也不用装` };
   if (p.installed && p.entitled) return { ...none, refuse: "已经装好并且有授权了" };
-  if (!p.signedIn) return { ...none, refuse: "登录 Umbra 账号后才能购买 / 领取插件" };
+  if (!p.signedIn) return { ...none, refuse: `登录${platformName}账号后才能购买 / 领取插件` };
   const install = isHttpsUrl(p.packageUrl) && !p.installed;
   if (p.entitled) return { buy: false, license: false, install, refuse: "" };
   /* ⚠️ **免费（0 积分）的也要走「买」**（2026-10-17 用户报「许可证里没有这个插件的授权」）：服务端 `buy()` 对 0 积分的

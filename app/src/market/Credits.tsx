@@ -7,12 +7,14 @@
  *  真做的时候要带上用户 2026-09-26 定的三条（`doc/20` §4.5）：
  *  积分不过期 · 买插件出问题只退积分（充值订单本身的问题可以原路退钱）· 300/1,000/3,000，¥0.1 一积分。
  */
+
+import { platformName } from "@shared/brand";
 export function Credits() {
   return (
     <div className="max-w-[560px] mx-auto px-8 py-10 text-xs leading-relaxed">
       <h1 className="text-lg font-semibold">积分</h1>
       <p className="text-text2 mt-3">
-        积分用来买插件。<b className="text-text">还没接通</b> —— 账号（微信 / Apple / Umbra）和支付还在做，
+        积分用来买插件。<b className="text-text">还没接通</b> —— 账号（微信 / Apple / {platformName}）和支付还在做，
         所以这里暂时没有余额和流水。
       </p>
       <div className="mt-4 rounded px-3 py-2.5" style={{ background: "var(--tool-warn-soft)", color: "var(--tool-warn)" }}>

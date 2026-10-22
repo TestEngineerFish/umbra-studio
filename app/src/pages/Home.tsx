@@ -1,3 +1,4 @@
+import { studioName } from "@shared/brand";
 import { useEffect, useState } from "react";
 import type { Core } from "../api/client";
 import { timeAgo, type ProjectRow } from "../api/types";
@@ -148,7 +149,7 @@ export function Home({ core, host, onOpen, onNewProject, onImport, onSettings, o
   return (
     <div className="h-full flex flex-col">
       <header className="h-11 px-4 flex items-center gap-3 border-b border-border bg-panel shrink-0">
-        <span className="font-semibold text-sm">Umbra Studio</span><span className="flex-1" />
+        <span className="font-semibold text-sm">{studioName}</span><span className="flex-1" />
         <span className="text-[11px] text-muted mr-2">{host.kind === "desktop" ? "桌面" : "浏览器"}</span>
         <button className="btn ghost sm" onClick={onMarket} data-ud="home-market" title="插件商城：上架的插件、已装、积分">商城</button>
         <button className="btn ghost sm" onClick={onSettings}>设置</button>

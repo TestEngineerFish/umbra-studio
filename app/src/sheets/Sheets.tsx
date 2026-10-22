@@ -1,3 +1,4 @@
+import { platformName, studioName } from "@shared/brand";
 import { useCallback, useEffect, useState } from "react";
 import type { Core } from "../api/client";
 import { baseName, type CliStatus, type DirInfo } from "../api/types";
@@ -706,7 +707,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
       setSt(d);
       if (d.signedIn || d.lastError || !d.pending || Date.now() - t0 > 5 * 60_000) {
         setBusy(false);
-        if (d.signedIn) toast("已登录 Umbra 账号");
+        if (d.signedIn) toast(`已登录${platformName}账号`);
         else if (d.lastError) toast(d.lastError);
         /* 停了之后再读一次（#137 的保险）：万一停在「收尾还没写完」的那一刻，之后落盘的登录态 / 失败原因也能显示出来 */
         setTimeout(() => { void load(); }, 1500);
@@ -736,10 +737,10 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
   return <section data-ud="account" className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5">
     <div className="flex flex-col gap-0.5">
       <div className="flex items-center gap-2">
-        <h3 className="text-sm font-semibold shrink-0">Umbra 账号</h3>
+        <h3 className="text-sm font-semibold shrink-0">{platformName}账号</h3>
         <span className="text-muted text-xs truncate">{st ? (st.signedIn ? `已登录 · ${who}${st.user?.is_owner ? " · 主人" : ""}${st.user?.email ? ` · ${st.user.email}` : ""}` : "未登录（单机使用；同步、服务端 AI、插件市场要登录）") : "…"}</span>
       </div>
-      <span className="text-muted text-xs">和 Umbra PC、iOS 用同一个账号。</span>
+      <span className="text-muted text-xs">和 {platformName} PC、iOS 用同一个账号。</span>
     </div>
     <div className="flex items-center gap-2 text-xs">
       <span className="text-muted shrink-0">服务端</span>
@@ -752,7 +753,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
       {st?.signedIn
         ? <button className="btn" onClick={logout}>退出登录</button>
         : provider !== "oidc"
-          ? <PasswordLogin core={core} serverUrl={st?.serverUrl || ""} onSignedIn={(d) => { setSt(d as Status); toast("已登录 Umbra 账号"); void load(); }} />
+          ? <PasswordLogin core={core} serverUrl={st?.serverUrl || ""} onSignedIn={(d) => { setSt(d as Status); toast(`已登录${platformName}账号`); void load(); }} />
           : <button data-ud="account-oidc-login" className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
       {busy && provider === "oidc" && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
       {/* ⚠️ `lastError` **一律显示，不按 provider 过滤**（2026-10-21 改）：它现在承载的是
@@ -772,13 +773,13 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
           <span className="block h-full rounded-full" style={{ width: `${Math.max(storage.used > 0 ? 1 : 0, storage.pct)}%`, background: storage.warn === "full" ? "var(--tool-danger, #d33)" : storage.warn === "critical" ? "var(--tool-warn)" : "var(--accent, #e8873a)" }} />
         </span>
         <span>{fmtBytes(storage.used)} / {fmtBytes(storage.limit)} · {storage.pct}%</span>
-        <span className="text-muted">{storage.tier ? "会员" : "免费档"} · 清理与管理在 Umbra PC / iOS 的账号页</span>
+        <span className="text-muted">{storage.tier ? "会员" : "免费档"} · 清理与管理在 {platformName} PC / iOS 的账号页</span>
       </div>
     )}
     {st?.signedIn && (
       <div className="flex items-center gap-2 text-xs">
         <button className={`btn ${st.serverAi ? "primary" : ""}`} onClick={toggleServerAi}>{st.serverAi ? "服务端 AI：开" : "用服务端 AI（会员额度）"}</button>
-        <span className="text-muted">开了之后通道 A 走 Umbra 服务端，模型由服务端定，每次对话按积分扣；当前用哪条通道不变（要用就在引擎选择器里选通道 A），本地 CLI（通道 B）不受影响。</span>
+        <span className="text-muted">开了之后通道 A 走{platformName}服务端，模型由服务端定，每次对话按积分扣；当前用哪条通道不变（要用就在引擎选择器里选通道 A），本地 CLI（通道 B）不受影响。</span>
       </div>
     )}
   </section>;
@@ -913,7 +914,7 @@ function FileTreePanel({ core }: { core: Core }) {
           </label>
           <p className="text-[11px] text-muted leading-relaxed pl-6">
             关掉之后 <code className="font-mono">.gitignore</code> / <code className="font-mono">.env</code> 这类文件不在树里显示。
-            Umbra Studio 自己产的东西（<code className="font-mono">.umbrastudio/</code> · <code className="font-mono">_runtime/</code>）
+            {studioName} 自己产的东西（<code className="font-mono">.umbrastudio/</code> · <code className="font-mono">_runtime/</code>）
             <strong>两种情况下都不显示</strong> —— 它们由工具维护，改了会被下一次重建覆盖。
           </p>
           <p className="text-[11px] text-muted leading-relaxed pl-6">

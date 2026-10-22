@@ -1,3 +1,4 @@
+import { studioName } from "@shared/brand";
 import type { HostAdapter, HostCapability } from "./types";
 
 /** 浏览器宿主：能做的走本地 API，做不了的说清原因（doc/12 M7-3「不可用的按钮说明原因」） */
@@ -17,7 +18,7 @@ export function createBrowserHost(api: { post: (route: string, body: unknown) =>
       } catch { /* 无权限就落到页面内提示 */ }
       window.dispatchEvent(new CustomEvent("ud-toast", { detail: n }));
     },
-    setTitle(title) { document.title = title ? `${title} · Umbra Studio` : "Umbra Studio"; },
+    setTitle(title) { document.title = title ? `${title} · ${studioName}` : studioName; },
     /* ⚠️ **回空数组而不是抛**：拖拽这条路在浏览器里是「拿不到路径」，
        不是「出错了」。调用方按 `capabilities().dropPaths` 决定说什么话。 */
     pathsForDrop() { return []; },

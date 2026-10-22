@@ -9,6 +9,8 @@
  *  对 Umbra 服务端照旧放 `Authorization: Bearer`。`local`（老服务端 / 还没切）→ 这里不做邮箱密码登录，
  *  照实回「这台服务器还没开 OIDC 登录」。
  */
+
+import { platformName } from "./shared/brand.js";
 import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -269,7 +271,7 @@ export class AccountService {
     const cur = await getAiConfig();
     if (on) {
       const st = await this.status();
-      if (!st.signedIn) throw new Error("先登录 Umbra 账号，再开服务端 AI");
+      if (!st.signedIn) throw new Error(`先登录${platformName}账号，再开服务端 AI`);
       const next = mergeChannel(cur, "a", { useAccount: true, model: cur.channelA?.model || "umbra" } as never);
       await setAiConfig(next);
     } else {
@@ -659,7 +661,7 @@ export class AccountService {
     try {
       const r = await this.authedFetch("/plugins/license", { method: "GET" });
       /* 刚因为令牌失效被清掉的，要说「失效」而不是「没登录」—— 他明明登过 */
-      if (!r) return { ok: false, why: this.lastError ? "登录已失效，重新登录一次再取许可证" : "没登录 Umbra 账号，取不了许可证", grants: [] };
+      if (!r) return { ok: false, why: this.lastError ? "登录已失效，重新登录一次再取许可证" : `没登录${platformName}账号，取不了许可证`, grants: [] };
       if (r.status === 503) return { ok: false, why: "服务端还没配许可证签名密钥，暂时发不了许可证", grants: [] };
       /* 走到这里 = 刷新过还是 401（或刷新令牌也过期了）：才真是「登录失效」 */
       if (r.status === 401) return { ok: false, why: "登录已失效，重新登录一次再取许可证", grants: [] };
@@ -692,7 +694,7 @@ export class AccountService {
    *  是服务端记的「原价 · 折扣 · 实扣」（草案 §3.3，折扣落在扣积分那一刻；老服务端没有就是 0）。失败抛 Error（message 是服务端的人话）。 */
   async buyPlugin(id: string): Promise<{ ok: boolean; already: boolean; price: number; discount: number; charged: number }> {
     const r = await this.authedFetch(`/plugins/${encodeURIComponent(id)}/buy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    if (!r) throw new Error(this.lastError ? "登录已失效，重新登录一次" : "登录 Umbra 账号后才能购买");
+    if (!r) throw new Error(this.lastError ? "登录已失效，重新登录一次" : `登录${platformName}账号后才能购买`);
     let body: Record<string, unknown> = {};
     try { body = (await r.json()) as Record<string, unknown>; } catch { body = {}; }
     if (r.ok) {

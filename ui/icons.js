@@ -106,7 +106,7 @@
       ["zoom", "缩放"], ["source", "源码"], ["split", "分栏"], ["sel-region", "圈选"]] },
     { label: "面板 · 聊天 · 其他", items: [
       ["panel-props", "属性"], ["panel-changes", "变更"], ["panel-info", "信息"], ["panel-outline", "大纲"],
-      ["chat-history", "会话历史"], ["sel-range", "带进 · 片段"], ["sel-files", "带进 · 文件"], ["app", "Umbra Studio"]] },
+      ["chat-history", "会话历史"], ["sel-range", "带进 · 片段"], ["sel-files", "带进 · 文件"], ["app", "长尾雀 Studio"]] },
     { label: "插件 · 第十轮", note: "「不允许」用 deny，不用 close：close 是关掉一个东西，deny 是这件事做不了", items: [
       ["plugin", "插件"], ["sandbox", "沙箱 · 权限"], ["deny", "不允许"], ["coin", "积分"], ["download", "安装 / 下载"]] }
   ];

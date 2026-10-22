@@ -25,6 +25,7 @@ import { readCheck, sha256, type CheckRecord } from "./check.js";
 import { renderCheck } from "./render.js";
 import { indexDataFile } from "./statedirs.js";
 import { ensureExcluded } from "./gitexclude.js";
+import { studioName } from "./shared/brand.js";
 
 export type Health = "ok" | "warn" | "error" | "unchecked";
 
@@ -267,7 +268,7 @@ function page(data: IndexData): string {
 </helmet>
 <div style="min-height:100vh">
   <header style="display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid ${t("border")};background:${t("panel")}">
-    <strong style="font-size:14px">Umbra Studio</strong>
+    <strong style="font-size:14px">${studioName}</strong>
     <span style="color:${t("border-strong")}">|</span>
     <strong style="font-size:14px">{{ title }}</strong>
     <code style="font-family:${t("mono")};font-size:12px;color:${t("muted")}">{{ name }}</code>

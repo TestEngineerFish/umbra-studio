@@ -14,16 +14,17 @@ import {
   authorizeUrl, loopbackRedirectUri, parseCallback, parseTokenResponse, pkcePair, randomState,
   refreshRequestBody, tokenRequestBody, type OidcClientConfig, type OidcTokens,
 } from "./oidc_pkce.js";
+import { studioName } from "./shared/brand.js";
 
 export type { OidcClientConfig, OidcTokens } from "./oidc_pkce.js";
 
 /** 浏览器那边最多等多久（毫秒）。 */
 export const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 
-const PAGE_OK = "<!doctype html><meta charset=utf-8><title>Umbra Studio</title>"
-  + "<body style='font:15px system-ui;padding:48px;color:#333'>登录成功，可以回到 Umbra Studio 了。这个页面可以关掉。</body>";
-const PAGE_BAD = "<!doctype html><meta charset=utf-8><title>Umbra Studio</title>"
-  + "<body style='font:15px system-ui;padding:48px;color:#333'>这次登录没有完成，请回到 Umbra Studio 重试。</body>";
+const PAGE_OK = `<!doctype html><meta charset=utf-8><title>${studioName}</title>`
+  + `<body style='font:15px system-ui;padding:48px;color:#333'>登录成功，可以回到 ${studioName} 了。这个页面可以关掉。</body>`;
+const PAGE_BAD = `<!doctype html><meta charset=utf-8><title>${studioName}</title>`
+  + `<body style='font:15px system-ui;padding:48px;color:#333'>这次登录没有完成，请回到 ${studioName} 重试。</body>`;
 
 export type OidcFailReason = "cancelled" | "timeout" | "state" | "idp" | "network";
 

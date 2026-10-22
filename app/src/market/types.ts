@@ -4,6 +4,8 @@
  *  那些是稿里为了演示态方便算好的样式值，进了代码就成了「颜色写在数据里」，
  *  换主题时改不动。样式由组件按 `state` 算。
  */
+
+import { productName } from "@shared/brand";
 export type PluginState = "builtin" | "installed" | "bought" | "none";
 
 export interface MarketTool {
@@ -86,7 +88,7 @@ export function permRows(p: { files?: string[]; net?: string[] }): PermRow[] {
   const net = p.net ?? [];
   return [
     files.includes("write")
-      ? { allow: true, label: "读写当前项目里的文件", note: "每一下都经过 Umbra，出不了项目目录" }
+      ? { allow: true, label: "读写当前项目里的文件", note: `每一下都经过${productName}，出不了项目目录` }
       : files.includes("read")
         ? { allow: true, label: "读当前项目里的文件", note: "只读，改不了任何东西" }
         : { allow: false, label: "碰文件 · 不允许", note: "它读不到也写不了你的文件" },
@@ -96,6 +98,6 @@ export function permRows(p: { files?: string[]; net?: string[] }): PermRow[] {
     /* ⚠️ `exec` 第一期没有，但**这一行照样写**（设计侧第十轮）：
        写成「Umbra 不给任何插件这个权限」，以后开放了再改成按清单来。
        不写的话用户会想「那它还能干什么」—— 列出来的空白比不列更让人安心。 */
-    { allow: false, label: "启动外部程序 · 不允许", note: "Umbra 不给任何插件这个权限" },
+    { allow: false, label: "启动外部程序 · 不允许", note: `${productName}不给任何插件这个权限` },
   ];
 }

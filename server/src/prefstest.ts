@@ -17,6 +17,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { studioName } from "./shared/brand.js";
 
 const STATE = await mkdtemp(join(tmpdir(), "umbra-prefstest-"));
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
@@ -103,7 +104,9 @@ console.log("\n② 拒因分档");
   const ours = denyReason("index-data.js");
   const git = denyReason(".git/config");
   const user = denyReason(".gitignore");
-  ok("我们的产物：说的是「Umbra Studio 自己产的」", /Umbra Studio 自己产的/.test(ours?.why ?? ""), ours?.why);
+  /* ⚠️ 判据**读常量**而不是写死品牌名（geek-99 2026-10-22 第 4 条）——
+   写死的话改一次品牌名就要改一次判据，而「判据跟着改」会掩盖「文案忘了改」。 */
+ok(`我们的产物：说的是「${studioName} 自己产的」`, new RegExp(`${studioName} 自己产的`).test(ours?.why ?? ""), ours?.why);
   /* ⚠️ 这一条钉的正是拆判准时自己踩的坑：`.git` 曾被说成「这是工具自己的文件」。 */
   ok("`.git` 里的东西：**不说成「工具自己的文件」**，说的是版本控制自己的数据",
      /\.git/.test(git?.why ?? "") && !/自己产的/.test(git?.why ?? ""), git?.why);

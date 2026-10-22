@@ -83,6 +83,7 @@ async function binaryMaxSetting(): Promise<number> {
 import { kindOf, isTextualPath, type FileKind } from "./shared/kinds.js";
 import { assetDir, UD_DIRNAME } from "./statedirs.js";
 import { isEditable } from "./records.js";   // M14-7 那道闸的判准
+import { productName, studioName } from "./shared/brand.js";
 export { kindOf };
 
 /** 这个扩展名的内容能不能当文本读 */
@@ -188,7 +189,7 @@ export function isHiddenFromList(rel: string, showHidden: boolean): boolean {
 export function denyReason(rel: string): { why: string; fix: string } | null {
   if (isOurArtifact(rel)) {
     return {
-      why: "这是 Umbra Studio 自己产的文件",
+      why: `这是 ${studioName} 自己产的文件`,
       fix: "索引页、壳页面、运行时副本由 build_index 生成；改了也会被下一次重建覆盖。",
     };
   }
@@ -577,7 +578,7 @@ export async function writeAnyFile(p: Project, rel: string, content: string | Bu
   if (!isEditable(p.dir)) {
     throw new ToolError(err(X.IO, normalizeRel(p, rel), { kind: "path", name: p.dir },
       "这个目录还是只读预览",
-      { fix: "这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 `start_editing`。版本历史记在 Umbra 自己的目录里，原文件夹不会多出任何文件。" }));
+      { fix: `这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 \`start_editing\`。版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。` }));
   }
   /** 一进来就归一成字节 —— 后面每一处都用它，免得「有的地方按字符有的地方按字节」 */
   const buf = typeof content === "string" ? Buffer.from(content, "utf8") : content;

@@ -41,6 +41,7 @@ import { listTemplates, saveAsTemplate, deleteTemplate } from "./templates.js";
 import { exportProject, importProject } from "./export.js";
 import { invokeVerb, isVerb, listVerbs, verbToolDef } from "./plugin/verbs.js";
 import { allCaps } from "./cap/registry.js";   // 只取表，不在这里装配（装配在 index.ts / api.ts，免得和 cap/chat.ts 绕成环）
+import { productName, studioName } from "./shared/brand.js";
 
 /* 与 index.ts 的 GUIDES 同一张表（写稿规则文档索引）。不从 index.ts 引 —— 那会形成循环导入。 */
 const GUIDES: Record<string, { file: string; note: string }> = {
@@ -573,7 +574,7 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
 
     // 系统提示：设计助手角色 + 选中节点上下文
     const systemParts: string[] = [
-      "你是 Umbra Studio 助手，在一个本地目录工作台里干活。**全程用简体中文回答**，包括思考过程里给用户看的那些话。",
+      `你是 ${studioName} 助手，在一个本地目录工作台里干活。**全程用简体中文回答**，包括思考过程里给用户看的那些话。`,
       "这个目录里有两类文件，各走各的路，别串：",
       "  · **设计稿 `.dc.html`**：read_draft 读（每个元素带 data-ud-node 地址）→ set_prop 改一处 / patch_draft 增量改 / write_draft 整份写；改前后各 validate_draft 一次。",
       "  · **别的文件**（`.md`、`.json`、`.css`、图片…）：list_files 列 → read_file 读（拿 content 与 sha256）→ write_file 写（把那个 sha256 原样带回去，盘上被别人改过会被拒）。write_file 不归一化、不动 frontmatter。",
@@ -738,7 +739,7 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
      不给路径它就得 `list_projects` 猜，而用户打开的目录多半不在 projectsRoot 下（这正是
      Umbra Studio 的核心场景），于是它反复试到超时 —— 2026-09-24 实测 120 秒耗尽、零工具调用。 */
   const bSystemParts: string[] = [
-    "你是 Umbra Studio 设计助手。你可以通过 MCP 工具 umbrastudio 读取和修改这个项目里的文件。",
+    `你是 ${studioName} 设计助手。你可以通过 MCP 工具 umbrastudio 读取和修改这个项目里的文件。`,
     "",
     "### 当前项目（所有工具的 project 参数一律传这个绝对路径，不要传项目名，也不要去 list_projects 找）",
     `project = ${p.dir}`,
@@ -803,7 +804,7 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
      **动了用户的项目就要说一声** —— 悄悄写文件是最招人烦的那种「贴心」。 */
   if (ccResult.wroteFiles.length) {
     await addMessage(p.dir, session.id, { role: "system",
-      content: `为了让 ${bSpec.label} 认得 Umbra 的工具，在这个项目里写了 ${ccResult.wroteFiles.join("、")}（只加了 umbrastudio 这一项，你原有的其它 MCP server 没动）。` });
+      content: `为了让 ${bSpec.label} 认得${productName}的工具，在这个项目里写了 ${ccResult.wroteFiles.join("、")}（只加了 umbrastudio 这一项，你原有的其它 MCP server 没动）。` });
   }
 
   // ── 审计本次 AI 会话对稿件的变更（M2-9，通道 B） ──
@@ -858,10 +859,10 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
   const bypassed = bypassedDrafts(stampBeforeB, stampAfterB);
   if (bypassed.length) {
     await addMessage(p.dir, session.id, { role: "system",
-      content: `⚠️ 这一轮有 ${bypassed.length} 份稿是**被 ${bSpec.label} 直接改的**，没走 Umbra 的写入口：${bypassed.join("、")}。\n`
+      content: `⚠️ 这一轮有 ${bypassed.length} 份稿是**被 ${bSpec.label} 直接改的**，没走${productName}的写入口：${bypassed.join("、")}。\n`
         + `所以它们**没有快照，退不回去**，变更卡上也看不到这次改动（那不是「没改」，是我们拿不到前后两版）。\n`
         + `这几份稿还可能缺 __resources（断网会白屏）和节点地址（点选用不了）—— 在它上面点一次「加上地址」可以补回来。\n`
-        + `要根治：在设置里把这条通道换成 Claude Code（它只放行 Umbra 的工具），或者让 AI 一律用 write_draft / write_file。` });
+        + `要根治：在设置里把这条通道换成 Claude Code（它只放行${productName}的工具），或者让 AI 一律用 write_draft / write_file。` });
   }
 
   const chValB: "a" | "b" | "c" = ch;

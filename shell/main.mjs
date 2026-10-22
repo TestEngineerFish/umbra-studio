@@ -15,7 +15,35 @@ const CORE_ROOT = app.isPackaged ? join(process.resourcesPath, "core") : join(HE
 const CORE_DIST = join(CORE_ROOT, "server", "dist");
 const IS_MCP = process.argv.includes("--mcp");
 
-app.setName("Umbra Studio");
+/** 可写状态的目录名，**冻结在改名之前的值**（品牌收口）。
+ *
+ *  ⚠️⚠️ **这不是品牌名，是一条遗留路径** —— 所以它**刻意不读 `brand.ts`**。
+ *  Electron 的 `getPath("userData")` = `appData` + **应用名**，而原来
+ *  `app.setName("Umbra Studio")` 正是在喂这个计算（下面第三行就把它塞进
+ *  `UMBRASTUDIO_STATE_DIR`）。于是改一次 `productName`，`userData` 就从
+ *  `Umbra Studio` 变成别的名字，而躺在里面的是用户的 **`workspace.json`（最近打开）·
+ *  `account.json`（登录）· `records/`（全部版本历史）** —— 实测这台机器上 **8.1 MB**。
+ *  > **改一个显示用的名字，不该让用户的数据消失** ——
+ *  > 而这两件事之间唯一的联系是一个「顺手用了应用名做目录名」的默认行为。
+ *  ⚠️ 2026-10-22 这一天产品名改了**两次**（先「悠蜗」后「长尾雀」）——
+ *  **这正是为什么数据路径必须和显示名解耦**：解耦之后改几次都不影响它。
+ *  ⚠️ 单实例锁也跟着固定了（macOS / Linux 上它就落在 `userData` 里）。
+ *  ⚠️ `captest` ⑯ 有一条闸钉着这个常量不等于任何品牌名派生值。 */
+const LEGACY_DATA_DIR = "Umbra Studio";
+
+/* 必须在 ready 之前、且在任何 getPath("userData") 之前 —— 同步、不依赖任何 import。
+   `appData`（`~/Library/Application Support`）本身不含应用名，所以不受 setName 影响。 */
+app.setPath("userData", join(app.getPath("appData"), LEGACY_DATA_DIR));
+
+/** 显示用的应用名。**只有这一处读 brand**，其余地方一律用 `app.getName()`。
+ *  ⚠️ 为什么失败不兜一个字面量：兜了就是第二份品牌名。打包版里 `app.getName()`
+ *  退回 `Info.plist` 的 `CFBundleName`（electron-builder 从 `extendInfo` 写的，
+ *  也是「长尾雀 Studio」），开发版退回 `Electron` —— 而开发版 core 没 build 的话本来也跑不起来。
+ *  ⚠️ `setName` **不需要**在 ready 之前（userData 上面已经显式定住了），所以这里 await 是安全的。 */
+try {
+  const brand = await import(pathToFileURL(join(CORE_DIST, "shared", "brand.js")).href);
+  app.setName(brand.studioName);
+} catch { /* core 没 build：名字退回 Info.plist / Electron，见上 */ }
 /* 可写状态（ai_config / workspace / projects / .archived）不能落在 .app 里：
    ad-hoc 签名的 app 内容一被改动，下次启动就被 macOS 判「已损坏」（M9-4 实测的第一条缺陷）。
    核心读 UMBRASTUDIO_STATE_DIR，没设时退回自己的根 —— 开发模式什么都不变。
@@ -264,12 +292,12 @@ function wireIpc() {
   ipcMain.handle("host:pickDirectory", (e, opts) => pickDirectory(opts, winOf(e.sender)));
   ipcMain.handle("host:revealInFinder", (_e, p) => { shell.showItemInFolder(p); });
   ipcMain.handle("host:openExternal", (_e, url) => safeExternal(url));   // 协议闸收口在这里（#131；OIDC 登录地址也走这条）
-  ipcMain.handle("host:notify", (_e, n) => { if (Notification.isSupported()) new Notification({ title: n?.title ?? "Umbra Studio", body: n?.body ?? "" }).show(); });
+  ipcMain.handle("host:notify", (_e, n) => { if (Notification.isSupported()) new Notification({ title: n?.title ?? app.getName(), body: n?.body ?? "" }).show(); });
   /* 窗口标题**只写项目名**（M8-16，用户实测第 1 条）。
      拼上应用名是 VS Code 那类的惯例，但这里已经有两处在报应用名了：
      macOS 的菜单栏、Dock 的悬停提示。标题栏再写一次，用户看到的就是
      「项目名 + Umbra Studio」黏成一长串，反而认不出哪个是项目。 */
-  ipcMain.handle("host:setTitle", (e, t) => { const w = winOf(e.sender); if (w) w.setTitle(t || "Umbra Studio"); });
+  ipcMain.handle("host:setTitle", (e, t) => { const w = winOf(e.sender); if (w) w.setTitle(t || app.getName()); });
   /* 在新窗口里打开拖进来的东西（M14-5 下半，场景 ①②）。
      ⚠️ **只接我们自己窗口发来的** —— 和 `host:boot` 同一道判准。 */
   ipcMain.handle("host:openWindow", async (e, paths) => {
@@ -299,7 +327,7 @@ async function createMainWindow() {
   const off = front ? front.getBounds() : null;
   const win = new BrowserWindow({
     ...(off ? { x: off.x + 28, y: off.y + 28 } : {}),
-    width: 1440, height: 900, minWidth: 900, minHeight: 600, title: "Umbra Studio", show: false,
+    width: 1440, height: 900, minWidth: 900, minHeight: 600, title: app.getName(), show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#13151a" : "#f6f7f9",
     webPreferences: {
       preload: join(HERE, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: false,

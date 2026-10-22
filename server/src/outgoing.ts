@@ -27,6 +27,7 @@ import { TOOL_ROOT } from "./project.js";
 import { BASELINE_RE, shaOf } from "./baseline.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { writeZip } from "./zipwrite.js";
+import { studioName } from "./shared/brand.js";
 
 const UI = join(TOOL_ROOT, "ui");
 const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 13).replace("T", "-");
@@ -66,7 +67,7 @@ for (const f of ["support.js", "react.production.min.js", "react-dom.production.
   await copyFile(join(TOOL_ROOT, "runtime", f), join(pack, f));
 }
 
-await writeFile(join(stage, "README-给设计侧.md"), `# Umbra Studio 界面稿 · ${stamp}
+await writeFile(join(stage, "README-给设计侧.md"), `# ${studioName} 界面稿 · ${stamp}
 
 这个包里是我们这边 \`ui/\` 的**完整现版**，共 ${drafts.length} 份稿，外加运行时三件套（support.js + 两个 React UMD，和稿同层放）。配套的交办单是 \`doc/14\`。
 

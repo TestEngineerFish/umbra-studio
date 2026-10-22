@@ -1,3 +1,4 @@
+import { productName } from "@shared/brand";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Core, type ProjectEntry, type ProjectHandle } from "../api/client";
 import { draftTitle, type Picked, type Selection } from "../api/types";
@@ -64,7 +65,7 @@ function ReadOnlyBar({ core, editable, onUnlocked }: { core: Core; editable?: bo
     onUnlocked();
     /* ⚠️ 这一句是 `doc/24` §21.4 那条：**用户看不到的保证等于没有保证。**
        解锁那一下是说它最自然的时机 —— 他刚刚授权我们动他的文件。 */
-    toast("可以编辑了", "版本历史记在 Umbra 自己的目录里，原文件夹不会多出任何文件。", "ok");
+    toast("可以编辑了", `版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。`, "ok");
   };
   return (
     <div data-ud="readonly-bar" className="shrink-0 h-8 px-3 flex items-center gap-2 text-[11px] border-b border-border bg-panel2">
@@ -241,7 +242,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
         if (!hits.length) {
           /* ⚠️ **不送进空市场**。第一期只有三五个插件，大多数格式都落在这里，
              说「去市场看看」然后什么都没有，比直接说清楚更伤。 */
-          toast(`还没有能编辑 ${ext} 的插件`, "有了会出现在插件市场里，不用更新 Umbra", "ok");
+          toast(`还没有能编辑 ${ext} 的插件`, `有了会出现在插件市场里，不用更新${productName}`, "ok");
           return;
         }
         /* 市场里有 → **直接带他去**，别只弹一句让他自己找（设计侧：按这个扩展名筛好） */

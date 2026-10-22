@@ -28,6 +28,7 @@ import { gzipSync } from "node:zlib";
 import { buildSnapshot } from "./snapshot.js";
 import { listVersions, recordChange, recordVersionMeta, snapDir, type VersionOrigin } from "./history.js";
 import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
+import { productName, studioName } from "./shared/brand.js";
 
 export interface WriteOutcome {
   path: string;
@@ -87,7 +88,7 @@ function requireEditable(p: Project): void {
   if (isEditable(p.dir)) return;
   throw new ToolError(err(X.IO, "", { kind: "path", name: p.dir },
     "这个目录还是只读预览",
-    { fix: "这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 `start_editing`。版本历史记在 Umbra 自己的目录里，原文件夹不会多出任何文件。" }));
+    { fix: `这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 \`start_editing\`。版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。` }));
 }
 
 export async function writeDraft(
@@ -217,7 +218,7 @@ export async function writeDraft(
   if (!existsSync(join(dirname(abs), "support.js"))) {
     rtDiags.push(warn(X.IO, relPath, { kind: "file", name: "support.js" },
       "稿所在目录没有 support.js，直接打开会白屏",
-      { fix: "把 Umbra Studio/runtime/ 的三个文件放到这个目录（write_draft 会自动分发，除非 runtime/ 本身缺文件）" }));
+      { fix: `把 ${studioName}/runtime/ 的三个文件放到这个目录（write_draft 会自动分发，除非 runtime/ 本身缺文件）` }));
   }
 
   // ③ 落盘即留痕

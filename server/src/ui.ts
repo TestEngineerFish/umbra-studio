@@ -16,6 +16,7 @@ import { createInterface } from "node:readline";
 import { buildProject, listProjectDirs, loadProject, projectsRoot, type Project } from "./project.js";
 import { serveHold, serveStart } from "./serve.js";
 import { buildIndex, indexStatus } from "./indexpage.js";
+import { studioName } from "./shared/brand.js";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => argv.includes(name);
@@ -69,7 +70,7 @@ serveHold(p.dir);   // issue #20
    代价只是「手敲 127.0.0.1:端口/__app/」不再直接可用，那正是这条要堵的口子。 */
 const entry = `${serve.url}__app/?token=${encodeURIComponent(serve.token)}`;
 console.log("");
-console.log(`  ${b("Umbra Studio")}  ${p.title}`);
+console.log(`  ${b(studioName)}  ${p.title}`);
 console.log(`  项目    ${p.dir}`);
 console.log(`  稿件    ${built.drafts} 份` +
   `（ok ${built.byHealth.ok} · warn ${built.byHealth.warn} · error ${built.byHealth.error} · 没体检 ${built.byHealth.unchecked}）`);
