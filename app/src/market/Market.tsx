@@ -1,3 +1,4 @@
+import { platformName, productName } from "@shared/brand";
 import { useEffect, useMemo, useState } from "react";
 import type { Core } from "../api/client";
 import { Glyph } from "../ui/Glyph";
@@ -89,7 +90,7 @@ export function Market({ core, onClose, onSettings }: { core: Core; onClose: () 
               {/* 这一句空态也在 —— 第一次进来的人先读到的就该是它（设计侧 §一.3） */}
               <div className="mt-2 flex items-start gap-2 text-xs text-text2 leading-relaxed">
                 <span className="text-ok shrink-0 mt-0.5"><Glyph icon="sandbox" size={13} /></span>
-                <span>每个插件都跑在沙箱里：读写文件要经过 Umbra，出不了当前项目。它要什么权限，装之前会摆给你看。</span>
+                <span>每个插件都跑在沙箱里：读写文件要经过{productName}，出不了当前项目。它要什么权限，装之前会摆给你看。</span>
               </div>
 
               <div className="mt-5 flex items-center gap-2 flex-wrap">
@@ -107,7 +108,7 @@ export function Market({ core, onClose, onSettings }: { core: Core; onClose: () 
               {/* 目录不是服务端最新的那份时说一句 —— 「为什么市场里没有新插件」要有答案 */}
               {rows !== null && source !== "server" && (
                 <div className="mt-3 text-[11px] text-muted" data-ud="market-source">
-                  {source === "cache" ? "没连上 Umbra 服务端，这是上次联网时的目录，可能不是最新。" : "没连上 Umbra 服务端，这是随 Umbra 一起的出厂目录，联网后会更新。"}
+                  {source === "cache" ? `没连上${platformName}服务端，这是上次联网时的目录，可能不是最新。` : `没连上${platformName}服务端，这是随${productName}一起的出厂目录，联网后会更新。`}
                 </div>
               )}
               {rows === null ? <div className="mt-8 text-muted text-xs">读取中…</div>
@@ -179,7 +180,7 @@ const Empty = ({ hasAny, q, kind, onClear, onInstalled }: {
       <button className="btn sm mt-3" onClick={onClear}>清掉筛选</button>
     </> : <>
       <div className="font-semibold text-sm">市场里还没有可买的插件</div>
-      <p className="text-text2 mt-2">现在能用的是内置的 Markdown 编辑。新插件上架后会出现在这里，<b className="text-text">不用更新 Umbra</b>。</p>
+      <p className="text-text2 mt-2">现在能用的是内置的 Markdown 编辑。新插件上架后会出现在这里，<b className="text-text">不用更新{productName}</b>。</p>
       <button className="btn sm mt-3" onClick={onInstalled}>看已装的</button>
     </>}
   </div>

@@ -12,6 +12,7 @@
  *  自填端点（DeepSeek / 智谱…）的 4xx 不是这个形状，解析不出 `error.code` 就回 null，照旧走原来那条「HTTP 402: 原文」。
  */
 
+import { platformName } from "./shared/brand.js";
 /** 服务端用的类别名。PC 端那张表把厂商欠费叫 `vision_topup`，这里两个名字都认，免得两端表漂了就哑。 */
 export type AiFailKind = "insufficient_balance" | "need_membership" | "quota_exhausted" | string;
 
@@ -48,7 +49,7 @@ export function failHint(kind: string): string {
   const a = failAction(kind);
   if (!a) return "";
   if (kind === "insufficient_balance" || kind === "vision_topup") return "到模型服务商控制台充值后再试";
-  return `到 Umbra（PC 或手机）的「账号」页里${a === "开会员" ? "开会员" : "买重置卡或加量包"}`;
+  return `到${platformName}（PC 或手机）的「账号」页里${a === "开会员" ? "开会员" : "买重置卡或加量包"}`;
 }
 
 /** 4xx 的响应体 → 结构。不是 OpenAI 错误形状（没有 `error.code`）回 null。 */

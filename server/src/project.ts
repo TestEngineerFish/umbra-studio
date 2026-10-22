@@ -317,6 +317,7 @@ export function fixDsDepth(p: Project, src: string, depth: number): string {
 // ──────────────────────── M1-1: create_project ───────────────────────
 
 import { writeAtomic } from "./normalize.js";   // mkdir 在文件头一起导入了（改名兼容路也要用）
+import { studioName } from "./shared/brand.js";
 
 export interface CreateProjectOpts {
   /** 项目目录绝对路径。不给时默认 projects/<name> */
@@ -361,7 +362,7 @@ function blankDraft(title: string): string {
 </head>
 <body>
 <x-dc>
-<!-- ${title} —— Umbra Studio 空白稿，从这里开始画 -->
+<!-- ${title} —— ${studioName} 空白稿，从这里开始画 -->
 <div style="padding:80px 20px;text-align:center;color:var(--ink,#888);font-family:system-ui">
   <div style="font-size:16px;font-weight:600;margin-bottom:8px">${title}</div>
   <div style="font-size:13px">选中这个元素，改它的字号 / 颜色 / 文案</div>
@@ -380,7 +381,7 @@ class Component extends DCLogic {
 /** .gitignore 模板。新建项目时拷一次，之后由 build_index 维护生成的那段。 */
 function gitignoreTemplate(): string {
   return `# ── 设计项目（租户）的仓库 ────────────────────────────────────
-# 每个设计项目各自一个 git 仓库。git 在 Umbra Studio 里是【兜底手段】：
+# 每个设计项目各自一个 git 仓库。git 在 ${studioName} 里是【兜底手段】：
 # 主路径是 .umbrastudio/snapshots/ 的语义快照 + CHANGELOG-设计侧.md，
 # 只有要按任意 git ref 取历史版本时才用到 git（见 doc/07 §七）。
 

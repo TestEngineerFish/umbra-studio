@@ -1,3 +1,4 @@
+import { platformName, productName } from "@shared/brand";
 import { useState } from "react";
 import type { Core } from "../api/client";
 import { Glyph } from "../ui/Glyph";
@@ -117,7 +118,7 @@ export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
               ))}
             </div>
             <div className="mt-3 rounded bg-panel2 px-3 py-2 text-[11px] text-text2 leading-relaxed">
-              界面和逻辑各关在一个隔间里。它碰文件的每一下都要经过 Umbra，碰不到项目以外的地方，也碰不到别的插件。
+              界面和逻辑各关在一个隔间里。它碰文件的每一下都要经过{productName}，碰不到项目以外的地方，也碰不到别的插件。
             </div>
           </div>
 
@@ -130,14 +131,14 @@ export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
                   <button className="btn primary w-full" data-ud="market-act" disabled={busy} onClick={() => void acquire()}>
                     {busy ? "处理中…" : `更新到 ${row.version}`}</button>
                   <p className="text-[11px] text-muted mt-2 leading-relaxed">
-                    Umbra 自带，免费。本机现在是 {row.installedVersion}；更新后不想要了，可以在「已装」里退回出厂版本。
+                    {productName}自带，免费。本机现在是 {row.installedVersion}；更新后不想要了，可以在「已装」里退回出厂版本。
                   </p>
                 </>
               ) : (
                 <>
                   <button disabled className="btn w-full" data-ud="market-act">内置 · 已安装{row.installedVersion ? ` ${row.installedVersion}` : ""}</button>
                   <p className="text-[11px] text-muted mt-2">
-                    {row.upgraded ? `Umbra 自带，免费。已升级（出厂 ${row.factoryVersion ?? "—"}），在「已装」里可以退回出厂版本。` : "Umbra 自带，免费且卸不掉。"}
+                    {row.upgraded ? `${productName}自带，免费。已升级（出厂 ${row.factoryVersion ?? "—"}），在「已装」里可以退回出厂版本。` : `${productName}自带，免费且卸不掉。`}
                   </p>
                 </>
               )
@@ -191,7 +192,7 @@ export function Detail({ core, row, signedIn, onBack, onChanged, onSettings }: {
                     {buyLabel(pay > 0 ? `购买并安装 · ${pay} 积分` : "免费安装")}</button>
                 )}
                 <p className="text-[11px] text-muted mt-2 leading-relaxed">
-                  {signedIn ? "一次买断，含后续所有版本更新；积分不够时会提示去充值。" : "先在设置里登录 Umbra 账号；积分和会员在 Umbra 账号页。"}
+                  {signedIn ? "一次买断，含后续所有版本更新；积分不够时会提示去充值。" : `先在设置里登录${platformName}账号；积分和会员在${platformName}账号页。`}
                   {!row.package_url && " 发布方还没放安装包，现在买到的是授权，包放上后再点一次「安装」。"}
                 </p>
               </>

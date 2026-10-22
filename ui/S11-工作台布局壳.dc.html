@@ -48,7 +48,7 @@
 
     <!-- ═══ 上 · 顶栏 40px：窗口级。左 = 回到项目列表 + 项目名 ▾；右 = 目录 / 调试 / 聊天 三块在不在 ═══ -->
     <div style="flex: none; height: 40px; display: flex; align-items: center; gap: 4px; padding: 0 10px 0 8px; background: var(--tool-panel); border-bottom: 1px solid var(--tool-border); position: relative; z-index: 30;">
-      <button type="button" title="Umbra Studio · 回到项目列表" aria-label="回到项目列表" style="flex: none; width: 28px; height: 28px; display: grid; place-items: center; border: 0; background: transparent; border-radius: var(--tool-radius-sm); cursor: pointer; color: var(--tool-accent);" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
+      <button type="button" title="长尾雀 Studio · 回到项目列表" aria-label="回到项目列表" style="flex: none; width: 28px; height: 28px; display: grid; place-items: center; border: 0; background: transparent; border-radius: var(--tool-radius-sm); cursor: pointer; color: var(--tool-accent);" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
         <dc-import name="IconGlyph" icon="app" size="16" hint-size="16px,16px"></dc-import>
       </button>
       <button type="button" data-pop="project" onClick="{{ toggleProj }}" aria-haspopup="menu" title="{{ projectRoot }}" style="min-width: 0; max-width: 420px; display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 6px; border: 0; border-radius: var(--tool-radius-sm); cursor: pointer; background: {{ projBg }};" style-hover="background: var(--tool-hover);" style-focus="outline: 2px solid var(--tool-ring); outline-offset: 1px;">
@@ -682,7 +682,7 @@
         <sc-if value="{{ isInject }}" hint-placeholder-val="{{ false }}">
           <div style="display: grid; gap: 10px; font-size: 12px; line-height: 1.6;">
             <div style="font-weight: 600;">给这份稿加上节点地址</div>
-            <div style="color: var(--tool-text-2);">Umbra 给稿里每个元素标一个号（<span style="font-family: var(--tool-mono); font-size: 11px;">data-ud-node</span>），点选、评论、编辑靠它认出你点的是哪一个。这份稿是从别处来的，没有这个号。</div>
+            <div style="color: var(--tool-text-2);">长尾雀给稿里每个元素标一个号（<span style="font-family: var(--tool-mono); font-size: 11px;">data-ud-node</span>），点选、评论、编辑靠它认出你点的是哪一个。这份稿是从别处来的，没有这个号。</div>
             <div style="color: var(--tool-text-2);">只加这一个属性，内容和样式一个字不动。加之前的版本留在「变更」里，一步就能回去。</div>
             <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
               <input type="checkbox" checked="{{ injectAll }}" onChange="{{ toggleInjectAll }}" style="margin: 0; accent-color: var(--tool-accent);">

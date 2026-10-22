@@ -47,6 +47,7 @@ import { listTemplates, saveAsTemplate, deleteTemplate } from "./templates.js";
 import { exportProject, importProject } from "./export.js";
 
 import { capsFor, type CapCtx } from "./cap/index.js";
+import { studioName } from "./shared/brand.js";
 
 const VERSION = "0.1.0";
 
@@ -69,7 +70,7 @@ const server = new McpServer(
   { name: "umbradesign", version: VERSION },
   {
     instructions: [
-      "Umbra Studio —— 本地设计稿工具（.dc.html 格式）。",
+      `${studioName} —— 本地设计稿工具（.dc.html 格式）。`,
       "",
       "调用顺序（doc/00 §八）：",
       "1. get_project        拿到项目路径与限额",

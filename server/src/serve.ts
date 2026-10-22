@@ -21,6 +21,7 @@ import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
 import { BUILTIN, kindOf } from "./shared/kinds.js";
 import { isInside, isInsideReal, resolveInside } from "./pathguard.js";
+import { studioName } from "./shared/brand.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -40,7 +41,7 @@ interface Running { server: Server; port: number; dir: string; startedAt: string
 /** 前端构建产物（`app/`，M7-2；M7-8 起是唯一的前端）。没 build 过就只能提示去 build。 */
 const APP_DIST = resolve(TOOL_ROOT, "app", "dist");
 export function appDistReady(): boolean { return existsSync(resolve(APP_DIST, "index.html")); }
-const NO_BUILD_PAGE = `<!doctype html><meta charset="utf-8"><title>Umbra Studio</title>`
+const NO_BUILD_PAGE = `<!doctype html><meta charset="utf-8"><title>${studioName}</title>`
   + `<body style="margin:0;display:grid;place-items:center;height:100vh;font:13px/1.7 -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:#f6f7f9;color:#191c21">`
   + `<div style="text-align:center"><p style="font-weight:620">前端还没构建</p>`
   + `<p style="color:#79818d">在仓库根跑一次：<code style="font-family:ui-monospace,Menlo,monospace">npm --prefix app install &amp;&amp; npm --prefix app run build</code></p></div>`;

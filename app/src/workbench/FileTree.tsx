@@ -1,3 +1,4 @@
+import { studioName } from "@shared/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
 import type { Draft, FileEntry, Health, ListFilesResult } from "../api/types";
@@ -242,7 +243,7 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT, ...(e.opaque || e.outsideLink ? { opacity: 0.55 } : null) }}
           title={e.outsideLink
             ? `${e.path} —— 这是一条指向项目外面的链接。看得见，但从这里读写它等于读写项目外的文件，所以打不开。`
-            : e.opaque ? `${e.path} —— 版本控制自己的数据。看得见，但 Umbra Studio 不碰它，也不计入项目统计。` : e.path}
+            : e.opaque ? `${e.path} —— 版本控制自己的数据。看得见，但 ${studioName} 不碰它，也不计入项目统计。` : e.path}
           /* ⚠️ 指向项目外的链接**点了要说一句**，不是静默不动（issue #140）——
              「点了没反应」这一族在本项目里出现过太多次；而这里**有一个真实的理由**
              可以说出来，不说才是浪费。 */

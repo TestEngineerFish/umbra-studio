@@ -1,3 +1,4 @@
+import { platformName } from "../shared/brand.js";
 import { z } from "zod";
 import { envelope } from "../envelope.js";
 import { allowedCapNames } from "../plugin/host.js";
@@ -247,7 +248,7 @@ defineCap({
     const out: AcquireResult = { id, bought: null, already: false, licensed: ent.state === "active", installed: !!found, version: found ? (found.manifest.version ?? null) : null, note: "" };
     if (plan.refuse) {
       const code = st.signedIn ? "E_PLUGIN_ACQUIRE" : "E_ACCOUNT_LOGIN";
-      return envelope(out, [pluginErr(code, plan.refuse, id, st.signedIn ? undefined : "在设置里登录 Umbra 账号")]);
+      return envelope(out, [pluginErr(code, plan.refuse, id, st.signedIn ? undefined : `在设置里登录${platformName}账号`)]);
     }
     /* ⚠️ 买之前先取一次许可证（issue #145）：会员赠送的插件服务端会并进许可证，已有授权就不该买。
        会员信息这次没问到的话分不清是不是赠送 —— 宁可这次不买，也不按价扣积分。 */

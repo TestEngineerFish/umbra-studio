@@ -4,6 +4,7 @@ import { existsSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { STATE_ROOT } from "./project.js";
+import { studioName } from "./shared/brand.js";
 
 /** 项目目录的 git 版本记录（M9-7，用户 2026-09-28 提）。
  *
@@ -292,7 +293,7 @@ export async function ensureRepo(dir: string): Promise<boolean> {
        **不往用户的项目里塞文件**（原来那份 `.gitignore` 是我们建的，现在不需要了）。 */
     await mkdir(join(gd, "info"), { recursive: true });
     await writeFile(join(gd, "info", "exclude"), [
-      "# Umbra Studio 的版本兜底：这几样不记",
+      `# ${studioName} 的版本兜底：这几样不记`,
       ".umbrastudio/", ".umbradesign/", "node_modules/", ".DS_Store", "",
     ].join("\n"), "utf8");
     await stampIdentity(gd, dir);

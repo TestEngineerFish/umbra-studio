@@ -22,6 +22,7 @@
  *  `verified` 字段只在**这台机器上真跑通过**才是 true。按文档写出来的适配器一律 false，
  *  界面上要照实说「没实测过」—— 一个装得像验过的适配器比没有更糟。
  */
+import { productName } from "./shared/brand.js";
 import { STATE_ROOT } from "./project.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, readFile, mkdir } from "node:fs/promises";
@@ -131,7 +132,7 @@ export const CLI_SPECS: readonly CliSpec[] = [
     /* ⚠️ **反引号** —— 这一行原来是双引号，而里面有 `${...}`：判据第一次跑就抓到了，
        不然**用户会在设置页读到字面的 `${DIRECT_WRITE_WARN}`**。
        > 一个模板串写成普通字符串，TypeScript 不会说一句话。 */
-    note: `MCP 要在项目里放 .cursor/mcp.json —— 我们会写这一个键，你原有的别的 server 不动。不报 token 用量。⚠️ 这家的 AI **${DIRECT_WRITE_WARN}**（实测 --sandbox enabled 挡不住），那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code（它只放行 Umbra 的工具）。`,
+    note: `MCP 要在项目里放 .cursor/mcp.json —— 我们会写这一个键，你原有的别的 server 不动。不报 token 用量。⚠️ 这家的 AI **${DIRECT_WRITE_WARN}**（实测 --sandbox enabled 挡不住），那种改动没有快照、退不回去；一旦发生我们会在会话里记一条说明。要杜绝就换成 Claude Code（它只放行${productName}的工具）。`,
   },
   {
     directWrite: "blocked" as const,
