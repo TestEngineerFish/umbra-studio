@@ -12,6 +12,7 @@
  *
  *  跑：npm --prefix server run apitest
  */
+import { stripComments } from "./shared/stripcomments.js";
 import { serveStart } from "./serve.js";
 import { buildProject, TOOL_ROOT } from "./project.js";
 import { basename as basename8 } from "node:path";
@@ -1953,9 +1954,7 @@ console.log("\n㉓ 流式回复的解帧与累加（issue #134）");
      > **一条判据分不清「代码」和「解释它的注释」，就会把正确的注释报成缺陷**
      > （`doc/00` §107 那条的**第 5 次** —— 这说明「判据搜源码」这件事
      > 本身需要一个共用的剥注释工具，而现在每处各写一遍）。 */
-  const codeOnly = provSrc
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  const codeOnly = stripComments(provSrc);
   ok(/stream: true/.test(codeOnly) && !/stream: false/.test(codeOnly),
      "**请求体是 `stream: true`**（而且会执行的代码里没有残留的 `stream: false`）",
      `true=${/stream: true/.test(codeOnly)} · false=${/stream: false/.test(codeOnly)}`);

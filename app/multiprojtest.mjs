@@ -16,6 +16,7 @@
  *
  *  用法：`node app/multiprojtest.mjs`（自己起服务、自己收尾）
  */
+import { stripComments } from "../server/dist/shared/stripcomments.js";
 import { mkdtemp, writeFile, realpath, rm, mkdir, readFile } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -440,7 +441,7 @@ console.log("\n⑩ 存不回原格式的图片（issue #148 / #132）");
      所以：闸在不在 → 源码级（必跑）；闸长什么样 → 端到端（跑得到就验）。 */
   const src10 = await readFile(new URL("./src/kinds/image/index.tsx", import.meta.url), "utf8");
   const edit10 = await readFile(new URL("./src/kinds/image/Edit.tsx", import.meta.url), "utf8");
-  const code10 = src10.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  const code10 = stripComments(src10);
   ok(/export function canEncode/.test(edit10) && /"webp"/.test(edit10) && !/"avif"/.test(edit10.split("return ext ===")[1] ?? ""),
      "**闸① `canEncode` 只放行 png / jpg / jpeg / webp**（实测 canvas 对 avif / gif / bmp / ico 全退回 PNG）");
   ok(/disabled=\{d\.isSvg \|\| !canEncode\(d\.path\)\}/.test(code10),
@@ -524,7 +525,7 @@ console.log("\n⑪ 拖边改宽时 iframe 不吃事件（issue #107）");
   /* 松手兜底那一半：`blur` 和 `mouseup` 要走**同一个**收尾函数 ——
      两条退出路径各写一份收尾，迟早有一条忘了清。用源码钉（它是结构不是样式）。 */
   const fr107 = await readFile(new URL("./src/layout/Frame.tsx", import.meta.url), "utf8");
-  const code107 = fr107.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  const code107 = stripComments(fr107);
   ok(/window\.addEventListener\("blur", up\)/.test(code107) && /window\.removeEventListener\("blur", up\)/.test(code107),
      "**窗口失焦也结束拖拽，而且和 `mouseup` 共用同一个 `up`**（拖到窗口外松手 / 切走应用时 `mouseup` 永远不来）");
 }

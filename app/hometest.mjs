@@ -17,6 +17,7 @@
  *
  *  用法：`node app/hometest.mjs`（自己起服务、自己收尾，不用先开终端）
  */
+import { stripComments } from "../server/dist/shared/stripcomments.js";
 import { mkdtemp, writeFile, realpath, rm, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -433,7 +434,7 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
        而注释里提到那句话是**应该的** —— 那是它存在的理由。
        所以先把注释剥掉再找：这也是 `doc/00` §107 那条
        「判据里出现的字符串，要是它检查的那个东西本身，不是提到它的文字」的第三次。 */
-    const noComments = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const noComments = stripComments(src);
     ok(!/当前项目会关掉/.test(noComments),
        "**界面上没有「当前项目会关掉」那句话**（设计侧给的后果句，在 S2 之后是假的）");
     /* 反面自检：剥注释这一步真的在起作用吗 —— 不剥的话它该命中 */

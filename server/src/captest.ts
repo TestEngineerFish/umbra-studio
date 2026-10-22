@@ -4,6 +4,7 @@
  *  所以判据钉的全是**结构性质**：声明了就两面都有、名字不打架、入参没写重。
  *  功能本身有 `filetest` 管。
  */
+import { stripComments } from "./shared/stripcomments.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allCaps, capsFor, httpRoutes } from "./cap/index.js";
@@ -355,27 +356,9 @@ for (const n of wasHttpOnly) {
   const { readdirSync, readFileSync } = await import("node:fs");
   const { join: j } = await import("node:path");
   const SRC = join(process.cwd(), "src");
-  /** 剥掉块注释与行注释，只留下真正会执行的那部分 */
-  const codeOf = (src: string): string => {
-    const out: string[] = [];
-    let inBlock = false;
-    for (let ln of src.split("\n")) {
-      if (inBlock) {
-        const e = ln.indexOf("*/");
-        if (e < 0) { out.push(""); continue; }
-        ln = ln.slice(e + 2); inBlock = false;
-      }
-      for (;;) {
-        const b = ln.indexOf("/*");
-        if (b < 0) break;
-        const e = ln.indexOf("*/", b + 2);
-        if (e < 0) { ln = ln.slice(0, b); inBlock = true; break; }
-        ln = ln.slice(0, b) + ln.slice(e + 2);
-      }
-      out.push(ln.replace(/\/\/.*$/, ""));
-    }
-    return out.join("\n");
-  };
+  /* 剥注释走共用模块（`shared/stripcomments.ts`）—— 这件事原来在三套判据里
+     各写了一遍，而「判据分不清代码和注释」这条教训犯过 5 次。理由全文在那个文件里。 */
+  const codeOf = stripComments;
   const tests = readdirSync(SRC).filter((f) => /test\.ts$/.test(f) && f !== "captest.ts");
   ok(tests.length > 0, "扫得到回归源码（判据自己得先有东西可扫）", `${tests.length} 份`);
   const offenders: string[] = [];
@@ -466,5 +449,49 @@ for (const n of wasHttpOnly) {
   ok(added.length === 0, "**跑完一轮没给自己留下兜底仓库**（和开头那次逐个比，不靠路径匹配）",
      added.length ? added.join(" · ") : `${reposAfter.length} 个，和开头一样`);
 }
+/* ── 剥注释只许有一份实现（2026-10-22，geek-99 定）──
+   ⚠️ 「判据分不清『代码』和『解释它的注释』」这条教训犯过 **5 次**，
+   而每次的修法都是「在那一处内联一个正则」—— 于是同一件事长出了**三份实现**。
+   > **一条教训被修了五次而每次只修一处，它就不是教训，
+   > 是一个每次都要重新想起来的习惯。**
+   这一条闸装在这里：判据源码里再出现那个内联正则一律红。
+   ⚠️ 要查的那个字符串**拼出来**，不然这一条判据自己会命中自己
+   （又一次「判据里出现的字符串要是它检查的那个东西本身，不是提到它的文字」）。 */
+{
+  const { readdirSync: rd7, readFileSync: rf7 } = await import("node:fs");
+  const { join: j7 } = await import("node:path");
+  const { TOOL_ROOT: TR7 } = await import("./project.js");
+  const needle = "replace(/" + "\\/\\*[\\s\\S]*?\\*\\//g";
+  const where: string[] = [];
+  for (const [dir, pat] of [[j7(TR7, "server", "src"), /test\.ts$/], [j7(TR7, "app"), /test\.mjs$/]] as const) {
+    let names: string[] = [];
+    try { names = rd7(dir); } catch { continue; }
+    for (const n of names) {
+      if (!pat.test(n) || n === "captest.ts") continue;
+      try { if (rf7(j7(dir, n), "utf8").includes(needle)) where.push(n); } catch { /* 读不到跳过 */ }
+    }
+  }
+  ok(where.length === 0,
+     "**剥注释没有第二份实现**（判据源码里不再内联那个正则，一律走 `shared/stripcomments.ts`）",
+     where.length ? where.join(" · ") : "0 处");
+  /* 仪器自检：那个共用模块真的在、而且真的会剥 —— 两个空值相等也会让上面那条绿（纪律④） */
+  const { stripComments: sc } = await import("./shared/stripcomments.js");
+  ok(sc("a /* 注释 */ b\n// 整行\nc").trim() === "a  b\n\nc".trim()
+     && sc("x").trim() === "x",
+     "（仪器自检）共用模块真的会剥注释、而且**行号不变**（报一个对不上的行号比不报更费时间）",
+     JSON.stringify(sc("a /* 注释 */ b\n// 整行\nc")));
+  /* ⚠️ 这一条是从 `plugintest` 那份变体里**吸收**过来的保守性：
+     `//` 前面是 `:` 就不当注释，否则 `"http://x"` 会被剥成 `"http:`。
+     > **收成一份的时候，共用的那一份应该是所有变体里最安全的那一个** ——
+     > 挑最简单的那一份当标准，等于把别人想到过的坑又丢了一次。 */
+  /* ⚠️ 断言「URL 还在 + 注释没了」，**不比精确字符串** ——
+     第一版写死成 `'…/a";'`，而 `(^|[^:])` 会把 `//` 前那个字符（这里是空格）
+     留在结果里，于是判据红了而产品是对的。
+     > **一条判据如果比它要测的性质更精确，多出来的那部分精确就是它自己的脆弱。** */
+  const got = sc('const u = "http://example.com/a"; // 说明');
+  ok(got.includes("http://example.com/a") && !got.includes("说明"),
+     "（仪器自检）**`http://` 不会被当成注释剥掉**，而行尾真注释照剥", JSON.stringify(got));
+}
+
 console.log(fail === 0 ? `\n✓ 能力注册表 ${pass}/${pass + fail}` : `\n✗ 能力注册表 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -4,6 +4,7 @@
  *  它的 `probe` 能力故意去做插件不该做的四件事。
  *  沙箱不被攻一次，等于没验 —— 「没出事」和「关住了」在日志上长得一样。
  */
+import { stripComments } from "./shared/stripcomments.js";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -127,7 +128,7 @@ if (started) {
        `sandbox.ts` 里有一整段注释在讲「原来 `...process.env` 交过去 93 个」——
        第一版判据直接在全文上 `test`，被**我自己写的那句注释**命中，当场红了。
        **判据里出现的字符串，要是它检查的那个东西本身，不是提到它的文字。** */
-    const src = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const src = stripComments(raw);
     ok(!/\.\.\.process\.env/.test(src),
        "⑦ `sandbox.ts` 没把宿主的环境变量整份透传（原来 `...process.env` 交过去 93 个）",
        /\.\.\.process\.env/.test(src) ? "又出现了" : "白名单还在（已去掉注释再查）");
@@ -690,7 +691,7 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
     console.log("  · 跳过「A 面桥的超时」：`runtime/umbra-plugin.js` 不在（先跑 sync-plugins）—— **不算通过**");
   } else {
     const src = rf16(BR, "utf8");
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+    const code = stripComments(src);
     /* ① 超时这件事存在，而且**不 reject 而是回一个失败信封** ——
        reject 的话插件侧写的 `await umbra.call()` 会整个崩掉，而它们没有 try */
     ok(/function send\(msg, ms, onTimeout\)/.test(code) && /setTimeout\(/.test(code),

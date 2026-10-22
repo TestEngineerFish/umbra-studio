@@ -9,6 +9,7 @@
  * 需要 AI 配置才能跑（.umbrastudio/ai_config.json）。未配置时整块跳过。
  */
 
+import { stripComments } from "./shared/stripcomments.js";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -280,7 +281,7 @@ async function main() {
        改成匹配真正的拼装语句：`if (xxx) bSystemParts.push(…)` 或 `bSystemParts.push(…xxx…)`。
        这是这一轮第二条假判据了（上一条是 `startsWith("被拦")`，`00` §101.8）——
        **判据里出现的字符串，要是它检查的那个东西本身，而不是提到它的文字。** */
-    const noComments = bSeg.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const noComments = stripComments(bSeg);
     const missing = (["nodeContext", "contextFile", "filesContext", "rangeContext", "regionContext"] as const)
       .filter((k) => !new RegExp(`(if \\(${k}\\)|\\b${k}\\b[,)])`).test(noComments) || !noComments.includes(k));
     if (missing.length === 0) {
