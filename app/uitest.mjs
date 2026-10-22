@@ -356,6 +356,29 @@ const sweepSamples = async () => await pg.evaluate(async (pats) => {
  *
  *  没有「删快照」这件能力，也不该为判据加一个后门 ——
  *  uitest 跑在 node 里，直接用 fs 删。**只删名字对得上样本清单的那些目录。** */
+/** 这个项目的资产目录**在哪**（快照 / 草稿暂存）。回 `[[label, 绝对路径], ...]`。
+ *
+ *  ⚠️⚠️ **一处定义，三个地方用**（`sweepSnapshots` 顺手清 · `snapBaseline` 取基线 ·
+ *  收尾那条「多出来的一律删」）。原来三处各自拼 `join(dir, ".umbrastudio", sub)` ——
+ *  于是 M14-4 B1 搬家之后**三处同时失效**，而它们失效的样子是「一切正常」。
+ *  > **三份相同的路径拼接，就是三个会一起过期、而且一起沉默的地方。**
+ *
+ *  ⚠️ record id 走 `existingRecordIdFor` 而**不是** `recordIdFor` ——
+ *  后者找不到会**新建一条记录**，而判据不该往用户的记录索引里写东西。
+ *  为空 = 这个项目还没有 record，也就没有资产可清。
+ *  ⚠️ 旧位置**照旧扫**：存量不迁不删（Q72），里面可能还躺着以前几轮的东西。 */
+const assetRootsOf = async (dir) => {
+  const { join } = await import("node:path");
+  const out = [];
+  try {
+    const { existingRecordIdFor, recordsRoot } = await import("../server/dist/records.js");
+    const id = existingRecordIdFor(dir);
+    if (id) for (const sub of ["snapshots", "staged"]) out.push([`records/${sub}`, join(recordsRoot(), id, sub)]);
+  } catch { /* 没编译 / 版本对不上：旧位置照扫，别让收尾整个失效 */ }
+  for (const sub of ["snapshots", "staged"]) out.push([sub, join(dir, ".umbrastudio", sub)]);
+  return out;
+};
+
 const sweepSnapshots = async (dir) => {
   if (!dir) return [];
   const { readdirSync, rmSync, existsSync } = await import("node:fs");
@@ -363,14 +386,26 @@ const sweepSnapshots = async (dir) => {
   const gone = [];
   /* ⚠️ **两个目录都要扫。** `staged/` 是 M10-2c 新增的一类残留 ——
      判据一改文件就会留一份草稿，而 `file_trash` + `trash_purge` 不带走它。
-     加一种会落盘的东西就要问一句：**收尾扫不扫得到它**。 */
-  for (const sub of ["snapshots", "staged"]) {
-    const root = join(dir, ".umbrastudio", sub);
+     加一种会落盘的东西就要问一句：**收尾扫不扫得到它**。
+
+     ⚠️⚠️ **而「两个位置」也都要扫**（2026-10-23 抓到）。M14-4 B1 把资产搬去了
+     `STATE_ROOT/.umbrastudio/records/<ID>/`，而这里一直只看 `<项目>/.umbrastudio/` ——
+     那个旧位置现在**空着**，于是收尾每轮都报「清掉 0 份」而**看着完全正常**。
+     实测盘上躺着 **11 个快照 + 1 份草稿**，横跨 `_uitest*` / `csv回归*` / `插件回归样本*`
+     / `_回归样本.mp4` 几族 —— 而上面那句注释「加一种会落盘的东西就要问一句」
+     防住的是**新增一种**，没防住**搬家**。
+     > 这是「判据在没有样本的时候，测的是今天恰好没事」的**反面** ——
+     > 它**有样本却扫不到**。而两种病的读数一模一样：都是「0 份」。
+
+     ⚠️ record 的 id 走 `existingRecordIdFor`（**不是** `recordIdFor`）——
+     后者找不到会**新建一条记录**，而判据不该往用户的记录索引里写东西。
+     为空就是「这个项目还没有 record」，那也就没有资产可清。 */
+  for (const [label, root] of await assetRootsOf(dir)) {
     if (!existsSync(root)) continue;
     for (const name of readdirSync(root)) {
       if (!SAMPLE_PATS.some((re) => re.test(name))) continue;
       rmSync(join(root, name), { recursive: true, force: true });
-      gone.push(`${sub}/${name}`);
+      gone.push(`${label}/${name}`);
     }
   }
   return gone;
@@ -390,14 +425,47 @@ const snapBaseline = async (dir) => {
   const { readdirSync, existsSync } = await import("node:fs");
   const { join } = await import("node:path");
   const out = new Map();
-  for (const sub of ["snapshots", "staged"]) {
-    const root = join(dir, ".umbrastudio", sub);
+  /* ⚠️ 位置走 `assetRootsOf`（M14-4 B1 搬家之后这里只看旧位置，于是
+     **「多出来的就是这一轮留的」这条兜底判据一直在比两个空集**，永远绿）。 */
+  for (const [label, root] of await assetRootsOf(dir)) {
     if (!existsSync(root)) continue;
-    out.set(sub, new Set(readdirSync(root)));
+    out.set(label, new Set(readdirSync(root)));
   }
   return out;
 };
 let BASELINE = new Map();
+
+/* ⚠️⚠️ **清理必须跑，判据可以不跑**（2026-10-23 加）。
+   在这之前：任何一条判据抛出来（一次 locator 超时就够），`uitest` 整个退出，
+   而**收尾那一节在文件最后 1500 行处** —— 于是清样本、清资产、三条收尾判据
+   **全都跑不到**，样本留在用户项目里、快照攒在 `records/` 里。
+   实测：一次这样的退出留下 11 个快照 + 1 份草稿，而日志看着只是「有几条红」。
+   > **「判据没跑」和「清理没跑」是两件不同严重度的事** —— 前者是这一轮少知道几件事，
+   > 后者是往用户的东西里留垃圾（纪律⑥），而**它们在日志里长得一样**：都只是日志变短了。
+
+   所以这里注册一个兜底：抛出时**只清不判**（判据的结论这一轮本来就不可信了，
+   而清理和判据的结论无关 —— 和 §2026-10-06 那条「清理不该依赖判据算出来的结论」同一条）。
+   ⚠️ 用 `uncaughtException` 而不是 `beforeExit`：后者在未捕获异常退出时**不触发**。
+   ⚠️ 注册了 handler 之后进程不会立刻死，event loop 还在，所以这里的 `await` 跑得完。
+   ⚠️ 自己再抛就直接退 —— 否则两个 handler 互相触发，进程挂住。 */
+let emergency = false;
+process.on("uncaughtException", async (e) => {
+  if (emergency) { process.exit(1); return; }
+  emergency = true;
+  console.log("\n⚠️ 有判据抛出来了 —— 收尾那一节这一轮跑不到，下面是紧急清理");
+  console.log("   " + String(e).replace(/\s+/g, " ").slice(0, 240));
+  try {
+    const left = await sweepSamples();
+    const swept = await sweepSnapshots(left.dir);
+    console.log(`  · 紧急清理：项目根 ${left.files.length} 份 · 回收站 ${left.trash.length} 条 · 资产 ${swept.length} 份`);
+    if (swept.length) console.log("    " + swept.join(" · "));
+  } catch (e2) {
+    /* ⚠️ **清理自己失败了要说出来** —— 静默的话这条兜底就变成「看起来有兜底」 */
+    console.log("  · ⚠️ 紧急清理自己也失败了：" + String(e2).replace(/\s+/g, " ").slice(0, 200));
+  }
+  try { await b.close(); } catch { /* 浏览器可能已经没了 */ }
+  process.exit(1);
+});
 
 /* 开跑前先清 —— 上一轮可能抛在半路留下了东西 */
 {
@@ -3285,7 +3353,18 @@ console.log("\n插件 UI 的边界（M11-4）");
 
                 ok((await head3()).some((t) => /\uFFFD/.test(t)), "重读前表头是乱码", JSON.stringify(await head3()));
 
-                await gf.locator('#encbar button:has-text("GBK")').first().click();
+                /* ⚠️⚠️ **一条判据不该把整个回归带走。** 这一行原来是裸 `click()` ——
+                   横条没出来时它等 30 秒然后**抛出去**，于是 `uitest` 从这里整个退出，
+                   而**收尾那一节（清样本 / 清资产 / 三条收尾判据）在它后面 1500 行**。
+                   实测后果：盘上攒了 **11 个快照 + 1 份草稿**，横跨四族样本，
+                   而每一轮的日志看着只是「有几条红」。
+                   > **收尾跑不到，比收尾扫错位置更隐蔽** —— 后者至少会打印一行「0 份」，
+                   > 前者连那一行都没有，而「日志在半路停了」看着像是回归跑完了。
+                   （根本的那一半修在顶层的 `uncaughtException` 里：**清理必须跑，判据可以不跑**。
+                   这里是止血：让它变成一条红。） */
+                const gbkOk = await gf.locator('#encbar button:has-text("GBK")').first()
+                  .click({ timeout: 8000 }).then(() => true).catch(() => false);
+                if (!gbkOk) ok(false, "编码横条上点不到 GBK —— 「按 GBK 重读」这一组没验到（上面那两条已经说了横条压根没出来）");
                 await pg.waitForTimeout(2600);
                 const after = await head3();
                 ok(after[0] === "订单" && after[1] === "金额",
@@ -4749,7 +4828,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
   const leaked = [];
   for (const [sub, names] of nowSnap) {
     const was = BASELINE.get(sub) ?? new Set();
-    for (const n of names) if (!was.has(n)) leaked.push(`${sub}/${n}`);
+    for (const n of names) if (!was.has(n)) leaked.push([sub, n]);
   }
   /* ⚠️ **清理也不认名字** —— 多出来的一律删掉。
      （2026-10-02：这条判据第一次跑就抓到 `snapshots/_回归样本.mp4__93878b82992f`，
@@ -4759,14 +4838,21 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
      **目录名从此不再等于文件名，按文件名匹配的清单全都靠不住了。**）
 
      不清的话下一轮的基线就含着它，这条判据从此永远绿 —— 污染会累积。 */
+  /* ⚠️ 删也要按 `assetRootsOf` 给的真实位置 —— `leaked` 里的 label 可能是
+     `records/snapshots`，拼回 `<项目>/.umbrastudio/` 会**删到一个不存在的路径
+     而 `rmSync(force)` 不报错**：判据照样绿，东西照样留着。 */
   if (leaked.length) {
     const { rmSync } = await import("node:fs");
     const { join } = await import("node:path");
-    for (const rel of leaked) rmSync(join(left.dir, ".umbrastudio", rel), { recursive: true, force: true });
+    const where = new Map(await assetRootsOf(left.dir));
+    for (const [label, name] of leaked) {
+      const root = where.get(label);
+      if (root) rmSync(join(root, name), { recursive: true, force: true });
+    }
   }
   ok(leaked.length === 0,
      "**和开跑前比，`.umbrastudio/` 下一个目录都没多**（不靠认名字 —— 名字清单已经漏过两次）",
-     leaked.length ? "这一轮留下了（已清）：" + leaked.join("、") : `干净（跑前 ${[...BASELINE.values()].reduce((a, b) => a + b.size, 0)} 个，现在一样）`);
+     leaked.length ? "这一轮留下了（已清）：" + leaked.map(([l, n]) => `${l}/${n}`).join("、") : `干净（跑前 ${[...BASELINE.values()].reduce((a, b) => a + b.size, 0)} 个，现在一样）`);
   ok(stillThere.length === 0, "**`SAMPLE_PATS` 认得的那些也清干净了**（留着会让下一轮读数变错，不只是脏）",
      `这一轮清掉 ${swept.length} 份 · 再扫一次剩 ${stillThere.length} 份`);
 
