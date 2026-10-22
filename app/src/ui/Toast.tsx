@@ -17,7 +17,7 @@ export function Toasts() {
         /* ⚠️ **`warn` 这一档是 issue #99 加的**：在它之前只有 `error` 和默认（绿/中性）——
            于是「文件挪走了、但有几处引用没改成」这种**一半成功**的事只能报成 ok。
            **只有「成了 / 没成」两档的提示系统，会把「成了一半」说成「成了」。** */
-        <div key={t.id} className={`rounded-lg border px-3 py-2 text-xs shadow-lg bg-panel ${
+        <div key={t.id} data-ud="toast" className={`rounded-lg border px-3 py-2 text-xs shadow-lg bg-panel ${
           t.kind === "error" ? "border-err text-err"
           : t.kind === "warn" ? "border-warnBorder text-warn"
           : "border-border text-text"}`}>

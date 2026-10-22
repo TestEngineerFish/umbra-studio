@@ -13,7 +13,16 @@ export interface HostAdapter {
   /** 系统通知；浏览器里退化成页面内 toast（由调用方接 onFallback） */
   notify(n: { title: string; body?: string }): Promise<void>;
   setTitle(title: string): void;
-  capabilities(): Record<"pickDirectory" | "revealInFinder" | "openExternal" | "notify" | "setTitle", HostCapability>;
+  /** 把一组拖进来的 `File` 换成**磁盘上的绝对路径**（M14-5 下半）。
+   *
+   *  ⚠️ **只有壳给得出来。** 浏览器里 `File` 压根没有路径这个概念（有过的
+   *  `File.path` 是 Electron 自己加的，而 **Electron 32 起也移除了** ——
+   *  正确的是 preload 里 `webUtils.getPathForFile`，见 `doc/24` §4.4）。
+   *  浏览器宿主回空数组，`capabilities().dropPaths.why` 说清为什么。 */
+  pathsForDrop(files: File[]): string[];
+  /** 在一个**新窗口**里打开这些路径。回「开没开成」。浏览器里没有窗口这回事 → false。 */
+  openInNewWindow(paths: string[]): Promise<boolean>;
+  capabilities(): Record<"pickDirectory" | "revealInFinder" | "openExternal" | "notify" | "setTitle" | "dropPaths" | "newWindow", HostCapability>;
   /** 壳主动发来的事：菜单「打开目录」、上次没正常退出（未落盘提示）。浏览器宿主没有这些事。 */
   onEvent?(cb: (e: HostEvent) => void): () => void;
 }

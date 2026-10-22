@@ -238,6 +238,128 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
   await rm(plain, { recursive: true, force: true });
 }
 
+/* ── ⑦ 从系统里拖文件进来（M14-5 下半 · `doc/24` §22.1）──
+   ⚠️⚠️ **先说清这一节能测到哪一层，以及为什么只能到这一层。**
+   真的从访达拖一个文件进来要驱动系统 UI，Playwright 做不到；而 Electron 的
+   `webUtils.getPathForFile()` 对**页面里 new 出来的 `File`** 回空串 ——
+   它只认真从系统拖进来的那种。所以这一节测的是**拖拽逻辑那一层**：
+   合成一次带 `Files` 的 drag → 落点算得对不对 · 问句是哪一句 · 两个落点会不会
+   同时弹两个问句 · 这个宿主拿不到路径时**说话了没有**。
+   「路径真的取得到」那一层在 `shelltest` 里钉（它跑真 Electron，而且那条
+   版本陷阱 `File.path === undefined` 在那里量得到）。
+   > **分不清「这一层测到了什么」和「这件事测完了」，就会把半套当成全套。**
+
+   ⚠️ 这一节跑在**浏览器**里，所以 `pathsForDrop` 必然回空 —— 于是它恰好是
+   「拿不到路径要说话」那条判据的现成样本。**而这正是最容易静默的那一条**：
+   拖了一下什么都不发生，用户只会以为拖拽坏了。 */
+console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层）");
+{
+  /** 在一个元素上合成一次 drag：带 `Files` 类型 + 一个 File。 */
+  const dragTo = async (sel, name = "拖进来的.png") => pg.evaluate(({ sel, name }) => {
+    const el = document.querySelector(sel);
+    if (!el) return "没找到这个元素";
+    const dt = new DataTransfer();
+    dt.items.add(new File(["x"], name, { type: "image/png" }));
+    for (const type of ["dragenter", "dragover", "drop"]) {
+      el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+    }
+    return "ok";
+  }, { sel, name });
+
+  /* 先开一个真项目（要有文件列可拖）。
+     ⚠️ **自己新建一个，不要复用前面几节那几条** —— ④⑤ 已经把它们从列表里移除了，
+     第一版复用「还在的项目」当场超时 15 秒。
+     > **判据之间会互相拿掉夹具**（§143.6 那一族，这次拿掉的是「列表里还有没有这一行」）。 */
+  const dragProj = await realpath(await mkdtemp(join(tmpdir(), "umbra-home-drag-")));
+  await writeFile(join(dragProj, "project.json"), JSON.stringify({ name: "拖拽项目", title: "拖拽项目" }));
+  await writeFile(join(dragProj, "一份文档.md"), "# 文档\n");
+  /* ⚠️ 要有一个**子目录** —— 「拖到一行上那一行亮」钉的是目录行，
+     而根级文件行的落点是项目根（那时亮的是树的空白区，不是那一行）。 */
+  await mkdir(join(dragProj, "图"), { recursive: true });
+  await writeFile(join(dragProj, "图", "已有的.png"), "x");
+  await touchProject(dragProj, "拖拽项目", "拖拽项目");
+  /* ⚠️ **`goto(首页)` 不是 `reload()`**：⑥ 跑完页面停在工作台上（而那个目录已经被删了），
+     `reload` 会按当前地址重载工作台 —— 第一版就这么超时了 15 秒，
+     而报错说的是「等不到那一行」，**指向的是列表，不是「我压根没回首页」**。 */
+  await pg.goto(url, { waitUntil: "domcontentloaded" });
+  await pg.locator(`[data-ud="project-row"][data-name="拖拽项目"]`).first().waitFor({ timeout: 15000 });
+  await pg.locator(`[data-ud="project-row"][data-name="拖拽项目"]`).first().click();
+  await pg.locator('[data-ud="tree-body"]').waitFor({ timeout: 15000 });
+
+  /* ⓐ 浏览器里拿不到路径 → **要说话**，不能静静没反应 */
+  {
+    const r = await dragTo('[data-ud="tree-body"]');
+    ok(r === "ok", "（前提）合成的那一下真落在文件列上了", r);
+    const t = pg.locator('[data-ud="toast"], [role="status"]');
+    await t.first().waitFor({ timeout: 4000 }).catch(() => {});
+    const txt = await pg.evaluate(() => document.body.innerText);
+    ok(/拖不进来/.test(txt), "**浏览器里拖进来会说一句「这里拖不进来」**（拿不到路径 ≠ 什么都不做）",
+       (txt.match(/这里拖不进来[^\n]*/) ?? ["(没说)"])[0].slice(0, 50));
+    ok(/浏览器里拿不到文件在磁盘上的位置/.test(txt), "而且说的是**为什么**（浏览器的安全模型），不是「不支持」");
+  }
+
+  /* ⓑ 落点要画出来：拖到某一行时那一行高亮 —— 人要在**松手之前**知道会放到哪 */
+  {
+    const row = pg.locator('[role="treeitem"]').first();
+    const has = await row.count();
+    if (!has) ok(false, "（前提）树里至少有一行 —— 这一条没验到");
+    else {
+      /* ⚠️ **dispatch 完要等一拍再读 className** —— React 的 state 更新是异步的，
+         同一个 `evaluate` 里读到的还是渲染之前那一版。
+         第一版就是这么红的，而读数（「没有 ring-accent」）**和「高亮压根没做」一模一样**。
+         > 又一次：**判据抢跑会把「还没发生」读成「不会发生」**（§113 同族）。 */
+      const sel = '[role="treeitem"][aria-expanded]';   // 目录行（有 aria-expanded 的才是）
+      const has2 = await pg.locator(sel).count();
+      ok(has2 > 0, "（前提）树里有一个目录行可以拖上去", `${has2} 个`);
+      await pg.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        const dt = new DataTransfer();
+        dt.items.add(new File(["x"], "a.png", { type: "image/png" }));
+        el.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt }));
+        el.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      }, sel);
+      await pg.waitForTimeout(250);
+      const lit = await pg.evaluate((sel) => document.querySelector(sel).className.includes("ring-accent"), sel);
+      ok(lit, "**拖到一个目录行上时那一行高亮**（松手之前就知道会放到哪一层）");
+      /* 反面：落点是那个目录时，**别的行不许一起亮**（第一版就是全亮） */
+      const others = await pg.evaluate((sel) => {
+        const all = [...document.querySelectorAll('[role="treeitem"]')];
+        const target = document.querySelector(sel);
+        return all.filter((e) => e !== target && e.className.includes("ring-accent")).length;
+      }, sel);
+      ok(others === 0, "**只有那一行亮**（第一版「落点等于我所在的目录就亮」会让根级每一行一起亮）", `另外亮了 ${others} 行`);
+    }
+  }
+
+  /* ⓒ 两个落点不许同时弹两个问句 —— 文件列那一下要 `stopPropagation`
+     ⚠️ 这一条在浏览器里只能验「窗口级那个处理器没有也跟着跑」，办法是数
+     「这一下一共触发了几次 drop 处理」。用页面上的 toast 条数当读数：
+     拖一次只该有一条「拖不进来」，两个落点都接的话会是两条。 */
+  {
+    await pg.evaluate(() => { for (const n of document.querySelectorAll('[data-ud="toast"]')) n.remove(); });
+    await dragTo('[data-ud="tree-body"]');
+    await pg.waitForTimeout(600);
+    const n = await pg.evaluate(() => document.querySelectorAll('[data-ud="toast"]').length);
+    ok(n <= 1, "**拖一次只问一次**（文件列那一下 stopPropagation 了，窗口级那个没跟着跑）", `${n} 条提示`);
+  }
+
+  /* ⓓ 拖一段**文字**不该触发任何东西 —— 判准是 `dataTransfer.types` 里有没有 `Files` */
+  {
+    await pg.evaluate(() => { for (const n of document.querySelectorAll('[data-ud="toast"]')) n.remove(); });
+    const r = await pg.evaluate(() => {
+      const el = document.querySelector('[data-ud="tree-body"]');
+      const dt = new DataTransfer();
+      dt.setData("text/plain", "一段文字");
+      for (const type of ["dragenter", "dragover", "drop"]) {
+        el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      }
+      return document.querySelectorAll('[data-ud="toast"]').length;
+    });
+    ok(r === 0, "**拖一段文字进来什么都不发生**（不然选中一段字一拖，整个窗口就蒙一层「松手打开」）", `${r} 条提示`);
+  }
+  await rm(dragProj, { recursive: true, force: true });
+}
+
 /* ── 收尾：真实「最近打开」一个字节都没碰 ── */
 console.log("\n收尾");
 const realAfter = existsSync(realWorkspace) ? readFileSync(realWorkspace, "utf8") : null;

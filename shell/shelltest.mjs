@@ -32,6 +32,32 @@ const env = { ...process.env, UMBRASTUDIO_AUTOTEST_LOG: S + "/shell-autotest.log
   }
 }
 
+/** 把这个实例的所有窗口挪到**非主显示器**上（sam 2026-10-22 的要求）。
+ *
+ *  ⚠️ 这一套起的是**真 Electron 窗口**，没有无头模式可用（`hometest` 走 Playwright 的
+ *  无头 Chromium，所以它不弹窗；壳必须真开窗口才能测主进程那一层）。
+ *  而主屏上 sam 自己在用 —— 窗口弹出来就抢焦点。
+ *  ⚠️ **不改产品代码**：位置由测试自己摆，而不是给主进程加一个只有测试会设的环境变量
+ *  （那种「只在测试里走的分支」迟早会和真实行为分叉）。
+ *  只有一个显示器时它是空操作，并**说出来** —— 不然「挪过去了」和「这台机器只有一个屏」
+ *  读数一样。 */
+const park = async (app) => {
+  const r = await app.evaluate(({ BrowserWindow, screen }) => {
+    const prim = screen.getPrimaryDisplay();
+    const other = screen.getAllDisplays().find((d) => d.id !== prim.id);
+    if (!other) return null;
+    const a = other.workArea;
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed()) continue;
+      try {
+        w.setBounds({ x: a.x + 40, y: a.y + 40, width: Math.min(1280, a.width - 80), height: Math.min(840, a.height - 80) });
+      } catch { /* 隐藏的体检窗口摆不动也没关系 */ }
+    }
+    return { x: a.x, y: a.y, w: a.width, h: a.height };
+  }).catch(() => null);
+  return r;
+};
+
 const t0 = Date.now();
 const mainWindow = async (app) => {
   for (let i = 0; i < 100; i++) { const w = app.windows().find(w => w.url().includes("__app")); if (w) return w; await new Promise(r => setTimeout(r, 200)); }
@@ -42,6 +68,10 @@ const mainWindow = async (app) => {
 };
 let app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL });
 let win = await mainWindow(app);
+{
+  const at = await park(app);
+  console.log("窗口位置:", at ? `挪到非主显示器 ${at.w}×${at.h} @ ${at.x},${at.y}（不抢主屏）` : "只有一个显示器，没地方挪 —— 窗口会出现在主屏上");
+}
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 30000 })
   .catch(async (e) => { console.error("首页没出来，当前页面文字：", JSON.stringify((await win.evaluate(() => document.body.innerText)).slice(0, 300))); throw e; });
 console.log("launch→home:", Date.now() - t0, "ms | projects:", await win.evaluate(() => document.querySelectorAll("li").length), "| host:", await win.evaluate(() => ({ kind: window.umbraHost?.kind, pick: window.umbraHost?.capabilities().pickDirectory.ok })));
@@ -313,12 +343,98 @@ const second = spawn(bin, [SHELL], { env, stdio: "ignore" }); const code = await
 console.log("second instance exit:", code);
 // 强杀 → 重开 → 未落盘提示
 const pid = await app.evaluate(() => process.pid); process.kill(pid, "SIGKILL"); await new Promise(r => setTimeout(r, 1500));
-app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app);
+app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app); await park(app);
 await win.waitForFunction(() => /上次没有正常退出/.test(document.body.innerText), null, { timeout: 15000 }).then(() => console.log("dirty-restart toast: ok")).catch(() => console.log("dirty-restart toast: 没出现"));
 await app.close();
 // 正常退出后再开：不该有提示
-app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app); await win.waitForTimeout(2500);
+app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app); await park(app); await win.waitForTimeout(2500);
 console.log("clean restart toast:", await win.evaluate(() => /上次没有正常退出/.test(document.body.innerText)) ? "有（错）" : "无（对）");
+/* ── 多窗口 + 拖拽路径桥（M14-5 下半，2026-10-22）──
+   ⚠️⚠️ **这一节钉的是「多窗口不是一句 new BrowserWindow」。**
+   主进程原来有一个 `mainWin` 单例，而它被**九处**读着（发事件给谁 · boot 校验 ·
+   改谁的标题 · 对话框挂哪 · 导航闸 · activate · second-instance …）。
+   只改 new 的那一句，其余八处会静默指着「第一个窗口」——
+   症状是「第二个窗口里点什么都作用在第一个窗口上」，**那比开不出新窗口难查得多**。
+   所以这里不只数窗口数，还要钉**两个窗口互不串线**。
+
+   ⚠️ **真从访达拖一个文件进来，判据写不进来**（要驱动系统 UI）；
+   而 `webUtils.getPathForFile()` 对页面里 `new` 出来的 `File` 回空串 ——
+   它只认真从系统拖进来的那种。所以拖拽分两层测：
+   逻辑那一层在 `hometest` ⑦（合成 drag，钉落点 / 问句 / 两个落点的分界），
+   这里钉**桥在不在、以及那个版本陷阱是真的**。 */
+{
+  const winCount = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length);
+  const n0 = await winCount();
+
+  /* ⓐ 版本陷阱本身：这个 Electron 上 `File.path` 真的没了 —— **这是 `webUtils` 存在的理由**。
+     ⚠️ 这一条是「为什么不能照老教程写」的读数。没有它，下一个人会把
+     `webUtils.getPathForFile` 「简化」回 `file.path`，而那在这个版本上静默回 undefined。 */
+  const trap = await win.evaluate(() => ({
+    pathProp: typeof new File([new Uint8Array(1)], "x.png").path,
+    hasBridge: typeof window.umbraHost?.pathsForDrop === "function",
+    canDrop: window.umbraHost?.capabilities?.().dropPaths?.ok ?? null,
+    canWin: window.umbraHost?.capabilities?.().newWindow?.ok ?? null,
+    electron: null,
+  }));
+  console.log("拖拽路径桥:", trap.pathProp === "undefined" && trap.hasBridge && trap.canDrop === true
+    ? `✓ File.path 在这个版本上是 undefined（所以必须走 webUtils）· 桥在 · dropPaths.ok`
+    : `✗ ${JSON.stringify(trap)}`);
+  /* 合成的 File 拿不到路径是**预期**（`getPathForFile` 只认真拖进来的）——
+     钉的是**它不抛异常**：抛的话一次拖拽会把整个处理器炸掉，而症状是「拖了没反应」。 */
+  const synth = await win.evaluate(() => {
+    try { return { ok: true, n: window.umbraHost.pathsForDrop([new File([new Uint8Array(1)], "x.png")]).length }; }
+    catch (e) { return { ok: false, why: String(e).slice(0, 80) }; }
+  });
+  console.log("合成的 File 走桥:", synth.ok ? `✓ 不抛，回 ${synth.n} 个路径（0 是对的：getPathForFile 只认真拖进来的）` : `✗ 抛了：${synth.why}`);
+
+  /* ⓑ 开一个新窗口，而且**它真的打开了那个目录** */
+  const copyDir = S + "/umbra_copy";
+  const opened = await win.evaluate((d) => window.umbraHost.openInNewWindow([d]), copyDir);
+  await new Promise((r) => setTimeout(r, 3000));
+  await park(app);
+  const n1 = await winCount();
+  console.log("多窗口:", opened === true && n1 === n0 + 1 ? `✓ ${n0} → ${n1} 个窗口` : `✗ openInNewWindow 回 ${opened} · 窗口 ${n0} → ${n1}`);
+
+  const second = app.windows().find((w) => w !== win && w.url().includes("__app"));
+  if (!second) console.log("第二个窗口:", "✗ 找不到（上一条已经红了）");
+  else {
+    /* 判据是**那个窗口真的开到了那个项目**，不是「窗口出来了」——
+       后者在事件丢掉的时候也成立（那正是「按窗口分待发队列」要防的）。 */
+    /* ⚠️⚠️ **第一版这一条绿错了，而只有详情那一串看得出来。**
+       原来的条件是 `/umbra_copy/.test(innerText) || tree-head` —— 而
+       「umbra_copy」这个名字出现在**新窗口首页的「最近打开」列表**里
+       （第一个窗口刚打开过它）。于是判据通过，读数却是「(没有目录列)」：
+       **新窗口停在首页，事件丢了。**
+       > 又一次「它还可能因为什么原因这么说」—— 一个 `||` 里的某一支，
+       > 在要测的那件事完全没发生时也成立。
+       现在只认目录列，而且列头上要**真的是那个目录的名字**。 */
+    let got = "";
+    try {
+      await second.waitForFunction(() => {
+        const h = document.querySelector('[data-ud="tree-head"]');
+        return !!h && /\S/.test(h.innerText);
+      }, null, { timeout: 25000 });
+      got = await second.evaluate(() => document.querySelector('[data-ud="tree-head"]').innerText.trim().slice(0, 30));
+    } catch { got = ""; }
+    console.log("新窗口打开了那个目录:", got && /umbra_copy|Umbra_design/.test(got)
+      ? `✓ 它自己的目录列，列头「${got}」`
+      : `✗ ${got ? `列头是「${got}」，不是那个目录` : "25 秒内没开出工作台 —— 事件丢了（页面还没挂上监听就发了？）"}`);
+
+    /* ⓒ **两个窗口互不串线** —— 这一条才是「九处单例」的判据。
+       在第二个窗口里改标题，第一个窗口的标题不许跟着变。 */
+    await second.evaluate(() => window.umbraHost.setTitle("第二个窗口"));
+    await new Promise((r) => setTimeout(r, 800));
+    const titles = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).map((w) => w.getTitle()));
+    console.log("两个窗口互不串线:", titles.filter((t) => t === "第二个窗口").length === 1
+      ? `✓ 只有一个窗口改了标题 · ${JSON.stringify(titles)}`
+      : `✗ 标题串了 · ${JSON.stringify(titles)}`);
+    await second.evaluate(() => window.close()).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1200));
+    const n2 = await winCount();
+    console.log("关掉第二个窗口:", n2 === n0 ? `✓ 回到 ${n2} 个（集合里删干净了）` : `✗ 还剩 ${n2} 个`);
+  }
+}
+
 /* 主窗口导航闸（issue #131）：顶层导航到 hub 以外要被取消、交给系统浏览器（这里是记录桩），主窗口仍在 hub 源。
    放在这个实例的最后：被取消的导航会让 Playwright 之后的操作一直「等导航结束」。 */
 {
@@ -361,6 +477,7 @@ await app.close();
     const t2 = Date.now();
     const a2 = await electron.launch({ executablePath: bin, args: [SHELL, copy + "/" + one], env, cwd: SHELL });
     const w2 = await mainWindow(a2);
+    await park(a2);
     /* 判据是**工作台开到了那一份**，不是「窗口出来了」——
        后者在参数被整个忽略的时候也成立（那正是 `second-instance` 原来的样子）。 */
     let got = "";
@@ -385,3 +502,19 @@ try {
   const r = await removeRecentProject(S + "/umbra_copy");   // 记的是副本目录本身，不是 S（原来传 S，永远「本来就没有」）
   console.log("收尾：最近打开里那条测试记录", r.removed ? "已撤掉" : "本来就没有");
 } catch (e) { console.log("收尾：撤「最近打开」没成（不影响测试结论）:", String(e).slice(0, 60)); }
+/* ⚠️ **还要清掉旁数据那条记录**（M14-9 收尾时量到，2026-10-22）。
+   打开那个副本会在 `STATE_ROOT/.umbrastudio/records/` 里建一条记录 + 一个目录，
+   而 `removeRecentProject` 只管「最近打开」那张列表 —— **两件事，两处状态**。
+   ⚠️ 别套用 `apitest` 那句 `dropLeftoversUnder(os.tmpdir())`：
+   这一套的副本在**会话 scratchpad**（`/private/tmp/claude-501/…`）下，不在 `os.tmpdir()`（`/var/folders/…`）里，
+   那句话扫不到它 —— 又一次「清理的判准和样本的位置对不上」。
+   所以按**副本自己的目录**清。 */
+try {
+  const { dropRecordsUnder } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/dist/records.js");
+  /* ⚠️ **`{ onlyDead: false }` 是必须显式写的**：不传 opts 时它只删「目标已经不在」的，
+     而这里副本目录**还在**（跑完由人决定要不要留着看）。
+     第一版没传，读数是「旁数据记录 **本来就没有**」——
+     **一句「本来就没有」把「我没删到」说成了「没有要删的」。** */
+  const r2 = dropRecordsUnder(S, { onlyDead: false });
+  console.log("收尾：旁数据记录", r2.removed.length ? `清掉 ${r2.removed.length} 条` : "本来就没有");
+} catch (e) { console.log("收尾：清旁数据记录没成（不影响测试结论）:", String(e).slice(0, 60)); }

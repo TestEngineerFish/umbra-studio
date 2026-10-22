@@ -32,9 +32,36 @@ function writeSession(v) { try { mkdirSync(dirname(sessionFile()), { recursive: 
 
 let core = null;      // { hubStart, serveStart, buildProject, listRecentProjects, touchProject }
 let hub = null;       // { url, port, token }
-let mainWin = null;
+/** 开着的所有工作窗口（M14-5 下半，2026-10-22）。
+ *
+ *  ⚠️ **原来这里是一个 `mainWin` 单例。** 多窗口不是「再 new 一个 BrowserWindow」那么一句 ——
+ *  一个单例在这个文件里被**九处**读着：`sendHost` 发事件给谁 · `host:boot` 的发送方校验 ·
+ *  `host:setTitle` 改谁的标题 · 选目录对话框挂在哪个窗口上 · `will-prevent-unload` ·
+ *  `activate` · `second-instance` · 菜单里「在浏览器里打开当前页」。
+ *  **只改 new 的那一句，其余八处会静默指着「第一个窗口」** ——
+ *  症状是「第二个窗口里点什么都作用在第一个窗口上」，而那比不能开新窗口难查得多。
+ *
+ *  所以这里换成一个集合 + 一个「谁在前面」，上面九处逐处改成「按发送方找窗口」。 */
+const wins = new Set();
+/** 最后被聚焦的那个窗口 —— 系统事件（Dock 图标、`second-instance`）没有发送方，只能给它。 */
+let lastFocused = null;
 let checkWin = null;
-const pending = [];   // 主窗口还没 ready 时攒下来的宿主事件
+/** 窗口 → 它还没 ready 时攒下的宿主事件。**按窗口分**：原来是一个全局队列，
+ *  多窗口下第二个窗口 ready 时会把第一个窗口的事件也一起领走。 */
+const pendingOf = new WeakMap();
+
+/** 这个 webContents 是我们自己的工作窗口吗（`host:boot` 那道闸要用）。 */
+function winOf(webContents) {
+  for (const w of wins) if (!w.isDestroyed() && w.webContents === webContents) return w;
+  return null;
+}
+/** 事件该发给哪个窗口：点名的那个 → 最后聚焦的 → 任意一个。 */
+function targetWin(prefer) {
+  if (prefer && !prefer.isDestroyed()) return prefer;
+  if (lastFocused && !lastFocused.isDestroyed()) return lastFocused;
+  for (const w of wins) if (!w.isDestroyed()) return w;
+  return null;
+}
 
 /* ══ 「打开方式」/ 双击 / 命令行（M14-5，`doc/11` Q59–Q61）══
  *
@@ -67,23 +94,70 @@ function pathsFromArgv(argv) {
 /** 打开一个路径：目录就当目录开，文件就开它的父目录并选中它。
  *  ⚠️ **父目录不会被写进任何东西**（M14-4 B3）—— 这是 Q59 那一档成立的前提。
  *  B3 之前这条路会在用户的下载文件夹里部署 780 KB，所以当时它不能做。 */
-function openPath(p) {
+function openPath(p, win) {
   if (!p) return;
   let st = null;
   try { st = statSync(p); } catch { return; }
-  if (st.isDirectory()) sendHost({ type: "open-dir", dir: p });
-  else sendHost({ type: "open-file", dir: dirname(p), rel: basename(p) });
+  if (st.isDirectory()) sendHost({ type: "open-dir", dir: p }, win);
+  else sendHost({ type: "open-file", dir: dirname(p), rel: basename(p) }, win);
+}
+
+/** 在一个**新窗口**里打开这些路径（M14-5 下半，场景 ①②）。
+ *  ⚠️ 新窗口先开出来、事件进它自己的待发队列，等它 `did-finish-load` 再放 ——
+ *  直接 `send` 的话页面还没挂上监听，事件**静默丢掉**（原来那个全局 `pending`
+ *  就是为这件事存在的，多窗口下它必须按窗口分）。 */
+async function openPathsInNewWindow(paths) {
+  const list = (Array.isArray(paths) ? paths : [paths]).filter((x) => typeof x === "string" && x);
+  if (!list.length || !hub) return false;
+  /* ⚠️ **一个路径一个窗口**，不是「这些路径一个窗口」。
+     前端是单项目模型（一个窗口一个项目，并存那一档是 M15-1），
+     所以往同一个窗口连发三个 `open-dir` 的结果是**只有最后一个留下**，
+     而界面上看起来像「拖了三个，只开了一个」—— 又一条静默丢东西。 */
+  for (const p of list) {
+    const w = await createMainWindow();
+    openPath(p, w);
+  }
+  return true;
 }
 
 /** 核心还没起来时先攒着，起来之后一次性放出去。 */
 function takePath(p) {
-  if (core && mainWin) openPath(p); else queued.push(p);
+  if (core && wins.size) openPath(p); else queued.push(p);
 }
 
 /* **顶层注册**，不在 whenReady 里 —— 理由见上面那段⚠️ */
 app.on("open-file", (e, p) => { e.preventDefault(); takePath(p); });
 
-function sendHost(ev) { if (mainWin && !mainWin.isDestroyed() && mainWin.webContents.isLoadingMainFrame() === false) mainWin.webContents.send("host:event", ev); else pending.push(ev); }
+/** 哪些窗口的页面**已经挂上了 `onEvent` 监听**（渲染侧经 `host:ready` 报的）。
+ *
+ *  ⚠️⚠️ **原来这里判的是 `webContents.isLoadingMainFrame() === false`，而那是错的判准。**
+ *  `loadURL` 的 promise resolve 只说明**加载完了**，不说明页面脚本已经
+ *  `ipcRenderer.on("host:event", …)` 过 —— React 的 `useEffect` 还在后面。
+ *  于是「开一个新窗口并让它打开某个目录」这条路上事件**静默丢掉**，
+ *  新窗口停在首页，而主进程这边一切正常。
+ *  2026-10-22 `shelltest` 当场量到：新窗口的读数是「(没有目录列)」。
+ *  ⚠️ 更坏的是它**时序敏感** —— 冷启动那条路（中间还开了一个体检窗口，多了几十毫秒）
+ *  一直是好的，所以这个缺陷只在「新开窗口」这条新路上现形。
+ *  > **「窗口加载完了」是主进程的事实，「页面在听了」只有渲染侧知道。**
+ *  > 用前者替后者，就是一个按时序碰运气的实现。
+ *
+ *  现在改成渲染侧报到：`preload.cjs` 的 `onEvent` 挂完监听就 `send("host:ready")`。 */
+const readyWins = new WeakSet();
+
+function drain(w) {
+  const q = pendingOf.get(w);
+  if (!q) return;
+  while (q.length) w.webContents.send("host:event", q.shift());
+}
+
+function sendHost(ev, prefer) {
+  const w = targetWin(prefer);
+  if (!w) { (pendingOf.get(prefer) ?? []).push(ev); return; }
+  if (readyWins.has(w) && !w.webContents.isLoadingMainFrame()) { w.webContents.send("host:event", ev); return; }
+  let q = pendingOf.get(w);
+  if (!q) pendingOf.set(w, (q = []));
+  q.push(ev);
+}
 
 async function loadCore() {
   const mod = async (f) => import(pathToFileURL(join(CORE_DIST, f)).href);
@@ -123,7 +197,7 @@ async function buildMenu() {
     { label: "编辑", role: "editMenu" },
     { label: "视图", submenu: [{ role: "reload", label: "重新加载" }, { role: "toggleDevTools", label: "开发者工具" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
     { label: "窗口", role: "windowMenu" },
-    { label: "帮助", submenu: [{ label: "在浏览器里打开当前页", click: () => { if (mainWin) void safeExternal(mainWin.webContents.getURL()); } }] },
+    { label: "帮助", submenu: [{ label: "在浏览器里打开当前页", click: () => { const w = targetWin(null); if (w) void safeExternal(w.webContents.getURL()); } }] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(tpl));
 }
@@ -137,8 +211,11 @@ function safeExternal(url) {
 /** 这个 frame 当前是不是 hub 源（令牌只给 hub 源，issue #131）。 */
 function isHubOrigin(url) { return !!hub && sameOrigin(url, hub.url); }
 
-async function pickDirectory(opts = {}) {
-  const r = await dialog.showOpenDialog(mainWin ?? undefined, { title: opts.title ?? "选择目录", properties: ["openDirectory", "createDirectory"] });
+/** ⚠️ `owner` 是**发起这次选择的那个窗口**，不是「第一个窗口」——
+ *  挂错了的话第二个窗口点「选择目录」，对话框贴在第一个窗口上（macOS 上是一张
+ *  垂下来的 sheet），看上去像是点错了窗口。 */
+async function pickDirectory(opts = {}, owner = null) {
+  const r = await dialog.showOpenDialog(targetWin(owner) ?? undefined, { title: opts.title ?? "选择目录", properties: ["openDirectory", "createDirectory"] });
   return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
 }
 
@@ -152,11 +229,21 @@ function wireIpc() {
     /* ⚠️ 再核一条**来源**（issue #131）：只按 frame 身份判的话，主窗口被稿里的
        `top.location = "http://外部"` 导走以后，外部页跑在同一个主 frame 里、preload 照常执行，
        令牌就交给它了。不变量是「令牌只给 hub 源」。 */
-    const okSender = !!mainWin && e.sender === mainWin.webContents && e.senderFrame === e.sender.mainFrame
+    /* ⚠️ 判准从「是不是**那一个**主窗口」换成「是不是**我们自己的某个**工作窗口」——
+       不变量没变（主 frame + hub 源 + 是我们开的窗口），变的只是窗口不止一个。 */
+    const okSender = !!winOf(e.sender) && e.senderFrame === e.sender.mainFrame
       && isHubOrigin(e.senderFrame?.url);
     e.returnValue = okSender ? bootData() : null;
   });
-  ipcMain.handle("host:pickDirectory", (_e, opts) => pickDirectory(opts));
+  /* 渲染侧挂好 `host:event` 监听了（见 `preload.cjs`）。
+     ⚠️ **只认我们自己的窗口**，和 `host:boot` 同一道判准。 */
+  ipcMain.on("host:ready", (e) => {
+    const w = winOf(e.sender);
+    if (!w) return;
+    readyWins.add(w);
+    drain(w);
+  });
+  ipcMain.handle("host:pickDirectory", (e, opts) => pickDirectory(opts, winOf(e.sender)));
   ipcMain.handle("host:revealInFinder", (_e, p) => { shell.showItemInFolder(p); });
   ipcMain.handle("host:openExternal", (_e, url) => safeExternal(url));   // 协议闸收口在这里（#131；OIDC 登录地址也走这条）
   ipcMain.handle("host:notify", (_e, n) => { if (Notification.isSupported()) new Notification({ title: n?.title ?? "Umbra Studio", body: n?.body ?? "" }).show(); });
@@ -164,7 +251,13 @@ function wireIpc() {
      拼上应用名是 VS Code 那类的惯例，但这里已经有两处在报应用名了：
      macOS 的菜单栏、Dock 的悬停提示。标题栏再写一次，用户看到的就是
      「项目名 + Umbra Studio」黏成一长串，反而认不出哪个是项目。 */
-  ipcMain.handle("host:setTitle", (_e, t) => { if (mainWin) mainWin.setTitle(t || "Umbra Studio"); });
+  ipcMain.handle("host:setTitle", (e, t) => { const w = winOf(e.sender); if (w) w.setTitle(t || "Umbra Studio"); });
+  /* 在新窗口里打开拖进来的东西（M14-5 下半，场景 ①②）。
+     ⚠️ **只接我们自己窗口发来的** —— 和 `host:boot` 同一道判准。 */
+  ipcMain.handle("host:openWindow", async (e, paths) => {
+    if (!winOf(e.sender)) return false;
+    return openPathsInNewWindow(paths);
+  });
 }
 
 /** 交给 preload 的启动数据。和 `serve.ts` 注进 `window.__UD_APP` 的那一份同形 ——
@@ -179,8 +272,15 @@ function bootData() {
   };
 }
 
+/** 开一个工作窗口。**返回它** —— 调用方（新窗口那条路）要往它发事件。
+ *  ⚠️ 原来这个函数把结果写进 `mainWin` 单例；现在它只认一个局部变量，
+ *  **让「忘了用返回值」变成一个显式的错**，而不是悄悄作用在别的窗口上。 */
 async function createMainWindow() {
-  mainWin = new BrowserWindow({
+  /* 新窗口错开一点位置，不要严丝合缝叠在上一个上面（看着像没开成） */
+  const front = targetWin(null);
+  const off = front ? front.getBounds() : null;
+  const win = new BrowserWindow({
+    ...(off ? { x: off.x + 28, y: off.y + 28 } : {}),
     width: 1440, height: 900, minWidth: 900, minHeight: 600, title: "Umbra Studio", show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#13151a" : "#f6f7f9",
     webPreferences: {
@@ -203,21 +303,29 @@ async function createMainWindow() {
          令牌只在两个进程之间走一次 IPC，**不落在 argv、也不落在任何响应里**。 */
     },
   });
-  mainWin.once("ready-to-show", () => mainWin.show());
-  mainWin.webContents.on("did-finish-load", () => { while (pending.length) mainWin.webContents.send("host:event", pending.shift()); void buildMenu(); });
-  mainWin.webContents.setWindowOpenHandler(({ url }) => { void safeExternal(url); return { action: "deny" }; });
+  wins.add(win);
+  lastFocused = win;
+  win.on("focus", () => { lastFocused = win; });
+  win.once("ready-to-show", () => win.show());
+  /* ⚠️ **换页 / 刷新要把「在听」撤回**：新的页面脚本还没跑，旧的监听已经没了。
+     不撤的话刷新那一瞬间发出去的事件又会丢 —— 和上面那条是同一个病。 */
+  win.webContents.on("did-start-navigation", (_e, _u, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) readyWins.delete(win);
+  });
+  win.webContents.on("did-finish-load", () => { void buildMenu(); });
+  win.webContents.setWindowOpenHandler(({ url }) => { void safeExternal(url); return { action: "deny" }; });
   /* ⚠️ **主窗口不许被导出 hub 源**（issue #131）。演示态 iframe、或稿里一句 `top.location=…`
      能把主 frame 换成外部页；换过去之后 preload 照样跑。离开 hub 源的导航一律取消，
      http(s) 的交给系统浏览器（经同一道协议闸），别的丢掉。
      `will-navigate` 在 Electron 25+ 只对主 frame 触发 —— 稿件 iframe 走项目服务（别的端口），不受影响。 */
-  mainWin.webContents.on("will-navigate", (e, url) => {
+  win.webContents.on("will-navigate", (e, url) => {
     if (isHubOrigin(url)) return;
     e.preventDefault();
     void safeExternal(url);
   });
   /* 地址里**不带 token** —— 壳靠 preload 的 `sendSync("host:boot")` 拿（issue #39）。
      带在地址里的话它会进历史记录、也会被 `webContents.getURL()` 之类读到。 */
-  await mainWin.loadURL(hub.url + "__app/home");
+  await win.loadURL(hub.url + "__app/home");
   /* ⚠️ **有未落盘时关窗 / ⌘Q / 重新加载都要问一句**（issue #44，2026-10-02）。
      前端在有 dirty 时对 `beforeunload` 调 `preventDefault()` ——
      **浏览器**会弹自带的「离开此网站？」，而 **Electron 不弹**：
@@ -241,8 +349,8 @@ async function createMainWindow() {
 
      ⚠️ `preventDefault()` 的语义是**反直觉的**：它表示「忽略 beforeunload」
      = **放行关闭**。写反了就是「选了离开反而关不掉」。 */
-  mainWin.webContents.on("will-prevent-unload", (e) => {
-    const choice = dialog.showMessageBoxSync(mainWin, {
+  win.webContents.on("will-prevent-unload", (e) => {
+    const choice = dialog.showMessageBoxSync(win, {
       type: "warning",
       buttons: ["回去接着改", "不要了，离开"],
       defaultId: 0, cancelId: 0,
@@ -256,17 +364,19 @@ async function createMainWindow() {
        之后真被强杀，下次启动看到 true，**那条「上次没正常退出」的提示就不出了**。 */
     writeSession({ cleanExit: false, at: new Date().toISOString() });
   });
-  mainWin.on("closed", () => { mainWin = null; });
+  win.on("closed", () => { wins.delete(win); if (lastFocused === win) lastFocused = targetWin(null); });
+  return win;
 }
 
 app.on("second-instance", (_e, argv) => {
-  if (mainWin) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.focus(); }
+  const w = targetWin(null);
+  if (w) { if (w.isMinimized()) w.restore(); w.focus(); }
   /* ⚠️ **argv 要接住**（`doc/24` §六①）：Windows 上「应用已经开着时右键 › 用它打开」
      走的就是这条路 —— 原来这个回调把 argv 整个扔了，于是那一下**什么都不会发生**。 */
   for (const p of pathsFromArgv(argv)) takePath(p);
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("activate", () => { if (!mainWin && hub) void createMainWindow(); });
+app.on("activate", () => { if (!wins.size && hub) void createMainWindow(); });
 app.on("before-quit", () => { writeSession({ cleanExit: true, at: new Date().toISOString() }); });
 
 app.whenReady().then(async () => {

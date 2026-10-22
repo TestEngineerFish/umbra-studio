@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
 import type { Draft, FileEntry, Health, ListFilesResult } from "../api/types";
+import { isFileDrag } from "../host/drop";
 import { Glyph } from "../ui/Glyph";
 import { CtxMenu, itemsFor, type CtxActions, type CtxTarget } from "./ctxmenu";
 import { PopoverAt } from "../ui/Popover";
@@ -60,15 +61,27 @@ export interface TreeProps {
    *  以**旧路径**为键，改完名它按新路径重读 → **改动没了，一句话都不说**。
    *  而切文件 / 关页签都经过这道闸，**只有改名绕过了它**。 */
   beforeRename?: (path: string) => Promise<boolean>;
+  /** 从系统里把文件 / 文件夹拖进了树里（场景 ③，M14-5 下半）。
+   *  `destDir` 是落点（`""` = 项目根）。**树自己不复制，也不认识宿主** ——
+   *  它只报「拖了这几个 File、落在哪一层」，换磁盘路径那一步由工作台经 host adapter 做
+   *  （`doc/01` H7：**`host/` 之外不许出现宿主 API**，而 `File → 路径` 只有壳给得出来）。
+   *  问句和那件写操作也归工作台 —— 和 `onRenamed` 同一个分工：**树不持有别人的决定**。 */
+  onDropFiles?: (files: File[], destDir: string) => void;
 }
 
-export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, healthOf, projectName, drafts, indexed, reindexing, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename }: TreeProps) {
+export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, healthOf, projectName, drafts, indexed, reindexing, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
   const [goto, setGoto] = useState(false);
   const [q, setQ] = useState("");
   const [ctx, setCtx] = useState<{ x: number; y: number; target: CtxTarget } | null>(null);
   /** 正在就地改名的那一行（设计侧 §五：重命名就地改，不弹窗 ——
    *  弹窗要把视线从树里拉走，而改名的时候人正盯着这一行） */
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** 正被拖到哪个目录上（`""` = 项目根 / 空白处，`null` = 没在拖）。
+   *  ⚠️ **要把落点画出来**：一个 460px 宽的问句弹窗事后告诉人「放进了 X」，
+   *  已经晚了 —— 他要在**松手之前**知道会放到哪一层。 */
+  const [dropAt, setDropAt] = useState<string | null>(null);
+  /** 这一行作为拖拽落点代表哪一层目录。 */
+  const dirOfRow = (e: FileEntry): string => (e.isDir ? e.path : e.path.includes("/") ? e.path.slice(0, e.path.lastIndexOf("/")) : "");
   const headRef = useRef<HTMLDivElement>(null);
   /* 每一层的内容按需拉，拉过就留在内存里。`children[path] === undefined` = 还没拉过，
      这和后端约定的「children 缺省表示未拉取、[] 表示空目录」是同一套语义。 */
@@ -213,7 +226,12 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
         <div key={e.path} role="treeitem" data-path={e.path} aria-expanded={e.isDir ? open : undefined} aria-selected={isCur}
           className={`flex items-center gap-1.5 pr-2 cursor-pointer select-none ${isCur ? "bg-accentSoft text-accent font-semibold" : "hover:bg-hover"} ${
             ctx && "path" in ctx.target && ctx.target.path === e.path ? "ring-1 ring-inset ring-accent" : ""} ${
-            flash === e.path ? "ring-1 ring-inset ring-accent" : ""}`}
+            flash === e.path ? "ring-1 ring-inset ring-accent" : ""} ${
+            /* ⚠️ **只有「目录行自己」亮，不是「落点等于我所在的目录」就亮**。
+               后者是第一版，而它的后果是：拖到一个根级文件上时 `dirOfRow` 是 `""`，
+               于是**每一行根级文件一起亮** —— 看上去像「会放到所有这些地方」。
+               落点是项目根时亮的是树的空白区（下面那个容器），那才是「根」的样子。 */
+            dropAt !== null && e.isDir && dropAt === e.path ? "bg-accentSoft ring-1 ring-inset ring-accent" : ""}`}
           style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT, ...(e.opaque ? { opacity: 0.55 } : null) }}
           title={e.opaque ? `${e.path} —— 版本控制自己的数据。看得见，但 Umbra Studio 不碰它，也不计入项目统计。` : e.path}
           onClick={() => (e.isDir ? toggle(e.path) : onOpenFile(e.path))}
@@ -223,6 +241,26 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
             setCtx({ x: ev.clientX, y: ev.clientY, target: e.isDir
               ? { kind: "dir", path: e.path, name: e.name }
               : { kind: "file", path: e.path, name: e.name, isDraft: e.kind === "dc" } });
+          }}
+          /* ── 拖进来落在这一行（场景 ③）──
+             ⚠️ **落在文件行上算「放进它所在的目录」**，不是「放到这个文件上」：
+             一个文件不是容器，而人确实会瞄着文件松手。
+             不这么做的话，瞄歪一行就什么都不会发生 —— 又一条「点了没反应」。 */
+          onDragEnter={(ev) => { if (!onDropFiles || !isFileDrag(ev.dataTransfer)) return; ev.preventDefault(); ev.stopPropagation(); setDropAt(dirOfRow(e)); }}
+          onDragOver={(ev) => {
+            if (!onDropFiles || !isFileDrag(ev.dataTransfer)) return;
+            ev.preventDefault(); ev.stopPropagation();
+            ev.dataTransfer.dropEffect = "copy";
+            setDropAt(dirOfRow(e));
+          }}
+          onDrop={(ev) => {
+            if (!onDropFiles || !isFileDrag(ev.dataTransfer)) return;
+            /* ⚠️ `stopPropagation` 是**两个落点的分界线**：不拦的话窗口级那个处理器
+               也会收到同一下，于是一次拖拽弹两个问句（`host/drop.tsx` 文件头那条）。 */
+            ev.preventDefault(); ev.stopPropagation();
+            const files = Array.from(ev.dataTransfer.files);
+            setDropAt(null);
+            onDropFiles(files, dirOfRow(e));
           }}>
           {/* 三角占位：文件也占同样宽度，图标才对得齐 */}
           <span className="w-4 shrink-0 text-[10px] text-muted grid place-items-center transition-transform"
@@ -276,8 +314,28 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           onPick={(f) => { setGoto(false); onOpenFile(f); }} onClose={() => setGoto(false)} />}
       </div>
       {/* 空白处 = 项目根（设计侧 §五）。所以在树的空白区右键，新建就落在根目录。 */}
-      <div className="flex-1 min-h-0 overflow-auto pb-2" role="tree"
-        onContextMenu={(ev) => { ev.preventDefault(); setCtx({ x: ev.clientX, y: ev.clientY, target: { kind: "blank" } }); }}>
+      <div className={`flex-1 min-h-0 overflow-auto pb-2 ${dropAt === "" ? "ring-1 ring-inset ring-accent bg-accentSoft/40" : ""}`} role="tree"
+        data-ud="tree-body"
+        onContextMenu={(ev) => { ev.preventDefault(); setCtx({ x: ev.clientX, y: ev.clientY, target: { kind: "blank" } }); }}
+        /* 空白处 = 项目根，和右键菜单同一个口径（设计侧 §五）——
+           **两个入口指着同一个对象，就该用同一个口径**，否则「右键新建落在根、
+           拖拽落在别处」会让人以为空白区有两种含义。 */
+        onDragEnter={(ev) => { if (!onDropFiles || !isFileDrag(ev.dataTransfer)) return; ev.preventDefault(); setDropAt(""); }}
+        onDragOver={(ev) => {
+          if (!onDropFiles || !isFileDrag(ev.dataTransfer)) return;
+          ev.preventDefault(); ev.dataTransfer.dropEffect = "copy";
+          /* ⚠️ 只在**还没有**更具体的落点时才接 —— 行上那几个处理器会
+             `stopPropagation()`，所以走到这里就说明落在空白区。 */
+          setDropAt("");
+        }}
+        onDragLeave={(ev) => { if (ev.currentTarget === ev.target) setDropAt(null); }}
+        onDrop={(ev) => {
+          if (!onDropFiles || !isFileDrag(ev.dataTransfer)) return;
+          ev.preventDefault(); ev.stopPropagation();
+          const files = Array.from(ev.dataTransfer.files);
+          setDropAt(null);
+          onDropFiles(files, "");
+        }}>
         {children[""] === undefined ? <Loading depth={0} /> : rows("", 0)}
         {/* 底部留一块空白，专门接「空白处右键」—— 树短的时候这里本来就是空的，
             树长的时候滚到底也有一块。两条路都留着。 */}

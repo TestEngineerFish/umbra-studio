@@ -2,7 +2,13 @@ import { z } from "zod";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
 import { getPluginLimits } from "../plugin/limits.js";
-import { countTypes, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { countTypes, denyReason, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, normalizeRel, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { writeDraft } from "../write.js";
+import { draftKindOf, parseDraft } from "../draft.js";
+import { isInside } from "../pathguard.js";
+import { existsSync } from "node:fs";
+import { readFile as readFileP, readdir as readdirP, stat as statP } from "node:fs/promises";
+import { basename, join, resolve, sep } from "node:path";
 import { gitFallbackOf } from "../gitkeep.js";
 import { clearStagedDraft, getStagedDraft, listStagedDrafts, stageDraft } from "../staged.js";
 import { defineCap } from "./registry.js";
@@ -184,6 +190,162 @@ defineCap({
   /* `origin` 就是两个门面唯一的真实差异，现在它从 `via` 来，不再各写一遍 */
   run: async ({ path, content, encoding, expectSha256, note }, c) =>
     envelope(await writeAnyFile(p(c), path, decodeContent(content, encoding), { expectSha256, origin: originOf(c.via), note })),
+});
+
+/* ══════════ 把外部的文件复制进项目（M14-5 下半 · 场景 ③，2026-10-22）══════════ */
+
+/** 一次最多复制几个文件。
+ *  拖一个几千个文件的文件夹进来，排队慢慢复制不是不行，但**在一个确认框后面**
+ *  做几千次写入口调用（每次都有写前校验 + 快照）不该是默认行为。
+ *  超了就照实说数，让用户自己拆开拖。 */
+const COPY_MAX_FILES = 200;
+
+/** 复制进来的落点：重名顺延，**永不覆盖**。
+ *  ⚠️ 和 `convert/output.ts` 的 `reserveOutput` 同一个口径（「成品在源文件旁、
+ *  重名顺延、永不覆盖」）—— **两处同一个承诺就该是同一个算法**，
+ *  不然用户会发现「转换不覆盖，而拖进来覆盖了」。 */
+function freeName(dirAbs: string, base: string): string {
+  const dot = base.indexOf(".", base.startsWith(".") ? 1 : 0);
+  const stem = dot < 0 ? base : base.slice(0, dot);
+  const ext = dot < 0 ? "" : base.slice(dot);
+  if (!existsSync(join(dirAbs, base))) return base;
+  for (let i = 1; i < 1000; i++) {
+    const cand = `${stem} (${i})${ext}`;
+    if (!existsSync(join(dirAbs, cand))) return cand;
+  }
+  throw new ToolError(err(X.IO, base, { kind: "file", name: base },
+    "这个名字后面一千个顺延号都占着了", { fix: "换个目标目录，或者先清一下。" }));
+}
+
+/** 把一个源路径摊平成「相对它自己的那一层」的文件清单（目录就递归）。 */
+async function flattenSource(abs: string): Promise<Array<{ abs: string; rel: string; size: number }>> {
+  const st = await statP(abs);
+  if (!st.isDirectory()) return [{ abs, rel: basename(abs), size: st.size }];
+  const top = basename(abs);
+  const out: Array<{ abs: string; rel: string; size: number }> = [];
+  const walk = async (d: string, pre: string): Promise<void> => {
+    for (const e of await readdirP(d, { withFileTypes: true })) {
+      const q = join(d, e.name);
+      if (e.isDirectory()) await walk(q, `${pre}/${e.name}`);
+      else if (e.isFile()) out.push({ abs: q, rel: `${pre}/${e.name}`, size: (await statP(q)).size });
+      /* 软链一律跳过：它指到哪儿是源那边的事，跟过来只会在用户项目里留一条断链 */
+    }
+  };
+  await walk(abs, top);
+  return out;
+}
+
+defineCap({
+  name: "copy_into_project", title: "把外部的文件复制进这个项目", scope: "project",
+  summary: [
+    "把项目**外面**的文件或文件夹复制到项目里的某个目录（拖拽进文件列那一下走它）。",
+    "⚠️ 这是整个工具里**唯一一处会复制用户文件**的能力，而它成立的理由只有一条：**复制是用户自己点的，落点也是他自己的项目目录**。",
+    "重名顺延（`图 (1).png`），**永不覆盖**。设计稿走 write_draft，别的走 write_file —— 两条都是写入口，所以复制进来的文件一样有 v1 快照、一样能回退。",
+  ].join("\n"),
+  input: {
+    sources: z.array(z.string()).describe("源的**绝对**路径，可以是文件也可以是文件夹"),
+    destDir: z.string().optional().describe("项目里的目标目录（相对项目根），不给就是项目根"),
+  },
+  http: { method: "POST" },
+  run: async ({ sources, destDir }, c) => {
+    const proj = p(c);
+    /* ⚠️ **空的 `destDir` 就是项目根**，而 `normalizeRel` 对空串是抛「路径是空的」——
+       它是给「要读写哪个文件」用的，那里空串确实是错；这里空串是一个合法的落点。
+       判据第一次跑就在这上面红了四条（「拖一个文件夹进来」连 destDir 都没给）。
+       > **同一个归一化函数，在「文件」和「目录」两种问法下对空串的答案是相反的。** */
+    const dest = (destDir ?? "").trim() ? normalizeRel(proj, destDir!) : "";
+    const destAbs = dest ? join(proj.dir, dest.split("/").join(sep)) : proj.dir;
+    /* ⚠️ **目标那一头要守两道，不是一道**：
+       ① 必须在项目里（`isInside`）—— 不然 `destDir: "../.."` 把文件复制到用户主目录；
+       ② 必须是**能写的**那一层（`denyReason`）—— `.git/` 列得出来但不许写（Q77）。
+       只守①的话「复制进 `.git/`」是通的，而那会弄坏他的仓库。 */
+    /* ⚠️ **这一道今天走不到，故意留着**：`normalizeRel` 的 `clean()` 会把 `..` 段
+       整个剥掉（`../../偷偷放外面` → `偷偷放外面`），所以跨出项目在它之后已经不可能。
+       留着的理由和 `purge.refuseIfDangerous` 一样：**防的是「以后有人换掉上面那个归一化」**。
+       ⚠️ 判据因此不能钉这句话的措辞 —— 要钉**结果**（项目外面没多出东西）。 */
+    if (!isInside(proj.dir, destAbs)) {
+      throw new ToolError(err(X.BAD_INPUT, dest, { kind: "path", name: dest },
+        "目标目录跨出了项目", { fix: "destDir 要指向这个项目里的一个目录。" }));
+    }
+    const noWrite = dest ? denyReason(dest) : null;
+    if (noWrite) {
+      throw new ToolError(err(X.IO, dest, { kind: "path", name: dest },
+        `${noWrite.why}，不能往这里复制`, { fix: noWrite.fix }));
+    }
+    if (!existsSync(destAbs) || !(await statP(destAbs)).isDirectory()) {
+      throw new ToolError(err(X.BAD_INPUT, dest, { kind: "path", name: dest },
+        "目标不是一个已有的目录", { fix: "先建这个目录，或者把 destDir 指向一个已有的目录。" }));
+    }
+
+    /* ⚠️ **源不许就是项目里的东西**：那不是「复制进来」，那是「在项目里复制」——
+       有 `duplicate_draft` 管那件，而走这条路会绕过它的引用改写。 */
+    const flat: Array<{ abs: string; rel: string; size: number }> = [];
+    for (const src of sources) {
+      const sAbs = resolve(src);
+      if (!existsSync(sAbs)) {
+        throw new ToolError(err(X.BAD_INPUT, src, { kind: "path", name: src }, `这个路径不在：${src}`));
+      }
+      if (isInside(proj.dir, sAbs)) {
+        throw new ToolError(err(X.BAD_INPUT, src, { kind: "path", name: src },
+          "这一份本来就在项目里", { fix: "项目内复制用 duplicate_draft（设计稿）或 move_file（别的）—— 它们会把引用一起改对。" }));
+      }
+      flat.push(...await flattenSource(sAbs));
+    }
+    if (!flat.length) {
+      throw new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name: "sources" }, "一个文件都没有（空文件夹？）"));
+    }
+    if (flat.length > COPY_MAX_FILES) {
+      throw new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name: "sources" },
+        `一次最多复制 ${COPY_MAX_FILES} 个文件，这次是 ${flat.length} 个`,
+        { fix: "分几次拖，或者用访达 / 资源管理器直接拷进去（那条路我们不插手）。" }));
+    }
+    const cap = (await getPluginLimits()).binaryReadMaxMB * 1048576;
+    const tooBig = flat.filter((f) => f.size > cap);
+    if (tooBig.length) {
+      throw new ToolError(err(X.BAD_INPUT, tooBig[0]!.rel, { kind: "file", name: basename(tooBig[0]!.rel) },
+        `有 ${tooBig.length} 份超过了 ${Math.round(cap / 1048576)} MB`,
+        { fix: "复制要经过写入口（它会记一版快照），超限的用访达 / 资源管理器直接拷进去。上限在设置 › 插件沙箱里。" }));
+    }
+
+    /* 顶层那几项各自占一个不重名的落点；文件夹内部的相对结构原样跟过来。
+       ⚠️ **先把名字全占好再开始写**：边算边写的话，两个顶层同名项会抢到同一个名字。 */
+    const topMap = new Map<string, string>();
+    for (const f of flat) {
+      const top = f.rel.split("/")[0]!;
+      if (!topMap.has(top)) topMap.set(top, freeName(destAbs, top));
+    }
+
+    const written: string[] = [];
+    const failed: Array<{ path: string; why: string }> = [];
+    for (const f of flat) {
+      const segs = f.rel.split("/");
+      segs[0] = topMap.get(segs[0]!)!;
+      const relOut = (dest ? dest + "/" : "") + segs.join("/");
+      try {
+        /* ⚠️ **两条写入口各走各的，不许用 `copyFile` 抄过去** ——
+           抄过去的 `.dc.html` 没有 `__resources`，断网就白屏（纪律①），
+           而别的文件会少一版 v1 快照（于是「退回上一版」在它身上永远是空的）。 */
+        if (relOut.endsWith(".dc.html")) {
+          const src = await readFileP(f.abs, "utf8");
+          /* ⚠️ `kind` **真解析一次再判**，不要写死 `"page"`：它今天只落在
+             `stats.kind` 上，而「只是个读数」不是「可以随便写」——
+             读数错了，下一个人按它判断就会错（`draft.ts` 那条注释的原话）。
+             解析不出来（别人发来的稿本来就坏）就按 page，让写入口去报它自己那套诊断。 */
+          let kind: "page" | "component" = "page";
+          try { kind = draftKindOf(parseDraft(src, relOut)); } catch { /* 让写入口去报 */ }
+          await writeDraft(proj, relOut, src, kind, "从外面复制进来", { origin: "人手改" });
+        } else {
+          await writeAnyFile(proj, relOut, await readFileP(f.abs));
+        }
+        written.push(relOut);
+      } catch (e) {
+        failed.push({ path: relOut, why: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    /* ⚠️ 回执要**分开说成了几份、败了几份**，不要只回一个 ok ——
+       一个「成功」里藏着三份没复制进来，就是又一条假回执。 */
+    return envelope({ written, failed, destDir: dest }, [], { copied: written.length, failed: failed.length });
+  },
 });
 
 defineCap({

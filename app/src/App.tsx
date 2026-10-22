@@ -10,6 +10,7 @@ import { guardUnsaved } from "./ui/dirty";
 import { auditKindsOrThrow } from "./kinds";
 import { loadPlugins } from "./kinds/plugin/loader";
 import { Workbench } from "./workbench/Workbench";
+import { DropAsk, pathsFromDrop, useWindowFileDrop } from "./host/drop";
 
 /** 两个核心句柄：hub（托管本页的服务，首页与全局路由走它）与 project（当前项目自己的服务）。
  *  浏览器入口（npm run ui -- <项目>）时两者是同一个服务；桌面壳里 hub 不属于任何项目，项目服务由 open_project 按需起。 */
@@ -24,6 +25,8 @@ export default function App() {
    *  ⚠️ **用完要清**：不清的话下次从首页点同一个项目，它还会把人送回那份文件。 */
   const [openAt, setOpenAt] = useState<string | null>(null);
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
+  /** 从系统里拖进来、还没决定怎么处理的那几个路径（场景 ①，M14-5 下半） */
+  const [dropped, setDropped] = useState<string[] | null>(null);
   const [projectsVersion, bump] = useState(0);
   const setLayout = useCallback((l: LayoutState) => { setLayoutRaw(l); saveLayout(l); }, []);
   /** 项目自己那个服务的句柄 —— 设置页里「清掉当前项目的缓存」要打它（`scope: "project"`）。
@@ -85,6 +88,37 @@ export default function App() {
        首页那颗「新建项目」还在，那是用户**明说要建一个新项目**的入口。 */
     void open(dir);
   }, [host, hub, open]);
+  /* ── 从系统里拖文件 / 文件夹进来（场景 ①②，`doc/24` §22.1）──
+     ⚠️ **一条硬约束先摆着**（用户 2026-10-21 原话，和 Q62 同一句）：
+     「无论是导入还是拖拽导入都不应该把文件放入到我们的 `projects` 中，
+     我们项目中绝对不重复存储用户的文件」。
+     所以**拖进来打开 = 零复制**：以它所在的位置为根打开，和「打开方式」同一条路。
+     唯一会复制的是把它拖进**文件列**那一下（场景 ③，在 `FileTree.tsx`），
+     而那一下不违反约束 —— **复制是用户自己点的，落点是他自己的项目目录**。
+
+     分流只有一条判准：**当前有没有开着项目**。
+     · 首页（没项目）→ 直接打开。多一个问句只会让人问「不然还能干嘛」。
+     · 工作台（有项目）→ 问一句。因为「在当前窗口打开」会**离开他正在看的项目**，
+       而那是一个他没要求的后果。
+     ⚠️ 用户给的 ① 原文是「问：新开窗口，还是在当前窗口里并存」——
+     **「并存」那一档是 M15-1（一个窗口多个项目），不在这一期**（理由 `doc/24` §22.2：
+     它是一个新架构不是一个按钮）。所以这一问现在是「新窗口 / 当前窗口」两档，
+     少的那一档**照实缺着**，不拿一个假的「并存」糊上去。 */
+  const onFileDrop = useCallback((e: DragEvent) => {
+    if (!host) return;
+    const paths = pathsFromDrop(host, e);
+    if (!paths.length) {
+      /* ⚠️ **拖了而拿不到路径要说话**：浏览器里 `files` 有、路径没有（见 `host/types.ts`）。
+         静静没反应的话用户只会以为「拖拽坏了」，而真相是这个宿主给不出路径。 */
+      const cap = host.capabilities().dropPaths;
+      if (!cap.ok) toast("这里拖不进来", cap.why, "error");
+      return;
+    }
+    if (!project || page !== "work") { void open(paths[0]!); return; }
+    setDropped(paths);
+  }, [host, project, page, open]);
+  useWindowFileDrop(onFileDrop);
+
   useEffect(() => host?.onEvent?.((e) => {
     /* ⚠️ **直接打开，不再拦去「新建项目」**（M14-4 B3，2026-10-21）。
        原来：不是项目 → 弹新建项目面板 → 用户照做 → 我们往他的目录里写 780 KB。
@@ -143,6 +177,21 @@ export default function App() {
         : page === "home" || !project
         ? <Home core={hub} host={host} onOpen={(d) => void open(d)} onNewProject={() => setSheet({ kind: "newProject" })} onImport={() => void importDir()} onSettings={() => setSheet({ kind: "settings" })} onMarket={() => setPage("market")} projectsVersion={projectsVersion} />
         : <Workbench key={project.dir} project={project} host={host} openAt={openAt} onOpenedAt={() => setOpenAt(null)} layout={layout} setLayout={setLayout} onHome={() => { setPage("home"); bump((v) => v + 1); }} onSettings={() => setSheet({ kind: "settings" })} />}
+      {dropped && host && (
+        <DropAsk paths={dropped} kind="outside" host={host}
+          onClose={() => setDropped(null)}
+          onOpenHere={() => { const ps = dropped; setDropped(null); void open(ps[0]!); }}
+          onNewWindow={() => {
+            const ps = dropped; setDropped(null);
+            void host.openInNewWindow(ps).then((okWin) => {
+              /* ⚠️ 开不成要说出来 —— 回执是 `false` 时静静什么都不发生，
+                 就是又一条「点了没反应」。 */
+              if (okWin) return;
+              toast("没能开新窗口", "已经在当前窗口里打开了", "error");
+              void open(ps[0]!);
+            });
+          }} />
+      )}
       {sheet?.kind === "newProject" && <NewProjectSheet hub={hub} host={host} initialDir={sheet.dir} onClose={() => setSheet(null)} onOpen={(d) => void open(d)} />}
       {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectUrl={page === "work" && project ? project.url : null} projectCore={page === "work" ? projectCore : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)} />}
       <Toasts />

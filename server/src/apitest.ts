@@ -14,6 +14,7 @@
  */
 import { serveStart } from "./serve.js";
 import { buildProject, TOOL_ROOT } from "./project.js";
+import { basename as basename8 } from "node:path";
 import { start as startJob } from "./jobs.js";
 import { projectJobKey } from "./api.js";
 import { mkdtemp, rm as rmdirAll, writeFile as wfFix } from "node:fs/promises";
@@ -1280,6 +1281,102 @@ console.log("\n⑰ 接管弹窗上那几个数是真的（非循环对账）");
   const shellsKb5 = Math.round(new5.filter((x) => /^(S\d|IconGlyph)/.test(x[0]) || x[0] === "icons.js").reduce((a, x) => a + x[1], 0) / 1024);
   ok(Math.abs(saidShells - shellsKb5) <= 12, "**「预览壳 8 份」那个数 ≈ 实测那 8 份 + 图标表**", `界面约 ${saidShells} KB · 实测 ${shellsKb5} KB`);
   await rmdirAll(d5, { recursive: true, force: true });
+}
+
+/* ── ⑱ 把外部文件拖进项目 = 复制进来（M14-5 下半 · 场景 ③，2026-10-22）──
+   ⚠️⚠️ **这是整个工具里唯一一处会复制用户文件的能力**，而用户 2026-10-21 的硬约束是
+   「**绝不重复存储用户的文件**」。它成立的理由只有一条：**复制是他自己点的，
+   落点是他自己的项目目录**，不是我们的 `projects/`。
+   所以这一节一半是「复制对了」，另一半是**「越界的一个都别想」** ——
+   而后一半更要紧：那几道闸平时一条路都走不到，**只有直接打它才量得到它在不在**。 */
+console.log("\n⑱ 把外部文件复制进项目（场景 ③）");
+{
+  const { mkdtemp: mk8, writeFile: wf8, mkdir: md8, readFile: rf8, rm: rm8 } = await import("node:fs/promises");
+  const { tmpdir: td8 } = await import("node:os");
+  const { join: j8 } = await import("node:path");
+  const { existsSync: ex8, realpathSync: rp8 } = await import("node:fs");
+
+  const proj = rp8(await mk8(j8(rp8(td8()), "umbra-copyin-proj-")));
+  await wf8(j8(proj, "project.json"), JSON.stringify({ name: "copyin" }), "utf8");
+  await md8(j8(proj, "图"), { recursive: true });
+  await wf8(j8(proj, "图", "封面.png"), "本来就有的", "utf8");
+  const s8 = await (await import("./serve.js")).serveStart(await (await import("./project.js")).buildProject(proj));
+  const cp8 = (body: unknown) => fetch(`${s8.url}__ud/copy_into_project?token=${encodeURIComponent(s8.token)}`, {
+    method: "POST", headers: { "content-type": "application/json", origin: s8.url.replace(/\/$/, "") }, body: JSON.stringify(body),
+  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { written: string[]; failed: Array<{ path: string; why: string }> }; errors?: Array<{ message?: string; fix?: string }> }>);
+
+  /* 外面一个「别人发来的」目录：一份图 + 一个子目录 + 一份同名的图（撞已有的那份） */
+  const out = rp8(await mk8(j8(rp8(td8()), "umbra-copyin-src-")));
+  await wf8(j8(out, "新图.png"), "外面的新图", "utf8");
+  await wf8(j8(out, "封面.png"), "外面的同名图", "utf8");
+  await md8(j8(out, "一个文件夹", "深一层"), { recursive: true });
+  await wf8(j8(out, "一个文件夹", "深一层", "里面的.txt"), "深一层", "utf8");
+
+  /* ⓐ 正常复制：内容对、落点对 */
+  {
+    const r = await cp8({ sources: [j8(out, "新图.png")], destDir: "图" });
+    ok(r.ok === true && r.data?.written[0] === "图/新图.png", "复制进指定的子目录", JSON.stringify(r.data?.written ?? r.errors));
+    ok(ex8(j8(proj, "图", "新图.png")) && await rf8(j8(proj, "图", "新图.png"), "utf8") === "外面的新图",
+       "**内容是源文件的内容**（不是空文件，也不是被编码糟蹋过的）");
+    ok(ex8(j8(out, "新图.png")), "**源文件一个字节都没动**（是复制不是移动）");
+  }
+  /* ⓑ 重名顺延，永不覆盖 —— 和 `convert/output.ts` 同一个承诺就该是同一个行为 */
+  {
+    const before = await rf8(j8(proj, "图", "封面.png"), "utf8");
+    const r = await cp8({ sources: [j8(out, "封面.png")], destDir: "图" });
+    ok(r.ok === true && r.data?.written[0] === "图/封面 (1).png", "**重名顺延成「封面 (1).png」**", JSON.stringify(r.data?.written));
+    ok(await rf8(j8(proj, "图", "封面.png"), "utf8") === before, "**他原来那份封面.png 一个字节都没动**（永不覆盖）");
+  }
+  /* ⓒ 文件夹：内部结构原样跟过来 */
+  {
+    const r = await cp8({ sources: [j8(out, "一个文件夹")] });
+    ok(r.ok === true && (r.data?.written ?? []).includes("一个文件夹/深一层/里面的.txt"),
+       "拖一个文件夹进来：**内部结构原样跟过来**", JSON.stringify(r.data?.written));
+  }
+  /* ⓓ 走的是写入口 —— 所以复制进来的文件**有 v1 快照、退得回去** */
+  {
+    /* ⚠️ 字段叫 **`snapshots`** 不是 `versions`。第一版写错了名字，读数打出
+       **「0 版」**—— 而那和「产品压根没记快照」长得一模一样，
+       我差点去查写入口。**判据读错一个字段名，症状会伪装成产品缺陷。** */
+    const vs = await fetch(`${s8.url}__ud/file_versions?token=${encodeURIComponent(s8.token)}&path=${encodeURIComponent("图/新图.png")}`)
+      .then((r) => r.json() as Promise<{ ok: boolean; data?: { snapshots?: unknown[] } }>);
+    ok(vs.ok === true && (vs.data?.snapshots?.length ?? 0) >= 1,
+       "**复制进来的文件有版本历史**（走的是写入口，不是 `copyFile` 抄过去）", `${vs.data?.snapshots?.length ?? 0} 版`);
+  }
+  /* ── 四道闸，每一道都直接打一次 ── */
+  {
+    /* ⚠️ **这一条钉的是结果，不是措辞。** `normalizeRel` 的 `clean()` 把 `..` 段
+       整个剥掉（`../../偷偷放外面` → `偷偷放外面`），所以跨出项目在它之后已经不可能 ——
+       `isInside` 那道闸今天**走不到**（留着是防「以后有人换掉归一化」）。
+       第一版按「报错里有『跨出』」钉，于是红在措辞上，看着像闸没装。
+       > **一道走不到的闸，判据只能钉它要防的那个结果。** */
+    const escape = j8(proj, "..", "偷偷放外面");
+    const r1 = await cp8({ sources: [j8(out, "新图.png")], destDir: "../../偷偷放外面" });
+    ok(r1.ok === false && !ex8(escape), "**destDir 里的 `..` 落不到项目外面**（剥掉之后那个目录不存在 → 拒）",
+       `${r1.errors?.[0]?.message} · 项目外面那个位置：${ex8(escape) ? "✗ 真被建出来了" : "没有东西"}`);
+    const r2 = await cp8({ sources: [j8(proj, "图", "封面.png")] });
+    ok(r2.ok === false && /本来就在项目里/.test(r2.errors?.[0]?.message ?? ""),
+       "**拒：源本来就在项目里**（那是「项目内复制」，有 duplicate_draft 管，走这条会绕过引用改写）", r2.errors?.[0]?.message);
+    const r3 = await cp8({ sources: [j8(out, "不存在的东西.png")] });
+    ok(r3.ok === false && /不在/.test(r3.errors?.[0]?.message ?? ""), "**拒：源路径不在**", r3.errors?.[0]?.message);
+    await md8(j8(proj, ".git"), { recursive: true });
+    const r4 = await cp8({ sources: [j8(out, "新图.png")], destDir: ".git" });
+    ok(r4.ok === false, "**拒：往 `.git/` 里复制**（它列得出来但不许写，Q77）", r4.errors?.[0]?.message);
+    const r5 = await cp8({ sources: [j8(out, "新图.png")], destDir: "没有这个目录" });
+    ok(r5.ok === false && /不是一个已有的目录/.test(r5.errors?.[0]?.message ?? ""), "**拒：目标目录还不存在**（不替他建）", r5.errors?.[0]?.message);
+  }
+  /* ⓔ 一次太多：照实说数，不默默只复制前 200 个 */
+  {
+    const many = rp8(await mk8(j8(rp8(td8()), "umbra-copyin-many-")));
+    for (let i = 0; i < 205; i++) await wf8(j8(many, `f${i}.txt`), "x", "utf8");
+    const r = await cp8({ sources: [many] });
+    ok(r.ok === false && /205/.test(r.errors?.[0]?.message ?? ""),
+       "**一次 205 个文件被拦住，而且说出是 205 个**（不是默默只复制前 200 个）", r.errors?.[0]?.message);
+    ok(!ex8(j8(proj, basename8(many), "f0.txt")), "被拦住的那一下**一个字节都没写**");
+    await rm8(many, { recursive: true, force: true });
+  }
+  await rm8(proj, { recursive: true, force: true });
+  await rm8(out, { recursive: true, force: true });
 }
 
 /* ⚠️ **先自检夹具的身份还在**，再删它。

@@ -18,6 +18,10 @@ export function createBrowserHost(api: { post: (route: string, body: unknown) =>
       window.dispatchEvent(new CustomEvent("ud-toast", { detail: n }));
     },
     setTitle(title) { document.title = title ? `${title} · Umbra Studio` : "Umbra Studio"; },
+    /* ⚠️ **回空数组而不是抛**：拖拽这条路在浏览器里是「拿不到路径」，
+       不是「出错了」。调用方按 `capabilities().dropPaths` 决定说什么话。 */
+    pathsForDrop() { return []; },
+    async openInNewWindow() { return false; },
     capabilities() {
       return {
         pickDirectory: NO_DIALOG,
@@ -30,6 +34,10 @@ export function createBrowserHost(api: { post: (route: string, body: unknown) =>
         openExternal: { ok: true },
         notify: { ok: "Notification" in window, why: "浏览器通知要先授权；没授权就显示在页面里" },
         setTitle: { ok: true },
+        /* ⚠️ 这句话要说清**为什么**，不是「不支持」—— 用户拖了一下没反应，
+           他需要知道的是「浏览器里拿不到文件在磁盘上的位置」这件事实。 */
+        dropPaths: { ok: false, why: "浏览器里拿不到文件在磁盘上的位置（这是浏览器的安全模型，不是我们没做）。用桌面版，或者用上面的「打开目录」选。" },
+        newWindow: { ok: false, why: "浏览器里由你自己开标签页" },
       };
     },
   };

@@ -10,6 +10,7 @@ import { Frame } from "../layout/Frame";
 import { engineLabel } from "../chat/channel";
 import { useProject } from "../store/project";
 import { NewDraftSheet } from "../sheets/Sheets";
+import { DropAsk } from "../host/drop";
 import { toast } from "../ui/Toast";
 import { installHotkeys } from "../ui/hotkeys";
 import { Glyph, ICON } from "../ui/Glyph";
@@ -221,6 +222,8 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
 
   /** 右键菜单的动作，目录列和目录视图共用（`ctxmenu.tsx`） */
   const [localTick, setLocalTick] = useState(0);
+  /** 拖进文件列、还没决定要不要复制的那几份（场景 ③） */
+  const [drop, setDrop] = useState<{ paths: string[]; destDir: string } | null>(null);
   const ctxActions = makeActions({
     core, host, projectDir: project.dir,
     onOpenFile: (f) => open(f), onOpenDir: (d) => open(d, true),
@@ -305,6 +308,21 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
         return askLeave(stuck, LEAVE.rename);
       }}
       onRenamed={applyRename}
+      /* ── 场景 ③：从系统里把文件拖进文件列（M14-5 下半，`doc/24` §22.1）──
+         ⚠️ **这是整个工具里唯一一处会复制用户文件的地方**，而它不违反
+         「绝不重复存储用户的文件」那条硬约束（用户 2026-10-21 原话）——
+         因为**复制是他自己点的，落点是他自己的项目目录**，不是我们的 `projects/`。
+         ⚠️ 换磁盘路径这一步在**这里**做（经 host adapter），不在树里：
+         `File → 路径` 只有壳给得出来，而 `host/` 之外不许出现宿主 API（`doc/01` H7）。 */
+      onDropFiles={(files, destDir) => {
+        const paths = host.pathsForDrop(files);
+        if (!paths.length) {
+          const cap = host.capabilities().dropPaths;
+          toast("这里拖不进来", cap.why ?? "拿不到这些文件在磁盘上的位置", "error");
+          return;
+        }
+        setDrop({ paths, destDir });
+      }}
     />
   );
 
@@ -815,6 +833,28 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
           } : undefined}
         />
       {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} projectDir={project.dir} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
+      {drop && (
+        <DropAsk paths={drop.paths} kind="tree" destLabel={drop.destDir || "项目根"} host={host}
+          onClose={() => setDrop(null)}
+          onNewWindow={() => { const d = drop; setDrop(null); void host.openInNewWindow(d.paths).then((okWin) => { if (!okWin) toast("这个宿主开不了新窗口", undefined, "error"); }); }}
+          onCopy={() => {
+            const d = drop; setDrop(null);
+            void (async () => {
+              const r = await core.post<{ written: string[]; failed: Array<{ path: string; why: string }> }>(
+                "copy_into_project", { sources: d.paths, destDir: d.destDir || undefined });
+              if (!r.ok) { toast("复制不进来", r.errors?.[0]?.message ?? "", "error"); return; }
+              const n = r.data?.written.length ?? 0;
+              const bad = r.data?.failed ?? [];
+              /* ⚠️ **成了几份、败了几份要分开说**：一个「已复制」里藏着三份没进来，
+                 就是又一条假回执（§23.1 那一族）。 */
+              if (bad.length) toast(`复制了 ${n} 份，${bad.length} 份没成`, bad.map((x) => `${x.path}：${x.why}`).join("\n"), "error");
+              else toast(`已复制 ${n} 份`, d.destDir || "项目根", "ok");
+              await store.fetchDrafts();
+              setLocalTick((t) => t + 1);
+              if (n === 1 && r.data?.written[0]) open(r.data.written[0]);
+            })();
+          }} />
+      )}
       {guardNode}
     </div>
   );

@@ -233,7 +233,18 @@ export function dropOrphanRecords(): { ids: string[]; unindexed: string[] } {
  *  正是 M14-6 那条「回归自己攒兜底仓库」（595 个 / 94 MB）的重演。
  *
  *  判准和 M14-6 一样只有一条、**不枚举名字**：指向这个目录树下 + （`onlyDead` 时）目标已经不在。
- *  ⚠️ `root` 要两种写法都比（macOS 上 `/var` 是链接 —— 同一个坑的第四次）。 */
+ *  ⚠️ `root` 要两种写法都比（macOS 上 `/var` 是链接 —— 同一个坑的第四次）。
+ *
+ *  ⚠️⚠️ **`onlyDead` 不传时的默认是「只删已经不在的」，和这个名字的字面读法相反。**
+ *  一个叫 `onlyDead` 的可选布尔，自然读法是「不传 = false = 全删」——
+ *  而这里的条件是 `opts?.onlyDead === false || !existsSync(dir)`，
+ *  所以**不传等于 `true`**。要连「目标还在」的一起删，必须显式写 `{ onlyDead: false }`。
+ *  2026-10-22 给 `shelltest` 加收尾时当场踩到：读数是「旁数据记录 **本来就没有**」，
+ *  而索引里那一条明明在 —— **一句「本来就没有」把「我没删到」说成了「没有要删的」**。
+ *  默认值**刻意不改**：这是一个删东西的函数，把默认从「保守」翻成「全删」，
+ *  受影响的是所有不传 opts 的调用方，而他们原来依赖的正是那份保守。
+ *  > **安全的默认值配一个会被读反的名字，代价是每个新调用方都要踩一次。**
+ *  > 改不了默认值，就把这段话写在它正上方。 */
 export function dropRecordsUnder(root: string, opts?: { onlyDead?: boolean }): { removed: string[] } {
   const roots = new Set([resolve(root), canon(root)]);
   const under = (dir: string) => [...roots].some((r) => dir === r || dir.startsWith(r + "/"));

@@ -16,6 +16,7 @@ import { X } from "./codes.js";
 import { emit } from "./events.js";
 import { err, ToolError } from "./envelope.js";
 import { assetDir, UD_DIRNAME } from "./statedirs.js";
+import { sweepTmpUnder } from "./tmpfiles.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 工具自身的根：server/dist/.. → server/.. → Umbra Studio/
@@ -117,6 +118,17 @@ export async function migrateUdDir(dir: string): Promise<boolean> {
   return true;
 }
 migrateUdDirSync(STATE_ROOT);   // 工具自己的 ai_config / workspace / outgoing 记录
+
+/* ── 启动时扫一次我们自己的状态目录，清掉原子写留下的孤儿（M14-9，2026-10-22）──
+ *
+ * ⚠️ **为什么在这里**：每个入口（壳、`npm run ui`、外部客户端起的 MCP、通道 B 给 CLI 起的 MCP）
+ * 都会 import 这个文件，而它们**没有一个共同的「启动」函数**。
+ * 装在某一个入口里的话，另外三个入口上这件事就不发生 —— 而「有的入口清、有的不清」
+ * 和「都不清」在用户那边几乎是同一个现象（§170 那一族：**一道闸只守住一条路等于没守**）。
+ *
+ * ⚠️ **不 await**：清垃圾慢了不该让启动等着。它内部一个异常都不往外抛。
+ * ⚠️ 实测它要清的就是 `doc/24` §19.5 量到的那两个 `clock.json.*.tmp`。 */
+void sweepTmpUnder(STATE_ROOT).catch(() => { /* 清垃圾失败不该挡住启动 */ });
 
 export interface ProjectConfig {
   name: string;
