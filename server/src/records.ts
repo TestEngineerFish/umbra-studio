@@ -40,6 +40,7 @@
  *  **一次搬迁顺手做一次大改，是让搬迁出错的最可靠办法**。
  *  索引文件只有几 KB，`readFileSync` / `writeFileSync` 在这里的代价可以忽略。
  */
+import { isUnderRoot } from "./pathguard.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -382,7 +383,9 @@ export function markEditable(projectDir: string): string {
  *  > 改不了默认值，就把这段话写在它正上方。 */
 export function dropRecordsUnder(root: string, opts?: { onlyDead?: boolean }): { removed: string[] } {
   const roots = new Set([resolve(root), canon(root)]);
-  const under = (dir: string) => [...roots].some((r) => dir === r || dir.startsWith(r + "/"));
+  /* ⚠️ 原来是 `dir.startsWith(r + "/")` —— **Windows 上一条都匹配不上**（issue #188），
+     于是这个函数什么都不清，而收尾自检「清完必须是 0」永远绿。走平台无关的那一份。 */
+  const under = (dir: string) => [...roots].some((r) => isUnderRoot(r, dir));
   const ix = load();
   const hit = ix.records.filter((r) => r.dir && under(r.dir) && (opts?.onlyDead === false || !existsSync(r.dir)));
   for (const r of hit) {
@@ -397,7 +400,10 @@ export function dropRecordsUnder(root: string, opts?: { onlyDead?: boolean }): {
  *  「我删掉了 0 个」和「现在一个都不剩」是两句不同的话（`purge.ts` §223 同一条）。 */
 export function deadRecordsUnder(root: string): string[] {
   const roots = new Set([resolve(root), canon(root)]);
-  return load().records.filter((r) => r.dir && [...roots].some((x) => r.dir === x || r.dir.startsWith(x + "/")) && !existsSync(r.dir)).map((r) => r.id);
+  /* 同一个病的第二处（issue #188）：这一件回 `[]` 的后果更隐蔽 ——
+     收尾自检「清完必须是 0」**永远绿**，而那正是 `purge.ts` 自己警告过的
+     「清掉 0 个有两种可能」（纪律④）。 */
+  return load().records.filter((r) => r.dir && [...roots].some((x) => isUnderRoot(x, r.dir)) && !existsSync(r.dir)).map((r) => r.id);
 }
 
 /** 只给回归用：忘掉进程内缓存（回归会在一个进程里换 `STATE_ROOT`）。 */

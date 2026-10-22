@@ -114,6 +114,44 @@ export function isOutsideLink(base: string, abs: string): boolean {
   return isInside(base, abs) && !isInsideReal(base, abs);
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   硬编码 `"/"` 那一族（issue #188 / #161 / #160）
+
+   ⚠️ 三处各自写了一遍「按 `/` 切路径」，而 Windows 上原生分隔符是 `\`：
+   · `records.ts` 的 `dir.startsWith(root + "/")` → **一条都匹配不上** →
+     回归每跑一轮就在状态目录里多留一条记录 + 一个目录，
+     而收尾自检「清完必须是 0」**永远绿**（`deadRecordsUnder` 也回 `[]`）；
+   · `index.ts` 的 `abs.lastIndexOf("/")` → 回 `-1` → `slice(0, -1)` 变成
+     「**文件名去掉最后一个字母**」，于是同目录的稿各算一条；
+   · `api.ts` 的 `dir.split("/").pop()` → 回**整条盘符路径**，
+     新建项目面板的建议名变成 `C-Users-sam-Projects-Demo`。
+
+   这三条的共同形状：**它们都在 mac 上恰好正确**，所以没有任何读数会异常。
+   > **一个只在另一个平台上错的判定，在本机永远量不到** ——
+   > 所以修法里最要紧的那一半是「**让它能在 mac 上被测**」：
+   > 每个函数都收一个 `PlatformPath`，判据传 `path.win32`（issue #25 用过这招）。
+   ══════════════════════════════════════════════════════════════════════ */
+
+/** `dir` 在 `root` 里面（或就是它）—— 平台无关。
+ *  ⚠️ 这是 `isInside` 的别名级包装，存在的理由是**调用点的语气**：
+ *  那几处问的是「这条记录属于这个根吗」，而不是「这个路径安全吗」。 */
+export const isUnderRoot = (root: string, dir: string, p: PlatformPath = path): boolean =>
+  isInside(root, dir, p);
+
+/** 这个绝对路径所在目录相对项目根的那一段（`.` = 项目根自己）。平台无关。 */
+export function dirKeyOf(abs: string, projectDir: string, p: PlatformPath = path): string {
+  const rel = p.relative(projectDir, p.dirname(abs));
+  return rel === "" ? "." : rel;
+}
+
+/** 从一个目录路径算「建议的项目名」。平台无关。
+ *  ⚠️ **HTTP 版和 MCP 版原来是两份实现**（前者 `split("/")`、后者 `basename`）——
+ *  同一件事两份实现，没有任何机制保证它们一致，而**实测它们在 Windows 上就不一致**。 */
+export function suggestedNameOf(dir: string, p: PlatformPath = path): string {
+  return (p.basename(dir) || "project").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+}
+
 /** 「这是一个普通名字，不是一段路径」—— **全项目唯一一份判定**（issue #70，2026-10-05）。
  *
  *  ### 为什么要抽出来

@@ -25,6 +25,7 @@
  * 这不是「安全无虞」，是「本地工具该有的门」。判断而非定论：真要严，
  * 得走 Unix socket 或者只让 MCP 侧写。等有人提出更强的要求再收紧。
  */
+import { suggestedNameOf } from "./pathguard.js";
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listCssVars } from "./cssvars.js";
@@ -546,7 +547,7 @@ export async function handleApi(
         };
         await walk(dir, 0);
       }
-      json(reply, 200, { ok: true, data: { dir, exists, isDir, isProject: exists && existsSync(join(dir, "project.json")), draftCount, suggestedName: (dir.split("/").pop() || "project").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "project" } });
+      json(reply, 200, { ok: true, data: { dir, exists, isDir, isProject: exists && existsSync(join(dir, "project.json")), draftCount, suggestedName: suggestedNameOf(dir)   /* issue #160：原来 `split("/")` 在 Windows 上回整条盘符路径；而且和 MCP 版是两份实现 */ } });
       return true;
     }
 

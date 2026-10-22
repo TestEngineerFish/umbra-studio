@@ -4,6 +4,7 @@
  * 第一批：检索类 + validate_draft。
  * 写入类（write_draft / patch_draft）、render_check、语义 diff 在后面几批。
  */
+import { dirKeyOf, suggestedNameOf } from "./pathguard.js";
 import { readFile } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
@@ -162,7 +163,7 @@ server.registerTool("inspect_dir", {
     }
   };
   await walk(dir, 0);
-  const suggestedName = basename(dir).replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  const suggestedName = suggestedNameOf(dir);   // 和 HTTP 版同一份实现（issue #160）
   return envelope({ dir, exists, isDir, isProject, draftCount, suggestedName }, [], {});
 }));
 
@@ -292,7 +293,9 @@ server.registerTool("check_runtime", {
   const byDir = new Map<string, string[]>();
   for (const abs of drafts) {
     const miss = missingRuntime(abs);
-    if (miss.length) byDir.set(abs.slice(0, abs.lastIndexOf("/")).slice(p.dir.length + 1) || ".", miss);
+    /* ⚠️ 原来是 `abs.lastIndexOf("/")` —— Windows 上回 `-1`，`slice(0, -1)` 变成
+       「**文件名去掉最后一个字母**」，于是同目录的稿各算一条（issue #161）。 */
+    if (miss.length) byDir.set(dirKeyOf(abs, p.dir), miss);
   }
   return envelope({ missing: [...byDir.entries()].map(([dir, files]) => ({ dir, files })) },
     [], { dirsMissing: byDir.size, draftsScanned: drafts.length });

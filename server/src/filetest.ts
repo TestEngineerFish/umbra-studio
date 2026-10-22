@@ -1413,6 +1413,67 @@ await rm(DIR, { recursive: true, force: true });
      { 这一轮清掉: r.removed.length, 腾出KB: Math.round(r.freedBytes / 1024), 还活着的临时项目: r.keptAlive, 认不出的老仓库: r.unidentifiable });
 }
 /* ══════════════════════════════════════════════════════════════════════
+   ⑯ 硬编码 `"/"` 那一族（issue #188 / #161 / #160）
+
+   ⚠️ 三处各自写了一遍「按 `/` 切路径」，而 Windows 上原生分隔符是 `\`。
+   > **这三条的共同形状：它们都在 mac 上恰好正确，所以本机没有任何读数会异常。**
+   > **一个只在另一个平台上错的判定，在本机永远量不到** ——
+   > 所以修法里最要紧的那一半是「让它能在 mac 上被测」：三个函数都收一个
+   > `PlatformPath`，这里传 `path.win32`（issue #25 用过这招）。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑯ 硬编码 \"/\" 那一族（#188 / #161 / #160）");
+{
+  const { win32: w32, posix: pxs } = await import("node:path");
+  const { isUnderRoot, dirKeyOf, suggestedNameOf } = await import("./pathguard.js");
+
+  /* ── #188：`dropRecordsUnder` / `deadRecordsUnder` 的「在这个根下面吗」── */
+  const R = "C:\\Users\\sam\\AppData\\Local\\Temp\\umbra-xyz";
+  ok("#188 win：记录目录在临时根下面 → 认得出", isUnderRoot(R, R + "\\proj", w32));
+  ok("#188 win：根自己也算在里面", isUnderRoot(R, R, w32));
+  ok("#188 win：同前缀的兄弟目录**不算**（#19 那条在 win 下也要成立）",
+     !isUnderRoot(R, R + "2\\proj", w32));
+  ok("#188 win：别处的目录不算", !isUnderRoot(R, "C:\\Users\\sam\\Projects\\x", w32));
+  /* ⚠️ 反方向：旧写法在 win 下**一条都匹配不上**，这里把那个事实也钉住 ——
+     不然「改好了」和「本来就对」分不开。 */
+  const oldWay = (root: string, dir: string) => dir === root || dir.startsWith(root + "/");
+  ok("#188 **旧写法在 win 下确实匹配不上**（证明这一条不是「本来就对」）",
+     !oldWay(R, R + "\\proj"), `旧写法: ${oldWay(R, R + "\\proj")}`);
+
+  /* ── #161：`check_runtime` 按目录归组的那个键 ── */
+  const PD = "C:\\projects\\Demo";
+  ok("#161 win：子目录里的稿 → 目录键是那一段相对路径",
+     dirKeyOf(PD + "\\sub\\a.dc.html", PD, w32) === "sub", dirKeyOf(PD + "\\sub\\a.dc.html", PD, w32));
+  ok("#161 win：项目根上的稿 → `.`",
+     dirKeyOf(PD + "\\a.dc.html", PD, w32) === ".", dirKeyOf(PD + "\\a.dc.html", PD, w32));
+  /* 旧写法会把文件名掉尾字母 —— 把那个症状原样打出来 */
+  const oldKey = (abs: string, pd: string) => abs.slice(0, abs.lastIndexOf("/")).slice(pd.length + 1) || ".";
+  ok("#161 **旧写法在 win 下是「文件名去掉最后一个字母」**（原样打出来）",
+     oldKey(PD + "\\sub\\a.dc.html", PD) !== "sub", `旧写法: ${JSON.stringify(oldKey(PD + "\\sub\\a.dc.html", PD))}`);
+  ok("#161 posix 下照旧对（别为了修 win 把 mac 弄坏）",
+     dirKeyOf("/p/sub/a.dc.html", "/p", pxs) === "sub" && dirKeyOf("/p/a.dc.html", "/p", pxs) === ".");
+
+  /* ── #160：新建项目面板的建议名 ── */
+  ok("#160 win：建议名是最后那一段，不是整条盘符路径",
+     suggestedNameOf("C:\\Users\\sam\\Projects\\Demo", w32) === "Demo",
+     suggestedNameOf("C:\\Users\\sam\\Projects\\Demo", w32));
+  const oldName = (dir: string) => (dir.split("/").pop() || "project").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "project";
+  ok("#160 **旧写法在 win 下是一整条横杠串**（原样打出来）",
+     oldName("C:\\Users\\sam\\Projects\\Demo") !== "Demo", `旧写法: ${oldName("C:\\Users\\sam\\Projects\\Demo")}`);
+  ok("#160 posix 下照旧对", suggestedNameOf("/Users/sam/Projects/我的设计 稿", pxs) === "project"
+     || /^[A-Za-z0-9_-]+$/.test(suggestedNameOf("/Users/sam/Projects/Demo", pxs)),
+     suggestedNameOf("/Users/sam/Projects/Demo", pxs));
+  /* ⚠️ **HTTP 版和 MCP 版现在是同一份实现** —— 原来是两份，而实测它们在 win 下不一致。
+     这一条钉的是「不再有两份」，所以直接比两个调用点用的是不是同一个函数名。 */
+  const { readFileSync: rf16 } = await import("node:fs");
+  const { join: j16 } = await import("node:path");
+  const { TOOL_ROOT: TR16 } = await import("./project.js");
+  const apiSrc = rf16(j16(TR16, "server", "src", "api.ts"), "utf8");
+  const idxSrc = rf16(j16(TR16, "server", "src", "index.ts"), "utf8");
+  ok("#160 HTTP 版与 MCP 版都走 `suggestedNameOf`（不再是两份实现）",
+     /suggestedName: suggestedNameOf\(dir\)/.test(apiSrc) && /suggestedNameOf\(dir\)/.test(idxSrc));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    ⑮ 项目里指向外面的符号链接（issue #140，geek-99 2026-10-22 裁定口径）
 
    ⚠️⚠️ **根约束原来只比字面路径，全程不碰文件系统。** #19 修好的是
