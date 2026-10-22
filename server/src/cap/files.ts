@@ -5,6 +5,7 @@ import { getPluginLimits } from "../plugin/limits.js";
 import { countTypes, denyReason, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, normalizeRel, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { writeDraft } from "../write.js";
 import { draftKindOf, parseDraft } from "../draft.js";
+import { isEditable, markEditable } from "../records.js";
 import { isInside } from "../pathguard.js";
 import { existsSync } from "node:fs";
 import { readFile as readFileP, readdir as readdirP, stat as statP } from "node:fs/promises";
@@ -345,6 +346,25 @@ defineCap({
     /* ⚠️ 回执要**分开说成了几份、败了几份**，不要只回一个 ok ——
        一个「成功」里藏着三份没复制进来，就是又一条假回执。 */
     return envelope({ written, failed, destDir: dest }, [], { copied: written.length, failed: failed.length });
+  },
+});
+
+defineCap({
+  name: "start_editing", title: "解锁这个目录（从只读预览变成可编辑）", scope: "project",
+  summary: [
+    "**只读预览**那道闸的出路（Q70 / M14-7）：从「右键 → 打开方式」随手打开一个目录时，我们默认不动它的文件。",
+    "点一下这件，之后这个目录**永远**可编辑，不再提示。",
+    "⚠️ 它**不复制也不移动任何文件** —— 落的只是我们自己目录里的一个标记。版本历史也记在我们这边，原文件夹不会多出任何文件。",
+  ].join("\n"),
+  input: {},
+  http: { method: "POST" },
+  run: async (_i, c) => {
+    const proj = p(c);
+    const already = isEditable(proj.dir);
+    const flag = markEditable(proj.dir);
+    /* ⚠️ 回执要分得清**「刚解锁」和「本来就是」** —— 前端那条横条要据此决定
+       「换成那句保证」还是「压根不该出现过」。只回一个 ok 的话两种状态分不开。 */
+    return envelope({ dir: proj.dir, editable: true, already }, [], { flag });
   },
 });
 

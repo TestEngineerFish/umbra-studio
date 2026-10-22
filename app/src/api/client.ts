@@ -9,6 +9,11 @@ export interface ProjectHandle {
    *  `undefined` = 这条路没报（老的调用点），**当「不知道」而不是当 false** ——
    *  当 false 会让所有现成项目都弹那条接管横条。 */
   designProject?: boolean;
+  /** 这个目录解锁过编辑没有（M14-7 / Q70）。
+   *  `false` = 只读预览：从「右键 → 打开方式」随手打开的目录，**两条写入口都会拒**。
+   *  `undefined` = 这条路没报 —— 同上，当「不知道」而不是当 false，
+   *  **当 false 会让所有现成项目都变成只读**，那比没有这道闸糟得多。 */
+  editable?: boolean;
 }
 /** 信封里的一条诊断：`fix` 是给人看的改法，比 message 更可操作（doc/00 §二） */
 export interface Err { code?: string; message: string; fix?: string; level?: string }

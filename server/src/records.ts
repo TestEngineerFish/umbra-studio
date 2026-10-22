@@ -42,7 +42,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { UD_DIRNAME } from "./statedirs.js";
 import { tmpNameFor } from "./tmpfiles.js";
@@ -222,6 +222,54 @@ export function dropOrphanRecords(): { ids: string[]; unindexed: string[] } {
   const unindexed = unindexedRecordDirs();
   for (const name of unindexed) rmrfSync(join(recordsRoot(), name));
   return { ids: dead.map((r) => r.id), unindexed };
+}
+
+/* ══════════ M14-7：这个目录「准不准改」（Q70，用户 2026-10-21 拍板）══════════ */
+
+/** 解锁标记：解锁过的目录在它自己的记录目录下有这一个文件。 */
+const editableFlag = (projectDir: string): string => join(recordDirOf(projectDir), "editable");
+
+/** 这个目录现在准不准我们动它的文件。
+ *
+ *  ### 为什么要有这道闸（Q70，`doc/24` §二十一）
+ *  从「右键 → 打开方式」进来的那条路上，用户的意图**通常只是看一眼**，
+ *  而我们这个窗口里坐着一个能调 `write_file` 的模型 ——
+ *  一句「帮我把这段改通顺」就落盘了。
+ *  > 这道闸的理由**不是「我们改不了」**（Notion 是那样，我们不是），
+ *  > 是「**在我们还不确定你想不想让我们改的时候，先别改**」。
+ *
+ *  ### 判准为什么不是「`records/<key>/` 在不在」
+ *  Q70 当初定的是那个，而 2026-10-22 落地时量了一次 —— **它有一个洞**：
+ *  `stage_draft`（在编辑框里打字、还没落盘的暂存）会写进 `records/<id>/staged/`，
+ *  而那一下就把记录目录建出来了 → **用户在只读状态下打几个字就把自己解锁了**。
+ *  「暂存」恰恰是「还没落盘」，拿它当「可以落盘」的证据是反的。
+ *  > **一个「存在性」判准，会被任何顺手建出那个东西的代码路径悄悄满足。**
+ *  所以换成一个**只有显式解锁才会写**的标记文件。
+ *
+ *  ### 存量怎么办（不迁移，一次性认）
+ *  两种目录直接**当成已解锁并补上标记**：
+ *  · 有 `project.json` —— 用户显式接管过（`create_project` / `adopt_project` 都写它）；
+ *  · 有 `snapshots/` —— 我们已经改过它的文件，历史就在那儿。
+ *  ⚠️ **`staged` / `chats` / `cache` 不算**：前者是「还没落盘」，后两者不代表「动过文件」。
+ *  这是一次性的认，认完就落标记，不会每次都算。 */
+export function isEditable(projectDir: string): boolean {
+  const dir = resolve(projectDir);
+  const id = existingRecordIdFor(dir);
+  if (id && existsSync(join(recordsRoot(), id, "editable"))) return true;
+  /* 存量：显式接管过，或者我们已经存过它的快照 */
+  const grandfathered = existsSync(join(dir, "project.json"))
+    || (!!id && existsSync(join(recordsRoot(), id, "snapshots")));
+  if (grandfathered) { markEditable(dir); return true; }
+  return false;
+}
+
+/** 解锁：用户点了「开始编辑」。
+ *  ⚠️ 幂等 —— 点两次、或者存量那条路和用户同时触发，都只是同一个文件。 */
+export function markEditable(projectDir: string): string {
+  const f = editableFlag(projectDir);
+  mkdirSync(dirname(f), { recursive: true });
+  if (!existsSync(f)) writeFileSync(f, new Date().toISOString() + "\n", "utf8");
+  return f;
 }
 
 /** 清掉**指向某个目录树下**的记录（给回归收尾用，和 `dropFallbackReposUnder` 配对）。

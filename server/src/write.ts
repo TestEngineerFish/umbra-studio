@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { X } from "./codes.js";
 import { err, ToolError, warn, type Diagnostic } from "./envelope.js";
+import { isEditable } from "./records.js";   // M14-7 那道闸的判准
 import { conclusion as conclusionOf, type DiffResult } from "./diff.js";
 import { draftPath, type Project } from "./project.js";
 import { validateDraft } from "./validate.js";
@@ -74,6 +75,21 @@ async function gitHead(p: Project): Promise<string | null> {
 }
 
 /** 写一份稿。内容相同则不落盘也不新增快照（避免版本号空转）。 */
+/** M14-7 那道闸（Q70）：这个目录还没解锁 → 一个字节都不写。
+ *
+ *  ⚠️⚠️ **闸必须装在写入口，不是界面上**（Q70 的原话）。
+ *  装界面上的话 AI 和 MCP **直接绕过去**，那条横条就只是装饰 ——
+ *  而这道闸要防的恰恰是「这个窗口里坐着一个能调 `write_file` 的模型」。
+ *  两条写入口（`writeDraft` / `writeAnyFile`）各一道，**一道只守住一条路等于没守**（#75）。
+ *
+ *  ⚠️ 拒因里要有**出路**，不然这就从「保护」变成「这个文件改不了」。 */
+function requireEditable(p: Project): void {
+  if (isEditable(p.dir)) return;
+  throw new ToolError(err(X.IO, "", { kind: "path", name: p.dir },
+    "这个目录还是只读预览",
+    { fix: "这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 `start_editing`。版本历史记在 Umbra 自己的目录里，原文件夹不会多出任何文件。" }));
+}
+
 export async function writeDraft(
   p: Project, relPath: string, content: string, kind: "page" | "component",
   note?: string, opts?: { expectedSourceSha256?: string; origin?: VersionOrigin; allowErrors?: boolean },
@@ -84,6 +100,8 @@ export async function writeDraft(
         "稿的文件名必须以 .dc.html 结尾",
         { fix: `改成 "${relPath.replace(/\.[^.]*$/, "")}.dc.html"` }));
   }
+
+  requireEditable(p);
 
   const abs = resolveInProject(p, relPath);
   /* ⚠️ `isInside` 而不是 `startsWith`（issue #19）：后者不带分隔符，

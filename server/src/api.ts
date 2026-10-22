@@ -39,6 +39,7 @@ import { gunzipSync } from "node:zlib";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { draftPath, isDesignProject, listDrafts, type Project } from "./project.js";
+import { isEditable } from "./records.js";
 import { resolveDraft } from "./locate.js";
 import { readFile } from "node:fs/promises";
 import { relative, sep } from "node:path";
@@ -350,7 +351,11 @@ export async function handleApi(
          **而静默继承不会报错**，他只会觉得「这软件的历史是乱的」。
          老记录回 `unknown`（没指纹），界面**什么都不说** —— 否则每条老记录都要弹一次窗。 */
       const { identity } = await touchProject(target.dir, target.name, target.title);
-      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity, designProject: design } });
+      /* ⚠️ `editable` 要带回前端（M14-7 / Q70）：那条「只读预览」横条的依据。
+         ⚠️ **判准在服务端算，不在前端猜** —— 前端看不到 `records/<id>/editable`，
+         而「这个目录准不准改」这件事必须和写入口那道闸**用同一个答案**，
+         否则会出现「界面让你改、写入口拒了」或者反过来（比横条本身更糟）。 */
+      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity, designProject: design, editable: isEditable(target.dir) } });
       return true;
     }
 

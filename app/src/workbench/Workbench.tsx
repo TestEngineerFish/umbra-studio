@@ -37,6 +37,46 @@ import { normalize, openTab, type Tab } from "./tabs";
 /** 没声明 `Provider` 的格式用它兜底。**定义在模块级** —— 理由见用它的地方 */
 const PassThrough = ({ children }: { ctx: ViewContext; children: React.ReactNode }) => <>{children}</>;
 
+/** 「只读预览」那一条横条（M14-7 / Q70，用户 2026-10-21 拍板「按你建议的做」）。
+ *
+ *  ### 它买到的那样东西
+ *  从「右键 → 打开方式」进来的那条路上，用户的意图**通常只是看一眼**，
+ *  而这个窗口里坐着一个能调 `write_file` 的模型 —— 一句「帮我把这段改通顺」就落盘了。
+ *  > 这道闸的理由**不是「我们改不了」**，是「**在我们还不确定你想不想让我们改的时候，先别改**」。
+ *
+ *  ⚠️ **横条本身不是闸**，闸在两条写入口上（`write.ts` / `files.ts`）——
+ *  装界面上的话 AI 和 MCP 直接绕过去，这条横条就只是装饰（Q70 原话）。
+ *  所以这里**不负责拦任何东西**，它只负责把那道闸**说出来并给出路**。
+ *
+ *  ⚠️ **文案不许照抄 Notion 的「需要导入」**：Notion 的只读是能力所限（它改不了库外的文件），
+ *  它的出路是把文件复制进库；**我们不复制**（Q62）。照抄那句话是
+ *  **对我们自己行为的错误描述** —— 而用户最初担心的恰恰是「会不会往我目录里塞东西」。
+ *  所以解锁之后那一句要**正面回答那个担心**：「原文件夹不会多出任何文件」。 */
+function ReadOnlyBar({ core, editable, onUnlocked }: { core: Core; editable?: boolean; onUnlocked: () => void }) {
+  const [busy, setBusy] = useState(false);
+  if (editable !== false) return null;
+  const unlock = async () => {
+    setBusy(true);
+    const r = await core.post<{ editable: boolean; already: boolean }>("start_editing", {});
+    setBusy(false);
+    if (!r.ok) { toast("解锁失败", r.errors?.[0]?.message ?? "", "error"); return; }
+    onUnlocked();
+    /* ⚠️ 这一句是 `doc/24` §21.4 那条：**用户看不到的保证等于没有保证。**
+       解锁那一下是说它最自然的时机 —— 他刚刚授权我们动他的文件。 */
+    toast("可以编辑了", "版本历史记在 Umbra 自己的目录里，原文件夹不会多出任何文件。", "ok");
+  };
+  return (
+    <div data-ud="readonly-bar" className="shrink-0 h-8 px-3 flex items-center gap-2 text-[11px] border-b border-border bg-panel2">
+      <span className="text-muted truncate flex-1 min-w-0">
+        <b className="text-text2">只读预览</b> —— 这些文件不在你的项目里，所以我们默认<b className="text-text2">不动它们</b>（连 AI 也不行）。
+      </span>
+      <button className="btn sm" disabled={busy} data-ud="unlock-btn" onClick={() => void unlock()}>
+        {busy ? "正在解锁…" : "开始编辑"}
+      </button>
+    </div>
+  );
+}
+
 /** 「这个目录还没接管为设计项目」那一条横条（M14-4 B3）。
  *
  *  ⚠️ **它是 B3 那半边的出路，不是装饰。** B3 让「打开一个目录」**一个字节都不写**，
@@ -84,6 +124,10 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
    *  所以本地记一次翻面。**两个用它的地方（横条 · 新建稿件那一问）读的是同一份。** */
   const [adoptedHere, setAdoptedHere] = useState(false);
   const designProject = adoptedHere ? true : project.designProject;
+  /** 解锁过编辑没有（M14-7）。和 `adoptedHere` 同一个理由：`project` 这个 prop
+   *  来自 `open_project` 的那一次回执，解锁之后它不会自己变。 */
+  const [unlockedHere, setUnlockedHere] = useState(false);
+  const editable = unlockedHere ? true : project.editable;
   const store = useProject(core, project.dir, designProject);
   /** 页签三态（M8-28）。存量是 `string[]`，`normalize` 认它 */
   const [tabs, setTabsRaw] = useState<Tab[]>(() => normalize(mem.get(`us.tabs.${project.dir}`, [])));
@@ -681,7 +725,13 @@ export function Workbench({ project, host, layout, setLayout, onHome, onSettings
               node: (
                 <Wrap ctx={ctx} key={kind}>
                 <div className="flex-1 min-w-0 flex flex-col">
-            <AdoptBar project={project} core={core} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />
+            {/* ⚠️ **两条横条的顺序是「先只读、再接管」，而且一次只出一条。**
+                 它们答的是两个不同的问题（「我们能不能动你的文件」vs「要不要放工具文件进来预览设计稿」），
+                 但**接管必然蕴含可编辑**（它要写 `project.json`，那一下就解锁了）——
+                 所以在还只读的时候摆一颗「接管为设计项目」，等于让人先点一个
+                 **会往他目录里写 750 KB** 的按钮来解除一个「不动你文件」的保护。顺序反了。 */}
+              <ReadOnlyBar core={core} editable={editable} onUnlocked={() => { setUnlockedHere(true); setLocalTick((t) => t + 1); }} />
+              {editable !== false && <AdoptBar project={project} core={core} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />}
             <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file}
               /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
                  图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。

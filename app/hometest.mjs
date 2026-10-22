@@ -180,8 +180,12 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
   await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().waitFor({ timeout: 15000 });
   await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().click();
   const bar = pg.locator('[data-ud="adopt-bar"]');
-  await bar.waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
-  ok(await bar.isVisible(), "**工作台里有「这是普通目录」那条横条**（接管的唯一出路）");
+  /* ⚠️ **这里原来断言「接管横条出来了」，而 M14-7 之后它在这个时刻故意不出现。**
+     还只读的时候摆一颗「接管为设计项目」，等于让人先点一个会往他目录里写 750 KB
+     的按钮来解除一个「不动你文件」的保护 —— 顺序反了。
+     那条判据没有被删，**挪到了解锁之后**（下面那一组的最后一条）。
+     > **判据挪位置和判据被放松，差别在于「挪过去之后还红不红」**（§171 原话）——
+     > 拆掉「只读优先」那个条件，下面那条会红在「还只读的时候接管横条就出现了」。 */
   /* ⚠️ **要等一会儿再数**（反向验证逼出来的）：自动建索引是异步的，
      横条一出现就数的话，它还没落盘 —— **两道闸全拆掉这一条也绿**。
      「打开之后没多文件」要说的是「过了一会儿也没多」。 */
@@ -193,6 +197,39 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
   const extra = after.filter((x) => !before.includes(x));
   ok(extra.length === 0, "**打开之后那个目录一个文件都没多**（样本里带着 `.umbradesign/`）",
     extra.join(" · ") || `${after.length} 项，和打开前一样`);
+  /* ── 只读预览那条横条，以及它和「接管」那条的顺序（M14-7 / Q70，2026-10-22）──
+     ⚠️ **横条本身不是闸**（闸在两条写入口上，`apitest` ⑲ 钉着）——
+     这里钉的是「它说出来了没有、出路够不够得着」。
+     ⚠️ **顺序那一条才是这一节的要点**：接管必然蕴含可编辑（它要写 `project.json`），
+     所以在还只读的时候摆一颗「接管为设计项目」，等于让人先点一个
+     **会往他目录里写 750 KB** 的按钮，来解除一个「不动你文件」的保护 —— 顺序反了。 */
+  {
+    const ro = pg.locator('[data-ud="readonly-bar"]');
+    await ro.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+    ok(await ro.isVisible(), "**只读预览那条横条出来了**（随手打开的目录，默认不动它的文件）");
+    const roText = await ro.innerText().catch(() => "");
+    ok(/只读预览/.test(roText) && /连 AI 也不行/.test(roText),
+       "横条说的是「**我们默认不动它们**，连 AI 也不行」，不是 Notion 那句「需要导入」（我们不复制文件）",
+       roText.replace(/\n/g, " ").slice(0, 46));
+    ok(!(await pg.locator('[data-ud="adopt-bar"]').isVisible()),
+       "**还只读的时候「接管为设计项目」那条不出现**（不能让人先点一个写 750 KB 的按钮来解锁）");
+    await pg.locator('[data-ud="unlock-btn"]').click();
+    await pg.waitForTimeout(1200);
+    ok(!(await ro.isVisible()), "点完「开始编辑」那条横条自己退场");
+    const body = await pg.evaluate(() => document.body.innerText);
+    /* ⚠️ `doc/24` §21.4：**用户看不到的保证等于没有保证。**
+       解锁那一下是说这句话最自然的时机 —— 他刚刚授权我们动他的文件。 */
+    ok(/原文件夹不会多出任何文件/.test(body), "**解锁之后正面回答他最初那个担心**（原文件夹不会多出任何文件）",
+       (body.match(/版本历史记在[^\n]*/) ?? ["(没说)"])[0].slice(0, 44));
+    const after1 = walkPlain();
+    ok(after1.filter((x) => !before.includes(x)).length === 0,
+       "**解锁这一下也没往那个目录里放任何东西**（标记落在我们自己那边）",
+       after1.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
+    await pg.locator('[data-ud="adopt-bar"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    ok(await pg.locator('[data-ud="adopt-bar"]').isVisible(),
+       "**解锁之后「接管为设计项目」那条才出来**（两条横条一次只出一条，顺序是先只读再接管）");
+  }
+
   /* ── 「新建稿件」先问一句要不要接管（2026-10-22）──
      ⚠️ 这一条测的是**够不够得着那一问**，所以从真入口点进去：
      目录列列头那颗 `⋯`（和在空白处右键是同一张菜单）→「新建稿件…」。

@@ -56,6 +56,7 @@ async function binaryMaxSetting(): Promise<number> {
    注意是 import 进来再 re-export：`export {} from` 只转发，本模块内部还是取不到这个名字。 */
 import { kindOf, isTextualPath, type FileKind } from "./shared/kinds.js";
 import { assetDir, UD_DIRNAME } from "./statedirs.js";
+import { isEditable } from "./records.js";   // M14-7 那道闸的判准
 export { kindOf };
 
 /** 这个扩展名的内容能不能当文本读 */
@@ -513,6 +514,14 @@ export interface WriteFileResult {
  *  现在一进来就归一成 Buffer，后面全按字节算；文本那条路**行为一个字没变**
  *  （`Buffer.from(s,"utf8")` 再 `byteLength` 和原来是同一个数）。 */
 export async function writeAnyFile(p: Project, rel: string, content: string | Buffer, opts: WriteFileOptions = {}): Promise<WriteFileResult> {
+  /* M14-7（Q70）：这个目录还没解锁 → 一个字节都不写。
+     **和 `write.ts` 那一道是同一件事的两条路** —— 两条写入口各装一道，
+     装一条等于没装（#75）。拒因里的出路也要一样，不然两条路上说的话不一致。 */
+  if (!isEditable(p.dir)) {
+    throw new ToolError(err(X.IO, normalizeRel(p, rel), { kind: "path", name: p.dir },
+      "这个目录还是只读预览",
+      { fix: "这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 `start_editing`。版本历史记在 Umbra 自己的目录里，原文件夹不会多出任何文件。" }));
+  }
   /** 一进来就归一成字节 —— 后面每一处都用它，免得「有的地方按字符有的地方按字节」 */
   const buf = typeof content === "string" ? Buffer.from(content, "utf8") : content;
   const clean = normalizeRel(p, rel);

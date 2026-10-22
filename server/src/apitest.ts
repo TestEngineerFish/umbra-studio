@@ -1379,6 +1379,102 @@ console.log("\n⑱ 把外部文件复制进项目（场景 ③）");
   await rm8(out, { recursive: true, force: true });
 }
 
+/* ── ⑲ 只读预览 + 一键解锁（M14-7 / Q70，2026-10-22）──
+   ⚠️⚠️ **这道闸的全部价值在于它装在写入口，而不是界面上。**
+   它要防的是「这个窗口里坐着一个能调 `write_file` 的模型」——
+   装界面上的话 AI 和 MCP 直接绕过去，那条横条就只是装饰（Q70 原话）。
+   所以这一节**全部打 HTTP 面**（也就是 AI / MCP 走的那条路），一条都不看界面。
+
+   ⚠️ 判准不是「`records/<key>/` 在不在」—— Q70 当初定的是那个，而落地时量出它有洞：
+   `stage_draft`（编辑框里打字、还没落盘的暂存）会写进 `records/<id>/staged/`，
+   那一下就把记录目录建出来了 → **用户在只读状态下打几个字就把自己解锁了**。
+   换成一个**只有显式解锁才会写**的标记文件，而这一节有一条判据专门钉那个洞。 */
+console.log("\n⑲ 只读预览 + 一键解锁（M14-7）");
+{
+  const { mkdtemp: mk9, writeFile: wf9, rm: rm9, mkdir: md9 } = await import("node:fs/promises");
+  const { tmpdir: td9 } = await import("node:os");
+  const { join: j9 } = await import("node:path");
+  const { existsSync: ex9, realpathSync: rp9, readFileSync: rfs9 } = await import("node:fs");
+
+  /* 一个「随手右键打开的」目录：几份文档，**没有 project.json** */
+  const casual = rp9(await mk9(j9(rp9(td9()), "umbra-readonly-")));
+  await wf9(j9(casual, "别人的笔记.md"), "# 原文\n", "utf8");
+  const svc = await (await import("./serve.js")).serveStart(await (await import("./project.js")).buildProject(casual));
+  const post9 = (route: string, body: unknown) => fetch(`${svc.url}__ud/${route}?token=${encodeURIComponent(svc.token)}`, {
+    method: "POST", headers: { "content-type": "application/json", origin: svc.url.replace(/\/$/, "") }, body: JSON.stringify(body),
+  }).then((r) => r.json() as Promise<{ ok: boolean; data?: Record<string, unknown>; errors?: Array<{ message?: string; fix?: string }> }>);
+
+  /* ⓐ 第二条写入口（`.md` / 代码 / 文本走它）被拦住，而且**一个字节都没写** */
+  {
+    const r = await post9("file_write", { path: "别人的笔记.md", content: "# 被 AI 改过了\n" });
+    ok(r.ok === false && /只读预览/.test(r.errors?.[0]?.message ?? ""),
+       "**AI 改一份 .md 被拦住**（这条路就是 write_file，模型手上那件）", r.errors?.[0]?.message);
+    ok(rfs9(j9(casual, "别人的笔记.md"), "utf8") === "# 原文\n", "**他那份文件一个字节都没动**");
+    /* 拒因里要有出路，不然这就从「保护」变成「这种文件改不了」 */
+    ok(/开始编辑/.test(r.errors?.[0]?.fix ?? ""), "拒因里有出路（「开始编辑」）", (r.errors?.[0]?.fix ?? "").slice(0, 40));
+    /* ⚠️ 顺带钉住那句**正面回答他最初那个担心**的话（`doc/24` §21.4）——
+       用户最担心的是「会不会往我目录里塞东西」，而这正是该说这句话的地方。 */
+    ok(/原文件夹不会多出任何文件/.test(r.errors?.[0]?.fix ?? ""), "而且说清了解锁不会往他目录里塞东西");
+  }
+  /* ⓑ 第一条写入口（设计稿）也拦 —— **一道只守住一条路等于没守** */
+  {
+    await wf9(j9(casual, "别人发来的.dc.html"),
+      '<!DOCTYPE html><html><head></head><body><x-dc><div>稿</div></x-dc></body></html>\n', "utf8");
+    const r = await post9("draft_write", { path: "别人发来的.dc.html", content: "<!DOCTYPE html><html><body><x-dc><div>改过了</div></x-dc></body></html>\n", kind: "page" });
+    ok(r.ok === false, "**设计稿那条写入口也拦**（两条写入口各一道）", r.errors?.[0]?.message);
+  }
+  /* ⓒ **那个洞**：暂存草稿会建出记录目录，而它不许算解锁 */
+  {
+    const st = await post9("draft_stage", { path: "别人的笔记.md", content: "在编辑框里打了几个字" });
+    const { existingRecordIdFor, recordsRoot } = await import("./records.js");
+    const id = existingRecordIdFor(casual);
+    ok(st.ok === true && !!id && ex9(j9(recordsRoot(), id!)),
+       "（样本自己先成立）暂存了一次 → **记录目录真的被建出来了**", `${st.ok} · ${id ?? "没有记录"}`);
+    const r = await post9("file_write", { path: "别人的笔记.md", content: "# 又试一次\n" });
+    ok(r.ok === false && /只读预览/.test(r.errors?.[0]?.message ?? ""),
+       "**而它照旧是只读的** —— 「暂存」是「还没落盘」，拿它当「可以落盘」的证据是反的",
+       r.errors?.[0]?.message);
+  }
+  /* ⓓ 解锁：之后写得动，而且**没往他的目录里放任何东西** */
+  {
+    const before = (await (await import("node:fs/promises")).readdir(casual)).sort();
+    const u = await post9("start_editing", {});
+    ok(u.ok === true && u.data?.editable === true && u.data?.already === false,
+       "**「开始编辑」解锁了**，而且回执分得清「刚解锁」和「本来就是」", JSON.stringify(u.data));
+    const after = (await (await import("node:fs/promises")).readdir(casual)).sort();
+    ok(after.join("|") === before.join("|"), "**解锁没往他的目录里放任何东西**（标记落在我们自己那边）",
+       after.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
+    const w = await post9("file_write", { path: "别人的笔记.md", content: "# 现在改得动了\n" });
+    ok(w.ok === true, "解锁之后同一个请求就成了（闸不是把功能拆了）", String(w.ok));
+    const u2 = await post9("start_editing", {});
+    ok(u2.ok === true && u2.data?.already === true, "再点一次：幂等，而且说得出「本来就是」", JSON.stringify(u2.data));
+  }
+  await rm9(casual, { recursive: true, force: true });
+
+  /* ⓔ **存量不许被这道闸锁住** —— 这一条是整节里最要紧的。
+     判准写错的话，sam 现有那几个项目全变只读，而那比没有这道闸糟得多。 */
+  {
+    const legacy = rp9(await mk9(j9(rp9(td9()), "umbra-legacy-")));
+    await wf9(j9(legacy, "project.json"), JSON.stringify({ name: "legacy" }), "utf8");
+    await wf9(j9(legacy, "说明.md"), "# 旧项目\n", "utf8");
+    const { isEditable } = await import("./records.js");
+    ok(isEditable(legacy) === true, "**有 project.json 的目录直接算可编辑**（用户显式接管过的）");
+    /* 另一支：没有 project.json 但我们已经存过它的快照 —— 也就是我们早就在改它了 */
+    const legacy2 = rp9(await mk9(j9(rp9(td9()), "umbra-legacy2-")));
+    await wf9(j9(legacy2, "说明.md"), "# 老目录\n", "utf8");
+    const { assetDir: ad9 } = await import("./statedirs.js");
+    await md9(ad9(legacy2, "snapshots"), { recursive: true });
+    ok(isEditable(legacy2) === true, "**有 snapshots/ 的目录也算**（我们已经改过它的文件，历史就在那儿）");
+    /* 反面：只有 chats / staged 不算 —— 那不代表「动过文件」 */
+    const legacy3 = rp9(await mk9(j9(rp9(td9()), "umbra-legacy3-")));
+    await wf9(j9(legacy3, "说明.md"), "# 只聊过天\n", "utf8");
+    await md9(ad9(legacy3, "chats"), { recursive: true });
+    await md9(ad9(legacy3, "staged"), { recursive: true });
+    ok(isEditable(legacy3) === false, "**只有 chats / staged 不算**（聊过天、打过字 ≠ 落过盘）");
+    for (const d of [legacy, legacy2, legacy3]) await rm9(d, { recursive: true, force: true });
+  }
+}
+
 /* ⚠️ **先自检夹具的身份还在**，再删它。
    **这一条是上面那条教训的判据化**：整轮跑完夹具必须还是一个设计项目 ——
    有哪一节把它悄悄删了 / 改了，这里当场红，而不是等到下一个人
