@@ -166,7 +166,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
   onCloseProject?: (dir: string) => void;
   host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void;
   /** 进来就自动打开这一份（「打开方式」打开单个文件时，M14-5）。**优先级最高** */
-  openAt?: string | null; onOpenedAt?: () => void }) {
+  openAt?: { rel: string; nonce: number } | null; onOpenedAt?: () => void }) {
   /* ⚠️ **这两行是 S1 的全部**：解开成本地的 `project` / `core` 两个名字，
      于是下面那 32 处 `project.*` 和 7 处 `core.*` **一个字都不用改** ——
      S1 刻意是**零行为变化**（和 M14-4 A 段同一个做法：先把出处收口，再改行为）。
@@ -284,6 +284,10 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
    *  ⚠️ **换文件要清掉**：切走再回来不该还停在某个旧版上，
    *  而「停在旧版」的样子和「这份文件就是这样」一模一样，不清就是个静默陷阱。 */
   const [viewing, setViewing] = useState<string | null>(null);
+  /** 上面那个「恢复上次页签」的 effect 要读它来**让路**，而它自己的 effect 在下面。
+   *  用 ref 是为了不把 `openAt` 塞进 `[store.drafts]` 的依赖里（职责不同）。 */
+  const openAtRef = useRef(openAt);
+  openAtRef.current = openAt;
   useEffect(() => {
     const dirty = dirtySnap ? dirtySnap.split("|") : [];
     if (!dirty.length) return;
@@ -467,8 +471,12 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
        才看得到「有一份没落盘的草稿」。 */
     /* ⚠️ **`openAt` 排在页签之前**（M14-5）：用户是「右键这一份 › 用 Umbra Studio 打开」
        进来的，他要的就是这一份。页签里上次开着的那份**不该顶掉它** ——
-       那会让「打开方式」看起来「点了没反应」。 */
-    if (openAt) { open(openAt); onOpenedAt?.(); return; }
+       那会让「打开方式」看起来「点了没反应」。
+       ⚠️⚠️ **打开那一下现在由下面它自己的 effect 做**（issue #187）——
+       这里只负责**让路**：`openAt` 还没被消费掉，就不要去恢复上次的页签。
+       读 ref 而不是把 `openAt` 加进依赖：这个 effect 的职责是「稿件列表到了」，
+       加进去会让它在每次「打开方式」时白跑一遍。 */
+    if (openAtRef.current) return;
     const fromTabs = tabs.length ? tabs[tabs.length - 1]!.path : null;
     const last = fromTabs ?? mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
     if (last) { open(last); return; }
@@ -476,6 +484,25 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
     if (!store.drafts.length) return;
     if (store.drafts[0]) open(store.drafts[0].file);
   }, [store.drafts]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** 「打开方式」要的那一份 —— **自己的 effect，依赖就是它**（issue #187）。
+   *
+   *  ⚠️ 原来这件事挤在上面那个 `[store.drafts]` 的 effect 里，而**目录已经开着**时：
+   *  `App.open()` 发现 `dir === project.dir` 就早退 → `project` 没变 →
+   *  `key={project.dir}` 没变 → `Workbench` 不重挂 → 稿件列表也没变 →
+   *  **那个 effect 根本不跑**，于是「用 Umbra Studio 打开」在最常见的用法
+   *  （已经在看这个目录里的东西，再开一份）上**无声失效**。
+   *  > 这正是上面那段注释自己担心的事（「那会让『打开方式』看起来点了没反应」）——
+   *  > 它防的是「页签顶掉它」，没防「**根本没人读它**」。
+   *
+   *  ⚠️ 消费完**立刻清**：不清的话回首页再打开**另一个**项目时，
+   *  新挂载的 Workbench 会拿着上一个项目的相对路径去 `open()` —— 多半不存在，
+   *  用户看到一条读文件失败，而他什么都没做错。 */
+  useEffect(() => {
+    if (!openAt) return;
+    open(openAt.rel);
+    onOpenedAt?.();
+  }, [openAt]);   // eslint-disable-line react-hooks/exhaustive-deps
   /* 用 ResizeObserver 量详情区自己 —— 它能同时捕捉「窗口变了」和「旁边的列变宽了」。
      监听 window.resize 只能捕捉前者。 */
   useEffect(() => {

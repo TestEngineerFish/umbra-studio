@@ -70,8 +70,14 @@ export default function App() {
   const [page, setPage] = useState<"home" | "work" | "market">(() => (location.pathname.endsWith("/home") || !(b && b.name) ? "home" : "work"));
   const [layout, setLayoutRaw] = useState<LayoutState>(loadLayout);
   /** 打开项目之后要自动选中的那一份（「打开方式」打开单个文件时用，M14-5）。
-   *  ⚠️ **用完要清**：不清的话下次从首页点同一个项目，它还会把人送回那份文件。 */
-  const [openAt, setOpenAt] = useState<string | null>(null);
+   *  ⚠️ **用完要清**：不清的话下次从首页点同一个项目，它还会把人送回那份文件。
+   *
+   *  ⚠️⚠️ **带 `nonce`，不是一个裸字符串**（issue #187）。原来是 `string | null`，
+   *  而「连续两次用『打开方式』打开**同一份**文件」时 `setOpenAt("b.md")` 是同值 ——
+   *  React 不会重渲染，消费它的 effect 也就不跑，**第二次点没有任何反应**。
+   *  > **一个「请求做某件事」的信号，不能用「要做的那件事是什么」来表示** ——
+   *  > 前者每次都是新的，后者可能和上次一样。 */
+  const [openAt, setOpenAt] = useState<{ rel: string; nonce: number } | null>(null);
   const [sheet, setSheet] = useState<{ kind: "newProject"; dir?: string } | { kind: "settings" } | null>(null);
   /** 从系统里拖进来、还没决定怎么处理的那几个路径（场景 ①，M14-5 下半） */
   const [dropped, setDropped] = useState<{ paths: string[]; allDirs: boolean } | null>(null);
@@ -276,7 +282,10 @@ export default function App() {
     /* 「打开方式」给的是**一个文件**（M14-5 / `doc/11` Q59）：以父目录为根打开、选中它。
        ⚠️ 父目录**不会被写进任何东西**（M14-4 B3）—— B3 之前这条路会在用户的
        下载文件夹里部署 780 KB，所以当时 Q59 做不了。 */
-    if (e.type === "open-file") void (async () => { setOpenAt(e.rel); await open(e.dir); })();
+    /* ⚠️ `setOpenAt` 排在 `open()` **之前**：目录已经开着时 `open()` 会早退
+       （M15-1 S2 的「只切过去」），而那条路上 `project` 不变、`Workbench` 不重挂 ——
+       所以这一份文件能不能被打开，全靠 `openAt` 自己那个 effect（issue #187）。 */
+    if (e.type === "open-file") void (async () => { setOpenAt({ rel: e.rel, nonce: Date.now() }); await open(e.dir); })();
     if (e.type === "go-home") setPage("home");
     if (e.type === "dirty-restart") toast("上次没有正常退出", "如果当时有没落盘的改动，请在稿的版本历史里核对一下", "error");
   }), [host, hub, open]);

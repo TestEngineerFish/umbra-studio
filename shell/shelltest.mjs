@@ -2,6 +2,9 @@ import { _electron as electron } from "/Users/sam/Documents/SourceTree/Geek/Umbr
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const require = createRequire(import.meta.url);
 const bin = require("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/shell/node_modules/electron");
 const S = process.env.S; const SHELL = "/Users/sam/Documents/SourceTree/Geek/UmbraStudio/shell";
@@ -66,7 +69,27 @@ const mainWindow = async (app) => {
   throw new Error("主窗口没出来（20 秒）。可能的原因：① 还有旧实例活着（上面那道自检应该拦住了，除非它是刚起的）"
     + " ② `app/dist` 没 build（`npm --prefix app run build`） ③ 核心起不来 —— 看上面 electron 的 stderr");
 };
-let app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL });
+/** 壳自己的 `userData`：**一个临时目录，不是用户那份**（2026-10-22）。
+ *
+ *  ⚠️ 为什么非得这么做：`userData` 里有**单实例锁**，而开发壳和用户装的
+ *  `/Applications/…` 用的是同一个名字（`app.setName` 决定目录名）——
+ *  于是**用户开着那个 app 的时候，这一套整个跑不起来**：Electron 起来后
+ *  `requestSingleInstanceLock()` 拿不到锁，`app.quit()`，而 Playwright 报的是
+ *  「Process failed to launch」，看着像壳坏了。
+ *  > **「跑不起来」和「坏了」在报错里长得一样，而前者的原因可能完全在被测对象之外。**
+ *
+ *  ⚠️ 顺手还解决了另一件：`session.json`、`DevToolsActivePort`、Chromium 缓存
+ *  原来都落在**用户真实的** `userData` 里（`doc/00` §166 那一族 ——
+ *  「清掉自己造的文件」和「清掉自己造的状态」是两件事）。
+ *  ⚠️ 这**不影响** `STATE_ROOT`：开发模式下它是 `TOOL_ROOT`（仓库根），
+ *  和 `userData` 是两回事，所以下面那些清「最近打开」的收尾照旧有效。 */
+const UDD = mkdtempSync(join(tmpdir(), "umbra-shelltest-udd-"));
+/** 起一次壳。**所有起壳的地方都走它** —— 第一版只给第一处加了 `--user-data-dir`，
+ *  剩下四处照旧撞上用户的锁，读数是「Process failed to launch」。
+ *  > **一个必须每处都加的参数，就该收成一个函数**（`mainWin` 单例那条的翻版）。 */
+const launchShell = (extra = []) =>
+  electron.launch({ executablePath: bin, args: [`--user-data-dir=${UDD}`, SHELL, ...extra], env, cwd: SHELL });
+let app = await launchShell();
 let win = await mainWindow(app);
 {
   const at = await park(app);
@@ -323,6 +346,52 @@ console.log("workbench:", await win.evaluate(() => document.querySelector("heade
   await win.waitForTimeout(300);
 }
 
+/* ═══ 「打开方式」在**目录已经开着**时也要有反应（issue #187）═══
+   ⚠️ 这一条为什么非得在这里（真 Electron）测：浏览器模式的 host adapter
+   **没有 `onEvent`**，`open-file` 这条路在浏览器里根本不存在，
+   `uitest` / `hometest` / `multiprojtest` 三套都碰不到它。
+   症状是**无声**的：没有 toast、没有日志，所以「有没有反应」只能去页签上看。 */
+{
+  const copy = S + "/umbra_copy";
+  const tabs = () => win.evaluate(() => [...document.querySelectorAll('[data-ud="tab"]')].map((e) => e.getAttribute("data-path")));
+  const fire = (rel) => app.evaluate(({ BrowserWindow }, a) => {
+    const w = BrowserWindow.getAllWindows().find((w) => w.isVisible());
+    w.webContents.send("host:event", { type: "open-file", dir: a.dir, rel: a.rel });
+  }, { dir: copy, rel });
+  /** 等那一份出现在页签里。轮询而不是定时等 —— §113 那条「抢跑的判据把慢误报成坏」。 */
+  const waitTab = async (rel) => {
+    for (let i = 0; i < 40; i++) {
+      if ((await tabs()).includes(rel)) return true;
+      await win.waitForTimeout(250);
+    }
+    return false;
+  };
+  const before = await tabs();
+  console.log("open-file 前的页签:", before.join(" · ") || "(没有)");
+  /* ① 目录已经开着（上面 open-dir 已经把它打开了），再开里面的另一份 */
+  const one = "导览.md";
+  await fire(one);
+  const got1 = await waitTab(one);
+  console.log(`open-file（目录已开着，第一次）: ${got1 ? `✓ 打开了「${one}」` : `✗ 没反应 —— 页签仍是 ${(await tabs()).join(" · ") || "(没有)"}`}`);
+  /* ② **同一份再来一次** —— 原来 `openAt` 是裸字符串，同值不触发渲染，
+        于是「关掉页签后再从访达打开同一份」第二次点没反应。 */
+  await win.evaluate((rel) => {
+    const el = [...document.querySelectorAll('[data-ud="tab"]')].find((e) => e.getAttribute("data-path") === rel);
+    el?.querySelector("button[title*='关闭'], button[aria-label*='关闭']")?.click();
+  }, one);
+  await win.waitForTimeout(400);
+  const closed = !(await tabs()).includes(one);
+  await fire(one);
+  const got2 = await waitTab(one);
+  console.log(`open-file（同一份第二次）: ${got2 ? "✓ 又打开了（nonce 起作用）" : "✗ 没反应"}`
+    + ` | 前提「页签真关掉了」: ${closed ? "✓" : "✗ 没关掉，这一条测的不是第二次打开"}`);
+  /* ③ 另一份，证明不是碰巧 */
+  const two = "CHANGELOG-设计侧.md";
+  await fire(two);
+  const got3 = await waitTab(two);
+  console.log(`open-file（换另一份）: ${got3 ? `✓ 打开了「${two}」` : "✗ 没反应"}`);
+}
+
 // 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
 /* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
    原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——
@@ -339,15 +408,18 @@ const r = await win.evaluate(async (dir) => {
 console.log("check via CDP:", JSON.stringify(r).slice(0, 200));
 console.log("chrome processes launched by core? (ps count of headless chrome):", await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[h]eadless.*--disable-background-networking'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); }));
 // 单实例：第二个实例应立刻退出
-const second = spawn(bin, [SHELL], { env, stdio: "ignore" }); const code = await new Promise(res => { const t = setTimeout(() => { second.kill(); res("still running after 6s"); }, 6000); second.on("exit", c => { clearTimeout(t); res(c); }); });
+/* ⚠️ **第二个实例必须用同一个 `--user-data-dir`** —— 单实例锁就落在那里面。
+   不带的话它撞上的是**用户装的那个 app**，于是这条判据「退出码 0」看着对，
+   而它测的是别的东西（`doc/00` §114.6「判据在测别的东西也会绿」同一族）。 */
+const second = spawn(bin, [`--user-data-dir=${UDD}`, SHELL], { env, stdio: "ignore" }); const code = await new Promise(res => { const t = setTimeout(() => { second.kill(); res("still running after 6s"); }, 6000); second.on("exit", c => { clearTimeout(t); res(c); }); });
 console.log("second instance exit:", code);
 // 强杀 → 重开 → 未落盘提示
 const pid = await app.evaluate(() => process.pid); process.kill(pid, "SIGKILL"); await new Promise(r => setTimeout(r, 1500));
-app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app); await park(app);
+app = await launchShell(); win = await mainWindow(app); await park(app);
 await win.waitForFunction(() => /上次没有正常退出/.test(document.body.innerText), null, { timeout: 15000 }).then(() => console.log("dirty-restart toast: ok")).catch(() => console.log("dirty-restart toast: 没出现"));
 await app.close();
 // 正常退出后再开：不该有提示
-app = await electron.launch({ executablePath: bin, args: [SHELL], env, cwd: SHELL }); win = await mainWindow(app); await park(app); await win.waitForTimeout(2500);
+app = await launchShell(); win = await mainWindow(app); await park(app); await win.waitForTimeout(2500);
 console.log("clean restart toast:", await win.evaluate(() => /上次没有正常退出/.test(document.body.innerText)) ? "有（错）" : "无（对）");
 /* ── 多窗口 + 拖拽路径桥（M14-5 下半，2026-10-22）──
    ⚠️⚠️ **这一节钉的是「多窗口不是一句 new BrowserWindow」。**
@@ -452,11 +524,19 @@ await app.close();
 {
   const { Client } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js");
   const { StdioClientTransport } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js");
-  const t1 = Date.now(); const tr = new StdioClientTransport({ command: bin, args: [SHELL, "--mcp"], env, cwd: SHELL, stderr: "pipe" }); const c = new Client({ name: "t", version: "0" });
+  /* ⚠️ **MCP 实例用它自己的 `userData`**，不和上面那个窗口实例共用。
+     理由不是测试方便，而是**产品代码里的一条真实约束**：`main.mjs` 第 24 行
+     `requestSingleInstanceLock()` 是**无条件**的，`--mcp` 模式也要取锁 ——
+     于是「用户开着 app 的同时，外部 MCP 客户端起 `Umbra Studio --mcp`」会**直接退出**，
+     秘书接不上。那是另一条缺陷（已单独报出），不在这一节的范围里；
+     这里给它独立的 userData 只是**让这一节测它自己该测的东西**，不掩盖那件事。 */
+  const UDD_MCP = mkdtempSync(join(tmpdir(), "umbra-shelltest-mcp-"));
+  const t1 = Date.now(); const tr = new StdioClientTransport({ command: bin, args: [`--user-data-dir=${UDD_MCP}`, SHELL, "--mcp"], env, cwd: SHELL, stderr: "pipe" }); const c = new Client({ name: "t", version: "0" });
   await c.connect(tr); const tools = await c.listTools(); const r = await c.callTool({ name: "list_projects", arguments: {} }); const j = JSON.parse(r.content[0].text);
   console.log("--mcp: initialize", Date.now() - t1, "ms · tools", tools.tools.length, "· list_projects ok", j.ok);
   await c.close(); await new Promise(r => setTimeout(r, 800)); const alive = await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[U]mbraStudio/shell.*--mcp'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); });
   console.log("--mcp: 客户端断开后壳进程还活着:", alive, "(壳有窗口，stdin 关了不退出是预期；秘书用时窗口可见)");
+  try { rmSync(UDD_MCP, { recursive: true, force: true }); } catch { /* 清不掉也不算错 */ }
 }
 /* ── 命令行带一个路径进来（M14-5 / `doc/11` Q59–Q61）──
    「右键 › 打开方式」和「双击」走的是 macOS 的 `open-file` 事件，**判据写不进来**
@@ -475,7 +555,7 @@ await app.close();
   if (!one) console.log("命令行打开：跳过 —— 测试副本里没有可打开的文件");
   else {
     const t2 = Date.now();
-    const a2 = await electron.launch({ executablePath: bin, args: [SHELL, copy + "/" + one], env, cwd: SHELL });
+    const a2 = await launchShell([copy + "/" + one]);
     const w2 = await mainWindow(a2);
     await park(a2);
     /* 判据是**工作台开到了那一份**，不是「窗口出来了」——
@@ -517,4 +597,6 @@ try {
      **一句「本来就没有」把「我没删到」说成了「没有要删的」。** */
   const r2 = dropRecordsUnder(S, { onlyDead: false });
   console.log("收尾：旁数据记录", r2.removed.length ? `清掉 ${r2.removed.length} 条` : "本来就没有");
-} catch (e) { console.log("收尾：清旁数据记录没成（不影响测试结论）:", String(e).slice(0, 60)); }
+} catch (e) { /* 收尾：清掉自己那份临时 `userData`（不清的话每轮攒一个 —— `doc/00` §166 那条纪律）。 */
+try { rmSync(UDD, { recursive: true, force: true }); console.log("临时 userData 已清:", UDD); } catch { /* 清不掉也不算错 */ }
+console.log("收尾：清旁数据记录没成（不影响测试结论）:", String(e).slice(0, 60)); }
