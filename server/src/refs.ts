@@ -5,7 +5,7 @@
  * 所以生命周期操作必须先能回答「谁引用了我」。
  */
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { isInside, plainNameProblem } from "./pathguard.js";
+import { isInside, isInsideReal, plainNameProblem } from "./pathguard.js";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseDraft } from "./draft.js";
@@ -189,7 +189,7 @@ export async function renameDraft(
   const newFileName = newBaseName.endsWith(".dc.html") ? newBaseName : newBaseName + ".dc.html";
   const newAbs = resolve(oldDir, newFileName);
   /* 第二道：算出来的路径还得在项目里 —— 不依赖我对形状想得全不全。 */
-  if (!isInside(p.dir, newAbs)) throw new Error("改名后的路径跨出了项目目录");
+  if (!isInsideReal(p.dir, newAbs)) throw new Error("改名后的路径跨出了项目目录（链接也算，issue #140）");
 
   if (newAbs === oldAbs) {
     throw new Error("新旧文件名相同");
@@ -319,7 +319,7 @@ export async function moveDraft(
 
   // 计算目标路径
   const targetAbs = resolve(p.dir, targetDir);
-  if (!isInside(p.dir, targetAbs)) {                // issue #19
+  if (!isInsideReal(p.dir, targetAbs)) {            // issue #19 + #140（链接）
     throw new Error("目标目录跨出了项目目录");
   }
 

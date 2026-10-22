@@ -35,6 +35,8 @@ export interface FileEntry {
    *  ⚠️ **这个标记由服务端给**（`files.ts` 的 `isOpaquePath`）—— 前端不照名字自己猜，
    *  否则「哪些算基础设施」就有了两份清单，而两份清单迟早对不上。 */
   opaque?: boolean;
+  /** 指向项目外的符号链接（issue #140）：列出来、标出来，但打不开 */
+  outsideLink?: boolean;
 }
 export interface ListFilesResult { dir: string; entries: FileEntry[]; types: { dc: number; md: number; image: number; other: number } }
 export interface ReadFileResult {

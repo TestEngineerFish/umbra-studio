@@ -9,7 +9,7 @@
  * 判活只认 1+1：截图会骗人，一张不对的截图和一个坏掉的页面在屏上长得一样（doc/04 §2.1）。
  */
 import { createServer, type Server } from "node:http";
-import { isInside } from "./pathguard.js";
+import { isInside, isInsideReal } from "./pathguard.js";
 import { sendFile } from "./sendfile.js";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
@@ -97,7 +97,7 @@ export function startStatic(rootDir: string): Promise<{ server: Server; port: nu
            `normalize("/..")` 会钳到根，目前逃不出去，但**判定写法要统一**，
            免得下一个人把它当样板抄走。 */
         /* ⚠️ `isFile()` 而不是 `!isDirectory()`（issue #96）—— 见 `sendfile.ts` 的头注。 */
-        if (!isInside(rootDir, abs) || !existsSync(abs) || !statSync(abs).isFile()) {
+        if (!isInsideReal(rootDir, abs) || !existsSync(abs) || !statSync(abs).isFile()) {   // #140
           reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
           reply.end("404");
           return;

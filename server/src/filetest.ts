@@ -1412,5 +1412,99 @@ await rm(DIR, { recursive: true, force: true });
   ok(`（收尾）自己造的兜底仓库清干净了`, after.removed.length === 0,
      { 这一轮清掉: r.removed.length, 腾出KB: Math.round(r.freedBytes / 1024), 还活着的临时项目: r.keptAlive, 认不出的老仓库: r.unidentifiable });
 }
+/* ══════════════════════════════════════════════════════════════════════
+   ⑮ 项目里指向外面的符号链接（issue #140，geek-99 2026-10-22 裁定口径）
+
+   ⚠️⚠️ **根约束原来只比字面路径，全程不碰文件系统。** #19 修好的是
+   「`..` 和同前缀兄弟目录」那一半；**链接从来没有闸**：
+   `docs/notes.md -> ~/.umbrastudio/ai_config.json` 的 `relative()` 回
+   `"docs/notes.md"` → 判「项目内」→ `readFile` / `writeFile` / `rm` **都跟随链接**。
+   报错文案承诺的「只能读写项目目录里的文件」**在有链接时不成立**。
+
+   口径：解析后落在项目外 → **读 / 写 / 删 / 预览一律拒**；
+   文件树里**照常列出来**但标 `outsideLink`；指向项目**内部**的链接不受影响。
+   ⚠️ 最后那一条是分寸所在 —— **过度拦截和漏放一样是缺陷，只是症状跑到别的地方**
+   （`pathguard.ts` 里 `...dc.html` 那条教训）。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑮ 指向项目外的符号链接（issue #140）");
+{
+  const { symlink, readFile: rdf4, writeFile: wrf4 } = await import("node:fs/promises");
+  const { listFiles: lsf, readAnyFile, writeAnyFile, trashFile } = await import("./files.js");
+  const { isInsideReal, isOutsideLink, realOf } = await import("./pathguard.js");
+
+  /* ⚠️ **这一节自己建项目**，不复用文件头那个 `DIR` ——
+     它排在收尾清理之后，而那一步已经把 `DIR` 清掉了（第一版就撞上：
+     `symlink` 报 ENOENT，而读数看着像「建链接这件事做不到」）。
+     > **夹具不在了和产品做不到，报出来的样子一样**（本轮第 2 次）。 */
+  const { mkdtemp: mkdt15 } = await import("node:fs/promises");
+  const { tmpdir: td15 } = await import("node:os");
+  const L = await mkdt15(join(td15(), "umbra-filetest-link-"));
+  await wrf4(join(L, "project.json"), JSON.stringify({ name: "linktest", title: "链接" }), "utf8");
+  await wrf4(join(L, "需求.md"), "# 日志页需求\n\n正文。\n", "utf8");
+  const lp = await buildProject(L);
+
+  /* 项目外的那两个样本（放在项目的**上一层**，模拟「别人给的项目里带个链接」） */
+  const OUT = await mkdt15(join(td15(), "umbra-filetest-outside-"));
+  const secret = join(OUT, "secret.json");
+  await wrf4(secret, '{"apiKey":"不该被读到"}\n', "utf8");
+  await symlink(secret, join(L, "看着像笔记.md"));            // 指向项目外的**文件**
+  await symlink(OUT, join(L, "外链目录"));                     // 指向项目外的**目录**
+  await symlink(join(L, "需求.md"), join(L, "项目内的链接.md")); // 指向项目**内**：不该被拦
+
+  /* ── ⓐ 纯函数那一层 ── */
+  ok("`isInsideReal` 拦住指向项目外的链接", !isInsideReal(L, join(L, "看着像笔记.md")));
+  ok("**指向项目内的链接照常算「在里面」**（别过度拦截）", isInsideReal(L, join(L, "项目内的链接.md")));
+  ok("`isOutsideLink` 只对前者为真",
+     isOutsideLink(L, join(L, "看着像笔记.md")) && !isOutsideLink(L, join(L, "项目内的链接.md")));
+  /* ⚠️ 目标**还不存在**也要能解（写新文件时就是这样）—— 这一条是 `realOf` 的关键性质 */
+  const ghost = realOf(join(L, "外链目录", "还没建的.md"));
+  /* ⚠️ 比的时候两边都要 `realpath` 过 —— macOS 的 `/var` 是链接，
+     `OUT` 是未解析的 `/var/...` 而 `ghost` 是解析过的 `/private/var/...`
+     （**同一个坑本轮第 5 次**：判据红的理由是错的）。 */
+  ok("**目标还不存在也解得出来**（写新文件时目标必然不存在）",
+     ghost.startsWith(realOf(OUT)) && ghost.endsWith("还没建的.md") && !ghost.includes("外链目录"),
+     `${ghost}  ← 期望以 ${realOf(OUT)} 开头`);
+
+  /* ── ⓑ 读 / 写 / 删三条路都拒，而且外面那份一个字节没变 ── */
+  const before = await rdf4(secret, "utf8");
+  /* ⚠️ **每条用自己的链接样本**（issue #140 的判据第一版栽在这里）：
+     四条共用一条链接时，「写」那一条**成功之后把链接换成了普通文件**，
+     于是「删被拒」和「树里标 outsideLink」测的是一个**已经不存在的样本** ——
+     两条红得莫名其妙，而真因只有一个。
+     > **判据之间不能互相毁夹具**（`doc/00` §143.6）。 */
+  await symlink(secret, join(L, "样本-写.md"));
+  await symlink(secret, join(L, "样本-删.md"));
+  let 读 = "没拒", 写 = "没拒", 删 = "没拒", 穿目录写 = "没拒";
+  try { await readAnyFile(lp, "看着像笔记.md"); } catch (e) { 读 = (e as Error).message || String(e); }
+  try { await writeAnyFile(lp, "样本-写.md", "被改了"); } catch (e) { 写 = (e as Error).message || String(e); }
+  try { await trashFile(lp, "样本-删.md"); } catch (e) { 删 = (e as Error).message || String(e); }
+  try { await writeAnyFile(lp, "外链目录/新文件.md", "穿过去了"); } catch (e) { 穿目录写 = (e as Error).message || String(e); }
+  ok("**读被拒**", 读 !== "没拒", 读.slice(0, 60));
+  ok("**写被拒**", 写 !== "没拒", 写.slice(0, 60));
+  ok("**删被拒**", 删 !== "没拒", 删.slice(0, 60));
+  ok("**穿过外链目录往外写也被拒**（目录链接和文件链接是两条路）", 穿目录写 !== "没拒", 穿目录写.slice(0, 60));
+  /* ⚠️ 这一条是**真相** —— 上面四条都是「它说拒了」，这一条问「盘上那份动没动」。
+     只断言「抛了异常」的话，一个在写之后才抛的实现照样绿。 */
+  ok("**项目外那份文件一个字节都没变**", (await rdf4(secret, "utf8")) === before);
+  const { existsSync: ex } = await import("node:fs");
+  ok("也没有在项目外建出新文件", !ex(join(OUT, "新文件.md")));
+
+  /* ── ⓒ 指向项目内的链接照常能读（口径的后半句）── */
+  let 内链读到 = "";
+  try { 内链读到 = (await readAnyFile(lp, "项目内的链接.md")).content ?? ""; } catch (e) { 内链读到 = "✗ " + (e as Error).message; }
+  ok("**指向项目内的链接照常读得到**", 内链读到.includes("日志页需求"), 内链读到.slice(0, 40));
+
+  /* ── ⓓ 文件树：列出来、标出来 ── */
+  const ls = await lsf(lp);
+  const row = ls.entries.find((x) => x.name === "看着像笔记.md");
+  const inner = ls.entries.find((x) => x.name === "项目内的链接.md");
+  ok("**它在文件树里列出来了**（不列的话用户以为软件丢了他的东西）", !!row, row?.name);
+  ok("**而且标着 `outsideLink`**", row?.outsideLink === true, JSON.stringify(row ?? null).slice(0, 100));
+  ok("指向项目内的那条**不带**这个标记", !!inner && inner.outsideLink === undefined, JSON.stringify(inner ?? null).slice(0, 80));
+
+  await rm(OUT, { recursive: true, force: true });
+  await rm(L, { recursive: true, force: true });
+}
+
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

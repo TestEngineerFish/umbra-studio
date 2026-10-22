@@ -8,7 +8,7 @@
  */
 import { readdir, readFile, stat, rename, cp, mkdir } from "node:fs/promises";
 import { hasRepo } from "./gitkeep.js";
-import { isInside, resolveInside, plainNameProblem } from "./pathguard.js";
+import { isInside, isInsideReal, plainNameProblem, resolveInside } from "./pathguard.js";
 import { existsSync, cpSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve, relative, dirname, basename, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -273,7 +273,8 @@ export async function listDrafts(p: Project): Promise<string[]> {
 export function draftPath(p: Project, path: string): string {
   const abs = resolve(p.dir, path);
   /* issue #19：`startsWith` 不带分隔符，兄弟目录 `<项目名>2` 会穿过去 */
-  if (!isInside(p.dir, abs)) {
+  /* issue #140：解完符号链接再比 —— `isInsideReal` 内部经 realpath 规范化，字面那一半也覆盖了 */
+  if (!isInsideReal(p.dir, abs)) {
     throw new ToolError(err(X.BAD_INPUT, path, { kind: "path", name: path },
       "稿的路径跨出了项目目录", { fix: "path 必须是相对项目根的路径，不能用 .. 跳出去" }));
   }
@@ -591,7 +592,7 @@ export async function createDraft(
   source: DraftSource,
 ): Promise<CreateDraftResult> {
   const abs = resolve(p.dir, path);
-  if (!isInside(p.dir, abs)) {                      // issue #19
+  if (!isInsideReal(p.dir, abs)) {           // issue #19 + #140（链接）
     throw new Error("稿的路径跨出了项目目录");
   }
   if (existsSync(abs)) {
@@ -809,7 +810,7 @@ export async function duplicateDraft(
   /* 第二道：算出来的路径必须还在项目里。
      ⚠️ 形状那一道已经把分隔符挡掉了，这一道**不依赖我对形状想得全不全** ——
      和 #57 / #63 同一套做法（`00` §140.1 的「为什么设两道」）。 */
-  if (!isInside(p.dir, newAbs)) {
+  if (!isInsideReal(p.dir, newAbs)) {   // #140
     throw new ToolError(err(X.BAD_INPUT, path, { kind: "key", name: "newName" },
       "副本的路径跨出了项目目录", { fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue。" }));
   }
@@ -846,7 +847,7 @@ export async function createFolder(
   folderPath: string,
 ): Promise<CreateFolderResult> {
   const abs = resolve(p.dir, folderPath);
-  if (!isInside(p.dir, abs)) {                      // issue #19
+  if (!isInsideReal(p.dir, abs)) {           // issue #19 + #140（链接）
     throw new Error("目录路径跨出了项目目录");
   }
 

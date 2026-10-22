@@ -4,6 +4,7 @@ import type { Draft, FileEntry, Health, ListFilesResult } from "../api/types";
 import { isFileDrag } from "../host/drop";
 import { Glyph } from "../ui/Glyph";
 import { CtxMenu, itemsFor, type CtxActions, type CtxTarget } from "./ctxmenu";
+import { toast } from "../ui/Toast";
 import { PopoverAt } from "../ui/Popover";
 import { kindDef } from "@shared/kinds";
 import { inActive } from "./scope";   // 并存：只找当前那个工作台（M15-1 S2）
@@ -69,6 +70,11 @@ export interface TreeProps {
    *  问句和那件写操作也归工作台 —— 和 `onRenamed` 同一个分工：**树不持有别人的决定**。 */
   onDropFiles?: (files: File[], destDir: string) => void;
 }
+
+/** 点到「指向项目外的链接」时说的那句话（issue #140）。
+ *  ⚠️ **要给出路** —— 只说「打不开」用户会以为是软件坏了。 */
+const sayOutside = (path: string): void =>
+  toast("这是一条指向项目外面的链接", `${path} 指到项目目录外面。从这里读写它等于读写项目外的文件，所以不放行。要改那个文件，直接打开它真正所在的那个目录。`, "error");
 
 export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, healthOf, projectName, drafts, indexed, reindexing, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
   const [goto, setGoto] = useState(false);
@@ -233,10 +239,15 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
                于是**每一行根级文件一起亮** —— 看上去像「会放到所有这些地方」。
                落点是项目根时亮的是树的空白区（下面那个容器），那才是「根」的样子。 */
             dropAt !== null && e.isDir && dropAt === e.path ? "bg-accentSoft ring-1 ring-inset ring-accent" : ""}`}
-          style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT, ...(e.opaque ? { opacity: 0.55 } : null) }}
-          title={e.opaque ? `${e.path} —— 版本控制自己的数据。看得见，但 Umbra Studio 不碰它，也不计入项目统计。` : e.path}
-          onClick={() => (e.isDir ? toggle(e.path) : onOpenFile(e.path))}
-          onDoubleClick={() => (e.isDir ? onOpenDir(e.path) : onOpenFile(e.path, true))}
+          style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT, ...(e.opaque || e.outsideLink ? { opacity: 0.55 } : null) }}
+          title={e.outsideLink
+            ? `${e.path} —— 这是一条指向项目外面的链接。看得见，但从这里读写它等于读写项目外的文件，所以打不开。`
+            : e.opaque ? `${e.path} —— 版本控制自己的数据。看得见，但 Umbra Studio 不碰它，也不计入项目统计。` : e.path}
+          /* ⚠️ 指向项目外的链接**点了要说一句**，不是静默不动（issue #140）——
+             「点了没反应」这一族在本项目里出现过太多次；而这里**有一个真实的理由**
+             可以说出来，不说才是浪费。 */
+          onClick={() => (e.outsideLink ? sayOutside(e.path) : e.isDir ? toggle(e.path) : onOpenFile(e.path))}
+          onDoubleClick={() => (e.outsideLink ? sayOutside(e.path) : e.isDir ? onOpenDir(e.path) : onOpenFile(e.path, true))}
           onContextMenu={(ev) => {
             ev.preventDefault(); ev.stopPropagation();
             setCtx({ x: ev.clientX, y: ev.clientY, target: e.isDir

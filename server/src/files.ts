@@ -27,7 +27,7 @@ import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
 import { isToolPage } from "./indexpage.js";
-import { isInside } from "./pathguard.js";
+import { isInside, isInsideReal, isOutsideLink } from "./pathguard.js";
 import { writeAtomic } from "./normalize.js";
 import { listDrafts, type Project } from "./project.js";
 
@@ -195,6 +195,13 @@ export interface FileEntry {
   /** **别人的基础设施目录**（`.git`）—— 列出来让用户知道它在，但我们不碰、也不递归进去。
    *  界面按这个标记把它折叠 / 置灰 / 排到末尾（Q77，用户选的 (b) 显示但默认折叠）。 */
   opaque?: boolean;
+  /** **一条指向项目外面的符号链接**（issue #140，geek-99 2026-10-22 裁定）。
+   *
+   *  列出来、但读 / 写 / 删 / 预览一律拒。
+   *  > **「列出来但打不开」比「不列出来」好** —— 用户看得见那个文件，
+   *  > 才知道为什么它打不开，而不是以为软件丢了他的东西。
+   *  ⚠️ 指向项目**内部**的链接**不带这个标记**，照常能用（别过度拦截）。 */
+  outsideLink?: boolean;
 }
 
 export interface ListFilesResult {
@@ -237,6 +244,11 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
       path: rel, name: e.name, kind: kindOf(rel, e.isDirectory()), isDir: e.isDirectory(),
       size: e.isDirectory() ? 0 : st.size, updatedAt: st.mtime.toISOString(),
     };
+    /* ⚠️ **只对真的是链接的那几项做 realpath**（issue #140）——
+       对每一项都解一次的话，一个几千文件的目录要多几千次 syscall，
+       而**绝大多数文件压根不是链接**。`isSymbolicLink()` 来自 `withFileTypes`，
+       是 `readdir` 顺手给的，不额外花钱。 */
+    if (e.isSymbolicLink() && isOutsideLink(p.dir, full)) entry.outsideLink = true;
     if (e.isDirectory()) {
       /* 项数要和**这个用户看到的那个列表**一致，所以用同一把尺子（同一个 `showHiddenFiles`）——
          否则会出现「写着 3 项、点进去 5 个」。 */
@@ -539,7 +551,16 @@ export async function writeAnyFile(p: Project, rel: string, content: string | Bu
      `.md` / 代码 / 文本这些文件比设计稿更常在别的编辑器里改，
      只给设计稿装这道保险等于装了一半。 */
   const rescued = await commitExternalChanges(p.dir, clean);
-  const abs = join(p.dir, clean.split("/").join(sep));
+  /* ⚠️⚠️ **走 `safeJoin` 而不是自己 `join`**（issue #140）。原来这一行是
+     `join(p.dir, …)` —— 于是**根约束那两道闸整条路都绕过了**：
+     `write_file("指向外面的链接.md", …)` 会跟随链接写到项目外，
+     而 `rename` 还会把那条链接**替换成一个普通文件**。
+     > 读那条路走 `mustFile` → `safeJoin`，有闸；写这条路自己拼，没闸 ——
+     > **一道闸只守住一条路等于没守**（#75 同族，这次是同一个文件里的两条路）。
+     ⚠️ 判据顺带暴露出第二件事：写成功之后链接被换成普通文件，于是
+     紧跟着的「删被拒」「树里标 outsideLink」**全都在测一个已经不存在的样本**
+     （`doc/00` §143.6「样本互相毁夹具」）。 */
+  const abs = safeJoin(p, clean);
   const exists = existsSync(abs);
   const steps: string[] = [];
 
@@ -1075,9 +1096,19 @@ export function normalizeRel(p: Project, rel: string): string {
 function safeJoin(p: Project, rel: string): string {
   const c = clean(rel);
   const abs = c ? join(p.dir, c.split("/").join(sep)) : p.dir;
-  if (!abs.startsWith(p.dir)) {
+  /* ⚠️ **两道闸，问的不是同一个问题**（issue #140）：
+     ① `isInside` 比字面 —— 拦 `..` 和同前缀兄弟目录（#19）；
+     ② `isInsideReal` 解完符号链接再比 —— 拦「项目里放一个指向外面的链接」。
+     原来只有一道，而且是 `startsWith(p.dir)`（连 #19 那一半都是旧写法）。
+     ⚠️ **拒因要分开说**：两种情况用户该做的事不同
+     （前者改路径，后者那个文件压根不该从这里碰）。 */
+  if (!isInside(p.dir, abs)) {
     throw new ToolError(err(X.IO, rel, { kind: "path", name: rel }, "路径跑到项目外面去了",
       { fix: "只能读写项目目录里的文件。" }));
+  }
+  if (!isInsideReal(p.dir, abs)) {
+    throw new ToolError(err(X.IO, rel, { kind: "path", name: rel }, "这是一条指向项目外面的链接",
+      { fix: "它在文件树里标着「指向项目外」。链接本身可以留着，但从这里读写它等于读写项目外的文件，所以不放行。要改那个文件，请直接打开它所在的那个目录。" }));
   }
   return abs;
 }

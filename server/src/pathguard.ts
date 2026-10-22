@@ -1,4 +1,5 @@
 import path, { type PlatformPath } from "node:path";
+import { realpathSync } from "node:fs";
 
 /** 「这个路径在不在那个目录里面」——**全项目唯一一份判定**（issue #19，2026-09-28）。
  *
@@ -44,11 +45,73 @@ export function isInside(base: string, abs: string, p: PlatformPath = path): boo
 }
 
 /** 把相对项目根的路径解成绝对路径，并守住「不许跨出项目目录」。
- *  形状不对就抛 —— 调用方各自包装成自己的错误信封（文案不同，但判据是同一份）。 */
+ *  形状不对就抛 —— 调用方各自包装成自己的错误信封（文案不同，但判据是同一份）。
+ *  ⚠️ 这一件走**字面**判定；要连符号链接一起守的用 `resolveInsideReal`（见下）。 */
 export function resolveInside(baseDir: string, rel: string): string {
   const abs = path.resolve(baseDir, rel);
   if (!isInside(baseDir, abs)) throw new Error(`路径跨出了项目目录：${rel}`);
   return abs;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   符号链接那一半（issue #140，geek-99 2026-10-22 裁定口径）
+
+   ⚠️⚠️ **上面那道闸只比字面路径，全程不碰文件系统。** 于是 #19 修好的是
+   「`..` 和同前缀兄弟目录」那一半，而**链接**从来没有闸：
+   项目里放一个 `docs/notes.md -> ~/.umbrastudio/ai_config.json`，
+   `relative()` 回的是 `"docs/notes.md"` → 判「项目内」→ 之后 `readFile` /
+   `writeFile` / `rm` **都跟随链接**，落到项目外的真实文件上。
+   报错文案承诺的「只能读写项目目录里的文件」**在有链接时不成立**。
+
+   能串起来的链路（issue 里列的）：别人给的设计项目里带一个指向
+   `~/.umbrastudio/ai_config.json` 的链接，名字看着像普通 md →
+   应用内 AI `read_file` 它 → **密钥进模型上下文、进对话记录**；
+   或者预览里的稿 `fetch("./docs/notes.md")`（静态服务不要令牌、同源）。
+
+   **裁定的口径**：解析后落在项目外的，**读 / 写 / 删 / 预览一律拒**；
+   文件树里**照常列出来**但标「指向项目外」、打不开；指向项目**内部**的链接不受影响。
+   > **「列出来但打不开」比「不列出来」好** —— 用户看得见那个文件，
+   > 才知道为什么它打不开，而不是以为软件丢了他的东西。
+   ══════════════════════════════════════════════════════════════════════ */
+
+/** `abs` 解析完符号链接之后的真实路径。**目标还不存在也要能用**。
+ *
+ *  ⚠️ 不能直接 `realpathSync(abs)` —— 写一份新文件时目标还不在，那会抛。
+ *  做法：从自身往上找**第一个存在的祖先**，`realpath` 它，再把剩下那几段拼回去。
+ *  ⚠️ 走到根都 `realpath` 不了（极端情况）就**原样回**，让字面那道闸去判 ——
+ *  这里的职责是「解析」，不是「拒绝」。 */
+export function realOf(abs: string, p: PlatformPath = path): string {
+  let cur = abs;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(cur);
+      /* ⚠️ `[...tail]` 再 `reverse()` —— `tail.reverse()` 是**就地**反转，
+         在循环里调用会把数组本身改掉（第一版就这么写的，第二次迭代顺序就错了）。 */
+      return tail.length ? p.join(real, ...[...tail].reverse()) : real;
+    } catch { /* 这一段不存在，往上一层 */ }
+    const up = p.dirname(cur);
+    if (up === cur) return abs;
+    tail.push(p.basename(cur));
+    cur = up;
+  }
+}
+
+/** 和 `isInside` 同一个问题，但**先把符号链接解开**（issue #140）。
+ *
+ *  ⚠️ `base` 自己也要 `realpath`：项目目录本身可能在一条链接下
+ *  （macOS 的 `/var` → `/private/var` 就是，而临时目录都在那下面）——
+ *  不解 base 的话，**一个完全正常的项目**会被判成「全都在项目外」。 */
+export function isInsideReal(base: string, abs: string): boolean {
+  let realBase: string;
+  try { realBase = realpathSync(base); } catch { return false; }
+  return isInside(realBase, realOf(abs));
+}
+
+/** 这个路径是不是「一条指向项目外的链接」—— 给文件树标记用。
+ *  字面在项目里、而解析之后不在 = 就是它。 */
+export function isOutsideLink(base: string, abs: string): boolean {
+  return isInside(base, abs) && !isInsideReal(base, abs);
 }
 
 /** 「这是一个普通名字，不是一段路径」—— **全项目唯一一份判定**（issue #70，2026-10-05）。

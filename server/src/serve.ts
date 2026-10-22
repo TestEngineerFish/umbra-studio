@@ -20,7 +20,7 @@ import { isToolPage } from "./indexpage.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
 import { BUILTIN, kindOf } from "./shared/kinds.js";
-import { resolveInside, isInside } from "./pathguard.js";
+import { isInside, isInsideReal, resolveInside } from "./pathguard.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -51,7 +51,9 @@ function serveStatic(root: string, rel: string, reply: import("node:http").Serve
      FIFO / socket / 块设备都「不是目录」，而 `open` 一个 FIFO 会**一直阻塞在
      libuv 线程池里**（默认 4 个线程），请求几次就能把同进程所有 fs 操作卡住。
      `isInside` 而不是 `startsWith`（#19 那一族）。 */
-  if (!isInside(root, f) || !isServable(f)) return false;
+  /* #140：预览静态服务也解链接 —— 稿里 `fetch("./链")` 走的就是这条路，
+     而它不要令牌、同源，于是页面脚本能读到项目外的文件 */
+  if (!isInsideReal(root, f) || !isServable(f)) return false;
   sendFile(reply, f, { "content-type": MIME[extname(f).toLowerCase()] ?? "application/octet-stream", "cache-control": "no-store", ...extra });
   return true;
 }
@@ -478,7 +480,7 @@ function routeStatic(
        `abs.startsWith(dir)` + `!isDirectory()` —— 前者是 #19 那一族
        （不带分隔符，同前缀兄弟目录能穿进去），后者是 #96 那一族（FIFO 会阻塞）。
        **#96 的关单说明写的是「三处都换上」，而这一处没换** —— 而它恰恰是最常走的。 */
-    if (!isInside(dir, abs) || !isServable(abs)) {
+    if (!isInsideReal(dir, abs) || !isServable(abs)) {   // #140
       reply.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       reply.end(`404 ${raw}`);
       return;

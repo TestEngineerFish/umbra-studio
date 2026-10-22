@@ -392,6 +392,45 @@ console.log("workbench:", await win.evaluate(() => document.querySelector("heade
   console.log(`open-file（换另一份）: ${got3 ? `✓ 打开了「${two}」` : "✗ 没反应"}`);
 }
 
+/* ═══ 指向项目外的符号链接：列出来、标出来、点不开（issue #140）═══
+   ⚠️ 服务端那一半有 `filetest` ⑮ 的 15 条；**界面这一半只能在真浏览器里看** ——
+   而 `uitest` / `hometest` / `multiprojtest` 这台机器上跑不起来
+   （Playwright 的 headless chromium 没装），所以借 Electron 自带的 Chromium 验。 */
+{
+  const { symlinkSync, mkdtempSync: mkdtS, writeFileSync: wfS, rmSync: rmS } = await import("node:fs");
+  const OUTD = mkdtS(join(tmpdir(), "umbra-shelltest-outside-"));
+  wfS(join(OUTD, "secret.json"), '{"apiKey":"不该被读到"}\n', "utf8");
+  const linkRel = "看着像笔记.md";
+  const linkAbs = join(S, "umbra_copy", linkRel);
+  try { rmS(linkAbs, { force: true }); } catch { /* 没有就没有 */ }
+  symlinkSync(join(OUTD, "secret.json"), linkAbs);
+  /* 让目录树重新列一次 —— 磁盘监听会刷，但别等它，直接重开这个目录 */
+  await app.evaluate(({ BrowserWindow }, dir) => {
+    const w = BrowserWindow.getAllWindows().find((x) => x.isVisible());
+    w.webContents.send("host:event", { type: "open-dir", dir });
+  }, join(S, "umbra_copy"));
+  let row = null;
+  for (let i = 0; i < 40; i++) {
+    row = await win.evaluate((rel) => {
+      const el = document.querySelector(`[data-ud="tree-row"][data-path="${rel}"], [data-path="${rel}"]`);
+      return el ? { title: el.getAttribute("title") ?? "", opacity: getComputedStyle(el).opacity } : null;
+    }, linkRel);
+    if (row) break;
+    await win.waitForTimeout(250);
+  }
+  console.log(`外链在树里: ${row ? "✓ 列出来了" : "✗ 没列出来（不列的话用户会以为软件丢了他的东西）"}`);
+  console.log(`外链标出来了: ${row && /指向项目外面的链接/.test(row.title) ? `✓ 鼠标悬停说得出原因 · 透明度 ${row.opacity}` : `✗ title=${JSON.stringify(row?.title ?? null)}`}`);
+  if (row) {
+    /* 点它：该弹一句话而不是打开它（「点了没反应」这一族） */
+    await win.evaluate((rel) => (document.querySelector(`[data-path="${rel}"]`))?.dispatchEvent(new MouseEvent("click", { bubbles: true })), linkRel);
+    await win.waitForTimeout(600);
+    const said = await win.evaluate(() => document.body.innerText.includes("指向项目外面的链接"));
+    const opened = await win.evaluate((rel) => [...document.querySelectorAll('[data-ud="tab"]')].some((e) => e.getAttribute("data-path") === rel), linkRel);
+    console.log(`点外链: ${said && !opened ? "✓ 弹了一句话，而且没给它开页签" : `✗ 说了=${said} 开了页签=${opened}`}`);
+  }
+  try { rmS(linkAbs, { force: true }); rmS(OUTD, { recursive: true, force: true }); } catch { /* 清不掉也不算错 */ }
+}
+
 // 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
 /* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
    原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——
