@@ -26,6 +26,17 @@ import { chromium } from "../server/node_modules/playwright-core/index.mjs";
    拿它写不出一份「不是 UTF-8 的文件」，也就测不了「认出编码不对」这件事。
    绕过写入口在这里是对的：样本不是产品行为，**它是仪器**。 */
 import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+/* ⚠️ **品牌名一律从 `brand.ts` 读，判据里不许硬写**（2026-10-22 改名之后抓到的回归）。
+   第 129 行原来硬写着「`Umbra 服务端 AI`」，而产品那头是 `${platformName}服务端 AI`
+   （`ai_config.ts:177`）—— 改名当天那条判据就红了，而**读数长得像产品坏了**
+   （「刷新后还是它 — 刷新后 长尾雀服务端 AI」）。
+   ⚠️ 为什么 `captest` ⑯ 那道闸没拦住：它查的是 `${codename} Studio` 这一个串，
+   而这里是 `${codename} 服务端 AI` —— **同一类错的另一个长相**。
+   > **一道闸按「一个具体的串」写，它守住的就只有那个串。**
+   已补一条按「`Umbra` 紧跟中文」查的（`captest` ⑯ⓘ）。
+   ⚠️ 读 `dist` 那一份：判据是 `.mjs`，import 不了 `.ts`；而服务本来就从 `dist` 跑，
+   所以它一定是构建过的那一份（**和产品读的是同一个值**，不是第二份抄写）。 */
+import { platformName } from "../server/dist/shared/brand.js";
 
 const URL_ = process.argv[2];
 if (!URL_) { console.error("用法：node app/uitest.mjs <__app 的 URL>"); process.exit(2); }
@@ -126,7 +137,11 @@ console.log("\n会话历史与引擎名（M8-11 下 / M8-13 · 设计侧第六�
 const railText = await pg.locator("aside").first().innerText();
 ok(!/通道\s*[ABC]\b/.test(railText), "会话栏里没有「通道 A/B/C」字样了");
 /* 「Umbra 服务端 AI」是 M12-4a（2026-10-10）加的那一档（通道 A 开了「用服务端 AI」）—— 原来的名单里没有它，本机开着那一档时这条无故红 */
-ok(/DeepSeek|Claude Code|火山方舟|Codex|Cursor|Umbra 服务端 AI/.test(railText), "显示的是引擎名", (railText.match(/DeepSeek|Claude Code|火山方舟|Codex|Cursor|Umbra 服务端 AI/g) ?? []).slice(0,3).join(" / "));
+/* ⚠️ **一个正则、一次调用** —— 带 `g` 的正则 `.test()` 会推进它自己的 `lastIndex`，
+   同一个对象先 `test` 再 `test` 就会从上一次的位置往后找。这里改成只用 `match`：
+   它的结果既是「有没有」也是读数，**不给状态留位置**。 */
+const engines = railText.match(new RegExp(`DeepSeek|Claude Code|火山方舟|Codex|Cursor|${platformName}服务端 AI`, "g")) ?? [];
+ok(engines.length > 0, "显示的是引擎名", engines.slice(0, 3).join(" / "));
 /* 会话栏头在第八轮只剩两样：引擎 ▾ 和历史钮。
    「标题被挤扁」那条判据随标题一起作废了 —— 标题搬进了历史列表。 */
 ok(await pg.locator('aside button[data-ud="engine"]').count() === 1, "会话栏头有引擎选择器");
@@ -394,6 +409,42 @@ let BASELINE = new Map();
   if (pre.files.length || pre.trash.length || snaps.length) {
     console.log(`  · 开跑前扫掉了上一轮的残留：项目根 ${pre.files.length} 份 · 回收站 ${pre.trash.length} 条 · 快照 ${snaps.length} 份`);
   }
+  /* ⚠️⚠️ **清掉文件之后得让界面别再看着它**（2026-10-22 加）。
+     实测的链条（`uitest8` 那一轮红的就是这个）：
+     上一轮抛在半路 → 样本留在项目根 → **`_uitest…` 这个前缀在排序里靠前，
+     于是它就是稿件列表的第一份** → `Workbench` 在「没有页签、没有 lastDraft」时
+     走 `open(store.drafts[0].file)`，**页面一加载就自动打开它** →
+     紧接着上面这次清理把文件扔进回收站 → 界面继续轮询一个不存在的路径 →
+     `validate` / `comments` / `changes` 各一个 **400**，
+     而「零 error」那条判据把它算到**产品**头上。
+     > **判据自己制造的噪声，和产品的缺陷，在读数里长得一样。**
+
+     ⚠️ §159.5 那条「先切走再删」管不了这一种 —— 那管的是**本轮**自己建的样本，
+     而这一份在**页面加载的那一刻**就已经开着了，等我们动手时已经晚了。
+     ⚠️ 这里刻意**不去判「界面当前开的是不是刚清掉的那一份」**：
+     那又会变成「清理依赖判据自己算出来的结论」（§2026-10-06 那条，已经栽过三次）。
+     清掉过东西就重新进一次 —— 几秒钟，换掉一整类假红。
+     ⚠️ 顺带说明：`localStorage` 在这里**帮不上忙也不用清** ——
+     Playwright 每轮 `newContext()` 都是全新的，上一轮的页签 / lastDraft
+     一个字节都带不过来。**自动打开的依据是盘上的文件列表，不是浏览器里的记忆。** */
+  if (pre.files.length || pre.trash.length) {
+    const wasOpen = await pg.evaluate(() => {
+      const b = window.__UD_APP;
+      try { return JSON.parse(localStorage.getItem(`us.lastDraft.${b.dir}`)) ?? null; } catch { return null; }
+    }).catch(() => null);
+    await pg.goto(URL_, { waitUntil: "domcontentloaded" });
+    await pg.waitForFunction(() => !!window.__UD_APP, null, { timeout: 30000 }).catch(() => {});
+    await pg.waitForTimeout(1500);
+    /* ⚠️⚠️ 清理那一刻制造的噪声不计入这一轮，**但必须说出来** ——
+       纪律④：把仪器清零之前先让人看见被清掉的是什么。
+       静默 `errs.length = 0` 就是「把仪器调成零」，和它要防的那件事同一个形状。 */
+    const dropped = [...new Set(bad4xx)];
+    const nErr = errs.length;
+    errs.length = 0; bad4xx.length = 0;
+    console.log(`  · 清掉残留之后重新进了一次（清理前界面开着：${wasOpen ?? "没开"}）`
+      + `；清理阶段的噪声不计入：error ${nErr} 条 · 4xx ${dropped.length} 种`
+      + (dropped.length ? ` —— ${dropped.slice(0, 3).join(" · ")}` : ""));
+  }
 }
 
 /** ⚠️ **确认卡会挡住一切**（它是全屏遮罩）。一节忘了收，下一节所有点击都点不动，
@@ -483,14 +534,22 @@ const openProps = async () => { const b = pg.locator('[data-ud="toggle-props"]')
      那样建出来的稿和用户残留的那份空白稿一样测不了东西。
    · ⚠️ **`projects/` 下别的东西一个都不删**（纪律⑥，geek-99 2026-10-22 重申）。
    ══════════════════════════════════════════════════════════════════════ */
-const DC_SAMPLE = "_uitest画布.dc.html";
+/* ⚠️⚠️ **名字里不许出现任何判据会去搜的词**（2026-10-23 栽过）。
+   原来它叫 `_uitest画布.dc.html`，而「文件工具栏」那一节是在详情区**数「画布」出现几次**
+   （`整页 N 处 · 工具栏里 1 处`，多出来的就算「视图里还留着一条没搬走的工具栏」）——
+   于是它数到了**我这个样本的文件名**，判据红在自己的夹具上。
+   > **判据的样本名不该包含任何判据会去搜的词。**
+   这和「判据里出现的字符串要是它检查的那个东西本身、不是提到它的文字」是同一个病的
+   第三种长相：前两次命中的是自己的注释，这次命中的是自己的夹具。
+   现在这三个探针词是「渲染」/「画布」/「树」—— `样稿` 三个都不碰。 */
+const DC_SAMPLE = "_uitest样稿.dc.html";
 /** 建画布样本。回 false = 没建成（调用方据此说「这一条没验到」而不是报产品的错）。 */
 const makeDcSample = async () => {
   const made = await pg.evaluate(async ({ name }) => {
     const b = window.__UD_APP;
     const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
     const w = await fetch(u("draft_write"), { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: name, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>画布样本</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:32px;font-family:system-ui}h1{font-size:28px;margin:0 0 16px}button{font-size:14px;padding:6px 12px}p{color:#666}</style></helmet>\n<div><h1>画布样本</h1><p>这一段给点选用</p><button>一颗钮</button><button>第二颗</button></div></x-dc></body></html>` }) });
+      body: JSON.stringify({ path: name, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>样稿</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:32px;font-family:system-ui}h1{font-size:28px;margin:0 0 16px}button{font-size:14px;padding:6px 12px}p{color:#666}</style></helmet>\n<div><h1>一份样稿</h1><p>这一段给点选用</p><button>一颗钮</button><button>第二颗</button></div></x-dc></body></html>` }) });
     return (await w.json()).ok === true;
   }, { name: DC_SAMPLE });
   if (made) await settleTree(DC_SAMPLE);
@@ -593,7 +652,11 @@ for (const [suffix, label, probe] of [
      插件这一版按稿叫「源码 / 树」。探的是**同一件事** —— 开关在不在那条带上。 */
   [".json", "JSON", /树/g],
 ]) {
-  if (!(await openByName(suffix))) { ok(false, `${label}：项目里没有这种文件`); continue; }
+  /* ⚠️ `.dc.html` 走**判据自己那份样本**，不赌「树里第一份」（#192 那场赌博的最后一处）——
+     用户项目里第一份 `.dc.html` 是什么我们不知道，而这一节要数详情区里的词频，
+     样本里多一个探针词这条判据就红。 */
+  const opened = suffix === ".dc.html" ? await openDcSample() : await openByName(suffix);
+  if (!opened) { ok(false, `${label}：项目里没有这种文件`); continue; }
   await openEdit();
   const inBar = await countIn(bar(), probe);
   const onPage = await pageCount(probe);
@@ -2187,6 +2250,28 @@ else {
 console.log("\n控制台");
 ok(errs.length === 0, "零 error（已排除解析期的模板洞噪声）",
    errs.length ? `${errs[0]}${bad4xx.length ? ` ⟵ 4xx：${[...new Set(bad4xx)].slice(0, 3).join(" · ")}` : ""}` : "");
+
+/* ⚠️ **这一条是关于判据自己的**（2026-10-22 加，geek-99 要求补）。
+   上面那条「零 error」只看得到控制台那句 `Failed to load resource … 400`，
+   而那句话**既可能是产品的缺陷，也可能是判据自己留下的脚印**。
+   > **判据自己制造的噪声，和产品的缺陷，在读数里长得一样。**
+   所以要有一条判据专门认出后者，它钉的是**只有判据才有的那个特征**：样本名。
+   ⚠️ 它**不替代**「零 error」，是给那条红加一句「是谁造的」——
+   两条同时红 = 噪声是我造的；只有「零 error」红 = 真在产品上。 */
+{
+  const seen = [...new Set(bad4xx)];
+  const ofSample = seen.filter((s) => {
+    const m = /[?&](?:file|path)=([^&\s]*)/.exec(s);
+    if (!m) return false;
+    let v = m[1];
+    try { v = decodeURIComponent(v); } catch { /* 解不开就按原样试 */ }
+    const base = v.split("/").pop() ?? "";
+    return SAMPLE_PATS.some((re) => re.test(base));
+  });
+  ok(ofSample.length === 0,
+     "**4xx 里没有一条指向回归自己的样本**（有 = 这噪声是判据造的，不是产品的错）",
+     ofSample.length ? ofSample.slice(0, 3).join(" · ") : `4xx 共 ${seen.length} 种，没有一种指向样本`);
+}
 
 /* ── 插件 UI 的边界（M11-4）──
    这是整套插件机制唯一的**安全**断言，所以钉在这儿：
@@ -4715,7 +4800,7 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    加了判据就把这个数一起改，和 `fixtures/` 里每份基准钉一条犯过的错同一个意思。 */
 
-console.log("\n⑬ 设置 › Umbra 账号：画哪一支登录入口（2026-10-21）");
+console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口（2026-10-21）`);
 /* ⚠️ 这一块**原来一条判据都没有** —— 2026-10-21 要改它时才发现（`doc/11` Q74 ③）。
    那一轮我先以「没判据所以不改」压住了一次，拿到对接说明后才连判据一起做。
 
@@ -4732,7 +4817,7 @@ console.log("\n⑬ 设置 › Umbra 账号：画哪一支登录入口（2026-10-
   const acct = pg.locator('[data-ud="account"]');
   await acct.first().waitFor({ state: "visible", timeout: 6000 }).catch(() => {});
   const acctN = await acct.count();
-  ok(acctN === 1, "从项目菜单打开设置，里面有「Umbra 账号」那一块", `count=${acctN}`);
+  ok(acctN === 1, `从项目菜单打开设置，里面有「${platformName}账号」那一块`, `count=${acctN}`);
 
   const pwForm = await pg.locator('[data-ud="account-password-login"]').count();
   const oidcBtn = await pg.locator('[data-ud="account-oidc-login"]').count();
