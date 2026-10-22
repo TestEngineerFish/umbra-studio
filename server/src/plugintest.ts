@@ -614,5 +614,54 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   /* 「我删掉了 0 个」和「现在一个都不剩」是两句话（`purge.ts` §223） */
   if (left.length) { console.log(`  ✗ （收尾自检）还剩 ${left.length} 个死条目：${left.slice(0, 4).join(" ")}`); fail++; }
 }
+/* ══════════════════════════════════════════════════════════════════════
+   ⑮ 跨语言对拍：我们算的 canonical 字节，和格式正本的测试向量一致（issue #163）
+
+   `.umbraplugin` 的签名签的是 `canonical()` 那串字节，而这件事有**三份实现**：
+   · Studio（`plugin/pack.ts`，**验签**）
+   · umbra-plugins（`scripts/lib/package.mjs`，打包时算 sha）
+   · Umbra 服务端（`plugin_packages.py` 的 `canonical_text`，**签名**，Python）
+
+   ⚠️ 三份口径一致**全靠人去比** —— 而 Studio 这边**原来一条判据都没有**。
+   口径一分叉的症状是「这个包签名不对」，而真因在另一个仓的另一门语言里。
+   > **一件由三份实现共同维持的不变量，必须有一方去对拍，否则它只是三个人的记忆。**
+
+   ⚠️ geek-99 2026-10-22 拍板 **#163 走路 3**（不改成 JCS）：商城上的包已经签过名发出去了，
+   改签名输入就得重签或做迁移，收益抵不上；而眼下三处口径一致、服务端还有
+   「清单里有浮点字面量就拒」那道闸，实际风险已经压住了。
+   **所以这条判据就是那个决定的保险**：口径「保持一致」从一句话变成一个读数。
+
+   ⚠️ 向量在 `../umbra-plugins/sdk/test-vectors/`。那个仓不在旁边就**跳过并说出来**
+   （和 `converttest` 比对 PC 副本同一个处理）—— **跳过不算通过**。
+   ══════════════════════════════════════════════════════════════════════ */
+{
+  const { existsSync: ex15, readFileSync: rf15 } = await import("node:fs");
+  const { join: j15 } = await import("node:path");
+  const { createHash: ch15 } = await import("node:crypto");
+  const { TOOL_ROOT: TR15 } = await import("./project.js");
+  const { canonical } = await import("./plugin/pack.js");
+  const VEC = j15(TR15, "..", "umbra-plugins", "sdk", "test-vectors");
+  if (!ex15(j15(VEC, "canonical.bytes.json")) || !ex15(j15(VEC, "canonical.sha256"))) {
+    console.log(`  · 跳过「跨语言对拍 canonical」：旁边没有 umbra-plugins 仓（${VEC}）`);
+  } else {
+    const vec = JSON.parse(rf15(j15(VEC, "canonical.bytes.json"), "utf8")) as { format: number; manifest: Record<string, unknown>; files: Record<string, string> };
+    const want = rf15(j15(VEC, "canonical.sha256"), "utf8").trim().split(/\s+/)[0] ?? "";
+    const got = ch15("sha256").update(canonical(vec as never)).digest("hex");
+    ok(got === want,
+       "**我们算的 canonical 字节和格式正本的测试向量一致**（三份实现跨两门语言，这是唯一在对拍的地方）",
+       got === want ? `sha256 ${got.slice(0, 16)}…` : `我们 ${got.slice(0, 16)}… ≠ 向量 ${want.slice(0, 16)}…`);
+    /* ⚠️ 再钉一条**仪器自检**：向量本身别是空的 / 读错文件了 ——
+       「两个空值相等」也会让上面那条绿（纪律④：先排除仪器是零）。 */
+    ok(want.length === 64 && Object.keys(vec.files).length > 0 && !!vec.manifest["id"],
+       "（仪器自检）向量真读到了东西（64 位 sha · 有文件 · 有清单 id）",
+       `${Object.keys(vec.files).length} 个文件 · id=${String(vec.manifest["id"])}`);
+    /* ⚠️ 反方向：**改一个字节就该不一致** —— 不然「一致」可能只是什么都没比。 */
+    const tampered = { ...vec, manifest: { ...vec.manifest, version: "9.9.9" } };
+    const gotT = ch15("sha256").update(canonical(tampered as never)).digest("hex");
+    ok(gotT !== want, "（反向）清单改一个字段，canonical 就对不上了（证明上面那条真在比内容）",
+       `${gotT.slice(0, 16)}…`);
+  }
+}
+
 console.log(fail === 0 ? `\n✓ 插件机制 ${pass}/${pass + fail}` : `\n✗ 插件机制 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);
