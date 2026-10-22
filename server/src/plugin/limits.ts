@@ -12,6 +12,7 @@
  *  · 读：手改坏了的文件（越界、写成字符串）**夹到范围 / 回落默认**，不让插件因为一份坏配置全体起不来；
  *  · 写：越界直接拒（E_BAD_INPUT）—— 界面上填了 4096 却悄悄存成 2048，用户会以为自己存进去了。
  */
+import { BASE64_SAFE_MAX } from "../b64limit.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { X } from "../codes.js";
@@ -41,7 +42,10 @@ export const LIMIT_RANGES: Record<keyof PluginLimits, { min: number; max: number
   /* 默认值 = 原来的 `files.ts` `BINARY_MAX`（100 MB；那个常量 2026-10-19 删了，快照上限也改读这一项）。
      ⚠️ **这里不能从 `files.ts` 取任何东西**：`files.ts` 经 project → … → `sandbox.ts` 绕回本文件，模块顶层取它会撞上「初始化之前访问」
      （gaptest 当场栽过）。 */
-  binaryReadMaxMB: { min: 10, max: 1024, def: 100 },
+  /* ⚠️ `max` 原来是 1024，而 base64 在 ~384 MB 就抛 `ERR_STRING_TOO_LONG`（issue #180）——
+     也就是**设置页允许用户设一个必然失败的值**，而失败的样子是一句 V8 的内部错误。
+     上限跟着运行时算（`BASE64_SAFE_MAX`），不写死。 */
+  binaryReadMaxMB: { min: 10, max: Math.floor(BASE64_SAFE_MAX / 1048576), def: 100 },
   /* 默认值 = `files.ts` 的 `TEXT_MAX`（2 MB）；同上，不能在顶层引它。上限 64 MB：
      文本整份要解码成字符串再经 RPC / postMessage 进插件，再大就该按 byteOffset / byteLength 分段读了。 */
   textReadMaxMB: { min: 1, max: 64, def: 2 },

@@ -13,6 +13,7 @@
  *  **不做的**：不归一化、不改编码、不动换行、不碰 frontmatter —— 写进去什么样，盘上就什么样（H5）。
  */
 import { createHash } from "node:crypto";
+import { BASE64_SAFE_MAX } from "./b64limit.js";
 import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -39,6 +40,31 @@ export type { FileKind };
  *  ⚠️ 这是**模型 / MCP / HTTP / chat** 的上限，不进设置（大文件塞进模型上下文没有用）。
  *  插件来源的 `read_file` 用设置里的 `textReadMaxMB`（`plugin/limits.ts`，由 `cap/files.ts` 以 `opts.textMax` 传进来）。 */
 export const TEXT_MAX = 2 * 1024 * 1024;
+
+/* `BASE64_SAFE_MAX` 住在叶子模块 `b64limit.ts` 里（理由见那个文件），这里转一手 —— 
+   原来它定义在本文件，而 `plugin/limits.ts` 静态 import 它会在模块求值期撞 TDZ。 */
+export { BASE64_SAFE_MAX } from "./b64limit.js";
+
+/** 读这个文件，**但最多读 `cap` 字节**（issue #181）。
+ *
+ *  ⚠️⚠️ 原来 `readAnyFile` 第一句就是 `await readFile(abs)` ——
+ *  **先把整份读进内存，再判上限**。于是：
+ *  · 超过 **2 GiB** 的文件直接撞 Node 的 `readFile` 上限 → 抛 → 包成 `E_IO`，
+ *    **连「多大」和「可以按字节分段读」这两句都给不出来**；
+ *  · 就算没到 2 GiB，一份 1 GB 的文件也会先占 1 GB 内存，**只为了之后告诉用户「超限了」**。
+ *  > **判上限这件事只需要 `stat`，而我们却先读完了整份文件。**
+ *
+ *  回 `whole` 告诉调用方「这是不是整份」—— 它决定还能不能给 `sha256`
+ *  （截断的内容配整份的摘要是**写回的假凭据**，M14-11 那条已经定过这个口径）。 */
+async function readUpTo(abs: string, cap: number, size: number): Promise<{ buf: Buffer; whole: boolean }> {
+  if (size <= cap) return { buf: await readFile(abs), whole: true };
+  const fh = await open(abs, "r");
+  try {
+    const buf = Buffer.allocUnsafe(cap);
+    const { bytesRead } = await fh.read(buf, 0, cap, 0);
+    return { buf: buf.subarray(0, bytesRead), whole: false };
+  } finally { await fh.close(); }
+}
 /** 二进制按字节给（base64）的上限 / 新建文件记快照的上限：**以设置为准**（`plugin/limits.ts` 的 `binaryReadMaxMB`，默认 100 MB）。
  *  原来是这里的常量 `BINARY_MAX = 100 MB`；2026-10-19 起插件读取改读设置，同一天把快照那条也改过去、删掉常量 ——
  *  留着它就会有一条路悄悄还按 100 MB 走，而设置页上写的是另一个数。
@@ -389,15 +415,29 @@ function decodeHead(buf: Buffer, maxBytes: number): string {
 export async function readAnyFile(p: Project, rel: string, encoding?: string, opts: { binary?: boolean; binaryMax?: number; textMax?: number; asText?: boolean } = {}): Promise<ReadFileResult> {
   const abs = mustFile(p, rel);
   const st = statSync(abs);
-  const buf = await readFile(abs);
+  /* ⚠️ **先算「这一次最多可能用到多少字节」，再决定读多少**（issue #181）。
+     原来是先 `readFile` 整份、再判上限 —— 见 `readUpTo` 上面那段。
+     上限取三者最大：文本上限（可能要给开头一段）· 二进制上限（要转 base64）·
+     嗅探窗口（未知扩展名判不判是文本，只看前 8 KB）。 */
+  const textMaxEarly = opts.textMax ?? TEXT_MAX;
+  const binMaxEarly = opts.binary ? (opts.binaryMax ?? await binaryMaxSetting()) : 0;
+  const cap = Math.max(textMaxEarly, binMaxEarly, 8192);
+  const { buf, whole } = await readUpTo(abs, cap, st.size);
   const out: ReadFileResult = {
     path: rel, kind: kindOf(rel), size: st.size, updatedAt: st.mtime.toISOString(),
-    sha256: sha256(buf), content: null,
+    content: null,
   };
+  /* ⚠️ **只有整份读到了才给 `sha256`**（和 M14-11 截断那条同一个口径）：
+     摘要是**写回的凭据**，而拿着一份算不全的摘要去 `write_file`，
+     写前校验会**通过**，然后静默把文件截短而回执说「写成功」。
+     **删掉凭据比多说一句话管用。** */
+  if (whole) out.sha256 = sha256(buf);
   const snaps = await listSnapshots(p, rel);
   if (snaps.length) out.snapshot = snaps[snaps.length - 1];
   if (out.kind === "image") Object.assign(out, await imageSize(abs));
-  const textMax = opts.textMax ?? TEXT_MAX;
+  /* ⚠️ 复用上面那两个值，**不要再算一遍** —— 再算一遍就有两个来源，
+     而「按哪个读」和「按哪个判」一旦分叉，症状是「它说超限却给了内容」。 */
+  const textMax = textMaxEarly;
   if (!isTextual(rel)) {
     /* ── 未知扩展名的纯文本兜底（M14-11 / Q76，用户 2026-10-21 定的「任何文件都要能看」）──
        `kind === "other"` = 类型表不认得它。**不认得不等于看不了** ——
@@ -437,8 +477,13 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
     }
     out.why = out.kind === "other" ? "看着不是文本文件（二进制）" : "不是文本文件";
     if (opts.binary) {
-      const max = opts.binaryMax ?? await binaryMaxSetting();
+      const max = binMaxEarly;
       if (st.size > max) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过二进制读取上限 ${Math.round(max / 1048576)} MB${RANGE_HINT}`;
+      /* ⚠️ **转 base64 之前再判一次运行时的硬上限**（issue #180）：设置页的上限
+         可能被设到比 V8 能转的还大（原来 `max: 1024` MB，而 base64 在 ~384 MB 就抛）。
+         判在这里而不是只改设置的 max，是因为**上限有两个来源**（设置、调用方的
+         `opts.binaryMax`），而**运行时的硬限制对两者都成立**。 */
+      else if (st.size > BASE64_SAFE_MAX) out.why = `文件 ${(st.size / 1048576).toFixed(1)} MB，超过单次能转成 base64 的上限 ${Math.round(BASE64_SAFE_MAX / 1048576)} MB${RANGE_HINT}`;
       else { out.encoding = "base64"; out.base64 = buf.toString("base64"); }
     }
     return out;

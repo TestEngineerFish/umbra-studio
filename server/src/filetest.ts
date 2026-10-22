@@ -1413,6 +1413,77 @@ await rm(DIR, { recursive: true, force: true });
      { 这一轮清掉: r.removed.length, 腾出KB: Math.round(r.freedBytes / 1024), 还活着的临时项目: r.keptAlive, 认不出的老仓库: r.unidentifiable });
 }
 /* ══════════════════════════════════════════════════════════════════════
+   ⑰ 读大文件：先判上限再读，别先把整份读进内存（issue #181 / #180）
+
+   ⚠️ `readAnyFile` 原来第一句就是 `await readFile(abs)` —— **先整份读，再判上限**。
+   · 超过 **2 GiB** 撞 Node `readFile` 的上限 → 抛 → 包成 `E_IO`，
+     **连「多大」和「可以按字节分段读」这两句都给不出来**；
+   · 没到 2 GiB 的话，一份 1 GB 的文件也会先占 1 GB 内存，只为之后说一句「超限了」。
+   > **判上限这件事只需要 `stat`，而我们却先读完了整份文件。**
+
+   ⚠️ 样本用 **sparse 文件**（`truncate` 到 3 GB，APFS 不真占磁盘）——
+   那是唯一能在本机**真的**跑到「超过 2 GiB」那条路的办法。
+   > **一条「只在很大的输入上才错」的缺陷，判据得真造出那么大的输入** ——
+   > 把上限调小来凑，测到的是另一条路。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑰ 读大文件（issue #181 / #180）");
+{
+  const { open: openF } = await import("node:fs/promises");
+  const { mkdtemp: mkdt17 } = await import("node:fs/promises");
+  const { tmpdir: td17 } = await import("node:os");
+  const { readAnyFile: readF, BASE64_SAFE_MAX } = await import("./files.js");
+  const { LIMIT_RANGES } = await import("./plugin/limits.js");
+
+  const D17 = await mkdt17(join(td17(), "umbra-filetest-big-"));
+  await writeFile(join(D17, "project.json"), JSON.stringify({ name: "bigtest", title: "大文件" }), "utf8");
+  const bp = await buildProject(D17);
+
+  /** 造一个 sparse 文件：声明 `size` 字节，而**磁盘上几乎不占**。 */
+  const sparse = async (name: string, size: number) => {
+    const fh = await openF(join(D17, name), "w");
+    try { await fh.truncate(size); } finally { await fh.close(); }
+  };
+
+  /* ── ① 3 GB（超过 Node readFile 的 2 GiB 上限）—— 原来这里直接抛 ── */
+  await sparse("超大.bin", 3 * 1024 * 1024 * 1024);
+  let r1 = null, e1 = "";
+  try { r1 = await readF(bp, "超大.bin", undefined, { binary: true }); } catch (e) { e1 = (e as Error).message || String(e); }
+  ok("**3 GB 的文件不抛了**（原来撞 Node readFile 的 2 GiB 上限 → E_IO）", !!r1 && !e1, e1 || "没抛");
+  ok("**回执里有真实大小**（原来连这个都给不出来）", r1?.size === 3 * 1024 * 1024 * 1024, String(r1?.size));
+  ok("**说得出超限，而且给出路**（按字节分段读）",
+     !!r1?.why && /MB/.test(r1.why) && /byteOffset|分段/.test(r1.why), r1?.why);
+  ok("**不给 `sha256`** —— 没整份读到，摘要就不该当写回的凭据",
+     r1 !== null && !("sha256" in r1 && r1.sha256), JSON.stringify(Object.keys(r1 ?? {})));
+  ok("也没有 base64（超限就不该转）", !r1?.base64);
+
+  /* ── ② 刚好超过「能转 base64」那条线（issue #180）──
+     ⚠️ 要把 `binaryMax` 调到比它大，否则先撞上二进制上限那一条 ——
+     **两条上限叠在一起时，判据要确保测的是自己想测的那一条**。 */
+  const over = BASE64_SAFE_MAX + 1048576;
+  await sparse("能读但转不了.bin", over);
+  const r2 = await readF(bp, "能读但转不了.bin", undefined, { binary: true, binaryMax: over + 1048576 });
+  ok("**超过能转 base64 的上限时照实说**（原来抛 ERR_STRING_TOO_LONG → 用户看到一句 V8 内部错误）",
+     !!r2.why && /base64/.test(r2.why), r2.why);
+  ok("而且没有真去转（没给 base64）", !r2.base64);
+
+  /* ── ③ 设置页的上限不许设成一个必然失败的值 ── */
+  ok("**插件二进制上限的 `max` 跟着运行时算**（原来写死 1024 MB，而 base64 在 ~384 MB 就抛）",
+     LIMIT_RANGES.binaryReadMaxMB.max === Math.floor(BASE64_SAFE_MAX / 1048576)
+     && LIMIT_RANGES.binaryReadMaxMB.max < 1024,
+     `max=${LIMIT_RANGES.binaryReadMaxMB.max} MB · BASE64_SAFE_MAX=${Math.round(BASE64_SAFE_MAX / 1048576)} MB`);
+  /* ⚠️ 反方向一条：**别把上限算成一个谁都用不了的小数** */
+  ok("而且它仍然够大（> 300 MB）—— 别为了安全把它收到没用", LIMIT_RANGES.binaryReadMaxMB.max > 300);
+
+  /* ── ④ 正常大小的文件一点没变（别为了修大文件把小文件弄坏）── */
+  await writeFile(join(D17, "小.txt"), "一行内容\n", "utf8");
+  const r3 = await readF(bp, "小.txt");
+  ok("**正常文件照旧：有内容、有 sha256**（这一条防的是我为了修大文件把小文件改坏）",
+     r3.content === "一行内容\n" && !!r3.sha256, `${JSON.stringify(r3.content)} · sha ${r3.sha256?.slice(0, 8)}`);
+
+  await rm(D17, { recursive: true, force: true });
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    ⑯ 硬编码 `"/"` 那一族（issue #188 / #161 / #160）
 
    ⚠️ 三处各自写了一遍「按 `/` 切路径」，而 Windows 上原生分隔符是 `\`。
