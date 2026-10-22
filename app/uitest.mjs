@@ -461,8 +461,52 @@ const openByName = async (suffix) => {
 const openEdit = async () => { const b = pg.locator('[data-ud="toggle-edit"]'); if (await b.count() && (await b.getAttribute("aria-pressed")) !== "true") { await b.click(); await pg.waitForTimeout(400); } };
 const openProps = async () => { const b = pg.locator('[data-ud="toggle-props"]'); if (await b.count() && (await b.getAttribute("aria-pressed")) !== "true") { await b.click(); await pg.waitForTimeout(400); } };
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   判据自己的画布样本（issue #192）
+
+   ⚠️⚠️ `openByName(".dc.html")` 取的是**树里第一份** —— 而「第一份是哪一份」
+   取决于用户项目里有什么、以及前面几节有没有建过别的稿。
+   2026-10-22 实测：它选到了 `Umbra_design.dc.html`（一份 **753 字节的空白稿**，
+   9-28 的测试残留），而空白稿**没有可点的元素、没有节点地址** ——
+   于是 dc 那一大片的 9 条判据全部红在「点不到稿里的元素」「评论钉 0 枚」上，
+   而**产品是好的**（独立探针：同一份稿在干净会话里 iframe 2 个、壳里 26 个元素）。
+   > **`.first()` 是一场赌博**，而判据不该押它。
+   ⚠️ 这件事在第 1645 行那一节**已经被发现过一次**（那里的注释写着
+   「不能用 `openByName(".dc.html")` —— 它取的是树里第一份」），而那次**只绕开了那一处**。
+   > **一条教训只修一处，等于记了没用**（`doc/00` §147 同族）。
+
+   所以：**判据自己建一份**有内容、有节点地址的稿，dc 那几节都打开它。
+   · 名字走 `_uitest` 前缀（`SAMPLE_PATS` 的约定），收尾那套精确清理会清掉它；
+   · ⚠️ 走 `draft_write`（**唯一写入口**）而不是 `file_write` ——
+     后者对 `.dc.html` 会被拒，而且不会注入 `__resources` / 打节点地址，
+     那样建出来的稿和用户残留的那份空白稿一样测不了东西。
+   · ⚠️ **`projects/` 下别的东西一个都不删**（纪律⑥，geek-99 2026-10-22 重申）。
+   ══════════════════════════════════════════════════════════════════════ */
+const DC_SAMPLE = "_uitest画布.dc.html";
+/** 建画布样本。回 false = 没建成（调用方据此说「这一条没验到」而不是报产品的错）。 */
+const makeDcSample = async () => {
+  const made = await pg.evaluate(async ({ name }) => {
+    const b = window.__UD_APP;
+    const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+    const w = await fetch(u("draft_write"), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: name, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>画布样本</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:32px;font-family:system-ui}h1{font-size:28px;margin:0 0 16px}button{font-size:14px;padding:6px 12px}p{color:#666}</style></helmet>\n<div><h1>画布样本</h1><p>这一段给点选用</p><button>一颗钮</button><button>第二颗</button></div></x-dc></body></html>` }) });
+    return (await w.json()).ok === true;
+  }, { name: DC_SAMPLE });
+  if (made) await settleTree(DC_SAMPLE);
+  return made;
+};
+/** 打开判据自己那份画布样本。**不赌「树里第一份是什么」。**
+ *  没建成 / 打不开就回 false —— 调用方说「这一条没验到」，不是报产品的错。 */
+const openDcSample = async () => {
+  if (!(await pg.locator('[role="treeitem"]').filter({ hasText: DC_SAMPLE }).count())) {
+    if (!(await makeDcSample())) return false;
+  }
+  return await openByName(DC_SAMPLE);
+};
+
 /* 设计稿：画布（View）+ 属性面板（Panels）。它是唯一有五个面板的格式 */
-if (await openByName(".dc.html")) {
+if (await openDcSample()) {
   /* ⚠️ **「有个 iframe」不是判活**（纪律②）：稿加载失败时那个 iframe 照样在。
      真判据是穿两层看见东西 —— 外层是 S2 嵌入壳，内层才是稿本身。
      数得到内层的元素，就说明 postMessage 那座桥和稿的加载都通了。 */
@@ -868,8 +912,26 @@ console.log("\n插件市场四屏（M11-6）");
     void rfs;
     await pg.waitForTimeout(600);
   }
-  await pg.locator('[data-ud="market"] button[title="关闭"]').click().catch(() => {});
-  await pg.waitForTimeout(500);
+  /* ══════════ 收尾：**把市场关掉**（issue #192 的真因）══════════
+     ⚠️⚠️ 这一节原来**打开市场之后就不管了**，而 `Workbench` 的详情区在
+     `market` 为真时显示的是市场**而不是文件** —— 于是从这里往后，
+     所有「打开一份稿、看详情区」的判据都在市场页面上跑：
+     `iframes` 恒为 0 → 点选分派 · 编辑档开属性区 · 评论档弹评论框 · 切稿过场 ·
+     暂存区 · 评论钉 **9 条全部红**，而**产品是好的**。
+     （本节之前那一组 dc 判据绿着 —— 「壳里 1 层 · 稿里 22 个元素」，完全吻合。）
+
+     > **收尾要把世界放回去，不只是删自己的文件**（`doc/00` §163.5）——
+     > 这一次留下的不是文件、不是进程、不是「最近打开」里的一条记录，
+     > 是**一个开着的市场页**。
+     ⚠️ 它的伪装特别好：**页签条和详情区是两块**，所以「当前页签」一直显示着文件名。
+     明细读数里 `当前页签: _uitest画布.dc.html` 和 `iframes: 0` 并列，
+     看着像矛盾，其实是两块各说各话。 */
+  await pg.locator('[data-ud="market"] button[title="关闭"]').first().click().catch(() => {});
+  await pg.waitForTimeout(600);
+  ok(await pg.locator('[data-ud="market"]').count() === 0,
+     "**（收尾）市场关掉了** —— 不关的话它后面所有「打开稿看详情区」的判据都在市场页上跑",
+     `${await pg.locator('[data-ud="market"]').count()} 个市场容器还在`);
+
 }
 
 /* ── ✎ 永远显示（M11-6，用户 2026-09-26 定的模型）──
@@ -1008,7 +1070,7 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
   await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
 
   /* ③ 信息卡不接 ↑↓（§二.2）：里面是数字框和滑块，↑↓ 是它们调值的键 */
-  if (await openByName(".dc.html")) {
+  if (await openDcSample()) {
     await pg.waitForTimeout(1200);
     /* ⚠️ 信息卡在**正文右下角的浮块**里，不在编辑栏 —— 第九轮把「看稿用的」
        （宽度 · 缩放 · 浅深）都挪去了那儿，编辑栏只留「改稿用的」。
@@ -1035,7 +1097,7 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
 /* ── ⌘E / ⌘⌥B 开合（M8-28 · 设计侧第九轮 §三）──
    **这一节和默认值无关**，只问「按了会不会变」：先归一到收起，再开、再收。 */
 console.log("\n详情三层的开合：⌘E · ◨（M8-28）");
-if (await openByName(".dc.html")) {
+if (await openDcSample()) {
   await pg.waitForTimeout(1200);
   const editBtn = pg.locator('[data-ud="toggle-edit"]');
   const pressed = async () => (await editBtn.getAttribute("aria-pressed")) === "true";
@@ -1143,7 +1205,7 @@ console.log("\n浮层：不越界 / 点外面收起 / 不被 overflow 裁掉（M
   /* ⚠️ **点在稿上（iframe 里）也要收起** —— 这是那个 bug 的另一半：
      事件被 iframe 吃掉，外面的 document 监听收不到。浮层开着时让 iframe 不接事件。
      只测「点外面」的话这一半测不出来（M8-28 实测：修完第一半之后它还在）。 */
-  if (await openByName(".dc.html")) {
+  if (await openDcSample()) {
     /* ⚠️ **等 iframe 真挂上，而不是定时等**（issue #192）。
        原来是 `waitForTimeout(1500)` 然后直接 `locator("iframe").first().boundingBox()` ——
        而 dc 的 `View` 要先算出稿的 src 才会渲染 iframe（`pool` 在那之前是空的），
@@ -2038,7 +2100,7 @@ console.log("\n就地改名要带着页签走（issue #105）");
    所以判据改成**盖标记**：切格式后标记还在 = 这些节点没被换过。 */
 console.log("\n换格式不动目录列（用户 tmp.txt 第 1 条）");
 {
-  if (await openByName(".dc.html")) {
+  if (await openDcSample()) {
     await pg.waitForTimeout(600);
     const stamped = await pg.evaluate(() => {
       const rows = [...document.querySelectorAll('[role="treeitem"]')];
