@@ -153,7 +153,7 @@ async function dropFallbackRepo(dir: string): Promise<number> {
  *  ⚠️ 只认 `identity === "missing"`（路径压根不在）。
  *  **`replaced` 不在这一档里** —— 那个位置有东西，只是换了一个，
  *  删它的历史得走 ③（要确认）。 */
-export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: string; name: string }>; freedBytes: number; orphanRecords: number; left: number }> {
+export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: string; name: string }>; freedBytes: number; orphanRecords: number; adoptedRecords: number; left: number }> {
   const { recents } = await listRecentProjects();
   const stale = recents.filter((r) => r.identity === "missing");
   let freedBytes = 0;
@@ -170,7 +170,16 @@ export async function clearStaleRecords(): Promise<{ removed: Array<{ dir: strin
      `dropOrphanRecords` 按「它指着的目录还在不在」判，所以它也会顺手清掉
      更早以前留下的孤儿（没有对应「最近打开」条目的那些）。 */
   const orphans = dropOrphanRecords();
-  return { removed, freedBytes, orphanRecords: orphans.ids.length + orphans.unindexed.length, left: (await listRecentProjects()).recents.length };
+  /* ⚠️ `adoptedRecords` 单列，**不加进 `orphanRecords`**（issue #189）——
+     那一档是「**收编**了几条」而不是「删了几条」，混进同一个数会让回执说谎：
+     用户读到的是「清掉了 N 条」，而其中有几条其实留着。
+     > **一个数字把「删了」和「留着」加在一起，它就不再是回执了。** */
+  return {
+    removed, freedBytes,
+    orphanRecords: orphans.ids.length + orphans.unindexed.length,
+    adoptedRecords: orphans.adopted.length,
+    left: (await listRecentProjects()).recents.length,
+  };
 }
 
 /** ③ 忘掉这一个：一条记录 + 它的 git 兜底仓库。**历史真的没了，所以要 `confirm`**。

@@ -62,39 +62,93 @@ export interface RecordEntry {
   birthtimeMs?: number;
   /** 建这条记录的时间 */
   at: string;
+  /** **来源不明**：目录在盘上、而索引里曾经没有它（issue #189 收编回来的）。
+   *
+   *  ⚠️ `dir` 不可知，而且**找不回来** —— 索引是 id → 目录的唯一映射（键与路径无关，Q72），
+   *  被抹掉之后盘上那个目录名（随机 ID）里没有任何关于「它属于哪个项目」的信息。
+   *  所以这种记录**打不开，但也不删**：里面是用户的快照 / 评论 / 回收站。
+   *  > **「打不开」和「可以删」是两件事** —— 原来的代码把前者当成了后者的证明。 */
+  orphan?: true;
 }
 
 interface RecordIndex { records: RecordEntry[] }
+
+/* ══════════════════════════════════════════════════════════════════════
+   索引的读写（issue #189）
+
+   ⚠️⚠️ **`index.json` 是多进程共享的磁盘状态**，而原来的读改写全靠一个进程内缓存：
+   读一次之后再也不看盘，写的时候把缓存里那份**整个**覆盖回去。
+   于是两个核心进程（界面 + 一套跑在真 `STATE_ROOT` 上的回归，或者壳 + 外部 MCP 客户端）
+   交替写的时候，**后写的会把先写的那条记录从索引里抹掉**。
+   而抹掉之后那个目录就成了 `unindexedRecordDirs()` 眼里的「垃圾」，
+   用户点一下「清除已失效的记录」，**里面的快照 / 评论 / 回收站全被 `rm -rf`**。
+
+   > **「索引里没有它」曾经被当成「谁也打不开它」的证明，而那个推理只在单进程下成立。**
+
+   两条一起修才够：
+   ① 读：每次用前 `statSync` 核一下盘上那份的 `mtime + size`（几微秒），变了就重读 ——
+      20 多个同步调用点一个都不用改；
+   ② 写：**以盘上那份为底**做 upsert / remove，而不是整个覆盖。
+      ⚠️ 这里不能简单「并集」—— 六个写入点里**有三个是删除**，并集会让删除失效。
+      所以入口收成一个 `writeIndex({ upsert, removeIds })`：删除表达为「去掉这几个 id」，
+      而不是「把我这份当成全部」。
+   ══════════════════════════════════════════════════════════════════════ */
 
 /** 进程内缓存。**写也走这里**，所以缓存和盘上不会分叉。 */
 let cache: RecordIndex | null = null;
 /** 缓存是按哪个 `STATE_ROOT` 算的 —— 回归会在一个进程里换状态目录，不记就会读到上一个的 */
 let cacheRoot: string | null = null;
+/** 盘上那份的指纹（`mtimeMs:size`）。**别的进程写过**就和它不一样，于是重读。 */
+let cacheStamp: string | null = null;
+
+/** 盘上那份现在的指纹。文件不在回 `"none"`（那也是一种状态，要能和「有文件」区分）。 */
+function stampOf(): string {
+  try { const st = statSync(indexFile()); return `${st.mtimeMs}:${st.size}`; } catch { return "none"; }
+}
+
+/** 直接从盘上读，**不经缓存** —— 合并写要的就是「别人刚写的那一份」。 */
+function readFromDisk(): RecordIndex {
+  try {
+    const raw = JSON.parse(readFileSync(indexFile(), "utf8")) as RecordIndex;
+    return Array.isArray(raw?.records)
+      ? { records: raw.records.filter((r) => r && typeof r.id === "string" && typeof r.dir === "string") }
+      : { records: [] };
+  } catch {
+    /* 没有 / 坏了都当空 —— 这是我们自己的索引，坏了重新长出来就行（读宽容） */
+    return { records: [] };
+  }
+}
 
 function load(): RecordIndex {
   const root = recordsRoot();
-  if (cache && cacheRoot === root) return cache;
+  const stamp = stampOf();
+  if (cache && cacheRoot === root && cacheStamp === stamp) return cache;
   cacheRoot = root;
-  try {
-    const raw = JSON.parse(readFileSync(indexFile(), "utf8")) as RecordIndex;
-    cache = Array.isArray(raw?.records) ? { records: raw.records.filter((r) => r && typeof r.id === "string" && typeof r.dir === "string") } : { records: [] };
-  } catch {
-    /* 没有 / 坏了都当空 —— 这是我们自己的索引，坏了重新长出来就行（读宽容） */
-    cache = { records: [] };
-  }
+  cacheStamp = stamp;
+  cache = readFromDisk();
   return cache;
 }
 
-function save(ix: RecordIndex): void {
+/** 写索引：**以盘上那份为底**，`upsert` 几条、`removeIds` 去掉几条。
+ *
+ *  ⚠️ `removeIds` 优先于 `upsert`（同一次里既删又加同一个 id 时按删算）——
+ *  调用方不会这么用，但定下来比留着歧义好。
+ *  ⚠️ 临时名走唯一出处（M14-9）。原来是写死的 `index.json.tmp`：**没有 pid 也没有随机串**，
+ *  两个进程同时存记录时第二个的 rename 会报 ENOENT。 */
+function writeIndex(ops: { upsert?: RecordEntry[]; removeIds?: string[] }): RecordIndex {
   mkdirSync(recordsRoot(), { recursive: true });
-  /* 临时名走唯一出处（M14-9）。原来是写死的 `index.json.tmp`：**没有 pid 也没有随机串**，
-     两个进程同时存记录时第二个的 rename 会报 ENOENT —— 而那正是 `normalize.ts`
-     里注释了半屏的那个坑，这里又犯了一次。 */
+  const gone = new Set(ops.removeIds ?? []);
+  const byId = new Map<string, RecordEntry>();
+  for (const r of readFromDisk().records) if (!gone.has(r.id)) byId.set(r.id, r);
+  for (const r of ops.upsert ?? []) if (!gone.has(r.id)) byId.set(r.id, r);
+  const merged: RecordIndex = { records: [...byId.values()] };
   const tmp = tmpNameFor(indexFile());
-  writeFileSync(tmp, JSON.stringify(ix, null, 2) + "\n", "utf8");
+  writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmp, indexFile());
-  cache = ix;
+  cache = merged;
   cacheRoot = recordsRoot();
+  cacheStamp = stampOf();
+  return merged;
 }
 
 /** 量一次目录指纹。口径**和 `workspace.ts` 的 `fingerprintOf` 一模一样** ——
@@ -140,20 +194,18 @@ export function recordIdFor(projectDir: string): string {
        把它的 dir 清成空串表示「它指着的那个目录已经不是它了」 */
     byPath.dir = "";
     const fresh: RecordEntry = { id: newId(), dir, ...(now ?? {}), at: new Date().toISOString() };
-    ix.records.push(fresh);
-    save(ix);
+    writeIndex({ upsert: [byPath, fresh] });
     return fresh.id;
   }
 
   /* ③ 目录被改名 / 移动了：旧路径已经不在，而指纹正是现在这个目录 */
   if (now) {
     const moved = ix.records.find((r) => r.dir && r.dir !== dir && !existsSync(r.dir) && fpSame(r, now) === true);
-    if (moved) { moved.dir = dir; save(ix); return moved.id; }
+    if (moved) { moved.dir = dir; writeIndex({ upsert: [moved] }); return moved.id; }
   }
 
   const fresh: RecordEntry = { id: newId(), dir, ...(now ?? {}), at: new Date().toISOString() };
-  ix.records.push(fresh);
-  save(ix);
+  writeIndex({ upsert: [fresh] });
   return fresh.id;
 }
 
@@ -176,7 +228,7 @@ export function dropRecord(id: string): boolean {
   const dir = join(recordsRoot(), id);
   let touched = false;
   if (existsSync(dir)) { rmrfSync(dir); touched = true; }
-  if (i >= 0) { ix.records.splice(i, 1); save(ix); touched = true; }
+  if (i >= 0) { writeIndex({ removeIds: [id] }); touched = true; }
   return touched;
 }
 
@@ -192,11 +244,17 @@ export function adoptRecordDir(projectDir: string, from: string): string {
 
 const rmrfSync = (p: string): void => rmSync(p, { recursive: true, force: true });
 
-/** 索引里没有、而盘上有的记录目录。**只可能是垃圾** ——
- *  索引是够到一条记录的唯一途径（`recordIdFor` 先写索引才建目录），
- *  索引里没有它就等于谁也打不开它，而它照样占着地方。
- *  ⚠️ **只报不删**，删的决定留给调用方 —— 这是「量到零 vs 仪器是零」那条纪律的用法：
- *  有一条判据专门盯这个数，它涨了说明某处写索引失败了，而那比「多占点地方」严重。 */
+/** 索引里没有、而盘上有的记录目录。
+ *
+ *  ⚠️⚠️ **这里原来写着「只可能是垃圾」，而那是错的**（issue #189）。原推理是：
+ *  索引是够到一条记录的唯一途径，索引里没有它就等于谁也打不开它。
+ *  **推理没问题，前提有问题** —— 它假设「索引里没有」只会因为「从没写进去」而发生，
+ *  而多进程覆盖会把**已经写进去的**抹掉，于是一个装着用户快照 / 评论 / 回收站的目录
+ *  一夜之间变成「垃圾」。
+ *  > **「打不开」和「可以删」是两件事。**
+ *
+ *  所以这一件仍然**只报不删**（判据盯着这个数），而处置改成
+ *  `adoptUnindexed()`：收编回索引，只清真正的空壳。 */
 export function unindexedRecordDirs(): string[] {
   const root = recordsRoot();
   if (!existsSync(root)) return [];
@@ -211,17 +269,46 @@ export function unindexedRecordDirs(): string[] {
  *  ⚠️ 顺带把**索引里没有的目录**也收掉：它们谁也打不开，留着只是占地方。
  *  这一步**只放在这一件里**（用户明确点的「清除已失效的记录」），
  *  不放进回归收尾 —— 收尾那条路要尽量只碰自己造的东西。 */
-export function dropOrphanRecords(): { ids: string[]; unindexed: string[] } {
+export function dropOrphanRecords(): { ids: string[]; unindexed: string[]; adopted: string[] } {
   const ix = load();
-  const dead = ix.records.filter((r) => !r.dir || !existsSync(r.dir));
+  /* ⚠️ `orphan` 的那些**不算失效** —— 它们的 `dir` 本来就不可知（见 `RecordEntry.orphan`），
+     拿「`dir` 为空」当失效证明会把刚收编回来的历史在下一次点击里删掉。 */
+  const dead = ix.records.filter((r) => !r.orphan && (!r.dir || !existsSync(r.dir)));
   for (const r of dead) {
     const dir = join(recordsRoot(), r.id);
     if (existsSync(dir)) rmrfSync(dir);
   }
-  if (dead.length) { ix.records = ix.records.filter((r) => !dead.includes(r)); save(ix); }
-  const unindexed = unindexedRecordDirs();
-  for (const name of unindexed) rmrfSync(join(recordsRoot(), name));
-  return { ids: dead.map((r) => r.id), unindexed };
+  if (dead.length) writeIndex({ removeIds: dead.map((r) => r.id) });
+  const { adopted, emptied } = adoptUnindexed();
+  return { ids: dead.map((r) => r.id), unindexed: emptied, adopted };
+}
+
+/** 把「盘上有、索引里没有」的记录目录**收编回索引**（issue #189）。
+ *
+ *  原来这些目录被直接 `rm -rf`。改成：
+ *  · 目录里**有东西** → 收编（标 `orphan`，`dir` 留空），**不删**；
+ *  · 目录**完全是空的** → 那确实只是垃圾（`recordIdFor` 先写索引才建目录，
+ *    所以空目录要么是建了没写、要么是别处删剩的），清掉。
+ *
+ *  ⚠️ 收编之后那条记录**打不开**（映射找不回来了），但用户的历史**在盘上**，
+ *  而且「清除已失效的记录」再点多少次都不会动它。
+ *  > 这是一个**不对称的选择**：留着的代价是占地方，删掉的代价是用户的历史没了。 */
+export function adoptUnindexed(): { adopted: string[]; emptied: string[] } {
+  const root = recordsRoot();
+  const names = unindexedRecordDirs();
+  const adopted: RecordEntry[] = [];
+  const emptied: string[] = [];
+  for (const name of names) {
+    const d = join(root, name);
+    let empty = false;
+    try { empty = readdirSync(d).length === 0; } catch { empty = false; }
+    if (empty) { rmrfSync(d); emptied.push(name); continue; }
+    let at = new Date().toISOString();
+    try { at = new Date(statSync(d).mtimeMs).toISOString(); } catch { /* 量不到就用现在 */ }
+    adopted.push({ id: name, dir: "", at, orphan: true });
+  }
+  if (adopted.length) writeIndex({ upsert: adopted });
+  return { adopted: adopted.map((r) => r.id), emptied };
 }
 
 /* ══════════ M14-7：这个目录「准不准改」（Q70，用户 2026-10-21 拍板）══════════ */
@@ -302,7 +389,7 @@ export function dropRecordsUnder(root: string, opts?: { onlyDead?: boolean }): {
     const d = join(recordsRoot(), r.id);
     if (existsSync(d)) rmrfSync(d);
   }
-  if (hit.length) { ix.records = ix.records.filter((r) => !hit.includes(r)); save(ix); }
+  if (hit.length) writeIndex({ removeIds: hit.map((r) => r.id) });
   return { removed: hit.map((r) => r.id) };
 }
 

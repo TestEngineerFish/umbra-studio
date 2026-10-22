@@ -345,5 +345,118 @@ ok("（收尾）临时样本目录删掉了", !existsSync(BOX));
   ok("**（收尾）用户真实的兜底仓库目录里没有我造的任何一个**", 真仓库里有我的 === 0, { 查的: realGit, 找到: 真仓库里有我的 });
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ⑥ 两个核心进程交替写索引（issue #189）
+
+   ⚠️⚠️ **issue 里建议的模拟方式（`__resetRecordCache()` 当作「切到第二个进程」）
+   在旧代码下也会通过** —— reset 清掉缓存之后，旧的 `load()` 同样会重读盘。
+   那条判据测的是「今天恰好没事」。
+
+   真正要造的状态是：**缓存里有旧数据，而盘上已经被别人改过**。
+   所以这里**不 reset**，直接往盘上的 `index.json` 写一份「另一个进程写的」内容，
+   再让本进程继续建记录 —— 旧代码会拿缓存覆盖掉对方那条，新代码会先发现
+   `mtime + size` 变了、重读、再合并。
+   > **模拟并发不是「清掉状态」，是「让两份状态不一致」。**
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑥ 两个核心进程交替写 records/index.json（issue #189）");
+{
+  const { recordIdFor, allRecords, unindexedRecordDirs, dropOrphanRecords, dropRecord, recordsRoot } =
+    await import("./records.js");
+  const { readFile: rdf, writeFile: wrf, mkdir: mkd, readdir: rdd } = await import("node:fs/promises");
+  const IX = join(recordsRoot(), "index.json");
+
+  /* ── ⓐ A 建一条，然后「另一个进程」写盘，A 再建一条 ── */
+  const dirA = join(BOX, "并发-甲"); await mkd(dirA, { recursive: true });
+  const idA = recordIdFor(dirA);                       // A：缓存与盘都有 idA
+  ok("（前提）甲这条真写进索引了", allRecords().some((r) => r.id === idA), idA);
+
+  /* 另一个进程：读盘、加自己那条、写回。**本进程的缓存不动** —— 这是关键 */
+  const onDisk = JSON.parse(await rdf(IX, "utf8")) as { records: { id: string; dir: string; at: string }[] };
+  const idB = "r" + "b".repeat(16);
+  /* ⚠️ 乙指向的**项目目录也得真建出来** —— 不然它会被既有的、而且正确的那条
+     「指着的目录已经不在 = 失效」给清掉，于是判据红在一个和 #189 无关的理由上。
+     第一版就漏了这个，读数是「乙的快照文件 ENOENT」，看着像产品删了它。
+     > **夹具不全和产品有缺陷，报出来的样子一样。** */
+  const dirB = join(BOX, "并发-乙"); await mkd(dirB, { recursive: true });
+  onDisk.records.push({ id: idB, dir: dirB, at: new Date().toISOString() });
+  await wrf(IX, JSON.stringify(onDisk, null, 2) + "\n", "utf8");
+  await mkd(join(recordsRoot(), idB), { recursive: true });
+  await wrf(join(recordsRoot(), idB, "snapshots.txt"), "乙进程写的快照", "utf8");
+
+  /* A 继续干活：再建一条 */
+  const dirC = join(BOX, "并发-丙"); await mkd(dirC, { recursive: true });
+  const idC = recordIdFor(dirC);
+
+  const after = JSON.parse(await rdf(IX, "utf8")) as { records: { id: string }[] };
+  const ids = new Set(after.records.map((r) => r.id));
+  ok("**三条记录都在索引里 —— 后写的没有抹掉另一个进程刚写的那条**",
+     ids.has(idA) && ids.has(idB) && ids.has(idC),
+     { 甲: ids.has(idA), 乙: ids.has(idB), 丙: ids.has(idC), 共: after.records.length });
+
+  /* ── ⓐ′ **读**那一半：别的进程刚写的那条，本进程要认得出来 ──
+     ⚠️ 这一条是补上来的。ⓐ 全绿而**撤掉 `load()` 的盘上核对它照样绿** ——
+     因为 `writeIndex()` 自己会重读盘，**写**那条路被合并逻辑单独救下了。
+     守在 `load()` 上的是**读**：缓存里没有对方刚写的那条，
+     `recordIdFor(那个目录)` 就会以为它不存在而**新建第二条指向同一个目录** ——
+     于是同一个项目有两份历史，而界面只看得到新那份。
+     > **一个修法有两条生效路径时，只拆一条判据不会红**（`doc/24` §24.5 同族，第 2 次）。 */
+  /* ⚠️ **路径要 `realpath` 过**：产品内部用 `canon()`，而 macOS 的 `/var` 是链接
+     （`BOX` 就在 `/var/folders` 下）。不解析的话这条判据会红在「路径对不上」
+     而不是红在 #189 上 —— **一条红的判据，理由也可能是错的**（同一个坑第 4 次）。 */
+  const { realpathSync: rps } = await import("node:fs");
+  const dirE0 = join(BOX, "并发-戊"); await mkd(dirE0, { recursive: true });
+  const dirE = rps(dirE0);
+  const ix2 = JSON.parse(await rdf(IX, "utf8")) as { records: { id: string; dir: string; at: string }[] };
+  const idE = "r" + "e".repeat(16);
+  ix2.records.push({ id: idE, dir: dirE, at: new Date().toISOString() });
+  await wrf(IX, JSON.stringify(ix2, null, 2) + "\n", "utf8");
+  const seenE = recordIdFor(dirE);
+  ok("**认得出另一个进程刚为这个目录写的那条记录**（不新建第二条 → 历史不分叉）",
+     seenE === idE, { 期望: idE, 实得: seenE });
+  ok("索引里这个目录只有一条记录",
+     allRecords().filter((r) => r.dir === dirE).length === 1,
+     allRecords().filter((r) => r.dir === dirE).map((r) => r.id));
+
+  /* ── ⓑ 于是也就没有「孤儿」可清 ── */
+  ok("**没有「索引里没有而盘上有」的目录**（乙那条已经在索引里，不会被当垃圾）",
+     unindexedRecordDirs().length === 0, unindexedRecordDirs());
+  const r1 = dropOrphanRecords();
+  ok("**「清除已失效的记录」一个字节都没动乙的快照**",
+     (await rdf(join(recordsRoot(), idB, "snapshots.txt"), "utf8")) === "乙进程写的快照",
+     r1);
+
+  /* ── ⓒ 合并写不能把删除弄坏（我改 `save` 时最容易破的那一条）── */
+  const dirD = join(BOX, "并发-丁"); await mkd(dirD, { recursive: true });
+  const idD = recordIdFor(dirD);
+  dropRecord(idD);
+  ok("**删一条仍然真的删掉了**（合并写最容易把删除变成「加回来」）",
+     !allRecords().some((r) => r.id === idD), idD);
+
+  /* ── ⓓ 真·来源不明的目录：收编，不删 ──
+     ⚠️ 这一条造的是**索引里压根没有**的目录（即已经被抹掉之后的样子）。
+     原来的代码会 `rm -rf` 它。 */
+  const lost = "r" + "c".repeat(16);
+  await mkd(join(recordsRoot(), lost, "snapshots"), { recursive: true });
+  await wrf(join(recordsRoot(), lost, "snapshots", "v1.html"), "<p>用户的历史</p>", "utf8");
+  ok("（前提）它确实在索引外", unindexedRecordDirs().includes(lost), unindexedRecordDirs());
+  const r2 = dropOrphanRecords();
+  ok("**来源不明的记录目录被收编而不是删掉**", r2.adopted.includes(lost), r2);
+  ok("**里面用户的历史一个字节没变**",
+     (await rdf(join(recordsRoot(), lost, "snapshots", "v1.html"), "utf8")) === "<p>用户的历史</p>");
+  ok("收编之后它在索引里，并且标着 `orphan`",
+     allRecords().some((r) => r.id === lost && (r as { orphan?: boolean }).orphan === true));
+  /* 再点一次 —— 收编回来的 `dir` 是空串，而「`dir` 为空 = 失效」会把它删掉 */
+  const r3 = dropOrphanRecords();
+  ok("**再点一次「清除已失效的记录」它还在**（`dir` 为空不等于失效）",
+     (await rdd(recordsRoot())).includes(lost), r3);
+
+  /* ── ⓔ 空壳照旧清掉 —— 不然这件事就从「别乱删」变成「什么都不删」 ── */
+  const shell = "r" + "d".repeat(16);
+  await mkd(join(recordsRoot(), shell), { recursive: true });
+  const r4 = dropOrphanRecords();
+  ok("**完全空的记录目录照旧清掉**（那确实只是垃圾）",
+     r4.unindexed.includes(shell) && !(await rdd(recordsRoot())).includes(shell), r4);
+}
+
 console.log(`\n${bad ? "✗" : "✓"} 清除缓存三档 ${n - bad}/${n}\n`);
 process.exit(bad ? 1 : 0);
