@@ -1475,6 +1475,37 @@ console.log("\n⑲ 只读预览 + 一键解锁（M14-7）");
   }
 }
 
+/* ── 收尾：撤掉自己往「最近打开」里塞的那几条（2026-10-22）──
+   ⚠️⚠️ **这是 `doc/00` §166 那条的第二次，而且形状一模一样。**
+   ⑯ 调 `open_project`（以及 `adopt_project`）→ 服务端 `touchProject` →
+   往**真实的** `STATE_ROOT/.umbrastudio/workspace.json` 里记一行，
+   而这一套**从建起就没清过它**。
+   实测 2026-10-22：真实「最近打开」**19 条，一条不剩全是这一套的残留**
+   （`umbra-plain-*`，每跑一轮加一条）—— **sam 自己的项目一条都看不见了**，
+   因为列表按最近打开倒排，他的全被挤到后面。
+   ⚠️ **删临时目录删不掉它** —— 列表记的是路径（§166 原话）。
+   > **「清掉自己造的文件」和「清掉自己造的状态」是两件事**，而这一套
+   > 收尾那几行一直只看前者（兜底仓库算半个状态，它是被 M14-6 补上的）。
+
+   判准只有一条、不枚举名字：**指向系统临时目录**。 */
+{
+  const { listRecentProjects, removeRecentProject } = await import("./workspace.js");
+  const { tmpdir: td0 } = await import("node:os");
+  const { realpathSync: rp0 } = await import("node:fs");
+  const roots = [td0(), rp0(td0())];
+  const { recents } = await listRecentProjects();
+  const mine = recents.filter((r) => roots.some((x) => r.dir === x || r.dir.startsWith(x + "/")));
+  for (const r of mine) await removeRecentProject(r.dir);
+  if (mine.length) console.log(`  · （收尾）撤掉自己塞进「最近打开」的 ${mine.length} 条`);
+  /* ⚠️ **收尾自检**：「我删掉了 N 条」和「现在一条都不剩」是两句不同的话
+     （`purge.ts` §223 同一条）。没有这一句的话，下一个人再加一节
+     往那个列表里写东西，又是几十轮之后才有人发现。 */
+  const left = (await listRecentProjects()).recents
+    .filter((r) => roots.some((x) => r.dir === x || r.dir.startsWith(x + "/")));
+  ok(left.length === 0, "**（收尾）真实「最近打开」里没剩下任何指向临时目录的记录**",
+     left.map((r) => r.dir).join(" · ") || `撤掉 ${mine.length} 条`);
+}
+
 /* ⚠️ **先自检夹具的身份还在**，再删它。
    **这一条是上面那条教训的判据化**：整轮跑完夹具必须还是一个设计项目 ——
    有哪一节把它悄悄删了 / 改了，这里当场红，而不是等到下一个人
