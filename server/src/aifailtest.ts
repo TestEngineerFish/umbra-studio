@@ -1,5 +1,6 @@
 /** 服务端 AI 失败判据的回归（2026-10-11）：`ai_fail.ts` 把 Umbra 的 402 分成三档，按钮文案与 PC / iOS 同一张表。
  *  跑：npm --prefix server run aifailtest。一条都不调网络。 */
+import { platformName } from "./shared/brand.js";
 import { failAction, failErrorText, failHint, parseAiFailure } from "./ai_fail.js";
 
 let pass = 0, fail = 0;
@@ -44,7 +45,7 @@ ok(failErrorText(402, body402, f) === "HTTP 402: 没有有效会员，开通后�
 ok(failErrorText(402, "", q).includes("402") && failErrorText(402, "", q).includes("额度用完"), "状态码与中文都在");
 
 /* ── ④ 没有 topup_url 时的提示 ── */
-ok(failHint("need_membership").includes("账号") && failHint("need_membership").includes("开会员"), "没会员的提示指到 Umbra 账号页");
+ok(failHint("need_membership").includes("账号") && failHint("need_membership").includes("开会员"), `没会员的提示指到${platformName}账号页`);
 ok(failHint("quota_exhausted").includes("重置卡"), "额度用完的提示提到重置卡");
 ok(failHint("insufficient_balance").includes("服务商"), "欠费的提示指到厂商");
 ok(failHint("rate_limited") === "", "没按钮的类别没有提示");

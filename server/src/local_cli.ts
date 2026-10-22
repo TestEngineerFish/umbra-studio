@@ -147,7 +147,7 @@ export const CLI_SPECS: readonly CliSpec[] = [
     verified: true,
     modelHint: "留空用它自己的默认；或填 gpt-5-codex 这类",
     loginHint: "终端跑 codex login（ChatGPT 账号授权，用你的订阅）",
-    note: "事件流最干净（mcp_tool_call 带 server/tool/arguments/result）。跑的时候不加载你的全局配置 —— 只有 Umbra 这一台 MCP，省下三万 token 的无关工具表。",
+    note: `事件流最干净（mcp_tool_call 带 server/tool/arguments/result）。跑的时候不加载你的全局配置 —— 只有${productName}这一台 MCP，省下三万 token 的无关工具表。`,
   },
   {
     directWrite: "open" as const,

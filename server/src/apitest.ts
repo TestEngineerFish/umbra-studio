@@ -12,6 +12,7 @@
  *
  *  跑：npm --prefix server run apitest
  */
+import { platformName } from "./shared/brand.js";
 import { stripComments } from "./shared/stripcomments.js";
 import { serveStart } from "./serve.js";
 import { buildProject, TOOL_ROOT } from "./project.js";
@@ -960,7 +961,7 @@ console.log("\n⑫ 账号：OIDC 授权码 + PKCE（一·a，2026-10-10）——
 }
 
 
-console.log("\n⑬ 通道 A 走 Umbra 服务端 AI（一·c）—— 不出网，改完把配置放回去");
+console.log(`\n⑬ 通道 A 走${platformName}服务端 AI（一·c）—— 不出网，改完把配置放回去`);
 {
   const ac = await import("./ai_config.js");
   const before = await ac.getAiConfig();

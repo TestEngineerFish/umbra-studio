@@ -637,7 +637,80 @@ console.log("\n⑯ 品牌名散不散（2026-10-22）");
   }
   ok(stillOld.length === 0, `**\`${B.codename} Studio\` 不再出现在会执行的 TS 代码里**（白名单之外）`,
      stillOld.length ? stillOld.slice(0, 4).join(" · ") : "0 处");
+
+/* ── ⓘ 同一类错的**另一个长相**：`Umbra` 紧跟中文 ──
+   ⚠️⚠️ **这一条是 ⓗ 漏掉之后补的**（2026-10-22 改名当天实测）。
+   ⓗ 查的是 `${codename} Studio` **这一个串**，而 `ai_config.ts:177` 那条引擎名是
+   `${platformName}服务端 AI` —— 判据那头硬写着 `Umbra 服务端 AI`，于是改名当天
+   `uitest` 第 129 条当场红，**而读数长得像产品坏了**
+   （「刷新后还是它 — 刷新后 长尾雀服务端 AI」，一眼看过去像是没写进会话文件）。
+   > **一道闸按「一个具体的串」写，它守住的就只有那个串。**
+   所以这一条不认串，认**形状**：代号后面紧跟一个非 ASCII 字符 ——
+   那只可能是中文文案，而中文文案一律是给人看的。
+   ⚠️ 这一条**连判据文件一起扫**（`*test.mjs` / `*check.mjs`）：
+   回归自己写死品牌名，症状比产品写死更坏 —— 它会把「改名了」报成「功能坏了」。
+   ⚠️ `Umbra Studio.app` 这种不会命中（`S` 是 ASCII），所以 `shell/*.mjs` 里那些
+   **刻意冻结**的文件名照样放行 —— 形状判准正好把两类分开了。
+   ⚠️ 要查的串**拼出来**，不然这条判据会命中自己（第 N 次）。 */
+{
+  const { readdirSync: rd9, readFileSync: rf9, statSync: st9 } = await import("node:fs");
+  const re = new RegExp(B.codename + "[ \u3000]?[^\\x00-\\x7F]");
+  const hits: string[] = [];
+  const scan = (f: string): void => {
+    const rel = f.slice(R.length + 1);
+    if (rel === "server/src/captest.ts") return;          // 本判据自己
+    stripComments(rf9(f, "utf8")).split("\n").forEach((ln, i) => {
+      if (re.test(ln)) hits.push(`${rel}:${i + 1}`);
+    });
+  };
+  const walk = (dir: string, pat: RegExp): void => {
+    let names: string[] = [];
+    try { names = rd9(dir); } catch { return; }
+    for (const e of names) {
+      if (e === "node_modules" || e === "dist" || e === ".git" || e === "out" || e === "projects") continue;
+      const f = jn(dir, e);
+      if (st9(f).isDirectory()) { walk(f, pat); continue; }
+      if (pat.test(e)) scan(f);
+    }
+  };
+  walk(jn(R, "server", "src"), /\.tsx?$/);
+  walk(jn(R, "app", "src"), /\.tsx?$/);
+  walk(jn(R, "app"), /(test|check)\.mjs$/);
+  walk(jn(R, "shell"), /(test|check)\.mjs$/);
+  ok(hits.length === 0,
+     `**代号后面紧跟中文的地方一处都没有**（\`${B.codename}\` + 中文 = 一句给人看的话，该走常量）`,
+     hits.length ? hits.slice(0, 4).join(" · ") : "0 处");
 }
+
+/* ── ⓙ 访达里那两个文档类型名（用户看得见，而**判据原来够不着**）──
+   ⚠️ `fileAssociations[].name` / `.description` 进的是 `CFBundleTypeName` /
+   `CFBundleTypeDescription` —— 右键「打开方式」和「显示简介」里显示的就是它。
+   改名那一轮**只改了 `description`，漏了 `name`**，于是同一个条目里
+   一个写「长尾雀 Studio 设计稿」、另一个还写着旧代号 —— 两句话自己打架。
+   ⚠️ 为什么会漏：`package.json` 是 JSON，**import 不了 `brand.ts`**，
+   所以那几处只能硬写，而 ⓗ / ⓘ 只扫代码。
+   > **一处既不能引用单一来源、又没有判据扫得到的地方，就是下一次漏改的入口。**
+   这一条正面钉它；反方向的 `build.productName` 必须**不等于**品牌名那一条在上面（ⓕ）。 */
+{
+  const { readFileSync: rfp } = await import("node:fs");
+  const pkg = JSON.parse(rfp(jn(R, "shell", "package.json"), "utf8")) as {
+    build?: { fileAssociations?: { name?: string; description?: string }[] };
+  };
+  const fa = pkg.build?.fileAssociations ?? [];
+  const stale = fa.flatMap((a, i) => {
+    const bad: string[] = [];
+    if ((a.name ?? "").includes(B.codename)) bad.push(`#${i + 1} name=${a.name}`);
+    if ((a.description ?? "").includes(B.codename)) bad.push(`#${i + 1} description=${a.description}`);
+    return bad;
+  });
+  ok(fa.length >= 1 && stale.length === 0,
+     "**访达里那两个文档类型名不含旧代号**（`fileAssociations` 的 `name` / `description` 是用户看得见的）",
+     stale.length ? stale.join(" · ") : `${fa.length} 条，都不含 \`${B.codename}\``);
+  ok(fa.every((a) => (a.description ?? "").includes(B.productName)),
+     "**而且它们说得出自己是谁的**（描述里带产品名 —— 访达里一排类型名只有这个认得出来）",
+     fa.map((a) => a.description ?? "(没有)").join(" · "));
+}
+}   /* ⑯ 完 */
 
 /* ── 剥注释只许有一份实现（2026-10-22，geek-99 定）──
    ⚠️ 「判据分不清『代码』和『解释它的注释』」这条教训犯过 **5 次**，
