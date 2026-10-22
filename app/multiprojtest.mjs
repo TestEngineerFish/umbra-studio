@@ -483,6 +483,52 @@ console.log("\n⑩ 存不回原格式的图片（issue #148 / #132）");
 
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ⑪ 拖边改宽时 iframe 不许吃掉事件（issue #107）
+
+   ⚠️ 鼠标一旦移到稿的预览 / 插件面板上，`mousemove` 就被 iframe 吃掉 ——
+   父文档收不到，那一列卡在半路；而鼠标**在 iframe 里松开**时 `mouseup` 也收不到，
+   于是**拖拽状态永远不结束**：光标一直是 `col-resize`、监听器一直挂着，
+   下一次点哪儿都在改宽度。
+   > **一个「拖拽卡住」的毛病，真正的症状是「松手之后它还在拖」。**
+
+   ⚠️ 判据**真去量 CSS 生效**（动态建一个 iframe 再加 class），
+   而不是去源码里找那行字 —— **「规则写了」和「规则对 iframe 生效了」是两件事**，
+   而后者才是这条 issue 的内容（`pointer-events` 作用在 iframe **元素**上，
+   不受同源策略限制，这一点正是它能替代「盖一层透明遮罩」的原因）。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑪ 拖边改宽时 iframe 不吃事件（issue #107）");
+{
+  const pe = await pg.evaluate(() => {
+    const f = document.createElement("iframe");
+    f.id = "t107"; f.src = "about:blank";
+    f.style.cssText = "position:fixed;left:-9999px;width:10px;height:10px";
+    document.body.appendChild(f);
+    const before = getComputedStyle(f).pointerEvents;
+    document.body.classList.add("ud-resizing");
+    const during = getComputedStyle(f).pointerEvents;
+    document.body.classList.remove("ud-resizing");
+    const after = getComputedStyle(f).pointerEvents;
+    f.remove();
+    return { before, during, after };
+  });
+  ok(pe.during === "none",
+     "**拖拽期间 iframe 的 `pointer-events` 真的是 `none`**（量的是生效的样式，不是源码里有那行字）",
+     JSON.stringify(pe));
+  /* ⚠️ 两条**反方向**的：拖拽之前和之后都不该是 none ——
+     不然这条规则就从「拖拽时让开」变成「iframe 永远点不了」。 */
+  ok(pe.before !== "none" && pe.after !== "none",
+     "**拖拽之前和之后都不是 `none`**（不然 iframe 就永远点不了了）",
+     `before=${pe.before} · after=${pe.after}`);
+
+  /* 松手兜底那一半：`blur` 和 `mouseup` 要走**同一个**收尾函数 ——
+     两条退出路径各写一份收尾，迟早有一条忘了清。用源码钉（它是结构不是样式）。 */
+  const fr107 = await readFile(new URL("./src/layout/Frame.tsx", import.meta.url), "utf8");
+  const code107 = fr107.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  ok(/window\.addEventListener\("blur", up\)/.test(code107) && /window\.removeEventListener\("blur", up\)/.test(code107),
+     "**窗口失焦也结束拖拽，而且和 `mouseup` 共用同一个 `up`**（拖到窗口外松手 / 切走应用时 `mouseup` 永远不来）");
+}
+
 await br.close();
 await rm(STATE, { recursive: true, force: true });
 await rm(A, { recursive: true, force: true });

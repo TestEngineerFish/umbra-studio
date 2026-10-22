@@ -124,6 +124,21 @@ body { margin: 0; background: var(--tool-bg); color: var(--tool-text); font-fami
    拖的时候挂 `body.ud-resizing`，过渡让开。 */
 body.ud-resizing .anim-col,
 body.ud-resizing .anim-row { transition: none !important; }
+/* ⚠️⚠️ **拖边改宽时让所有 iframe 不接指针**（issue #107）。
+   鼠标一旦移到稿的预览 / 插件面板上，`mousemove` 就**被 iframe 吃掉** ——
+   父文档的 `document.addEventListener("mousemove")` 收不到，那一列卡在半路；
+   更糟的是鼠标**在 iframe 里松开**时 `mouseup` 也收不到，于是
+   **拖拽状态永远不结束**：`body.style.cursor` 一直是 `col-resize`、
+   监听器一直挂着，下一次点哪儿都在改宽度。
+   > **一个「拖拽卡住」的毛病，真正的症状是「松手之后它还在拖」。**
+
+   这一条 CSS 比盖一层透明遮罩干净：遮罩要建、要定 z-index、要记得移除
+   （而「忘了移除」就是一个点不动的全屏死层）。
+   ⚠️ **对跨源 iframe 同样有效** —— `pointer-events` 作用在 iframe **元素**上，
+   不是它里面的文档，所以不受同源策略限制。
+   ⚠️ 只在拖拽这一瞬间生效（class 加在 `mousedown`、去在 `mouseup`），
+   所以不影响任何正常交互。 */
+body.ud-resizing iframe { pointer-events: none !important; }
 /* 一整块（编辑栏这种） */
 .anim-block { transition: height var(--dur-mid) var(--ease), opacity var(--dur-fast) var(--ease); overflow: hidden; }
 

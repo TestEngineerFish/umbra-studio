@@ -136,6 +136,15 @@ if (!dmgs.length) {
     const got = declared?.[k];
     ok(got === v, `fuses：\`${k}\` 关掉了`, got === undefined ? "没声明（Electron 默认是开的）" : `现在是 ${got}`);
   }
+  /* ⚠️⚠️ **反方向的一条**（geek-99 2026-10-22 要的）：`runAsNode` **必须是开着的**。
+     它不是「我们还没关」，是「**关了就坏**」——
+     插件 B 面 runner 和通道 B 的 MCP 入口（#165 之后）都靠 `ELECTRON_RUN_AS_NODE=1` 起，
+     关了打包版**两处一起静默失效**，而**开发模式一定测不出来**（fuses 只写进打包的二进制）。
+     > **一个「有意保持开着」的开关，需要一条判据守着它别被顺手关掉** ——
+     > 否则下一个人读到上面那两条 `false`，很自然会把第三条也加上。 */
+  ok(declared?.runAsNode !== false,
+     "**`runAsNode` 没有被关掉**（B 面 runner + 通道 B 的 MCP 入口都依赖它，关了打包版两处一起静默失效）",
+     declared?.runAsNode === undefined ? "没声明（= 保持 Electron 默认的开）" : `声明成了 ${declared.runAsNode}`);
   /* ⚠️ 这一条**不是 pass/fail**，是一句照实说的话 —— 把「有意不关」和「忘了关」分开。 */
   console.log(`  · fuses：\`runAsNode\` **有意没关**（插件 B 面 runner + 通道 B 的 MCP 入口都靠它；`
     + `要关得先把 \`fork\` 换成 Electron 的 \`utilityProcess.fork\`，而 Node 的 \`--permission\` 在那里是否生效没实测过 —— issue #138 第二步）`);
@@ -156,6 +165,10 @@ if (!dmgs.length) {
       if (/EnableNodeOptions|RunAsNode/i.test(txt)) {
         ok(offOk, "fuses（**产物层实读**）：NODE_OPTIONS 入口已关", offOk ? "Disabled" : txt.slice(0, 80));
         ok(insOk, "fuses（**产物层实读**）：--inspect 入口已关", insOk ? "Disabled" : txt.slice(0, 80));
+        /* 产物层的反方向：RunAsNode 要**还开着** */
+        const ranOk = /RunAsNode\s*is\s*Enabled/i.test(txt);
+        ok(ranOk, "fuses（**产物层实读**）：`RunAsNode` **还开着**（关了插件沙箱和通道 B 都起不来）",
+           ranOk ? "Enabled" : txt.slice(0, 80));
       } else {
         console.log("  · fuses：产物层读不出来（`@electron/fuses` 不在，或这份产物是关掉 fuses 之前打的）—— **这一条没验到**");
       }

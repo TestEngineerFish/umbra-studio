@@ -137,6 +137,7 @@ function Grip({ r }: { r: Region }) {
         const mv = (ev: MouseEvent) => g.onResize(Math.min(g.max, Math.max(g.min, Math.round(w0 + dir * (ev.clientX - x0)))));
         const up = () => {
           document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up);
+          window.removeEventListener("blur", up);
           document.body.style.cursor = "";
           document.body.classList.remove("ud-resizing");
         };
@@ -146,6 +147,13 @@ function Grip({ r }: { r: Region }) {
            挂在 `body` 上而不是这一列上 —— 底栏改高度（`.anim-row`）是同一个病，一条规则管两处。 */
         document.body.classList.add("ud-resizing");
         document.addEventListener("mousemove", mv); document.addEventListener("mouseup", up);
+        /* ⚠️ **松手兜底**（issue #107 的后半）：`mouseup` 有两种收不到的情形 ——
+           ① 鼠标在 iframe 里松开（上面那条 CSS 已经堵住）；
+           ② 用户把鼠标拖到**窗口外**松开，或者直接切到别的应用。
+           第二种 `document` 永远收不到 `mouseup`，于是拖拽状态**永不结束**。
+           `blur` 覆盖「切走」这一类，而它和 `mouseup` 走**同一个 `up`**（幂等）——
+           > **两条退出路径共用一个收尾函数，才不会出现「一条路忘了清」。** */
+        window.addEventListener("blur", up);
       }} />
   );
 }

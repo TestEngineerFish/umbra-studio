@@ -663,5 +663,58 @@ await rm(join(tmpdir(), "x"), { recursive: true, force: true }).catch(() => {});
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ⑯ A 面桥的超时（issue #97）
+
+   ⚠️ **超时本身 2026-10-06 就做了** —— 这一节补的是它**一直没有的判据**。
+   B 面有（⑧ 钉「死循环在解释器里被打断」），而 A 面桥（`runtime/umbra-plugin.js`）
+   那几处**一条都没有**：下一个人把 `CALL_TIMEOUT` 那个参数去掉，
+   全套回归照旧全绿，而症状是「插件点一下就再也没反应」——
+   **一个永远不 resolve 的 Promise，在界面上和「宿主还在忙」长得一模一样。**
+
+   ⚠️ **为什么是源码级而不是端到端**（照实说）：那个文件是浏览器侧 IIFE
+   （靠 `window` / `parent.postMessage`），而且**正本在 umbra-plugins 仓**
+   （文件头写着「别手改 —— 改 SDK 正本再 sync」）。在 node 里 import 不了，
+   真测要在浏览器里伪造 `parent` 并等到超时（`MENU_TIMEOUT` 是 5 分钟）。
+   所以这里钉的是**结构**：超时的三件要素都在、而且**每一条路都传了它**。
+   > **一条源码级判据挡不住实现写错，但挡得住「某一条路忘了接」** ——
+   > 而「四条路里漏一条」正是 #97 当年的病（`umbra.menu` 那一条
+   > 甚至被写进了注释：「点空关掉就一直不返回」）。
+   ══════════════════════════════════════════════════════════════════════ */
+{
+  const { readFileSync: rf16, existsSync: ex16 } = await import("node:fs");
+  const { join: j16b } = await import("node:path");
+  const { TOOL_ROOT: TR16b } = await import("./project.js");
+  const BR = j16b(TR16b, "runtime", "umbra-plugin.js");
+  if (!ex16(BR)) {
+    console.log("  · 跳过「A 面桥的超时」：`runtime/umbra-plugin.js` 不在（先跑 sync-plugins）—— **不算通过**");
+  } else {
+    const src = rf16(BR, "utf8");
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+    /* ① 超时这件事存在，而且**不 reject 而是回一个失败信封** ——
+       reject 的话插件侧写的 `await umbra.call()` 会整个崩掉，而它们没有 try */
+    ok(/function send\(msg, ms, onTimeout\)/.test(code) && /setTimeout\(/.test(code),
+       "#97 ① 桥有超时机制（`send(msg, ms, onTimeout)` + `setTimeout`）");
+    ok(/E_BRIDGE_TIMEOUT/.test(code),
+       "#97 ② 超时回的是**带错误码的失败信封**（`E_BRIDGE_TIMEOUT`），不是 reject ——"
+       + " 插件侧写的是 `await umbra.call()`，reject 会让它整个崩掉");
+    /* ③ **每一条 `send(` 都带了超时** —— 这是这一节的本体。
+       ⚠️ 判准是「`send(` 的调用点数 === 带超时的调用点数」，
+       **不是「至少有一处带」** —— 后者几乎总是假判据（§145.4）。 */
+    const calls = [...code.matchAll(/\bsend\(\{/g)].length;
+    const timed = [...code.matchAll(/\bsend\(\{[^;]*?(CALL_TIMEOUT|MENU_TIMEOUT|\d{3,})/gs)].length;
+    ok(calls > 0 && calls === timed,
+       "#97 ③ **每一条 `send(` 都传了超时**（判准是「调用点数 === 带超时的条数」，不是「至少有一处」）",
+       `${timed}/${calls} 条带超时`);
+    /* ④ 应答到了要撤定时器 —— 不撤的话定时器还在跑，而那时 pending 已删，
+       所以不会重复 resolve（有一道 if 兜着），但它会让进程多挂几分钟的计时器 */
+    ok(/clearTimeout\(timer\)/.test(code),
+       "#97 ④ 应答到了就撤定时器（不撤的话菜单那条会挂着 5 分钟的计时器）");
+    /* ⑤ 失败信封要**说清这是谁的问题** —— 插件作者看到它才知道该报 issue 而不是改自己的输入 */
+    ok(/宿主的 bug/.test(src),
+       "#97 ⑤ 失败信封说清「这是宿主的 bug，不是你的输入问题」（插件作者据它决定报 issue 还是改输入）");
+  }
+}
+
 console.log(fail === 0 ? `\n✓ 插件机制 ${pass}/${pass + fail}` : `\n✗ 插件机制 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);
