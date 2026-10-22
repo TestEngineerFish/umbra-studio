@@ -1,9 +1,13 @@
-// 来源：UmbraPC electron/core/convert/converters/ffmpeg.ts（2026-10-19 cb7d2cc），改动：相对 import 补 .js；正则分组 m[1] / d[1] / t[1] 加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/converters/ffmpeg.ts（2026-10-21 e10fdd6），改动：相对 import 补 .js；索引取值与正则分组加非空断言（noUncheckedIndexedAccess）
 // 格式转换：用户自己装的 FFmpeg —— 音视频几乎全靠它，外加 webp 输出（sips 写不了）。
 //
 // 编码器先查再用（照 Filee，doc §9.3 第 6 条）：Homebrew 的 ffmpeg 和别处下的不一定带 x264 / libvpx / lame，
 // 第一次用时跑一次 `ffmpeg -encoders`，缺哪个编码器，那几条边就不登记 —— 规划器自然绕开或者说「转不了」，
 // 而不是让用户看一屏 ffmpeg 的报错。
+//
+// 输入一律按扩展名钉死解复用器（#126）：ffmpeg 默认按内容猜格式，一份叫 song.wav 的 ffconcat / m3u8 清单
+// 会被当清单读，把清单里写的别处文件（经软链出根）或网络地址拉进成品。所以 `-f <格式>` + `file:` 前缀，
+// 再加 `-protocol_whitelist file,pipe`：哪怕解复用器自己还想开别的地址，http / tcp / concat: 这些协议也开不了。
 
 import { runProc, procError } from "../proc.js";
 import type { ToolBox } from "../tools.js";
@@ -84,6 +88,20 @@ export function encodeArgs(to: string, enc: Set<string>, quality?: number): stri
   }
 }
 
+/** 输入扩展名 → `-f` 的解复用器名。不在表里的不给 ffmpeg 猜，直接不转。 */
+export const DEMUXER: Record<string, string> = {
+  mp4: "mp4", mov: "mov", m4a: "mov", mkv: "matroska", webm: "matroska", avi: "avi", gif: "gif",
+  mp3: "mp3", wav: "wav", flac: "flac", aiff: "aiff", ogg: "ogg", opus: "ogg",
+  png: "png_pipe", jpg: "jpeg_pipe",
+};
+
+/** 输入那一段：钉死格式、只许本地文件协议。**纯函数。** */
+export function inputArgs(from: string, input: string): string[] {
+  const f = DEMUXER[from];
+  if (!f) throw new Error(`ffmpeg 不读 ${from}`);
+  return ["-protocol_whitelist", "file,pipe", "-f", f, "-i", `file:${input}`];
+}
+
 const IDLE_MEDIA = 10 * 60_000;
 
 export function ffmpegConverter(tools: ToolBox): Converter {
@@ -117,7 +135,7 @@ export function ffmpegConverter(tools: ToolBox): Converter {
       const bin = tools.get("ffmpeg").path;
       if (!bin) throw new Error("没装 FFmpeg");
       await probe(bin).catch(() => {});
-      const args = ["-hide_banner", "-nostdin", "-y", "-i", step.input, ...encodeArgs(step.to, encoders ?? new Set(), step.options.quality), step.output];
+      const args = ["-hide_banner", "-nostdin", "-y", ...inputArgs(step.from, step.input), ...encodeArgs(step.to, encoders ?? new Set(), step.options.quality), step.output];
       let total = NaN;
       step.progress(0);
       const r = await runProc(bin, args, {

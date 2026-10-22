@@ -1,4 +1,4 @@
-// 来源：UmbraPC electron/core/convert/engine.ts（2026-10-19 cb7d2cc），改动：相对 import 补 .js；perSource[0]、route.steps[i] 加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/engine.ts（2026-10-22 b6874dc），改动：相对 import 补 .js；索引取值加非空断言（noUncheckedIndexedAccess）
 // 格式转换引擎（doc/格式转换-方案调研-2026-10-18.md §四、§9.3）。
 //
 // 一次转换 = 判格式 → 规划路线 → 在任务自己的临时目录里一步步转 → 占好成品位置 → 挪过去 → 删临时目录。
@@ -214,22 +214,41 @@ export class ConvertEngine {
   }
 }
 
-/** 文字类的源。 */
-const TEXTY: ReadonlySet<FormatCategory> = new Set(["document", "sheet", "slides", "text", "ebook", "pdf"]);
-/** 音视频。 */
-const MEDIA: ReadonlySet<FormatCategory> = new Set(["video", "audio"]);
+/** 每类源「列出来对用户有意义」的目标类别（同类永远算）。 */
+const MEANINGFUL: Record<FormatCategory, readonly FormatCategory[]> = {
+  // 图片：别的图片格式、拼成 PDF。图片 → Word / ODT / EPUB / 纯文本只是把图塞进一页文档（或者得靠识字），不列。
+  image: ["pdf"],
+  // 文字类 → 彼此、PDF、整页的图（说明.txt → JPG 是一张 A4 页面图，有用）。
+  pdf: ["document", "text", "ebook", "image"],
+  document: ["text", "ebook", "pdf", "image"],
+  text: ["document", "ebook", "pdf", "image"],
+  ebook: ["document", "text", "pdf", "image"],
+  // 表格 / 演示：彼此之内、PDF、页面图；表格还能出 CSV / HTML 这类文字。
+  sheet: ["pdf", "image", "text"],
+  slides: ["pdf", "image"],
+  // 视频：换封装、抽音轨；做动图见 sensible（只给 gif，不给 png / jpg 这种「第一帧」）。
+  video: ["audio"],
+  audio: [],
+};
+/** 类别之外单列的：动图 → 视频（gif 是图片类，但 ffmpeg 直接转 mp4 / webm 是常用需求）。 */
+const EXTRA: Record<string, readonly FormatCategory[]> = { gif: ["video"] };
 
-/** 列「能转成什么」时去掉没意义的组合：文字类的东西转成音视频。
- *  增强转换包的格式图很宽，多步一拼就会出「docx → gif → mp4」这种技术上通、没人要的路（10-18 实测撞到）。
+/** 列「能转成什么」时去掉没意义的组合（只看成品对用户有没有用，不是串得起来就列）。
+ *  格式图很宽，多步一拼就会出「png → gif → mp4 → mp3」（10-22 sam 实测右键 PNG 列出近 30 种，含 6 种音频）、
+ *  「docx → gif → mp4」（10-18）这种技术上通、没人要的路。
  *  只管**列不列**，不拦明确的请求（AI / 工作流写明了要 mp4，照转）。 */
 export function sensible(from: string, to: string): boolean {
   const a = formatById(from)?.category;
   const b = formatById(to)?.category;
-  return !(a && b && TEXTY.has(a) && MEDIA.has(b));
+  if (!a || !b) return true;
+  return a === b || MEANINGFUL[a].includes(b) || !!EXTRA[from]?.includes(b) || a === "video" && to === "gif";
 }
 
 /** 常用的排前面。 */
 const ORDER = ["pdf", "jpg", "png", "docx", "mp4", "mp3", "m4a", "xlsx", "pptx", "md", "html", "txt", "heic", "webp", "gif"];
+/** 目标格式的展示顺序（同代价同可用性时谁在前）。访达扩展的表也带上它，扩展多选取交集后照这个排（finderExt.ts）。 */
+export function targetRank(id: string): number { return order(id); }
+
 function order(id: string): number {
   const i = ORDER.indexOf(id);
   return i < 0 ? ORDER.length : i;

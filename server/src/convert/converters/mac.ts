@@ -1,4 +1,4 @@
-// 来源：UmbraPC electron/core/convert/converters/mac.ts（2026-10-18 a72ac3a），改动：相对 import 补 .js；SIPS_WRITE / AF_WRITE 取值加非空断言（noUncheckedIndexedAccess）
+// 来源：UmbraPC electron/core/convert/converters/mac.ts（2026-10-21 876cb3a），改动：相对 import 补 .js；索引取值加非空断言（noUncheckedIndexedAccess）
 // 格式转换：macOS 系统自带的四件（doc/格式转换-方案调研-2026-10-18.md §3.1，参数 10-18 本机实测过）。
 //
 //   sips      图片：能写 jpeg / png / heic / avif / tiff / gif / bmp / pdf，**写不了 webp**（读得了）；
@@ -63,6 +63,13 @@ export function sipsConverter(tools: ToolBox): Converter {
 
 const TEXTUTIL_IO = ["docx", "doc", "odt", "rtf", "html", "txt"];
 
+/** textutil 的参数。html 进来加 `-noload`（#126）：不去取页面引用的图片 / 样式表等资源。**纯函数。**
+ *  10-21 实测（macOS 26）：html → docx / doc / odt / rtf / txt 这几种成品本来就不带图（只有 rtfd 带，我们不出 rtfd），
+ *  外链也没收到请求；`-noload` 是把「不去取」写死，不靠系统版本的默认行为。 */
+export function textutilArgs(from: string, to: string, input: string, output: string): string[] {
+  return [...(from === "html" ? ["-noload"] : []), "-convert", to, "-output", output, input];
+}
+
 export function textutilConverter(tools: ToolBox): Converter {
   return {
     id: "textutil",
@@ -76,7 +83,7 @@ export function textutilConverter(tools: ToolBox): Converter {
     status: async () => systemStatus(tools, "textutil"),
     async convert(step) {
       step.progress(null);
-      await exec(tools, "textutil", ["-convert", step.to, "-output", step.output, step.input], step, IDLE_SHORT);
+      await exec(tools, "textutil", textutilArgs(step.from, step.to, step.input, step.output), step, IDLE_SHORT);
     },
   };
 }

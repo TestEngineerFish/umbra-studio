@@ -236,6 +236,75 @@ if (process.platform === "darwin" && existsSync("/usr/bin/sips")) {
   console.log("  · 跳过真转换：这台机器上没有 /usr/bin/sips");
 }
 
+/* ── ⑧ 「能转成什么」只列对用户有意义的成品（2026-10-22，同步 PC b6874dc）──
+   起因是 sam 在 PC 上实测：右键一张 PNG 列出近 30 种，含 mp3 / wav / mp4 / epub / odt；
+   PNG + WAV 多选交集出来 6 种音频。**病根是「可达」按传递闭包算** ——
+   `reachable()` 把 `png → gif → mp4 → mp3` 这种串得通的多步链路也算够得着。
+   > **「技术上转得到」和「有人要这个成品」是两件事，而只有前者是算得出来的。**
+
+   ⚠️ **Studio 这边是同一个病**：`list_convert_targets` → `convertEngine().targets()`
+   → `engine.ts` 那一行，**唯一一条路**，没有第二处自己算可达格式的地方（已 grep 确认）。
+   所以同步 `engine.ts` 就把它一起修掉了，而判据要留在这边 ——
+   **PC 的测试跑不到 Studio 的能力面上**。
+
+   ⚠️ 判据用**最坏情况的边表**（一个「什么都能直转什么」的假转换器），理由和 PC 那份一样：
+   Studio 真实的转换器集比 PC 窄（不带 builtin），拿真实集去测的话
+   「png 的目标里没有音频」**可能只是因为这台机器压根没有那条边** ——
+   那又是一条「今天恰好没事」。 */
+console.log("\n⑧ 「能转成什么」只列有意义的成品（PC b6874dc 同步）");
+{
+  const { sensible } = await import("./convert/engine.js");
+  const { FORMATS: FMTS, formatById: fbi } = await import("./convert/formats.js");
+  const ids = FMTS.map((f) => f.id);
+  /* 最坏情况：一个转换器声称**任何格式都能直接转成任何格式**。
+     这样「列出来的少」只可能是 `sensible()` 筛掉的，不可能是「图上没路」。 */
+  const widest = fake("最宽", ids.flatMap((f) => ids.filter((t) => t !== f).map((t) => ({ from: f, to: t }))));
+  const wideTmp = await mkdtemp(join(STATE, "conv-wide-"));
+  const wideEngine = new ConvertEngine([widest], wideTmp);
+  const sampleDir = await mkdtemp(join(STATE, "conv-sample-"));
+  const mkSample = async (name: string) => { const q = join(sampleDir, name); await writeFile(q, "x"); return q; };
+  const listed = async (...names: string[]) =>
+    (await wideEngine.targets(await Promise.all(names.map(mkSample)))).targets.map((t) => t.to);
+  const catOf = (id: string) => fbi(id)?.category;
+
+  /* ⚠️ **先证明仪器不是零**：这张最宽的边表真的能把所有格式都算成可达 ——
+     不然「没列出音频」可能只是因为 `targets()` 整个回了空（纪律④）。 */
+  const rawReach = (await import("./convert/route.js")).reachable([widest], "png");
+  ok(rawReach.size > 20 && [...rawReach].some((t) => catOf(t) === "audio"),
+     "**（仪器自检）这张最宽的边表确实让 png 够得着音频** —— 所以下面「没列音频」是筛掉的，不是没路",
+     `可达 ${rawReach.size} 种，含音频 ${[...rawReach].filter((t) => catOf(t) === "audio").length} 种`);
+
+  for (const name of ["a.png", "a.jpg", "a.heic", "a.webp"]) {
+    const to = await listed(name);
+    const bad = to.filter((t) => ["audio", "video", "document", "ebook", "text", "sheet", "slides"].includes(catOf(t) ?? ""));
+    ok(to.length > 0 && bad.length === 0 && to.includes("pdf"),
+       `图片 ${name}：目标里没有音视频 / 文档 / 电子书 / 纯文本，但有 pdf`,
+       bad.length ? `✗ 还列着 ${bad.join(" · ")}` : to.join(" · "));
+  }
+  ok((await listed("a.png", "b.wav")).length === 0,
+     "**PNG + WAV 多选：交集是空的**（原来冒出 6 种音频）", JSON.stringify(await listed("a.png", "b.wav")));
+  {
+    const to = await listed("说明.txt");
+    ok(["pdf", "jpg", "docx"].every((x) => to.includes(x)) && to.filter((t) => ["audio", "video"].includes(catOf(t) ?? "")).length === 0,
+       "**多步链路该留的留住**：txt → pdf / jpg / docx 还在（txt → JPG 是一张整页图，有用），但不转音视频", to.join(" · "));
+  }
+  ok((await listed("a.wav")).every((t) => catOf(t) === "audio"), "音频只到音频", (await listed("a.wav")).join(" · "));
+  {
+    const v = await listed("a.mp4");
+    ok(["mov", "mp3", "gif"].every((x) => v.includes(x)) && !v.includes("png") && !v.includes("pdf"),
+       "视频到视频 / 音频 / gif，**不到 png**（「第一帧」没人要）", v.join(" · "));
+  }
+  ok((await listed("a.gif")).includes("mp4"), "gif 能转视频（它是图片类，但这是常用需求 —— 类别表之外单列的那一条）");
+  /* `sensible()` 本身那张表 —— 照 PC `tests/convertTargetsMeaningful.test.ts` 最后一节逐条对 */
+  const table: Array<[string, string, boolean]> = [
+    ["png", "mp3", false], ["png", "mp4", false], ["png", "epub", false], ["png", "pdf", true],
+    ["txt", "jpg", true], ["pdf", "docx", true], ["xlsx", "pdf", true], ["pptx", "png", true],
+    ["docx", "mp4", false], ["gif", "mp4", true], ["mp4", "gif", true], ["mp4", "png", false],
+  ];
+  const wrong = table.filter(([f, t, want]) => sensible(f, t) !== want).map(([f, t, want]) => `${f}→${t} 应 ${want}`);
+  ok(wrong.length === 0, "`sensible()` 那张类别表逐条对得上 PC 的测试（12 条）", wrong.join(" · ") || "12/12");
+}
+
 /** 一张 w×h 的纯色 PNG（手拼：签名 + IHDR + IDAT + IEND，CRC 自己算） */
 function tinyPng(w: number, h: number): Buffer {
   const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
