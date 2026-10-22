@@ -17,7 +17,7 @@
  *  本机没有证书。混为一谈的话这个脚本会一直红，红久了就没人看了。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const app = process.argv[2] ?? join(import.meta.dirname ?? ".", "out", "mac-arm64", "Umbra Studio.app");
@@ -108,6 +108,61 @@ if (!dmgs.length) {
   ok(/accepted/.test(gate) && /source=Notarized/.test(gate), `dmg 过 Gatekeeper：${name}`,
     (gate.split("\n").find((l) => l.includes("source=") || l.includes("rejected")) ?? "").trim().slice(0, 60));
   ok(st.ok && /worked/.test(st.out), `dmg 的公证票据已 staple：${name}`, st.ok ? "" : "没 staple：首次打开要联网问 Apple");
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   五、Electron fuses（issue #138）—— 签名包里那几个「借身份跑任意代码」的入口
+
+   ⚠️ macOS 的 TCC 授权（「文稿」「桌面」「下载」、可移除卷、用户在打开面板里选过的目录）
+   认的是**签名身份**，不是「是不是 Studio 自己的代码在跑」。而 Studio 的定位就是
+   「打开用户任意目录」，它攒下的文件授权**比一般应用多**。于是 Electron 默认全开的那几个
+   入口就成了「别的进程能借 Studio 的身份跑任意代码，并继承那些授权」：
+   · `NODE_OPTIONS=--require …` · `--inspect` 挂调试器 · `ELECTRON_RUN_AS_NODE=1 … -e '<JS>'`
+   > **在 `main.mjs` 里 `delete process.env.NODE_OPTIONS` 来不及** ——
+   > 它在 JS 跑起来之前就已经生效了。fuses 是唯一能在**二进制层**关掉它们的地方。
+
+   ⚠️ **`runAsNode` 刻意没关**，而这一条读数要把它说清而不是算成「没做」：
+   插件 B 面的 runner 和通道 B 的 MCP 入口（#165 之后）**都靠 `ELECTRON_RUN_AS_NODE=1` 起**，
+   关了打包版两处都**静默失效**，而**开发模式一定测不出来**（fuses 只写进打包的二进制）。
+   ══════════════════════════════════════════════════════════════════════ */
+{
+  const fuseWant = { enableNodeOptionsEnvironmentVariable: false, enableNodeCliInspectArguments: false };
+  let declared = null;
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname ?? ".", "package.json"), "utf8"));
+    declared = pkg?.build?.electronFuses ?? null;
+  } catch { /* 读不到就按「没声明」算 */ }
+  for (const [k, v] of Object.entries(fuseWant)) {
+    const got = declared?.[k];
+    ok(got === v, `fuses：\`${k}\` 关掉了`, got === undefined ? "没声明（Electron 默认是开的）" : `现在是 ${got}`);
+  }
+  /* ⚠️ 这一条**不是 pass/fail**，是一句照实说的话 —— 把「有意不关」和「忘了关」分开。 */
+  console.log(`  · fuses：\`runAsNode\` **有意没关**（插件 B 面 runner + 通道 B 的 MCP 入口都靠它；`
+    + `要关得先把 \`fork\` 换成 Electron 的 \`utilityProcess.fork\`，而 Node 的 \`--permission\` 在那里是否生效没实测过 —— issue #138 第二步）`);
+  /* 产物层的读数：真去二进制里读一次（`@electron/fuses` 是 electron-builder 的传递依赖）。
+     ⚠️ 读不到就说读不到 —— **「没读到」和「关好了」不是一回事**（纪律④）。 */
+  if (existsSync(app)) {
+    try {
+      /* ⚠️ `run()` 回的是 `{ ok, out }`，不是 `{ stdout, stderr }` ——
+         第一版照后者取，读数变成字面的 `undefinedundefined`，
+         而那个字符串**非空**，于是它走了「读到了」那条分支、把两条判据报成「没关」。
+         > **一个读错字段的判据，会把「没读到」说成「结果是坏的」**（本轮第 2 次）。 */
+      const out = run("npx", ["--no-install", "@electron/fuses", "read", "--app", app]);
+      const txt = out.out ?? "";
+      const offOk = /EnableNodeOptionsEnvironmentVariable\s*is\s*Disabled/i.test(txt);
+      const insOk = /EnableNodeCliInspectArguments\s*is\s*Disabled/i.test(txt);
+      /* ⚠️ 只有**真读到 fuses 清单**才算读到 —— 命令不存在 / 产物太老时 `out` 里是
+         一句报错，而那也非空。判准要认内容而不是「有没有输出」（纪律④）。 */
+      if (/EnableNodeOptions|RunAsNode/i.test(txt)) {
+        ok(offOk, "fuses（**产物层实读**）：NODE_OPTIONS 入口已关", offOk ? "Disabled" : txt.slice(0, 80));
+        ok(insOk, "fuses（**产物层实读**）：--inspect 入口已关", insOk ? "Disabled" : txt.slice(0, 80));
+      } else {
+        console.log("  · fuses：产物层读不出来（`@electron/fuses` 不在，或这份产物是关掉 fuses 之前打的）—— **这一条没验到**");
+      }
+    } catch {
+      console.log("  · fuses：产物层读不出来（命令跑不起来）—— **这一条没验到**");
+    }
+  }
 }
 
 console.log(`\n${todo === 0 ? "✓" : "–"} ${done} 项具备 · ${todo} 项还没做`);

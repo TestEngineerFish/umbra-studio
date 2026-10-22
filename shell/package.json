@@ -23,6 +23,11 @@
   },
   "build": {
     "appId": "com.umbrastudio.app",
+    "_electronFuses说明": "见下面 electronFuses 的三条；放在这里是因为 JSON 不能写注释，而这几个值的理由比值本身长。① enableNodeOptionsEnvironmentVariable=false：关掉 NODE_OPTIONS=--require 这条注入口。已核 sandbox.ts 的 env 是白名单、故意不透传 NODE_OPTIONS（issue #24），所以关掉不碰现有功能。② enableNodeCliInspectArguments=false：关掉 --inspect 挂调试器进主进程。已核 execArgv 里只有 --permission / --allow-fs-read / --require。③ runAsNode 刻意不关（issue #138 第二步要拍板）：插件 B 面的 runner 和通道 B 的 MCP 入口都靠 ELECTRON_RUN_AS_NODE=1 起，关了打包版两处都静默失效，而开发模式一定测不出来（fuses 只写进打包的二进制）。出路是改用 Electron 的 utilityProcess.fork，但 Node 的 --permission 在 utility process 里是否同样生效没有实测过 —— 那是这条路最大的未知，要先 spike。",
+    "electronFuses": {
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false
+    },
     "productName": "Umbra Studio",
     "directories": {
       "output": "out"
