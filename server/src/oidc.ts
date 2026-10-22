@@ -28,6 +28,15 @@ const PAGE_BAD = "<!doctype html><meta charset=utf-8><title>Umbra Studio</title>
 export type OidcFailReason = "cancelled" | "timeout" | "state" | "idp" | "network";
 
 export class OidcFail extends Error {
+  /** IdP / 服务端回的 HTTP 状态码（有就带上，issue #170）。
+   *
+   *  ⚠️ **调用方要据它分「这个刷新令牌废了」和「对面此刻不舒服」** ——
+   *  原来只有 `reason` 和一句 `detail`，于是 `account.ts` 只能靠
+   *  「`reason === "network"`」区分，而 **5xx 被归到了「令牌废了」那一档**：
+   *  服务端或 IdP 短暂 500 / 502 / 503，**本机登录就被清掉了**。
+   *  > **把状态码塞进一句给人看的话里，就等于让下一个人去解析那句话** ——
+   *  > 而他解析得对不对，没有任何东西会报警。 */
+  status?: number;
   constructor(readonly reason: OidcFailReason, detail = "") {
     super(detail || reason);
     this.name = "OidcFail";
@@ -104,9 +113,9 @@ export class OidcLogin {
     try {
       data = await r.json();
     } catch {
-      throw new OidcFail("idp", `IdP 回了 ${r.status}，不是 JSON`);
+      throw Object.assign(new OidcFail("idp", `IdP 回了 ${r.status}，不是 JSON`), { status: r.status });
     }
-    if (!r.ok && !(data && typeof data === "object" && "error" in data)) throw new OidcFail("idp", `IdP 回了 ${r.status}`);
+    if (!r.ok && !(data && typeof data === "object" && "error" in data)) throw Object.assign(new OidcFail("idp", `IdP 回了 ${r.status}`), { status: r.status });
     return data;
   }
 

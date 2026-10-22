@@ -439,6 +439,122 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
      "**空串照样发出去**（服务端的意思是「不要显示名」，界面退回显示邮箱）—— 不当成「没填」拦掉");
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ⑬ `renew()` 的两条竞态（issue #171 / #170）
+
+   `renew()` 中间有**三次网络往返**（`/auth/config` → IdP token → `/auth/me`），
+   而 `setAccount` 是 `{...当前文件, ...patch}` 合并。于是：
+   · **#171** 刷新途中点「退出登录」→ 界面先显示未登录，**一两秒后又变回已登录**
+     （而 `logout` 吊销的是**旧**那枚令牌，新换的那枚和新刷新令牌没被吊销）；
+   · **#170** 服务端或 IdP 短暂 **5xx** → 除 network 之外一律清登录 →
+     **本机登录被清掉**，而用户什么都没做错、手上那枚刷新令牌也还好着。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n⑬ renew() 的两条竞态（issue #171 / #170）");
+{
+  /* ── #171 ⓐ 刷新途中退出登录：刷新结果**不许复活它** ── */
+  {
+    let kick: (() => void) | null = null;
+    const gate = new Promise<void>((r) => { kick = r; });
+    const oidc = new OidcLogin(async () => {
+      await gate;                                   // 停在这里，等判据把 logout 做完
+      return { ok: true, status: 200, json: async () => ({ access_token: "复活的令牌", refresh_token: "RT9", expires_in: 604800 }) };
+    });
+    const svc = new AccountService(oidc, (async (url: string, init: { headers?: Record<string, string> }) => {
+      const path = url.slice(BASE.length);
+      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
+      if (path === "/auth/config") return json(200, CFG);
+      if (path === "/auth/me") return json(200, { user: { id: 1, name: "sam" } });
+      return json(200, {});
+    }) as never);
+    await signIn("T1");
+    const p1 = svc.renew();                          // 开始刷新，卡在 gate 上
+    await new Promise((r) => setTimeout(r, 20));
+    await svc.logout();                              // 用户点「退出登录」
+    const afterLogout = (await svc.status()).signedIn;
+    kick!();                                          // 刷新这才回来
+    const renewed = await p1;
+    const st = await svc.status();
+    ok(afterLogout === false, "（前提）logout 当场就把登录清了", String(afterLogout));
+    ok(st.signedIn === false,
+       "**刷新途中退出登录，刷新结果不许把它复活**（原来一两秒后又变回已登录）",
+       `signedIn=${st.signedIn} · renew 回 ${renewed}`);
+    const a = await getAccount();
+    ok(a.accessToken === "" && a.refreshToken === "",
+       "**新换到的那枚令牌也没落盘**（不然它没被吊销、却躺在文件里）",
+       JSON.stringify({ at: a.accessToken, rt: a.refreshToken }));
+  }
+
+  /* ── #171 ⓑ 刷新途中完成一场新登录：旧结果不许盖掉它 ── */
+  {
+    let kick: (() => void) | null = null;
+    const gate = new Promise<void>((r) => { kick = r; });
+    const oidc = new OidcLogin(async () => {
+      await gate;
+      return { ok: true, status: 200, json: async () => ({ access_token: "旧刷新换到的", refresh_token: "RT-old", expires_in: 604800 }) };
+    });
+    const svc = new AccountService(oidc, (async (url: string) => {
+      const path = url.slice(BASE.length);
+      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
+      if (path === "/auth/config") return json(200, CFG);
+      if (path === "/auth/me") return json(200, { user: { id: 1, name: "sam" } });
+      return json(200, {});
+    }) as never);
+    await signIn("T1");
+    const p2 = svc.renew();
+    await new Promise((r) => setTimeout(r, 20));
+    await signIn("新登录的令牌", "RT-new");          // 另一场登录落盘了
+    kick!();
+    await p2;
+    const a = await getAccount();
+    ok(a.accessToken === "新登录的令牌" && a.refreshToken === "RT-new",
+       "**刷新途中的新登录不被旧刷新结果盖掉**", JSON.stringify({ at: a.accessToken, rt: a.refreshToken }));
+  }
+
+  /* ── #170 对面 5xx / 429 / 超时：**不清登录** ──
+     ⚠️ 两个方向的代价不对称：误清 = 用户被踢出去重新登录（**没有东西兜**）；
+     误留 = 界面多说一会儿「已登录」，而下一次请求照样会发现失效
+     （`x-umbra-session` 那层报信兜着）。 */
+  for (const [label, mk] of [
+    ["503", () => ({ ok: false, status: 503, json: async () => ({}) })],
+    ["500", () => ({ ok: false, status: 500, json: async () => ({}) })],
+    ["429", () => ({ ok: false, status: 429, json: async () => ({}) })],
+  ] as const) {
+    await signIn("T1");
+    const svc = new AccountService(new OidcLogin(async () => mk() as never), (async (url: string) => {
+      const path = url.slice(BASE.length);
+      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
+      if (path === "/auth/config") return json(200, CFG);
+      return json(200, {});
+    }) as never);
+    const r = await svc.renew();
+    const a = await getAccount();
+    ok(r === false && a.refreshToken === "RT1" && a.accessToken === "T1",
+       `**IdP 回 ${label} 时不清登录**（对面「此刻不舒服」≠「这枚令牌废了」）`,
+       JSON.stringify({ renew: r, at: a.accessToken, rt: a.refreshToken }));
+    const le = (await svc.status()).lastError ?? "";
+    ok(/暂时刷新不了/.test(le),
+       `${label}：而且说得出「暂时刷新不了」而不是「登录失效」`,
+       le);
+  }
+
+  /* ── 反方向：IdP **明确拒了这枚令牌**（400 invalid_grant）→ 该清就清 ──
+     ⚠️ 没有这一条的话，上面那几条可以用「renew 什么都不做」糊过去。 */
+  {
+    await signIn("T1");
+    const svc = new AccountService(new OidcLogin(async () => ({ ok: false, status: 400, json: async () => ({ error: "invalid_grant" }) } as never)), (async (url: string) => {
+      const path = url.slice(BASE.length);
+      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
+      if (path === "/auth/config") return json(200, CFG);
+      return json(200, {});
+    }) as never);
+    const r = await svc.renew();
+    const a = await getAccount();
+    ok(r === false && a.accessToken === "" && a.refreshToken === "",
+       "**IdP 明确拒了这枚刷新令牌（400 invalid_grant）→ 照旧清登录**（不然上面几条可以靠「什么都不做」糊过去）",
+       JSON.stringify({ at: a.accessToken, rt: a.refreshToken }));
+  }
+}
+
 await rm(STATE, { recursive: true, force: true });
 console.log(`\n${fail ? "✗" : "✓"} 令牌刷新 ${pass}/${pass + fail}`);
 process.exit(fail ? 1 : 0);

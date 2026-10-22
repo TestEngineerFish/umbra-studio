@@ -294,12 +294,50 @@ export class AccountService {
       try {
         const t = await this.oidc.refresh(cfg, a.refreshToken);
         const user = await this.me(a.serverUrl, t.accessToken);
+        /* ⚠️⚠️ **写回之前核一次「世界还是不是我出发时那个世界」**（issue #171）。
+           这中间有**三次网络往返**（`/auth/config` → IdP token → `/auth/me`），
+           而 `setAccount` 是 `{...当前文件, ...patch}` 合并 —— patch 里带着
+           `accessToken` 和 `user`，于是：
+           · 用户在刷新途中点「退出登录」→ 界面先显示未登录，**一两秒后又变回已登录**
+             （而 `signedInAt` 是空的，且 `logout` 吊销的是**旧**那枚令牌，
+             新换的那枚和新刷新令牌**没被吊销**）；
+           · 刷新途中完成了一场**新登录** → 旧的刷新结果把新令牌盖掉。
+           > **一个跨了三次 await 的写回，必须问一句「我读到的那一版还在吗」** ——
+           > 这和写文件的 sha256 写前校验是同一件事，只是这里的「文件」是登录状态。 */
+        const now = await getAccount();
+        if (now.accessToken !== a.accessToken) {
+          this.log("[account] 刷新完成时登录状态已经变了（退出登录 / 新登录），这次不写回");
+          return !!now.accessToken && !!now.user;
+        }
         await setAccount({ accessToken: t.accessToken, refreshToken: t.refreshToken || a.refreshToken, user });
         this.lastError = "";
         this.log("[account] 访问令牌已刷新");
         return true;
       } catch (e) {
-        if ((e as OidcFail)?.reason === "network" || /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test((e as Error).message)) return false;
+        const f = e as OidcFail & { status?: number };
+        if (f?.reason === "network" || /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test((e as Error).message)) return false;
+        /* ⚠️⚠️ **对面「此刻不舒服」不等于「这个令牌废了」**（issue #170）。
+           原来除了 network 一律清登录，于是服务端或 IdP 短暂 **5xx**、
+           或者刷新超时，**本机登录就被清掉了** —— 而用户什么都没做错，
+           手上那枚刷新令牌也还好着。
+           > 两个方向的代价不对称：**误清 = 用户被踢出去重新登录**（没有东西兜）；
+           > **误留 = 界面多说一会儿「已登录」，下一次请求照样会发现失效**
+           > （那一头有 `x-umbra-session` 兜着，Q69/§162 装的那层报信）。
+           > **所以只在 IdP 明确拒了这枚令牌时才清。** */
+        const transient = f?.reason === "timeout"
+          || (typeof f?.status === "number" && f.status >= 500)
+          || (typeof f?.status === "number" && f.status === 429);
+        if (transient) {
+          this.lastError = `暂时刷新不了（${f.status ?? f.reason}），稍后再试`;
+          this.log(`[account] 刷新失败但不清登录：${f.status ?? f.reason}`);
+          return false;
+        }
+        /* 清之前也要核一次 —— 刷新途中完成的新登录不该被这一条清掉（#171 的另一半） */
+        const now2 = await getAccount();
+        if (now2.accessToken !== a.accessToken) {
+          this.log("[account] 刷新失败，但登录状态已经换了一版，不动它");
+          return !!now2.accessToken && !!now2.user;
+        }
         await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
         this.lastError = "登录已经失效，重新登录一次";
         return false;
