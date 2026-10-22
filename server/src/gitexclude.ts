@@ -18,13 +18,33 @@
  *
  *  ### 三条边界（拿不准就不写）
  *  ① 不在 git 仓库里 → **什么都不写**；
- *  ② `.git` 是**文件**而不是目录（worktree / submodule）→ 按它里面的
- *     `gitdir: <路径>` 指向去找；指不到 → **不写**；
+ *  ② `.git` 是**文件**而不是目录（worktree / submodule）→ 问 git 要
+ *     **common dir**（见下面那段⚠️⚠️）；问不出来 → **不写**；
  *  ③ 写不下去（只读、权限） → **不写，并照实回**。
  *  > 这三条的共同形状：**它是一件「顺手帮个忙」的事，所以失败一律是「没帮」，
  *  > 不是「报错」** —— 排除规则写不进去不该让接管失败。
+ *
+ *  ### ⚠️⚠️ 为什么是 `--git-common-dir` 而不是自己解析 `gitdir:`
+ *  **第一版自己解析，而它在真 worktree 上不生效 —— 判据照样绿。**
+ *  2026-10-22 在**真的** `git worktree add` 和**真的**子模块上各接管一次，读数：
+ *
+ *  | | 自己解析出来的 gitdir | 写进它的 `info/exclude` 之后 `git status` |
+ *  | --- | --- | --- |
+ *  | 真子模块 | `parent/.git/modules/sub` | **0 行生成物（干净）** ✓ |
+ *  | 真 worktree | `main/.git/worktrees/wt` | **✗ 16 行全冒出来了** |
+ *
+ *  病根：**git 读 `info/exclude` 用的是 common dir，不是 per-worktree 那个 GIT_DIR。**
+ *  worktree 的 `.git` 文件指向 `…/worktrees/<名>`，而排除规则必须写进 `main/.git/info/exclude`。
+ *  > **「写对了地方」和「生效了」是两件事，而只有真问 git 才分得开。**
+ *  > 原来那条判据断言的是「文件写进了我算出来的那个路径」—— 那确实成功了，所以它绿。
+ *
+ *  改成问 `git rev-parse --git-common-dir`：它对普通仓库回 `.git`、
+ *  对 worktree 回 common dir、对子模块回它自己那个 modules 目录 —— **三种都对**。
+ *  ⚠️ **这件事 git 自己知道，我们不该再推一遍** ——
+ *  自己解析 `gitdir:` 是在复刻一个它已经给出答案的问题，而复刻品会在边角上和本尊分叉。
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { writeAtomic } from "./normalize.js";
@@ -62,31 +82,35 @@ export interface ExcludeResult {
   why?: string;
 }
 
-/** 从 `dir` 往上找包住它的那个 git 仓库的 **GIT_DIR**。
+/** 这个目录属于哪个 git 仓库的 **`info/exclude` 所在的那个目录**。
  *
- *  ⚠️ **`.git` 可能是一个文件**（worktree / submodule）：内容是
- *  `gitdir: /abs/or/relative/path`。按它指向去找，指不到就当没有。
- *  ⚠️ **只往上找，不往下找** —— 往下找会把子模块当成「这个目录的仓库」。 */
+ *  ⚠️ 名字是 `gitDirFor`，但它回的是 **common dir** 而不是 GIT_DIR ——
+ *  对普通仓库两者一样，对 worktree 不一样，而 `info/exclude` 认的是前者
+ *  （理由全文在文件头那段⚠️⚠️）。
+ *
+ *  ⚠️ **问 git，不自己走目录树**：`git rev-parse --git-common-dir` 一句话答完
+ *  「在不在仓库里」「是不是 worktree」「子模块指到哪」三个问题。
+ *  自己走的话要处理：`.git` 是目录 / 是文件 · `gitdir:` 是绝对还是相对 ·
+ *  worktree 还要再跳一次 common dir —— **而这些 git 全知道**。
+ *  ⚠️ 代价照实说：**它依赖机器上有 `git`**。没有 git 的机器上这件事回 `null` ——
+ *  而那恰好是对的：**没有 git 就没有 `git status` 要安抚**。 */
 export function gitDirFor(dir: string): { gitDir: string | null; why?: string } {
-  let cur = resolve(dir);
-  for (;;) {
-    const dot = join(cur, ".git");
-    if (existsSync(dot)) {
-      let st;
-      try { st = readFileSync(dot, "utf8"); } catch { return { gitDir: dot }; }   // 读不出来 = 它是目录
-      /* 目录读成文本会抛（EISDIR），所以走到这里说明它是文件 */
-      const m = /^gitdir:\s*(.+?)\s*$/m.exec(st);
-      if (!m) return { gitDir: null, why: `${dot} 是个文件，但里面没有 gitdir: 那一行 —— 认不出来，不写` };
-      const target = isAbsolute(m[1]!) ? m[1]! : resolve(cur, m[1]!);
-      if (!existsSync(target)) {
-        return { gitDir: null, why: `${dot} 指向 ${target}，而那个路径不在 —— 认不出来，不写` };
-      }
-      return { gitDir: target };
-    }
-    const up = dirname(cur);
-    if (up === cur) return { gitDir: null, why: "这个目录不在任何 git 仓库里 —— 什么都不写" };
-    cur = up;
+  const abs = resolve(dir);
+  if (!existsSync(abs)) return { gitDir: null, why: `${abs} 不在` };
+  let out: string;
+  try {
+    out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd: abs, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    /* 不在仓库里（git 回非零）、或者这台机器上没有 git —— 两种都是「不写」 */
+    return { gitDir: null, why: "这个目录不在任何 git 仓库里（或这台机器上没有 git）—— 什么都不写" };
   }
+  if (!out) return { gitDir: null, why: "git 没给出 common dir —— 认不出来，不写" };
+  /* ⚠️ 普通仓库里 git 回的是**相对路径** `.git`（实测），所以要按 cwd 解一次 */
+  const gd = isAbsolute(out) ? out : resolve(abs, out);
+  if (!existsSync(gd)) return { gitDir: null, why: `git 说 common dir 是 ${gd}，而那个路径不在 —— 认不出来，不写` };
+  return { gitDir: gd };
 }
 
 /** 把那一段写进（或更新）`<GIT_DIR>/info/exclude`。**幂等**：整段替换。

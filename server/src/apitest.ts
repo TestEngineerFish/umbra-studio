@@ -1571,29 +1571,89 @@ console.log("\n⑳ 排除规则进 .git/info/exclude，不碰用户的 .gitignor
     await rmA(plain, { recursive: true, force: true });
   }
 
-  /* ⓒ **`.git` 是文件的那种（worktree / submodule）：按 gitdir 指向去找**
-     ⚠️ 这一条是 geek-99 点名的那个边界。不处理的话 `readFileSync` 读到
-     `gitdir: …` 一行，而代码把它当目录去 `join(dot, "info")` —— 写到一个
-     **不存在的路径**下，`mkdir -p` 还会把它建出来：于是在用户的项目里
-     **凭空多出一个 `.git/info/` 目录**。 */
+  /* ⓒ **`.git` 是文件的那两种：真 `git worktree` 和真子模块**
+     ⚠️⚠️ **这一节 2026-10-22 重写过，因为第一版用手搓的 `gitdir:` 文件测，
+     而它在真 worktree 上漏掉了一个真缺陷 —— 判据照样绿。**
+     真跑一遍的读数：
+
+     | | 自己解析出来的 gitdir | 写进它的 `info/exclude` 之后 `git status` |
+     | --- | --- | --- |
+     | 真子模块 | `parent/.git/modules/sub` | **0 行生成物（干净）** |
+     | 真 worktree | `main/.git/worktrees/wt` | **✗ 16 行全冒出来了** |
+
+     病根：**git 读 `info/exclude` 用的是 common dir，不是 per-worktree 那个 GIT_DIR。**
+     而第一版判据断言的是「文件写进了我算出来的那个路径」—— 那确实成功了，所以它绿。
+     > **「写对了地方」和「生效了」是两件事，而只有真问 git 才分得开。**
+     > 而**手搓的样本和真样本「形状一样」** —— 一样到足以让判据通过，
+     > 却不足以暴露 worktree 那一跳。**同形不等于同一回事。** */
   {
-    const host = await mkRepo("worktree宿主");
-    const sub = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-子-")));
-    /* 手搓一个 `.git` 文件指向宿主那个真 GIT_DIR —— 和 worktree / submodule 同形 */
-    await wfA(jA(sub, ".git"), `gitdir: ${jA(host, ".git")}\n`, "utf8");
-    const g = gitDirFor(sub);
-    ok(g.gitDir === jA(host, ".git"), "**`.git` 是文件时按 `gitdir:` 指向找到真 GIT_DIR**", g.gitDir ?? "(null)");
-    const r = await ensureExcluded(sub);
-    ok(r.file === jA(host, ".git", "info", "exclude"),
-       "**排除规则写进宿主那个 GIT_DIR**，不是在子目录里凭空建一个 `.git/info/`", r.file ?? "(null)");
-    ok(!exA(jA(sub, ".git", "info")),
-       "**子目录里没有被建出 `.git/info/`**（把 `.git` 文件当目录用就会这样）");
-    /* 指不到就不写 */
-    const bad = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-坏指向-")));
-    await wfA(jA(bad, ".git"), "gitdir: /没有这个路径/xyz\n", "utf8");
+    const { execFileSync: ex3 } = await import("node:child_process");
+    const gitIn = (args: string[], cwd: string) => ex3("git",
+      ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...args],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const box = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-wt-")));
+
+    /** 在 `dir` 上接管一次，回「`git status` 里有几行生成物」+「项目里有没有被建出 `.git/info/`」 */
+    const adoptAndCheck = async (dir: string) => {
+      await wfA(jA(dir, "我的笔记.md"), "# 笔记\n", "utf8");
+      await wfA(jA(dir, "project.json"), JSON.stringify({ name: "wt" }), "utf8");
+      const pr = await bpA(dir);
+      const sv = await ssA(pr);
+      await biA(pr, sv.url);
+      const st = gitIn(["status", "--porcelain", "--untracked-files=all"], dir);
+      const noisy = st.split("\n").filter((l) => l.trim())
+        .filter((l) => /index\.dc\.html|index-data\.js|S\d.*\.dc\.html|IconGlyph|icons\.js|_ds-tool|support\.js|react(-dom)?\.production|umbradesign|umbrastudio/.test(l));
+      return { noisy, phantom: exA(jA(dir, ".git", "info")), gd: gitDirFor(dir).gitDir };
+    };
+
+    /* ── 真 git worktree ── */
+    await mdA(jA(box, "main"), { recursive: true });
+    gitIn(["init", "-q"], jA(box, "main"));
+    gitIn(["commit", "-q", "--allow-empty", "-m", "init"], jA(box, "main"));
+    gitIn(["worktree", "add", "-q", "../wt", "-b", "wtb"], jA(box, "main"));
+    ok(!exA(jA(box, "wt", ".git", "HEAD")), "（样本自己先成立）worktree 的 `.git` 是**文件**不是目录");
+    {
+      const r = await adoptAndCheck(jA(box, "wt"));
+      /* ⚠️ **钉的是 common dir，不是那个 per-worktree 的 GIT_DIR** */
+      ok(r.gd === jA(box, "main", ".git"),
+         "**真 worktree：算出来的是 common dir**（`main/.git`），不是 `main/.git/worktrees/wt`", r.gd ?? "(null)");
+      ok(r.noisy.length === 0,
+         "**真 worktree 里接管之后 `git status` 干净** —— 第一版这里是 16 行（写进了 per-worktree 那个 GIT_DIR，git 不读它）",
+         r.noisy.length ? "✗ " + r.noisy.length + " 行" : "0 行");
+      ok(!r.phantom, "**项目里没有被凭空建出 `.git/info/`**（把 `.git` 文件当目录用就会这样）");
+    }
+
+    /* ── 真子模块（本地 `file://`，**一条都不联网**）── */
+    await mdA(jA(box, "childwork"), { recursive: true });
+    gitIn(["init", "-q", "-b", "main"], jA(box, "childwork"));
+    await wfA(jA(box, "childwork", "a.txt"), "hi\n", "utf8");
+    gitIn(["add", "a.txt"], jA(box, "childwork"));
+    gitIn(["commit", "-q", "-m", "c1"], jA(box, "childwork"));
+    gitIn(["init", "-q", "--bare", "child.git"], box);
+    gitIn(["push", "-q", `file://${box}/child.git`, "main:main"], jA(box, "childwork"));
+    await mdA(jA(box, "parent"), { recursive: true });
+    gitIn(["init", "-q", "-b", "main"], jA(box, "parent"));
+    await wfA(jA(box, "parent", "r.md"), "r\n", "utf8");
+    gitIn(["add", "r.md"], jA(box, "parent"));
+    gitIn(["commit", "-q", "-m", "init"], jA(box, "parent"));
+    gitIn(["submodule", "add", "-q", `file://${box}/child.git`, "sub"], jA(box, "parent"));
+    ok(!exA(jA(box, "parent", "sub", ".git", "HEAD")), "（样本自己先成立）子模块的 `.git` 也是**文件**");
+    {
+      const r = await adoptAndCheck(jA(box, "parent", "sub"));
+      ok(r.gd === jA(box, "parent", ".git", "modules", "sub"),
+         "**真子模块：算出来的是它自己那个 modules 目录**", r.gd ?? "(null)");
+      ok(r.noisy.length === 0, "**真子模块里接管之后 `git status` 干净**",
+         r.noisy.length ? "✗ " + r.noisy.length + " 行" : "0 行");
+      ok(!r.phantom, "**子模块目录里没有被凭空建出 `.git/info/`**");
+    }
+
+    /* 不在仓库里 / 问不出来 → 不写（和 ⓑ 那一节是同一条，这里只补「说出了原因」） */
+    const bad = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-非git-")));
     const rb = await ensureExcluded(bad);
-    ok(rb.file === null && /认不出来/.test(rb.why ?? ""), "**指向不存在就不写，并说出原因**", rb.why);
-    for (const d of [host, sub, bad]) await rmA(d, { recursive: true, force: true });
+    ok(rb.file === null && /不在任何 git 仓库里/.test(rb.why ?? ""),
+       "**问不出 common dir 就不写，并说出原因**", rb.why);
+    await rmA(bad, { recursive: true, force: true });
+    await rmA(box, { recursive: true, force: true });
   }
 
   /* ⓓ 幂等：写两次只有一段 */
