@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { boot as readBoot, Core, type ProjectEntry, type ProjectHandle } from "./api/client";
 import { getHost } from "./host";
-import { applyTheme, loadLayout, saveLayout, type LayoutState } from "./layout/layout";
+import { applyTheme, loadLayout, saveLayout, winMem, type LayoutState } from "./layout/layout";
 import { Home } from "./pages/Home";
 import { Market } from "./market/Market";
 import { NewProjectSheet, SettingsSheet } from "./sheets/Sheets";
@@ -34,6 +34,26 @@ export default function App() {
     return [{ handle: h, core: new Core(h.url, h.token, h.ws) }];
   });
   const [activeDir, setActiveDir] = useState<string | null>(() => (b && b.dir ? b.dir : null));
+  /** 刷新之前这个窗口开着哪几个（M15-1 S3）。
+   *
+   *  ⚠️ **走 `winMem`（`sessionStorage`）而不是 `mem`（`localStorage`）**：
+   *  多窗口之后 `localStorage` 是**所有窗口共用的一张纸** ——
+   *  存那里的话窗口 A 的列表会在窗口 B 里被恢复出来。
+   *  而「这个窗口开着哪几个项目」本质上**是每个窗口各自的**，
+   *  `sessionStorage` 恰好按顶层浏览上下文分，而且**活过刷新**。
+   *  理由全文在 `layout.ts` 的 `winMem`。 */
+  const WIN_KEY = "us.windowProjects";
+  /** 刷新前存着的那几个目录。
+   *
+   *  ⚠️⚠️ **必须在 render 期间读，不能在 effect 里读。**
+   *  下面那个「列表变了就记一下」的 effect 声明在**恢复那个之前**，
+   *  而刷新后 `entries` 的初值只有 boot 那一个 —— 于是保存那个**先跑**，
+   *  把存着的 `["甲","乙"]` 冲成 `["甲"]`，恢复那个再去读就没东西了。
+   *  > **一个「保存」effect 和一个「恢复」effect 挂在同一个组件上，
+   *  > 保存那个会先把要恢复的东西冲掉。**
+   *  修法不是调声明顺序（那太脆，挪一行就坏），是**在任何 effect 跑之前就读进来**。
+   *  实测：判据第一次跑就是「2 → 1」。 */
+  const wanted = useRef<string[]>(winMem.get<string[]>(WIN_KEY, []));
   /** 一个窗口里最多并存几个（`doc/25` 取舍 C）。
    *
    *  **4 → 6，依据是量出来的**（2026-10-22，S2 做完之后）：
@@ -65,6 +85,9 @@ export default function App() {
    *  现在收成一个出处：窗口持有它，`Workbench` 和设置页**读同一个**。
    *  ⚠️ 设置页里「清掉当前项目的缓存」要打它（`scope: "project"`）——
    *  桌面壳里 **hub 不属于任何项目**，用 hub 调项目域的能力会被门面拒掉。 */
+  /* 列表变了就记一下（只记目录，连接信息下次重新问服务端拿） */
+  useEffect(() => { winMem.set(WIN_KEY, entries.map((e) => e.handle.dir)); }, [entries]);
+
   /** 当前显示的那一个。`null` = 首页 */
   const activeEntry = useMemo(() => entries.find((e) => e.handle.dir === activeDir) ?? null, [entries, activeDir]);
   /** 当前项目的 handle —— 下面那些「当前项目是谁」的判断照旧读它，**一个字都不用改** */
@@ -154,8 +177,30 @@ export default function App() {
         `${stuck.map((k) => k.slice(dir.length + 1)).join(" · ")} —— 切过去落了盘再关`, "error");
       return;
     }
-    setEntries((xs) => xs.filter((e) => e.handle.dir !== dir));
-    setActiveDir((cur) => (cur === dir ? (entries.find((e) => e.handle.dir !== dir)?.handle.dir ?? null) : cur));
+    const ent = entries.find((e) => e.handle.dir === dir);
+    const drop = () => {
+      setEntries((xs) => xs.filter((e) => e.handle.dir !== dir));
+      setActiveDir((cur) => (cur === dir ? (entries.find((e) => e.handle.dir !== dir)?.handle.dir ?? null) : cur));
+    };
+    if (!ent) { drop(); return; }
+    /* ── 取舍 B 的另一半（M15-1 S3）──
+       ⚠️ **「有没有一轮在跑」只有服务端答得了。** 前端 `useChat` 的 `running`
+       只在它自己那次 `send` 的生命周期里为真 —— `useChat.ts:174` 原话：
+       「刷新页面、**切项目再切回来**、或者第二个窗口打开同一会话，
+       它都是 false 而服务端那一轮还在跑」。
+       > **「我这边没在跑」和「没有在跑」是两句话。**
+       ⚠️ 问不到（服务挂了 / 超时）就**照旧关掉** —— 一个问不出答案的检查
+       不该把「关掉这个项目」变成做不到的事。 */
+    void ent.core.get<{ busy: boolean; count: number; kinds: string[] }>("project_busy")
+      .then((r) => {
+        if (r.ok && r.data?.busy) {
+          toast(`${ent.handle.title || ent.handle.name} 还有 ${r.data.count} 件在跑，先没关掉`,
+            `${r.data.kinds.join(" · ")} —— 跑完的结果要在这个项目里才看得到。要停就切过去点「中断」。`, "error");
+          return;
+        }
+        drop();
+      })
+      .catch(() => drop());
   }, [entries]);
   /** 导入目录：已是项目直接开；只是一堆稿 / 空目录进新建面板接管 */
   const importDir = useCallback(async () => {
@@ -197,6 +242,29 @@ export default function App() {
     setDropped({ paths, allDirs: allDirsInDrop(e) });
   }, [host, project, page, open]);
   useWindowFileDrop(onFileDrop);
+
+  /* ── 刷新之后把这个窗口原来开着的那几个恢复回来（M15-1 S3）──
+     ⚠️ **只恢复，不切换当前那个** —— 当前是哪个由 boot 决定（刷新前的地址就带着它）。
+     ⚠️ 逐个 `open_project`：目录已经不在了那一条**静静跳过**，
+     不弹错 —— 用户刷新一下不该看到几条「打不开」的红字，
+     而那个目录确实不在了这件事他下次进首页就会看到（失效记录那一行）。
+     ⚠️ **只跑一次**（`restored` 这个 ref）：`entries` 一变这个 effect 的依赖就变，
+     不挡住的话它会把刚关掉的项目又恢复回来。 */
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || !hub) return;
+    restored.current = true;
+    const missing = wanted.current.filter((d) => d !== (b?.dir ?? null));
+    if (!missing.length) return;
+    void (async () => {
+      for (const dir of missing) {
+        const r = await hub.post<ProjectHandle & { designProject?: boolean; editable?: boolean }>("open_project", { dir });
+        if (!r.ok || !r.data) continue;        // 目录没了就跳过，不弹错
+        const h: ProjectHandle = { url: r.data.url, token: r.data.token, ws: r.data.ws, name: r.data.name, title: r.data.title, dir: r.data.dir, designProject: r.data.designProject, editable: r.data.editable };
+        setEntries((xs) => (xs.some((e) => e.handle.dir === h.dir) ? xs : [...xs, { handle: h, core: new Core(h.url, h.token, h.ws) }]));
+      }
+    })();
+  }, [hub, b]);
 
   useEffect(() => host?.onEvent?.((e) => {
     /* ⚠️ **直接打开，不再拦去「新建项目」**（M14-4 B3，2026-10-21）。

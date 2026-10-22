@@ -163,3 +163,23 @@ export const mem = {
   get<T>(k: string, d: T): T { try { const v = localStorage.getItem(k); return v === null ? d : (JSON.parse(v) as T); } catch { return d; } },
   set(k: string, v: unknown): void { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } },
 };
+
+/** **这个窗口自己的**记忆（M15-1 S3，2026-10-22）。
+ *
+ *  ⚠️⚠️ **多窗口之后 `localStorage` 变成了「所有窗口共用的一张纸」。**
+ *  上面那个 `mem` 是对的，而且该是对的 —— `us.tabs.<项目目录>` 记的是
+ *  **那个项目**的页签，两个窗口打开同一个项目时**本来就该看到同一串**。
+ *  但有些东西本质上是**每个窗口各自的**：这个窗口开着哪几个项目（并存列表）。
+ *  存进 `localStorage` 的话，窗口 A 的列表会在窗口 B 里被恢复出来。
+ *
+ *  `sessionStorage` 恰好按**顶层浏览上下文**分 —— 每个 `BrowserWindow` 一份，
+ *  **而且活过刷新**。而「刷新之后并存列表只剩 boot 那一个」正是 S3 要修的那件事。
+ *  > 它不是退而求其次，是刚好对口：**要存的东西的作用域，和这个容器的作用域一样。**
+ *
+ *  ⚠️ 代价要照实说：**它活不过「完全退出再打开」**。那是刻意的 ——
+ *  冷启动时恢复 N 个项目要起 N 台服务、发 N 次 `open_project`，
+ *  而用户下次打开想看哪几个项目我们并不知道。**刷新不该丢，重开不该猜。** */
+export const winMem = {
+  get<T>(k: string, d: T): T { try { const v = sessionStorage.getItem(k); return v === null ? d : (JSON.parse(v) as T); } catch { return d; } },
+  set(k: string, v: unknown): void { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } },
+};

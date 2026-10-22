@@ -45,6 +45,31 @@ export function running(key: string): Job | null {
   return j && j.running ? j : null;
 }
 
+/** 这个前缀下**还在跑**的作业有几个（M15-1 S3，2026-10-22）。
+ *
+ *  ### 为什么需要它
+ *  并存之后「关掉一个项目」变成常见操作，而取舍 B 定的是「有一轮 AI 在跑就拦一句」。
+ *  **前端自己答不了这个问题**：`useChat` 的 `running` 只在**它那次 `send` 的生命周期里**
+ *  为真 —— `useChat.ts:174` 自己写着「刷新页面、**切项目再切回来**、
+ *  或者第二个窗口打开同一会话，它都是 false 而服务端那一轮还在跑」。
+ *  > **「我这边没在跑」和「没有在跑」是两句话**，而只有作业表知道后者。
+ *
+ *  ⚠️ 作业键是 `<项目目录>::<尾巴>`（`api.ts` 的 `projectJobKey`，issue #153），
+ *  所以按前缀数就是「这个项目的」。**不枚举尾巴** —— 以后多一种异步作业
+ *  （体检、转换…）它自动算进去，而那正是「这个项目还忙着」该包含的。 */
+export function runningUnder(prefix: string): { count: number; kinds: string[] } {
+  const kinds = new Set<string>();
+  let count = 0;
+  for (const [key, id] of byKey) {
+    if (!key.startsWith(prefix)) continue;
+    const j = jobs.get(id);
+    if (!j || !j.running) continue;
+    count++;
+    kinds.add(j.kind);
+  }
+  return { count, kinds: [...kinds] };
+}
+
 export function get(id: string): Job | null {
   return jobs.get(id) ?? null;
 }

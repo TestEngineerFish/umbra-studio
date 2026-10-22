@@ -239,6 +239,99 @@ console.log("\n⑥ 窗口级副作用只有当前那个在跑");
   ok(/甲/.test(t) && !/乙/.test(t), "**窗口标题是当前那个项目**（隐藏的那个没抢）", t);
 }
 
+/* ── ⑧ 刷新之后并存列表还在（M15-1 S3）──
+   ⚠️ S2 做完时量到的那条局限：并存那张列表只活在内存里，刷新（⌘R）之后
+   **只剩 boot 那一个项目**。量 C=4 的探针当时用 `pg.goto` 开下一个项目，
+   于是并存数**永远停在 2** —— 而读数看起来像「开不到第 3 个」。
+   ⚠️ **存进 `sessionStorage` 而不是 `localStorage`**：多窗口共享后者，
+   窗口 A 的列表会在窗口 B 里被恢复出来。这一条判据顺带钉住那个选择
+   （`localStorage` 里不许出现这个键）。 */
+console.log("\n⑧ 刷新之后并存列表还在（而且没写进 localStorage）");
+{
+  const before = await pg.$$eval('[data-ud="workbench-slot"]', (ns) => ns.map((n) => n.getAttribute("data-dir")).sort());
+  ok(before.length === 2, "（前提）刷新之前并存着两个", before.length);
+  /* ⚠️ 钉住它存在**哪个**容器里 —— 这是这一条的另一半 */
+  const stores = await pg.evaluate(() => ({
+    session: sessionStorage.getItem("us.windowProjects"),
+    local: localStorage.getItem("us.windowProjects"),
+  }));
+  ok(!!stores.session && stores.local === null,
+     "**列表记在 `sessionStorage` 里，`localStorage` 里一个字都没有**（多窗口共享后者）",
+     `session: ${(stores.session ?? "").slice(0, 40)} · local: ${stores.local ?? "(没有)"}`);
+
+  await pg.reload({ waitUntil: "domcontentloaded" });
+  await pg.locator('[data-ud="workbench-slot"][data-active]').waitFor({ timeout: 20000 });
+  /* ⚠️ 恢复是异步的（逐个 `open_project`），**要等一会儿再数** ——
+     不等的话这条判据测的是「它还没恢复完」，而那和「它不恢复」长得一样。 */
+  await pg.waitForTimeout(4000);
+  const after = await pg.$$eval('[data-ud="workbench-slot"]', (ns) => ns.map((n) => n.getAttribute("data-dir")).sort());
+  ok(after.length === before.length && after.join("|") === before.join("|"),
+     "**刷新之后两个都回来了**（原来只剩 boot 那一个）",
+     `${before.length} → ${after.length} · ${after.map((d) => d.split("/").pop()).join(" · ")}`);
+}
+
+/* ── ⑨ 关项目时「有一轮在跑」要拦住（M15-1 S3 · 取舍 B 的另一半）──
+   ⚠️⚠️ **这一条的要点是「谁答得了这个问题」。** 前端 `useChat` 的 `running`
+   只在它自己那次 `send` 的生命周期里为真 —— `useChat.ts:174` 自己写着
+   「刷新页面、**切项目再切回来**、或者第二个窗口打开同一会话，
+   它都是 false 而服务端那一轮还在跑」。
+   > **「我这边没在跑」和「没有在跑」是两句话。**
+   所以判准走服务端的 `project_busy`（它数的是作业表），而这一节
+   **用 `jobs.start` 塞一个慢作业造出「正忙」** —— 和 `apitest` 第一条同一个办法，
+   **一条都不调真 AI**。 */
+console.log("\n⑨ 关项目时有一轮在跑 → 拦住");
+{
+  const { start: startJob } = await import(`file://${ROOT}/server/dist/jobs.js`);
+  const { projectJobKey } = await import(`file://${ROOT}/server/dist/api.js`);
+  /* 往**非当前**那个项目塞一个慢作业（切换器里能关的就是非当前的那几个） */
+  const activeNow = await pg.$eval('[data-ud="workbench-slot"][data-active]', (n) => n.getAttribute("data-dir"));
+  const target = (await pg.$$eval('[data-ud="workbench-slot"]', (ns) => ns.map((n) => n.getAttribute("data-dir"))))
+    .find((d) => d !== activeNow);
+  /* ⚠️ **前提不成立就把话说完再跳过，不抛** —— 第一次跑时 ⑧ 红了导致只剩 1 个 slot，
+     `target` 是 undefined，`projectJobKey` 当场抛，**后面 5 条一条都不报**（今天第二次）。
+     > 产品坏了的时候，判据要照样把话说完。 */
+  ok(!!target, "（前提）有一个非当前的项目可以关", target?.split("/").pop() ?? "✗ 只有一个项目 —— 这一节没验到");
+  let release = () => {};
+  if (!target) { console.log("  · ⑨ 跳过：没有非当前的项目（上一节红了？）"); }
+  else {
+  startJob("chat", projectJobKey({ dir: target }, "chat::造一个在跑的"),
+    () => new Promise((res) => { release = () => res({ ok: true }); }));
+  /* ⚠️ **样本自己先成立**：服务端真的认为它在忙吗。
+     不验这一条的话，下面「没关掉」可能只是因为关这条路坏了，
+     而不是因为那道闸起作用了。 */
+  {
+    const { runningUnder } = await import(`file://${ROOT}/server/dist/jobs.js`);
+    const r = runningUnder(projectJobKey({ dir: target }, ""));
+    ok(r.count === 1, "（样本自己先成立）服务端的作业表里这个项目真的有 1 件在跑", JSON.stringify(r));
+  }
+
+  /* 从切换器里点那个 × */
+  await pg.locator('[data-ud="workbench-slot"][data-active] [aria-haspopup="menu"]').first().click();
+  await pg.waitForTimeout(400);
+  const closeBtn = pg.locator(`[data-ud="proj-close"][data-dir="${target}"]`);
+  ok(await closeBtn.count() > 0, "（前提）非当前那个项目旁边有关掉的那颗 ×");
+  await closeBtn.click({ force: true });
+  await pg.waitForTimeout(2500);
+  const left = await pg.$$eval('[data-ud="workbench-slot"]', (ns) => ns.map((n) => n.getAttribute("data-dir")));
+  ok(left.includes(target), "**有一轮在跑 → 没关掉**（取舍 B：拦一句，不悄悄关）",
+     `还剩 ${left.length} 个`);
+  const said = await pg.evaluate(() => document.body.innerText);
+  ok(/还有 1 件在跑/.test(said), "**而且说出了几件在跑**（不是干巴巴一句「关不掉」）",
+     (said.match(/还有 \d+ 件在跑[^\n]*/) ?? ["(没说)"])[0].slice(0, 50));
+
+  /* 对照组：跑完之后就关得掉 —— 没有它的话「没关掉」可能只是因为关这条路整个坏了 */
+  release();
+  await pg.waitForTimeout(1200);
+  await pg.locator('[data-ud="workbench-slot"][data-active] [aria-haspopup="menu"]').first().click();
+  await pg.waitForTimeout(400);
+  await pg.locator(`[data-ud="proj-close"][data-dir="${target}"]`).click({ force: true });
+  await pg.waitForTimeout(2000);
+  const left2 = await pg.$$eval('[data-ud="workbench-slot"]', (ns) => ns.map((n) => n.getAttribute("data-dir")));
+  ok(!left2.includes(target), "**对照组**：那一轮跑完之后同一颗 × 就关掉了（闸不是把功能拆了）",
+     `还剩 ${left2.length} 个`);
+  }
+}
+
 /* ── ⑦ 防复发：产品代码里不许再出现**没有范围**的全局 DOM 查找 ──
    ⚠️⚠️ **这一条是审出来的那 7 处的判据化，而我先前把这笔成本说小了。**
    我原来说这个设计「只要审 3 个 effect」—— 不对，还有 7 处全局 DOM 查找，

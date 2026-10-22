@@ -29,6 +29,25 @@ import { cacheAbsOf, indexDataFile } from "../statedirs.js";
 const p = (c: CapCtx) => c.project!;
 
 defineCap({
+  name: "project_busy", title: "这个项目现在有没有在跑的异步作业", scope: "project",
+  summary: [
+    "回「这个项目还有几个作业在跑」—— 关掉它 / 离开它之前要问一句的那个问题（M15-1 S3）。",
+    "⚠️ **前端自己答不了**：会话那边的 `running` 只在它自己那次发送的生命周期里为真；刷新、切项目再切回来、或者第二个窗口打开同一会话，它都是 false 而服务端那一轮还在跑。",
+    "⚠️ **不枚举作业种类** —— 以后多一种异步作业（体检、格式转换…）自动算进去，而那正是「这个项目还忙着」该包含的。",
+  ].join("\n"),
+  input: {},
+  http: { route: "project_busy", method: "GET" },
+  run: async (_i, c) => {
+    const proj = p(c);
+    const { runningUnder } = await import("../jobs.js");
+    const { projectJobKey } = await import("../api.js");
+    /* 前缀就是「这个项目的全部作业」 —— `projectJobKey(p, "")` 给的正是 `<目录>::` */
+    const r = runningUnder(projectJobKey(proj, ""));
+    return envelope({ busy: r.count > 0, count: r.count, kinds: r.kinds });
+  },
+});
+
+defineCap({
   name: "list_projects", title: "列出设计项目", scope: "global",
   summary: "列项目根下的所有项目（名字、标题、稿数、配没配设计系统）。项目根可用 --projects-root 或 UMBRASTUDIO_PROJECTS_ROOT 指定。",
   input: {},
