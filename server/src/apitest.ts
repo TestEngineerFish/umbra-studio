@@ -1725,6 +1725,81 @@ await rmdirAll(FIXTURE, { recursive: true, force: true });
   const r = await dropLeftoversUnder(td0(), { onlyDead: true });
   if (r.removed.length) console.log(`  · （收尾）清掉自己造的兜底仓库 ${r.removed.length} 个`);
 }
+/* ══════════════════════════════════════════════════════════════════════
+   ㉑ 通道 B 起的那台 MCP server：用哪个可执行文件、拿不拿到状态目录（issue #165）
+
+   通道 B 的**全部写入**都走「第三方 CLI 起的那台 `umbrastudio` MCP server」。
+   那是 CLI 的**孙子进程**，它拿到什么环境、用哪个 node，原来全靠两条默认假设：
+   「CLI 会把自己的环境原样传下去」和「机器上有个 node」。**打包版里两条都不成立。**
+
+   ⚠️⚠️ **这一段原来一条判据都没有**，而它的两种后果都只在打包版出现：
+   ① 没装 node 的机器上 CLI 起不来这台 server → **模型看不到任何工具**；
+   ② `UMBRASTUDIO_STATE_DIR` 到不了 → `STATE_ROOT` 回落成 `.app` 里那个只读目录 →
+      兜底提交仓库落在 `.app` 里（ad-hoc 签名的 `.app` 内容一改，下次启动被判「已损坏」）。
+   > **开发模式下 `STATE_ROOT === TOOL_ROOT`，所以这一条在开发时一定测不出来。**
+   > 判据要钉的正是这种「两个值在开发时恰好相等」的地方。
+
+   ⚠️ 一条真 CLI 都不起（要装、要登录、要花钱）—— 只问 `build()` 构造出了什么。
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n㉑ 通道 B 的 MCP 入口（issue #165）");
+{
+  const LC = await import("./local_cli.js");
+  const { STATE_ROOT: SR } = await import("./project.js");
+  const { join: jn21 } = await import("node:path");
+  const { mkdtemp: mkdt, readFile: rdf3, rm: rm3 } = await import("node:fs/promises");
+  const { tmpdir: td } = await import("node:os");
+  const MSP = jn21(TOOL_ROOT, "server", "dist", "index.js");
+
+  /* ── ⓐ 纯函数那一层 ── */
+  const e = LC.mcpEntry(MSP);
+  ok(e.command !== "node", "**MCP 入口不是写死的 `node`** —— 打包后用户机器上可能根本没有 node", e.command);
+  ok(e.command === process.execPath, "用的是 `process.execPath`（和插件沙箱同一条规矩）", e.command);
+  ok(e.env?.UMBRASTUDIO_STATE_DIR === SR,
+     "**带上状态目录** —— 不带的话打包版里它回落成 `.app` 里那个只读目录",
+     `${e.env?.UMBRASTUDIO_STATE_DIR}`);
+  ok(e.env?.ELECTRON_RUN_AS_NODE === "1", "带 `ELECTRON_RUN_AS_NODE`（Electron 当 node 跑）", String(e.env?.ELECTRON_RUN_AS_NODE));
+
+  /* ── ⓑ 端到端：claude 那一支**真写出来**的那份配置 ──
+     ⚠️ 只断言纯函数的话，「函数对了而写出去的东西不对」测不到
+     （`doc/00` §172.7：判据测的那个东西要和产品实际用的是同一个）。 */
+  const cwd1 = await mkdt(jn21(td(), "umbra-apitest-cliB-"));
+  const b1 = await LC.build({ cli: "claude", model: "x", mcpServerPath: MSP, cwd: cwd1, prompt: "p", systemPrompt: "s", timeoutMs: 1000 } as never);
+  const mcpArg = b1.args[b1.args.findIndex((a) => a === "--mcp-config") + 1];
+  let wrote: { mcpServers?: Record<string, { command?: string; env?: Record<string, string> }> } = {};
+  if (mcpArg) { try { wrote = JSON.parse(await rdf3(mcpArg, "utf8")) as typeof wrote; } catch { /* 下面那条会红 */ } }
+  const got = wrote.mcpServers?.["umbrastudio"];
+  ok(!!got && got.command === process.execPath && got.env?.["UMBRASTUDIO_STATE_DIR"] === SR,
+     "**真写出去的那份 MCP 配置里也是这两样**（纯函数对了不等于落盘的对）",
+     JSON.stringify(got ?? null).slice(0, 120));
+  await rm3(cwd1, { recursive: true, force: true });
+  if (b1.tmp) await rm3(b1.tmp, { recursive: true, force: true });
+
+  /* ── ⓒ codex 走的是 dotted path，三样都要给 ── */
+  const cwd2 = await mkdt(jn21(td(), "umbra-apitest-cliB2-"));
+  const b2 = await LC.build({ cli: "codex", model: "x", mcpServerPath: MSP, cwd: cwd2, prompt: "p", systemPrompt: "s", timeoutMs: 1000 } as never);
+  const argv = b2.args.join(" ");
+  ok(!/mcp_servers\.umbrastudio\.command="node"/.test(argv), "codex 那一支也不再写死 `node`");
+  ok(argv.includes(`mcp_servers.umbrastudio.command=${JSON.stringify(process.execPath)}`),
+     "codex 的 `-c` 里给了真正的可执行文件");
+  ok(argv.includes(`mcp_servers.umbrastudio.env.UMBRASTUDIO_STATE_DIR=${JSON.stringify(SR)}`),
+     "codex 的 `-c` 里也给了状态目录");
+  ok(argv.includes('mcp_servers.umbrastudio.env.ELECTRON_RUN_AS_NODE="1"'),
+     "codex 的 `-c` 里也给了 `ELECTRON_RUN_AS_NODE`");
+  await rm3(cwd2, { recursive: true, force: true });
+  if (b2.tmp) await rm3(b2.tmp, { recursive: true, force: true });
+
+  /* ── ⓓ 探测用的 PATH（issue #165 第 3 条）──
+     ⚠️ 照实说：**这一条钉的是实现而不是症状**。真正的症状（打包版从访达启动时
+     设置页把每家都显示成「未安装」）要装包 + 从访达启动才量得到，本轮没验到。
+     所以这里只钉住两件**能钉的**：补的目录在里面，而且**用户自己的 PATH 没被替换掉**。 */
+  const pp = LC.probePath({ PATH: "/usr/bin:/bin", HOME: "/Users/someone" });
+  ok(pp.startsWith("/usr/bin:/bin"), "**用户自己的 PATH 排在前面**（我们只追加，不替换）", pp);
+  ok(pp.includes("/opt/homebrew/bin") && pp.includes("/Users/someone/.local/bin"),
+     "补上了 launchd 那份 PATH 里缺的几个常见位置", pp);
+  const twice = LC.probePath({ PATH: pp, HOME: "/Users/someone" });
+  ok(twice === pp, "**幂等** —— 已经在里面的不会被加第二遍", `${pp.length} → ${twice.length} 字节`);
+}
+
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 

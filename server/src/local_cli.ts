@@ -22,6 +22,7 @@
  *  `verified` 字段只在**这台机器上真跑通过**才是 true。按文档写出来的适配器一律 false，
  *  界面上要照实说「没实测过」—— 一个装得像验过的适配器比没有更糟。
  */
+import { STATE_ROOT } from "./project.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, readFile, mkdir } from "node:fs/promises";
 import { existsSync, appendFileSync } from "node:fs";
@@ -185,17 +186,35 @@ export interface CliStatus extends CliSpec {
 /** 扫一遍。**只回答「装了没」，不回答「登录了没」** ——
  *  判登录得真发一次请求，那要花钱也要花时间，不该塞在一个列清单的接口里。
  *  登录状态由用户点「试一次」按钮时探（和 probe_image_support 一个道理）。 */
+/** 探测与起 CLI 时用的 `PATH`（issue #165 第 3 条）。
+ *
+ *  ⚠️ **从访达 / 程序坞启动的打包版，`PATH` 是 launchd 给的那一份**
+ *  （`/usr/bin:/bin:/usr/sbin:/sbin`），而 `claude` / `codex` / `cursor-agent`
+ *  装在 `~/.local/bin`、`/opt/homebrew/bin`、nvm 下 —— 于是 `command -v` 全找不到，
+ *  **设置页把每一家都显示成「未安装」**，而用户明明装了。
+ *  ⚠️ 这里只**追加**不替换，而且追加在**后面** —— 用户自己的 PATH 优先，
+ *  我们只补「它可能缺的那几个常见位置」。
+ *  > 这是一个**没有代价的改进**（多看几个目录），而不是一个修复 ——
+ *  > **它解决没解决那件事，只有在打包版上从访达启动才量得到**（本轮没验到，照实记）。 */
+export function probePath(env: NodeJS.ProcessEnv = process.env): string {
+  const cur = env.PATH ?? "";
+  const home = env.HOME ?? "";
+  const extra = ["/opt/homebrew/bin", "/usr/local/bin", home && `${home}/.local/bin`, home && `${home}/bin`].filter(Boolean) as string[];
+  const have = new Set(cur.split(":").filter(Boolean));
+  return [cur, ...extra.filter((d) => !have.has(d))].filter(Boolean).join(":");
+}
+
 export async function detectLocalClis(): Promise<CliStatus[]> {
   return await Promise.all(CLI_SPECS.map(async (spec) => {
     let path: string | null = null;
     try {
-      const { stdout } = await exec("sh", ["-c", `command -v ${spec.bin}`], { timeout: 4000 });
+      const { stdout } = await exec("sh", ["-c", `command -v ${spec.bin}`], { timeout: 4000, env: { ...process.env, PATH: probePath() } });
       path = stdout.trim() || null;
     } catch { path = null; }
     let version: string | null = null;
     if (path) {
       try {
-        const { stdout, stderr } = await exec(spec.bin, spec.versionArgs, { timeout: 8000 });
+        const { stdout, stderr } = await exec(spec.bin, spec.versionArgs, { timeout: 8000, env: { ...process.env, PATH: probePath() } });
         const raw = (stdout || stderr || "").trim().split("\n")[0] ?? "";
         version = spec.versionRe ? (raw.match(spec.versionRe)?.[0] ?? raw) : raw.slice(0, 60);
       } catch { version = null; }
@@ -211,7 +230,7 @@ export async function listCliModels(cli: CliId): Promise<string[]> {
   const spec = specOf(cli);
   if (!spec.listModelsArgs) return [];
   try {
-    const { stdout, stderr } = await exec(spec.bin, spec.listModelsArgs, { timeout: 25000, maxBuffer: 4 << 20 });
+    const { stdout, stderr } = await exec(spec.bin, spec.listModelsArgs, { timeout: 25000, maxBuffer: 4 << 20, env: { ...process.env, PATH: probePath() } });
     const clean = (stdout || stderr || "")
       .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")   // ANSI 光标控制符（cursor-agent 会塞 \x1b[2K\x1b[G）
       .replace(/[\u200b-\u200f\u2060]/g, "")    // 零宽字符：它的显示名里真的有（"Grok 4.7 Low Fast\u200b\u200b"）
@@ -257,9 +276,31 @@ export interface CliRunResult {
 
 const MCP_NAME = "umbrastudio";
 
-/** MCP 配置的内容，各家形状一样（都是 mcpServers 那套） */
-function mcpEntry(mcpServerPath: string) {
-  return { command: "node", args: [mcpServerPath] };
+/** MCP 配置的内容，各家形状一样（都是 mcpServers 那套）。
+ *
+ *  ⚠️⚠️ **原来是 `command: "node"` 而且不带 `env`**（issue #165）。打包版里两条都不成立：
+ *
+ *  ① **写死 `"node"`** —— `doc/00` 插件沙箱那一节自己写着「`execPath` 用
+ *  `process.execPath`，不能写死 `"node"` —— 打包后机器上可能根本没有 node
+ *  （用户不是开发者）」。沙箱照做了，**这里没有**：于是没装 node 的机器上
+ *  第三方 CLI 起不来这台 server，**模型看不到任何工具**，而通道 B 的写入全走它。
+ *
+ *  ② **不带 `env`** —— 这台 MCP server 是第三方 CLI 的**孙子进程**，它拿到什么环境
+ *  全看那家 CLI。codex 只转一份白名单环境（HOME / PATH / USER / LANG / TMPDIR 这类），
+ *  于是 `UMBRASTUDIO_STATE_DIR` 到不了，`STATE_ROOT` 回落成 `TOOL_ROOT` =
+ *  `.app/Contents/Resources/core`：兜底提交仓库落在 `.app` 里（装在 `/Applications`
+ *  时写不进去；写进去了则 ad-hoc 签名的 `.app` 内容一改，**下次启动被 macOS 判已损坏**），
+ *  而 `workspace.json` / 插件 / 许可证读写到另一份，和界面里看到的对不上。
+ *  > **开发模式下 `STATE_ROOT === TOOL_ROOT`，所以这一条在开发时一定测不出来**
+ *  > （CLAUDE.md §4「混了在开发模式下测不出来」那一族）。
+ *
+ *  ⚠️ `ELECTRON_RUN_AS_NODE: "1"` 在开发模式下无害（`process.execPath` 就是 node）。 */
+export function mcpEntry(mcpServerPath: string) {
+  return {
+    command: process.execPath,
+    args: [mcpServerPath],
+    env: { ELECTRON_RUN_AS_NODE: "1", UMBRASTUDIO_STATE_DIR: STATE_ROOT },
+  };
 }
 
 /** 往工作目录写 MCP 配置。
@@ -306,7 +347,10 @@ export function claudeEnvFor(src: NodeJS.ProcessEnv, baseUrl: string, apiKey: st
   return { ...cleanCliEnv(src), ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey };
 }
 
-async function build(o: CliRunOptions): Promise<Built> {
+/** ⚠️ **export 是为判据开的**（issue #165）：argv 与 MCP 配置是这条通道里
+ *  「打包版才会炸」的那一半，而它原来**没有任何判据** —— 要测就得能拿到它构造的东西，
+ *  而不是去真跑一家 CLI（那要装、要登录、要花钱）。 */
+export async function build(o: CliRunOptions): Promise<Built> {
   const spec = specOf(o.cli);
   const localLogin = !o.baseUrl?.trim() || !o.apiKey?.trim();
   /* 起子进程前要**清掉两族环境变量**，都是「父进程可能正被某个 AI CLI 起着」引出来的：
@@ -406,8 +450,15 @@ async function build(o: CliRunOptions): Promise<Built> {
         "--sandbox", "read-only",          // issue #29：挡住它自带的 apply_patch / shell 写文件
         "-c", "approval_policy=never",      // 不问就放行（headless 下没人能确认）
         "-C", o.cwd,
-        "-c", `mcp_servers.${MCP_NAME}.command="node"`,
+        /* ⚠️ 和 `mcpEntry()` 同一件事的另一种写法（codex 只认 dotted path，§65.6）——
+           **三样都要给**：可执行文件、`ELECTRON_RUN_AS_NODE`、状态目录。
+           理由全文在 `mcpEntry` 上面那段（issue #165）。
+           ⚠️ 这里**不能复用 `mcpEntry()` 的返回值直接 `JSON.stringify`** ——
+           codex 的 `-c 'mcp_servers.x={command=…}'` 整块注入实测不生效。 */
+        "-c", `mcp_servers.${MCP_NAME}.command=${JSON.stringify(process.execPath)}`,
         "-c", `mcp_servers.${MCP_NAME}.args=${JSON.stringify([o.mcpServerPath])}`,
+        "-c", `mcp_servers.${MCP_NAME}.env.ELECTRON_RUN_AS_NODE="1"`,
+        "-c", `mcp_servers.${MCP_NAME}.env.UMBRASTUDIO_STATE_DIR=${JSON.stringify(STATE_ROOT)}`,
       ];
       if (o.model.trim()) args.push("--model", o.model.trim());
       args.push(`${o.systemPrompt}\n\n---\n\n${o.prompt}`);
@@ -624,7 +675,10 @@ export async function runLocalCli(o: CliRunOptions): Promise<CliRunResult> {
     };
 
     const proc = spawn(spec.bin, built.args, {
-      env: built.env,
+      /* ⚠️ `PATH` 走 `probePath()`（issue #165）—— 探测时找得到、真起的时候找不到
+         是最难查的一种：设置页显示「已安装」，而点发送之后报「命令不存在」。
+         **两处用同一份 PATH**，所以这两件事不可能分叉。 */
+      env: { ...built.env, PATH: probePath(built.env) },
       cwd: o.cwd,
       /* stdin 给 ignore（= /dev/null）。这些 CLI 的 headless 模式都会**等 stdin**，
          不给就干等到超时 —— cursor-agent 第一次实测就是这么卡了 240 秒（`00` §65.2）。 */
