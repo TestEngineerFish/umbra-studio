@@ -35,15 +35,35 @@ console.log(`\n打包产物验收 · ${TARGET.replace(REPO + "/", "")}\n`);
 /* ── 一关：结构 ─────────────────────────────────────────
    「打出来了」和「东西齐」是两件事。全部离线，不开进程。 */
 console.log("一 · 结构");
-/** 三个内置插件在包里那一版的关键文件（版本目录取包里实际有的；一个都没有就给一条必红的路径）。 */
+/** 包里 `plugins/<id>/` 底下**实际**那个版本目录名。找不到回 `null`。
+ *
+ *  ⚠️ **一处定义，两处用**（结构那一节 + 下面真起 QuickJS 那一节）。
+ *  2026-10-22 栽过：S4 之后版本目录不再固定是 `1.0.0`（sync-plugins 拉的是 `1.3.0`），
+ *  当时**只改了结构那一节**，而「真起一次」那一节还写死 `1.0.0` ——
+ *  于是 `--allow-fs-read=<一个不存在的目录>` 照样放行，读数是 **`import 不到 tools.mjs`**。
+ *  > **症状伪装成沙箱权限问题**（本仓库 verbtest 那条 realpath 教训长得一模一样），
+ *  > 而真因是判据给了一个不存在的路径 —— **权限模型对不存在的路径的放行是成功的**。
+ *  「一条教训只修一处，等于记了没用」（`doc/00` §147 同族）。
+ *
+ *  ⚠️ **排序按数字比不按字典序** —— `.sort()` 会把 `1.10.0` 排在 `1.9.0` 前面
+ *  （S4 那条，`plugin/version.ts compareVersion` 的理由在这里同样适用）。 */
+function pluginVer(id) {
+  let vs = [];
+  try {
+    vs = readdirSync(join(RES, "core", "plugins", id)).filter((v) => v !== "current" && /^\d+\.\d+\.\d+/.test(v));
+  } catch { return null; }
+  if (!vs.length) return null;
+  const n = (v) => v.split(".").map((x) => parseInt(x, 10) || 0);
+  vs.sort((a, b) => { const A = n(a), B = n(b); return (A[0] - B[0]) || (A[1] - B[1]) || (A[2] - B[2]); });
+  return vs[vs.length - 1];
+}
+
+/** 三个内置插件在包里那一版的关键文件（一个都没有就给一条必红的路径）。 */
 function builtinFiles() {
   const want = { "com.umbra.markdown": ["manifest.json", "index.html", "markdown-it.mjs"], "com.umbra.code": ["manifest.json"], "com.umbra.html": ["manifest.json"] };
   const out = [];
   for (const [id, files] of Object.entries(want)) {
-    const idDir = join(RES, "core", "plugins", id);
-    let vs = [];
-    try { vs = readdirSync(idDir).filter((v) => v !== "current"); } catch { /* 没进包 */ }
-    const v = vs.sort().pop() ?? "（缺）";
+    const v = pluginVer(id) ?? "（缺）";
     for (const f of files) out.push(`core/plugins/${id}/${v}/${f}`);
   }
   return out;
@@ -115,11 +135,38 @@ const launch = async () => {
   return a;
 };
 const dumpErr = () => console.log(errLines.length ? "    主进程 stderr:\n" + errLines.slice(-12).map((l) => "      " + l.slice(0, 220)).join("\n") : "    主进程 stderr 一行都没有");
+/** 把这个实例的所有窗口挪到**非主显示器**上（sam 2026-10-22 的要求）。
+ *
+ *  ⚠️ 这一套起的是**真 Electron 窗口**（它测的就是打包产物能不能起来），
+ *  没有无头模式可用；而主屏上 sam 自己在用。
+ *  ⚠️ **不改产品代码** —— 位置由测试自己摆，不给主进程加一个只有测试会设的开关
+ *  （那种「只在测试里走的分支」迟早会和真实行为分叉）。
+ *  只有一个显示器时它是空操作，并**说出来** —— 不然「挪过去了」和
+ *  「这台机器只有一个屏」读数一样。和 `shelltest` 的 `park` 是同一份。 */
+const park = async (a) => {
+  const r = await a.evaluate(({ BrowserWindow, screen }) => {
+    const prim = screen.getPrimaryDisplay();
+    const other = screen.getAllDisplays().find((d) => d.id !== prim.id);
+    if (!other) return null;
+    const w0 = other.workArea;
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w.isDestroyed()) continue;
+      try { w.setBounds({ x: w0.x + 40, y: w0.y + 40, width: Math.min(1280, w0.width - 80), height: Math.min(840, w0.height - 80) }); } catch { /* 隐藏窗口摆不动没关系 */ }
+    }
+    return { x: w0.x, y: w0.y, w: w0.width, h: w0.height };
+  }).catch(() => null);
+  return r;
+};
+
 const mainWindow = async (a) => { for (let i = 0; i < 300; i++) { const w = a.windows().find((w) => w.url().includes("__app")); if (w) return w; await new Promise((r) => setTimeout(r, 200)); } throw new Error("主窗口没出来"); };
 
 const t0 = Date.now();
 let app = await launch();
 let win = await mainWindow(app);
+{
+  const at = await park(app);
+  console.log("窗口位置:", at ? `挪到非主显示器 ${at.w}×${at.h} @ ${at.x},${at.y}（不抢主屏）` : "只有一个显示器，没地方挪 —— 窗口会出现在主屏上");
+}
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 90000 });
 ok(true, "启动到首页", `${Date.now() - t0} ms`);
 
@@ -271,7 +318,7 @@ const insideApp = execFileSync("sh", ["-c", `find ${JSON.stringify(join(appCopy,
 ok(insideApp === "0", ".app 内部没有被写进任何状态", `命中 ${insideApp} 个`);
 const sigAfter = verify(appCopy);
 ok(sigAfter === "自洽", "跑过一轮之后签名仍然自洽（没被自己毁掉）", `${sigBefore} → ${sigAfter}`);
-app = await launch(); win = await mainWindow(app);
+app = await launch(); win = await mainWindow(app); await park(app);
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 90000 });
 const recent = await win.evaluate(() => /proj/.test(document.body.innerText) ? "记住了" : "没记住");
 ok(recent === "记住了", "第二次启动照样起来，最近打开记在 userData 里", recent);
@@ -305,7 +352,7 @@ console.log("\n四 · 打包版当 MCP server 起（秘书接入那条路）");
    不退出反而是对的（这条判据第一版就是这么写错的）。 */
 {
   const { spawn } = await import("node:child_process");
-  const first = await launch(); await mainWindow(first);
+  const first = await launch(); await mainWindow(first); await park(first);
   const second = spawn(exeCopy, [`--user-data-dir=${userData}`], { env, stdio: "ignore" });
   const code = await new Promise((res) => { const t = setTimeout(() => { second.kill(); res("6 秒还没退"); }, 8000); second.on("exit", (c) => { clearTimeout(t); res(c); }); });
   ok(code === 0, "有实例在跑时，第二个立刻退出（单实例锁）", `退出码 ${code}`);
@@ -329,7 +376,9 @@ console.log("\n四 · 打包版当 MCP server 起（秘书接入那条路）");
   const RUNNER = join(CORE, "server", "dist", "plugin", "runner.js");
   const NB = join(CORE, "server", "dist", "plugin", "net-block.cjs");
   const SROOT = join(CORE, "server");
-  const PLUG = join(CORE, "plugins", "com.umbra.markdown", "1.0.0");
+  /* ⚠️ 版本目录**按包里实际那一版找**，不写死 —— 理由全文在上面 `pluginVer` 那段 */
+  const PV = pluginVer("com.umbra.markdown");
+  const PLUG = join(CORE, "plugins", "com.umbra.markdown", PV ?? "（包里没有版本目录）");
   const wasm = join(SROOT, "node_modules", "@jitl", "quickjs-wasmfile-release-sync", "dist", "emscripten-module.wasm");
   ok(existsSync(wasm), "QuickJS 的 `.wasm` 进包了", existsSync(wasm) ? `${Math.round(statSync(wasm).size / 1024)} KB` : "没有");
   const out = await new Promise((res) => {
@@ -351,9 +400,24 @@ console.log("\n四 · 打包版当 MCP server 起（秘书接入那条路）");
     c.send({ id: 1, type: "init" });
     setTimeout(() => { c.kill(); res({ caps, err: "20 秒没反应", stderr: err }); }, 20000);
   });
-  ok(Array.isArray(out.caps) && out.caps.length === 2,
-     "**打包版里 QuickJS 真起来了，真插件的 B 面两件能力都在**（文件在 ≠ 加载得起来）",
-     out.caps ? out.caps.map((c) => c.name).join(" / ") : `${out.err} ${out.stderr.slice(0, 120)}`);
+  /* 「都在」的标准**从插件自己取**，不写死件数。
+     2026-10-22 栽过第二面：原来写的是 `=== 2`（`outline` / `replace_section`，M13-1 那天的第一批），
+     而 umbra-plugins 后来加到 **6 件** —— 判据红了，而产品是对的。
+     > **把一个会增长的数字写死，等于让判据在下一次正常演进时报假警。**
+     改成「**声明了几件就该报上来几件**」：源码文本里 `defineCap(` 的次数，
+     和 QuickJS 里真 eval 完报回来的件数，是**两个独立的东西** ——
+     所以这不是「判据引用了它要检查的东西」那种循环（`doc/00` §91 那条）。
+     ⚠️ 不写成 `>= 2`：「至少一条」几乎总是假判据（§145.4）。
+     ⚠️ 还要钉住**名字**：只比数的话「6 件全错名」照样绿。 */
+  const declared = (await readFile(join(PLUG, "tools.mjs"), "utf8").catch(() => "")).match(/defineCap\s*\(/g)?.length ?? 0;
+  const names = out.caps?.map((c) => c.name) ?? [];
+  ok(Array.isArray(out.caps) && declared > 0 && out.caps.length === declared
+     && names.some((n) => n.endsWith(".outline")) && names.some((n) => n.endsWith(".replace_section")),
+     `**打包版里 QuickJS 真起来了，真插件 B 面声明的 ${declared || "?"} 件能力都报上来了**（文件在 ≠ 加载得起来）`,
+     /* ⚠️ 把**用的哪一版**打进读数：这一条红过一次，而「判据路径过期」和「产物真坏了」
+        在读数里长得一样（都是 import 不到）—— 版本号是分得开它们的那一个字 */
+     out.caps ? `${PV ?? "没找到版本目录"} · 声明 ${declared} / 报上来 ${out.caps.length} · ${names.join(" / ")}`
+              : `${PV ?? "没找到版本目录"} · 声明 ${declared} · ${out.err} ${out.stderr.slice(0, 120)}`);
 }
 
 rmSync(sandbox, { recursive: true, force: true });
