@@ -35,6 +35,16 @@ process.env.UMBRASTUDIO_NO_GIT = "1";
 const realWorkspace = join(process.env.HOME ?? "", "Documents", "SourceTree", "Geek", "UmbraStudio", ".umbrastudio", "workspace.json");
 const realBefore = existsSync(realWorkspace) ? readFileSync(realWorkspace, "utf8") : null;
 
+/** 当前显示的那个工作台。
+ *
+ *  ⚠️ **并存之后（M15-1 S2）DOM 里可能有好几个工作台**（隐藏的那几个
+ *  用 `display:none`，不卸载）。于是 `[data-ud="tree-more"]` 这种全局选择器
+ *  `.first()` 会选到**隐藏的那一个** → 点它当场超时 30 秒，
+ *  而报错说的是「元素不可见」**指向产品**，不是指向判据选错了那一个。
+ *  这一套第一次撞到它就是这么崩的。
+ *  > **一个在单项目下唯一的选择器，在并存之后就成了「选到哪一个」的赌博。** */
+const WB = '[data-ud="workbench-slot"][data-active] ';
+
 const live = await realpath(await mkdtemp(join(tmpdir(), "umbra-home-live-")));
 await writeFile(join(live, "project.json"), JSON.stringify({ name: "还在的项目", title: "还在的项目" }));
 const gone = await realpath(await mkdtemp(join(tmpdir(), "umbra-home-gone-")));
@@ -179,7 +189,7 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
   await pg.reload({ waitUntil: "domcontentloaded" });
   await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().waitFor({ timeout: 15000 });
   await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().click();
-  const bar = pg.locator('[data-ud="adopt-bar"]');
+  const bar = pg.locator(WB + '[data-ud="adopt-bar"]');
   /* ⚠️ **这里原来断言「接管横条出来了」，而 M14-7 之后它在这个时刻故意不出现。**
      还只读的时候摆一颗「接管为设计项目」，等于让人先点一个会往他目录里写 750 KB
      的按钮来解除一个「不动你文件」的保护 —— 顺序反了。
@@ -204,16 +214,16 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
      所以在还只读的时候摆一颗「接管为设计项目」，等于让人先点一个
      **会往他目录里写 750 KB** 的按钮，来解除一个「不动你文件」的保护 —— 顺序反了。 */
   {
-    const ro = pg.locator('[data-ud="readonly-bar"]');
+    const ro = pg.locator(WB + '[data-ud="readonly-bar"]');
     await ro.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
     ok(await ro.isVisible(), "**只读预览那条横条出来了**（随手打开的目录，默认不动它的文件）");
     const roText = await ro.innerText().catch(() => "");
     ok(/只读预览/.test(roText) && /连 AI 也不行/.test(roText),
        "横条说的是「**我们默认不动它们**，连 AI 也不行」，不是 Notion 那句「需要导入」（我们不复制文件）",
        roText.replace(/\n/g, " ").slice(0, 46));
-    ok(!(await pg.locator('[data-ud="adopt-bar"]').isVisible()),
+    ok(!(await pg.locator(WB + '[data-ud="adopt-bar"]').isVisible()),
        "**还只读的时候「接管为设计项目」那条不出现**（不能让人先点一个写 750 KB 的按钮来解锁）");
-    await pg.locator('[data-ud="unlock-btn"]').click();
+    await pg.locator(WB + '[data-ud="unlock-btn"]').click();
     await pg.waitForTimeout(1200);
     ok(!(await ro.isVisible()), "点完「开始编辑」那条横条自己退场");
     const body = await pg.evaluate(() => document.body.innerText);
@@ -225,8 +235,8 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
     ok(after1.filter((x) => !before.includes(x)).length === 0,
        "**解锁这一下也没往那个目录里放任何东西**（标记落在我们自己那边）",
        after1.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
-    await pg.locator('[data-ud="adopt-bar"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
-    ok(await pg.locator('[data-ud="adopt-bar"]').isVisible(),
+    await pg.locator(WB + '[data-ud="adopt-bar"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+    ok(await pg.locator(WB + '[data-ud="adopt-bar"]').isVisible(),
        "**解锁之后「接管为设计项目」那条才出来**（两条横条一次只出一条，顺序是先只读再接管）");
   }
 
@@ -237,7 +247,7 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
      只有服务端闸的话，用户看到的是「新建失败」而不是「要不要接管」。 */
   {
     const b2 = walkPlain();
-    await pg.locator('[data-ud="tree-more"]').first().click();
+    await pg.locator(WB + '[data-ud="tree-more"]').first().click();
     await pg.waitForTimeout(400);
     const mk = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
       .filter({ hasText: /新建稿件/ }).first();
@@ -266,7 +276,7 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
   }
 
   /* 对照组：点了接管才写 —— 没有它的话上一条可能只是因为部署整条路都坏了 */
-  await pg.locator('[data-ud="adopt-btn"]').click();
+  await pg.locator(WB + '[data-ud="adopt-btn"]').click();
   await pg.waitForTimeout(2500);
   const adopted = (await import("node:fs")).readdirSync(plain).sort();
   ok(adopted.includes("project.json") && adopted.includes("index.dc.html"),
@@ -321,11 +331,11 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
   await pg.goto(url, { waitUntil: "domcontentloaded" });
   await pg.locator(`[data-ud="project-row"][data-name="拖拽项目"]`).first().waitFor({ timeout: 15000 });
   await pg.locator(`[data-ud="project-row"][data-name="拖拽项目"]`).first().click();
-  await pg.locator('[data-ud="tree-body"]').waitFor({ timeout: 15000 });
+  await pg.locator(WB + '[data-ud="tree-body"]').waitFor({ timeout: 15000 });
 
   /* ⓐ 浏览器里拿不到路径 → **要说话**，不能静静没反应 */
   {
-    const r = await dragTo('[data-ud="tree-body"]');
+    const r = await dragTo(WB + '[data-ud="tree-body"]');
     ok(r === "ok", "（前提）合成的那一下真落在文件列上了", r);
     const t = pg.locator('[data-ud="toast"], [role="status"]');
     await t.first().waitFor({ timeout: 4000 }).catch(() => {});
@@ -337,7 +347,7 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
 
   /* ⓑ 落点要画出来：拖到某一行时那一行高亮 —— 人要在**松手之前**知道会放到哪 */
   {
-    const row = pg.locator('[role="treeitem"]').first();
+    const row = pg.locator(WB + '[role="treeitem"]').first();
     const has = await row.count();
     if (!has) ok(false, "（前提）树里至少有一行 —— 这一条没验到");
     else {
@@ -345,7 +355,7 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
          同一个 `evaluate` 里读到的还是渲染之前那一版。
          第一版就是这么红的，而读数（「没有 ring-accent」）**和「高亮压根没做」一模一样**。
          > 又一次：**判据抢跑会把「还没发生」读成「不会发生」**（§113 同族）。 */
-      const sel = '[role="treeitem"][aria-expanded]';   // 目录行（有 aria-expanded 的才是）
+      const sel = WB + '[role="treeitem"][aria-expanded]';   // 当前那个工作台里的目录行（有 aria-expanded 的才是）
       const has2 = await pg.locator(sel).count();
       ok(has2 > 0, "（前提）树里有一个目录行可以拖上去", `${has2} 个`);
       await pg.evaluate((sel) => {
@@ -360,7 +370,7 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
       ok(lit, "**拖到一个目录行上时那一行高亮**（松手之前就知道会放到哪一层）");
       /* 反面：落点是那个目录时，**别的行不许一起亮**（第一版就是全亮） */
       const others = await pg.evaluate((sel) => {
-        const all = [...document.querySelectorAll('[role="treeitem"]')];
+        const all = [...document.querySelectorAll('[data-ud="workbench-slot"][data-active] [role="treeitem"]')];
         const target = document.querySelector(sel);
         return all.filter((e) => e !== target && e.className.includes("ring-accent")).length;
       }, sel);
@@ -374,7 +384,7 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
      拖一次只该有一条「拖不进来」，两个落点都接的话会是两条。 */
   {
     await pg.evaluate(() => { for (const n of document.querySelectorAll('[data-ud="toast"]')) n.remove(); });
-    await dragTo('[data-ud="tree-body"]');
+    await dragTo(WB + '[data-ud="tree-body"]');
     await pg.waitForTimeout(600);
     const n = await pg.evaluate(() => document.querySelectorAll('[data-ud="toast"]').length);
     ok(n <= 1, "**拖一次只问一次**（文件列那一下 stopPropagation 了，窗口级那个没跟着跑）", `${n} 条提示`);
@@ -384,7 +394,7 @@ console.log("\n⑦ 从系统里拖文件进来（场景 ①②③ 的逻辑层�
   {
     await pg.evaluate(() => { for (const n of document.querySelectorAll('[data-ud="toast"]')) n.remove(); });
     const r = await pg.evaluate(() => {
-      const el = document.querySelector('[data-ud="tree-body"]');
+      const el = document.querySelector('[data-ud="workbench-slot"][data-active] [data-ud="tree-body"]');
       const dt = new DataTransfer();
       dt.setData("text/plain", "一段文字");
       for (const type of ["dragenter", "dragover", "drop"]) {

@@ -33,9 +33,14 @@ import { closable, ordered, type Tab } from "./tabs";
  */
 const TAB_W = 184, TAB_MIN = 112, PIN_W = 150;
 
-export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMany, onPin, onKeep, onLocate, onToChat, onCopyPath, onReveal, metaOf, tail }: {
+export function TabBar({ tabs, current, busy, isDirty, onPick, onOpen, onClose, onCloseMany, onPin, onKeep, onLocate, onToChat, onCopyPath, onReveal, metaOf, tail }: {
   tabs: Tab[];
   current: string | null;
+  /** 「这一份改了还没落盘吗」—— **由工作台给**（M15-1 S2）。
+   *  ⚠️ 原来这里直接读全局 `dirtyStore`，而它的键现在是 `<项目目录>/<相对路径>`：
+   *  页签条只有相对路径，**它不知道自己在为哪个项目画那颗点**。
+   *  并存两个同名文件的项目时，另一个项目那份脏了，这条页签条也会挂点。 */
+  isDirty: (path: string) => boolean;
   /** 当前文件在忙（渲染 / 体检）：下沿那条线变 2px 流动 */
   busy?: boolean;
   /** 单击页签：切过去（不改它的态） */
@@ -62,6 +67,7 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
   const [avail, setAvail] = useState(9999);
   const morePop = usePopover();
   const [ctx, setCtx] = useState<{ x: number; y: number; tab: Tab } | null>(null);
+  /* 订阅还是全局那一个（任何项目变了都该重渲染一次），但**问哪一条**走 `isDirty` */
   const dirtySnap = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   void dirtySnap;
 
@@ -140,7 +146,7 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
    *  「固定的那几个长得不一样」，很难联想到是这里。 */
   const renderTab = (t: Tab) => {
         const cur = t.path === current;
-        const dirty = dirtyStore.has(t.path);
+        const dirty = isDirty(t.path);
         return (
           <div key={t.path} data-ud="tab" data-path={t.path} data-current={cur || undefined} data-preview={t.preview || undefined} data-pinned={t.pinned || undefined}
             style={{ width: t.pinned ? PIN_W : width, maxWidth: t.pinned ? PIN_W : width }}
@@ -228,19 +234,19 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
                   <Glyph icon={ICON_OF[kindOf(t.path)] ?? "file"} size={13} className="shrink-0 text-muted" />
                   <span className={`truncate flex-1 ${t.preview ? "text-text2" : ""}`}>{label(t.path)}</span>
                   {t.pinned && <Glyph icon="pin" size={12} className="shrink-0 text-accent" />}
-                  {dirtyStore.has(t.path) && <span className="w-1.5 h-1.5 rounded-full bg-text2 shrink-0" title="改了还没落盘" />}
+                  {isDirty(t.path) && <span className="w-1.5 h-1.5 rounded-full bg-text2 shrink-0" title="改了还没落盘" />}
                 </button>
               ))}
               {current && tabs.length > 1 && <>
                 <PopSep />
-                <PopItem label="关闭其他页签" onPick={() => { morePop.close("pick"); onCloseMany(closable(tabs, "others", current)); }} />
+                <PopItem label="关闭其他页签" onPick={() => { morePop.close("pick"); onCloseMany(closable(tabs, "others", current, isDirty)); }} />
               </>}
             </div>
           </Popover>
         </div>
       )}
       {tail && <div className="shrink-0 flex items-center gap-0.5 px-1.5 border-l border-border">{tail}</div>}
-      {ctx && <TabMenu ctx={ctx} tabs={tabs} onClose={() => setCtx(null)}
+      {ctx && <TabMenu ctx={ctx} tabs={tabs} isDirty={isDirty} onClose={() => setCtx(null)}
         on={{ onClose, onCloseMany, onPin, onKeep, onLocate, onToChat, onCopyPath, onReveal }} />}
     </div>
   );
@@ -252,8 +258,10 @@ export function TabBar({ tabs, current, busy, onPick, onOpen, onClose, onCloseMa
  *  未保存和固定的不算在内，一个都关不掉时整项置灰。
  *  这和目录右键那套「不弹确认、做完给撤销」是同一个思路：**把结果提前告诉人**。
  */
-function TabMenu({ ctx, tabs, onClose, on }: {
+function TabMenu({ ctx, tabs, isDirty, onClose, on }: {
   ctx: { x: number; y: number; tab: Tab };
+  /** 同 `TabBar` 的那一条：「关闭已保存的」要知道哪几份脏，而脏不脏按项目算（M15-1 S2） */
+  isDirty: (path: string) => boolean;
   tabs: Tab[];
   onClose: () => void;
   on: {
@@ -264,9 +272,9 @@ function TabMenu({ ctx, tabs, onClose, on }: {
   };
 }) {
   const t = ctx.tab;
-  const others = closable(tabs, "others", t.path);
-  const right = closable(tabs, "right", t.path);
-  const saved = closable(tabs, "saved", t.path);
+  const others = closable(tabs, "others", t.path, isDirty);
+  const right = closable(tabs, "right", t.path, isDirty);
+  const saved = closable(tabs, "saved", t.path, isDirty);
   const run = (f: () => void) => () => { onClose(); f(); };
   return (
     <PopoverAt x={ctx.x} y={ctx.y} onClose={onClose} tag="tabmenu">

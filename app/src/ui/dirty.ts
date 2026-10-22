@@ -38,10 +38,60 @@ export const dirtyStore = {
     for (const p of hit) { set.delete(p); set.add(to + p.slice(from.length)); }
     for (const f of subs) f();
   },
-  /** 现在有几份没落盘。`beforeunload` 要它 —— 那一刻只需要「有没有」和「几份」。 */
+  /** 现在有几份没落盘。`beforeunload` 要它 —— 那一刻只需要「有没有」和「几份」。
+   *  ⚠️ 这一件**刻意是跨项目的**：`beforeunload` 问的是「这个窗口里还有没有没落盘的」，
+   *  而一个窗口可以并存几个项目（M15-1）。 */
   count(): number { return set.size; },
   list(): string[] { return [...set].sort(); },
 };
+
+/* ══════════ 按项目隔开（M15-1 S2，2026-10-22）══════════ */
+
+/** 登记处里的键。**绝对路径** —— `<项目目录>/<相对路径>`。 */
+const keyOf = (projectDir: string, rel: string) => `${projectDir}/${rel}`;
+
+/** 一个项目在这个登记处里的那一片。
+ *
+ *  ⚠️⚠️ **原来这个登记处是一张全局的相对路径表，而那在并存之后会丢数据。**
+ *  一个窗口并存 A、B 两个项目，两边都有 `说明.md`：
+ *  · A 那份改了没落盘 → `set("说明.md", true)`；
+ *  · B 的页签条问 `has("说明.md")` → **true**，于是 B 那份干干净净的文件上也挂了点；
+ *  · **而 B 关掉它那个页签时 `drop("说明.md")` 会把 A 的登记一起清掉** ——
+ *    于是 A 那份没落盘的改动**再也不会被拦一下**，刷新就没了。
+ *  前两条是显示错，第三条是**真丢东西**。
+ *  > **一张以相对路径为键的全局表，在「同时有两个根」的那一刻就开始串。**
+ *
+ *  ⚠️ `count()` / `list()` **故意留在全局**：`beforeunload` 问的是
+ *  「这个窗口里还有没有没落盘的」，那本来就该跨项目数。
+ *  **同一张表上，有的问题按项目问，有的问题按窗口问** —— 所以不是把它整个改成按项目，
+ *  而是加一层「这个项目的那一片」。 */
+export function dirtyOf(projectDir: string): {
+  snapshot(): string;
+  has(rel: string): boolean;
+  set(rel: string, dirty: boolean): void;
+  drop(rel: string): void;
+  rename(from: string, to: string): void;
+  list(): string[];
+} {
+  const pre = projectDir + "/";
+  return {
+    /* ⚠️ 快照只含这个项目的那几条，**而且回相对路径**。
+       两条理由，第二条是差点栽的那个：
+       ① 含别人的话，别的项目一改动这个项目的页签条就整条重渲染
+          （`useSyncExternalStore` 按快照字符串比）；
+       ② **调用方拿它 `split("|")` 之后去和页签的相对路径比**
+          （`Workbench` 那条「改了内容就转正」）—— 回绝对键的话那个 `includes`
+          **永远不命中，而那条行为会静默失效**。
+       > 这一层对外**全程说相对路径**，键的形状是它自己的事。 */
+    snapshot: () => [...set].filter((k) => k.startsWith(pre)).map((k) => k.slice(pre.length)).sort().join("|"),
+    has: (rel) => dirtyStore.has(keyOf(projectDir, rel)),
+    set: (rel, dirty) => dirtyStore.set(keyOf(projectDir, rel), dirty),
+    drop: (rel) => dirtyStore.drop(keyOf(projectDir, rel)),
+    rename: (from, to) => dirtyStore.rename(keyOf(projectDir, from), keyOf(projectDir, to)),
+    /* 回**相对路径** —— 调用方（「还有哪几份没落盘」那一问）要的是项目内的名字 */
+    list: () => [...set].filter((k) => k.startsWith(pre)).map((k) => k.slice(pre.length)).sort(),
+  };
+}
 
 /** ⚠️ **刷新 / 关窗前拦一下**（2026-09-29，设计侧第十二轮反问出来的）。
  *

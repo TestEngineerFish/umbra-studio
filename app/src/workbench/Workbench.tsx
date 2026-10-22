@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Core, type ProjectEntry, type ProjectHandle } from "../api/client";
 import { draftTitle, type Picked, type Selection } from "../api/types";
 import { ChatRail } from "../chat/ChatRail";
@@ -17,7 +17,7 @@ import { Glyph, ICON } from "../ui/Glyph";
 import { PopItem, PopSep, Popover, usePopover } from "../ui/Popover";
 import { BottomBar } from "./BottomBar";
 import { debugBus, wireDebug } from "../ui/debug";
-import { LEAVE, dirtyStore } from "../ui/dirty";
+import { LEAVE, dirtyOf, dirtyStore } from "../ui/dirty";
 import { useLeaveGuard } from "./LeaveGuard";
 import { ViewingBar, VersionPill } from "./VersionPill";
 import { FileTree } from "./FileTree";
@@ -32,6 +32,7 @@ import { makeActions } from "./ctxmenu";
 import { Market } from "../market/Market";
 import { TabBar } from "./TabBar";
 import { normalize, openTab, type Tab } from "./tabs";
+import { focusChatInput } from "./scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 工作台（S11 形制）：顶栏 40 · 页签 34 · 左会话 / 中画布 / 右从属面板列 · 底部状态行 24 */
 /** 没声明 `Provider` 的格式用它兜底。**定义在模块级** —— 理由见用它的地方 */
@@ -115,7 +116,7 @@ function AdoptBar({ project, core, designProject, onAdopted }: { project: Projec
   );
 }
 
-export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, openAt, onOpenedAt }: {
+export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCloseProject, host, layout, setLayout, onHome, onSettings, openAt, onOpenedAt }: {
   /** 当前这个项目的**身份与客户端绑在一起的那个对象**（M15-1 S1）。
    *
    *  ⚠️ 原来这里收的是 `project: ProjectHandle`，`core` 由本组件自己
@@ -125,6 +126,30 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
    *  **「改动落在另一个项目的文件上，而界面一句话都不说」**（issue #20 那一条）。
    *  收一个绑好的对象 = **把那个 bug 变成编译错误**，理由全文在 `ProjectEntry` 的注释里。 */
   entry: ProjectEntry;
+  /** 这个实例现在是**不是**当前显示的那一个（M15-1 S2）。
+   *
+   *  ⚠️⚠️ **并存的做法是「全部挂上、只显示一个」，不是「切项目时换 props」。**
+   *  后者（也就是 `doc/25` S2 原来写的「拿掉 `key=`」）要审的面比方案估的大得多：
+   *  32 处 `project.*` **之外**，`useProject` 还有 13 份 state
+   *  （`selected` / `diags` / `comments` / `changes` / `source` / `stash` / `changedAt`…）
+   *  全都初始化成空、只靠 `useEffect([dir])` 重拉**一部分** ——
+   *  剩下那几份会把**上一个项目的值**带过来，而那正是
+   *  「改动落在另一个项目的文件上，而界面一句话都不说」的来路。
+   *
+   *  挂一份实例只服务一个项目（`key={dir}`，一生不换），那个不变量就**原样保留** ——
+   *  **32 + 13 处一处都不用审**，切换是瞬时的，正在跑的会话也还活着。
+   *  > **与其把一个不变量拆掉再逐处补回来，不如让它继续成立。**
+   *
+   *  ⚠️ 隐藏用 `display:none`，而**详情区那个 `ResizeObserver` 会量到 0 宽** ——
+   *  它已经有 `if (w > 0)` 那道闸（§70 那条「误判 narrow → 全屏遮罩锁死」留下的），
+   *  所以隐藏期间 `winW` 保持上一个好值，不会翻成 narrow。**这一条是查过才敢这么做的。** */
+  hidden?: boolean;
+  /** 这个窗口里并存着哪几个项目 + 切过去 / 关掉（M15-1 S2）。
+   *  ⚠️ 列表由**窗口**持有，工作台只是显示它 —— 和 `onRenamed` 同一个分工：
+   *  **工作台不持有别人的决定。** */
+  windowProjects?: { dir: string; title: string }[];
+  onSwitchProject?: (dir: string) => void;
+  onCloseProject?: (dir: string) => void;
   host: HostAdapter; layout: LayoutState; setLayout: (l: LayoutState) => void; onHome: () => void; onSettings: () => void;
   /** 进来就自动打开这一份（「打开方式」打开单个文件时，M14-5）。**优先级最高** */
   openAt?: string | null; onOpenedAt?: () => void }) {
@@ -134,6 +159,12 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
      变的只有一件事：它们现在**来自同一个对象**，不可能指着两个不同的项目。 */
   const project = entry.handle;
   const core = entry.core;
+  /** 这个项目在「未落盘」登记处里的那一片（M15-1 S2）。
+   *  ⚠️ 原来这里直接用全局 `dirtyStore` —— 而它以**相对路径**为键。
+   *  并存两个同名文件的项目时，B 关页签那一下 `drop("说明.md")`
+   *  会把 **A 的未落盘登记一起清掉** → A 那份改动再也不会被拦一下，刷新就没了。
+   *  理由全文在 `ui/dirty.ts` 的 `dirtyOf`。 */
+  const projDirty = useMemo(() => dirtyOf(project.dir), [project.dir]);
   /** 这个目录接管过没有。`project.designProject` 是进来时的读数，
    *  接管之后 `project` 这个 prop 不会自己变（它来自 `open_project` 的那一次回执），
    *  所以本地记一次翻面。**两个用它的地方（横条 · 新建稿件那一问）读的是同一份。** */
@@ -226,10 +257,10 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
    *  一份在改、另一份在看，切页签时各自保持。 */
   /* **改了内容就转正**（设计侧 §六.1）：人都开始改了，它不该再被下一次单击盖掉。
      `dirtyStore` 是每种格式各自登记的，这里订阅它。 */
-  const dirtySnap = useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
+  const dirtySnap = useSyncExternalStore(dirtyStore.subscribe, projDirty.snapshot);
   /** 「要丢内容了，先问一句」**一处实现**，关页签 / 切文件 / 回退三种触发共用
    *  （S18 §一.1 数出来的三种，设计侧第十二轮）。 */
-  const { askLeave, guardNode } = useLeaveGuard();
+  const { askLeave, guardNode } = useLeaveGuard(projDirty);
   /** 正在看哪一个历史版本（M10-2b）。`null` = 看当前那份。
    *
    *  ⚠️ **状态在工作台，画面在格式模块。** 工作台只知道「要看 s5」，
@@ -286,7 +317,7 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
   const ctxActions = makeActions({
     core, host, projectDir: project.dir,
     onOpenFile: (f) => open(f), onOpenDir: (d) => open(d, true),
-    onToChat: (paths) => { putSelection("files", { kind: "files", label: paths.length === 1 ? (paths[0]!.split("/").pop() ?? paths[0]!) : `${paths.length} 项`, detail: paths.join("\n") }); setTimeout(() => document.getElementById("chatInput")?.focus(), 50); },
+    onToChat: (paths) => { putSelection("files", { kind: "files", label: paths.length === 1 ? (paths[0]!.split("/").pop() ?? paths[0]!) : `${paths.length} 项`, detail: paths.join("\n") }); focusChatInput(); },
     onRename: () => {},   // 就地改名由 FileTree 自己接管（它知道是哪一行）
     onNewDraft: (dir) => setSheet({ kind: "newDraft", dir }),
     onCollapseAll: () => setLayout({ ...layout, tree: { ...layout.tree, expanded: [] } }),
@@ -319,7 +350,7 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
       mem.set(`us.tabs.${project.dir}`, n);
       return n;
     });
-    dirtyStore.rename(from, to);
+    projDirty.rename(from, to);
     setEditBy((m) => { const n: Record<string, boolean> = {}; for (const k of Object.keys(m)) n[mapPath(k)] = m[k]; return n; });
     const last = mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
     if (last) mem.set(`us.lastDraft.${project.dir}`, mapPath(last));
@@ -331,11 +362,21 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
     void store.fetchDrafts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.dir]);
+  /* ⚠️⚠️ **这一条不是「抢资源」，是跨项目污染**（M15-1 S2）。
+     `ud-renamed` 是个 `window` 级事件（目录视图的批量「移到…」和文件卡发它），
+     而四个工作台都挂着这个监听 —— 于是在 A 里把 `说明.md` 改名成 `README.md`，
+     **B 那个项目里如果也开着 `说明.md`，它的页签会被一起改名**，
+     指向一个 B 里并不存在的路径。
+     ⚠️ 判准用 `!hidden` 是对的、而且是**今天唯一正确的判准**：
+     这个事件只从**用户正在操作的那个**工作台发出来（它的来源全是 UI）。
+     如果以后它会从别处发（比如 AI 改名后广播一次），**那时候它必须带上项目目录** ——
+     这条注释就是给那一刻的人看的。 */
   useEffect(() => {
+    if (hidden) return;
     const on = (e: Event) => { const d = (e as CustomEvent).detail ?? {}; applyRename(String(d.from ?? ""), String(d.to ?? "")); };
     window.addEventListener("ud-renamed", on);
     return () => window.removeEventListener("ud-renamed", on);
-  }, [applyRename]);
+  }, [applyRename, hidden]);
   /* 「显示隐藏文件」改了要**立刻重列**（Q77）。
      ⚠️ 走 `localTick` 而不是自己再写一条拉取：`FileTree` 已经有「盘上变了就重拉
      **已经展开的那些层**」那套逻辑了，只重拉根会让展开着的子目录显示旧内容。
@@ -362,7 +403,7 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
       tick={`${store.lastEvent?.at ?? ""}:${localTick}`}
       beforeRename={async (p) => {
         /* 目录改名时，没落盘的那份可能在它**底下** —— 问的是那一份 */
-        const stuck = dirtyStore.list().find((d) => d === p || d.startsWith(p + "/"));
+        const stuck = projDirty.list().find((d) => d === p || d.startsWith(p + "/"));
         if (!stuck) return true;
         return askLeave(stuck, LEAVE.rename);
       }}
@@ -388,7 +429,11 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
   const chat = useChat(core, project.dir, { selectedDraft: dirMode ? null : file, selections, afterChanges: () => { void store.fetchDrafts(); if (file) { void store.fetchDiagnostics(file); void store.fetchChanges(file); } } });
 
   // 进项目：自动开上次看的稿（没有就第一份）
-  useEffect(() => { host.setTitle(project.title || project.name); }, [host, project]);
+  /* ⚠️ **只有当前显示的那个实例设窗口标题**（M15-1 S2）。
+     「全部挂上、只显示一个」之后这里有四个实例，不加 `hidden` 判断的话
+     **它们会抢着设标题，最后挂载的那个赢** —— 于是窗口标题写的是一个
+     你现在根本没在看的项目。这是这个设计的第一笔「窗口级副作用」审计。 */
+  useEffect(() => { if (!hidden) host.setTitle(project.title || project.name); }, [host, project, hidden]);
   useEffect(() => {
     if (store.selected) return;
     /* 【M8-11 之后改了】以前这里会自动 `open("", true)` 进目录视图。
@@ -462,13 +507,17 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("ud-send-selection"));
         if (!layout.right) setLayout({ ...layout, right: true });
-        setTimeout(() => document.getElementById("chatInput")?.focus(), layout.right ? 0 : 60);
+        focusChatInput(layout.right ? 0 : 60);
       }
     };
     /* ⚠️ **不是 `document.addEventListener`**（M8-29）：键盘事件不跨 iframe 边界，
        焦点落进稿里之后顶层 document 收不到 —— 用户报的「⌘E 时灵时不灵、打开 html
        刚开始不行后面又可以」就是这件事。`installHotkeys` 把同一个处理挂到顶层
        **和每一个同源 iframe 的 document** 上，iframe 后加载 / 换稿时自动补挂。 */
+    /* ⚠️ **隐藏的实例不挂快捷键**（M15-1 S2）：不然按一次 ⌘E / ⌘P，
+       四个工作台一起响应 —— 而其中三个你看不见，它们的编辑栏、
+       「转到文件」浮层都会跟着开。**看不见的东西响应了快捷键，是查不出来的那种乱。** */
+    if (hidden) return;
     return installHotkeys(on);
     /* ⚠️ **依赖一个都不能漏**。M8-28 栽过：漏了 `setEditOpen`（它随当前文件变），
        闭包捕获的是上一个文件的 `editKey`，于是 ⌘E 把编辑栏开在了**别的文件**上，
@@ -488,7 +537,7 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
     mem.set(`us.lastDraft.${project.dir}`, f);
     /* 单击 = 预览态（会盖掉上一个预览页签），双击 / 明确打开 = 打开态。
        这是用户第 8 条要的「不要每看一个就多一个」。 */
-    setTabsRaw((t) => { const n = openTab(t, f, mode); mem.set(`us.tabs.${project.dir}`, n); return n; });
+    setTabsRaw((t) => { const n = openTab(t, f, mode, projDirty.has); mem.set(`us.tabs.${project.dir}`, n); return n; });
   };
   /** 打开一个文件 / 目录。**当前这份有没落盘的改动就先问一句**
    *  （S18 §一.1 那张卡管的第二种触发，设计侧第十二轮）。
@@ -502,13 +551,13 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
   const open = (f: string, isDir = false, mode: "preview" | "open" = "preview") => {
     /* 切到自己不算离开 —— 单击已打开的页签会走到这里 */
     if (!isDir && f === file) { doOpen(f, isDir, mode); return; }
-    if (file && !dirMode && dirtyStore.has(file)) { void askLeave(file, LEAVE.switch).then((ok) => { if (ok) doOpen(f, isDir, mode); }); return; }
+    if (file && !dirMode && projDirty.has(file)) { void askLeave(file, LEAVE.switch).then((ok) => { if (ok) doOpen(f, isDir, mode); }); return; }
     doOpen(f, isDir, mode);
   };
   const dirRel = dirMode ? (file === "__root__" ? "" : (file ?? "")) : "";
   /** 真的关掉（确认过了，或者本来就没改动）。 */
   const doCloseTab = useCallback((f: string) => {
-    dirtyStore.drop(f);
+    projDirty.drop(f);
     /* 关页签时把编辑栏的记忆也清掉 —— 重新打开时回到收起。
        设计侧问过这一条，它的建议就是「回到收起」：重开一份文件多半是去看的，
        不是接着改的；真要改，⌘E 一下就回来。 */
@@ -520,15 +569,15 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
   }, [tabs, file, setTabs]);
   /** 关页签。**有没落盘的改动就先问一句**（S18 §一.1，设计侧第十二轮）。
    *
-   *  ⚠️ 原来这里直接 `dirtyStore.drop(f)` 然后关 —— **改动就这么没了，一句话都不说**。
+   *  ⚠️ 原来这里直接 `dirty.drop(f)` 然后关 —— **改动就这么没了，一句话都不说**。
    *  设计侧的裁决是「平时不打扰，**只在真的要丢东西的时候**出来」，这就是那个时候。 */
   const closeTab = useCallback((f: string) => {
-    if (dirtyStore.has(f)) { void askLeave(f, LEAVE.close).then((ok) => { if (ok) doCloseTab(f); }); return; }
+    if (projDirty.has(f)) { void askLeave(f, LEAVE.close).then((ok) => { if (ok) doCloseTab(f); }); return; }
     doCloseTab(f);
   }, [doCloseTab, askLeave]);
   /** 关一批（右键菜单的「关闭其他 / 右侧 / 已保存的」用） */
   const closeMany = useCallback((list: Tab[]) => {
-    for (const t of list) dirtyStore.drop(t.path);
+    for (const t of list) projDirty.drop(t.path);
     const gone = new Set(list.map((t) => t.path));
     const n = tabs.filter((t) => !gone.has(t.path));
     setTabs(n);
@@ -647,6 +696,37 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
                 <div className="text-[11px] text-muted mb-0.5">项目目录 · 点击复制</div>
                 <div className="font-mono text-[11px] break-all leading-relaxed">{project.dir}</div>
               </button>
+              {/* ── 这个窗口里并存着哪几个项目（M15-1 S2）──
+                  ⚠️ **形制等设计侧认**（第 58 封的回执里会定它放在哪：左边一列？页签条上面一条？
+                  还是就留在这个菜单里）。现在**用既有的浮层，不新造一种** ——
+                  理由和「只读横条照 S1 那条索引过期横条」一样：
+                  **在形制定下来之前，借一个已有的形状比发明一个新的安全**。
+                  ⚠️ 只在**真的并存了两个以上**的时候出现 —— 只有一个项目时
+                  这一节是一句废话，而废话会让菜单变长。 */}
+              {windowProjects && windowProjects.length > 1 && (
+                <div data-ud="proj-switch" className="pb-1 mb-1 border-b border-border">
+                  <div className="px-2 py-1 text-[11px] text-muted">这个窗口里开着 {windowProjects.length} 个</div>
+                  {windowProjects.map((w) => (
+                    <div key={w.dir} className="flex items-stretch group">
+                      <button data-ud="proj-switch-item" data-dir={w.dir} data-current={w.dir === project.dir || undefined}
+                        className={`flex-1 min-w-0 text-left px-2 py-1 rounded hover:bg-hover ${w.dir === project.dir ? "text-accent font-semibold" : ""}`}
+                        onClick={() => { projPop.close("pick"); if (w.dir !== project.dir) onSwitchProject?.(w.dir); }}
+                        title={w.dir}>
+                        <span className="truncate block">{w.title}</span>
+                      </button>
+                      {/* 关掉那一个。⚠️ **不给当前这个也放一颗** —— 关掉当前项目之后
+                          该显示谁没有明显答案，而「关掉之后跳到另一个」是个要拍板的行为。
+                          所以第一期只关**非当前**的那几个（取舍 B 的拦一句在 `onCloseProject` 里）。 */}
+                      {w.dir !== project.dir && (
+                        <button data-ud="proj-close" data-dir={w.dir}
+                          className="w-7 grid place-items-center rounded text-muted opacity-0 group-hover:opacity-100 hover:bg-hover hover:text-text"
+                          onClick={() => { projPop.close("pick"); onCloseProject?.(w.dir); }}
+                          title={`把 ${w.title} 从这个窗口里关掉`} aria-label="关掉这个项目">×</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               {[
                 /* **「新建稿件」去了目录右键**（第八轮 §三）：右键点在哪里，稿就建在哪里，
                    不用在这里点完再选一次位置。 */
@@ -747,7 +827,7 @@ export function Workbench({ entry, host, layout, setLayout, onHome, onSettings, 
                  **会往他目录里写 750 KB** 的按钮来解除一个「不动你文件」的保护。顺序反了。 */}
               <ReadOnlyBar core={core} editable={editable} onUnlocked={() => { setUnlockedHere(true); setLocalTick((t) => t + 1); }} />
               {editable !== false && <AdoptBar project={project} core={core} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />}
-            <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file}
+            <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file} isDirty={projDirty.has}
               /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
                  图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。
                  那几种的读数在 `⋯` 浮层头（`mod.meta`），不在这里重复造一套。 */

@@ -6,6 +6,7 @@ import { renderMd, renderMdInline } from "../ui/markdown";
 import { Popover, usePopover } from "../ui/Popover";
 import { Stash } from "./Stash";
 import { toast } from "../ui/Toast";
+import { inActive } from "../workbench/scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 会话栏，形制按 S9：用户句右对齐；一个 AI 回合共用一根左栏，文本与工具行按出现顺序排；变更卡带回退；「已选中」药丸紧挨输入框上方 */
 export function ChatRail({ chat, selections, onDropSelection, onClearSelections, contextLabel, currentFile, stash, onSendStash, onDropStash, onLocateComment, onOpenUrl }: { chat: ChatStore; selections: Selection[]; onDropSelection: (i: number) => void; onClearSelections: () => void; contextLabel: string | null; currentFile: string | null; stash: Comment[]; onSendStash: () => void | Promise<void>; onDropStash: (id: string) => void; onLocateComment: (c: Comment) => void; onOpenUrl?: (url: string) => void }) {
@@ -20,7 +21,7 @@ export function ChatRail({ chat, selections, onDropSelection, onClearSelections,
     const on = (e: Event) => {
       const d = (e as CustomEvent<{ placeholder?: string } | undefined>).detail;
       setHint(d?.placeholder ?? null);
-      const el = document.getElementById("chatInput") as HTMLTextAreaElement | null;
+      const el = inActive<HTMLTextAreaElement>("#chatInput");
       el?.focus();
     };
     window.addEventListener("ud-focus-chat", on);

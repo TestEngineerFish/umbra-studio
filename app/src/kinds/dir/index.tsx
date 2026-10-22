@@ -4,6 +4,7 @@ import type { ViewContext } from "../context";
 import type { KindModule } from "../registry";
 import { Seg } from "../toolbar";
 import { DirView } from "./View";
+import { focusChatInput } from "../../workbench/scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 目录（`00` §五十九；M8-15b 拆成目录）。`ctx.path` 是目录的相对路径，`""` = 项目根。
  *
@@ -53,7 +54,7 @@ function Provider({ ctx, children }: { ctx: ViewContext; children: ReactNode }) 
         detail: paths.join("\n"),
       });
       ctx.ui.expandChat();
-      setTimeout(() => document.getElementById("chatInput")?.focus(), 50);
+      focusChatInput();
     };
     window.addEventListener("ud-send-files", on); return () => window.removeEventListener("ud-send-files", on);
   }, [ctx]);

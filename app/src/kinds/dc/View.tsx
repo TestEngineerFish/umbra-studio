@@ -5,6 +5,7 @@ import type { ViewContext } from "../context";
 import { useDc } from "./bridge";
 import { CommentBox } from "./CommentBox";
 import { Pins } from "./Pins";
+import { inActive } from "../../workbench/scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 画布：S2 嵌入壳 iframe（编辑）/ 稿本身（预览）/ 源码只读。
  *  **工具栏不在这里** —— 第七轮把它搬到了统一那条横带（`index.tsx` 的 `Toolbar`）。
@@ -148,7 +149,7 @@ function CodeView({ src, picked }: { src: SourceData | null; picked: Picked | nu
 /** 演示全屏：只看稿，Esc 退出 */
 function Present({ src, onStop }: { src: string; onStop: () => void }) {
   useEffect(() => {
-    const el = document.getElementById("present");
+    const el = inActive("#present");
     el?.requestFullscreen?.().catch(() => {});
     const on = () => { if (!document.fullscreenElement) onStop(); };
     document.addEventListener("fullscreenchange", on);

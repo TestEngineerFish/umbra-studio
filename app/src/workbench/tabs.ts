@@ -1,4 +1,7 @@
-import { dirtyStore } from "../ui/dirty";
+/* ⚠️ **这个模块不再直接读那个全局登记处**（M15-1 S2，2026-10-22）。
+   登记处的键现在是 `<项目目录>/<相对路径>` —— 而这里只有相对路径，
+   **它不知道自己在为哪个项目算**。所以「这一份脏不脏」改成从外面传进来：
+   纯函数要拿到它算不出来的东西，就该由调用方给，而不是去读一个全局的。 */
 
 /** 页签的三态（M8-28，形制按设计侧第九轮 §六）。
  *
@@ -33,9 +36,12 @@ export function ordered(tabs: Tab[]): Tab[] {
   return [...tabs.filter((t) => t.pinned), ...tabs.filter((t) => !t.pinned)];
 }
 
+/** 「这一份改了还没落盘吗」—— 由调用方给（它知道是哪个项目）。 */
+export type IsDirty = (path: string) => boolean;
+
 /** 一份文件**能不能被预览态盖掉**：固定的不行，改了没落盘的不行。 */
-export function replaceable(t: Tab): boolean {
-  return !!t.preview && !t.pinned && !dirtyStore.has(t.path);
+export function replaceable(t: Tab, isDirty: IsDirty): boolean {
+  return !!t.preview && !t.pinned && !isDirty(t.path);
 }
 
 /** 打开一份文件。
@@ -43,14 +49,14 @@ export function replaceable(t: Tab): boolean {
  *  `mode: "preview"`（单击）会**盖掉现有的预览页签** —— 这是用户要的「不要每看一个就多一个」。
  *  盖不掉的（固定 / 未保存）永远不会被盖，这时候新开一个预览页签。
  */
-export function openTab(tabs: Tab[], path: string, mode: "preview" | "open"): Tab[] {
+export function openTab(tabs: Tab[], path: string, mode: "preview" | "open", isDirty: IsDirty): Tab[] {
   const has = tabs.find((t) => t.path === path);
   if (has) {
     /* 已经开着：双击 / 明确打开会把预览态转正，单击不动它 */
     return mode === "open" && has.preview ? tabs.map((t) => (t.path === path ? { ...t, preview: false } : t)) : tabs;
   }
   if (mode === "open") return [...tabs, { path }];
-  const idx = tabs.findIndex(replaceable);
+  const idx = tabs.findIndex((t) => replaceable(t, isDirty));
   if (idx < 0) return [...tabs, { path, preview: true }];
   const next = [...tabs];
   next[idx] = { path, preview: true };
@@ -59,8 +65,8 @@ export function openTab(tabs: Tab[], path: string, mode: "preview" | "open"): Ta
 
 /** 「关闭其他 / 右侧 / 已保存的」会关掉几个 —— 菜单里要**写出真会关掉的个数**，
  *  「点之前就知道结果」（设计侧 §六.2）。一个都关不掉时那一项置灰。 */
-export function closable(tabs: Tab[], scope: "others" | "right" | "saved", current: string): Tab[] {
-  const keep = (t: Tab) => t.pinned || dirtyStore.has(t.path);
+export function closable(tabs: Tab[], scope: "others" | "right" | "saved", current: string, isDirty: IsDirty): Tab[] {
+  const keep = (t: Tab) => t.pinned || isDirty(t.path);
   if (scope === "others") return tabs.filter((t) => t.path !== current && !keep(t));
   if (scope === "saved") return tabs.filter((t) => !keep(t));
   const i = tabs.findIndex((t) => t.path === current);

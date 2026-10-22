@@ -9,7 +9,8 @@
     "check": "tsc -p . --noEmit",
     "uitest": "node uitest.mjs",
     "hometest": "node hometest.mjs",
-    "build:shared": "vite build --config vite.shared.config.ts"
+    "build:shared": "vite build --config vite.shared.config.ts",
+    "multiprojtest": "node multiprojtest.mjs"
   },
   "dependencies": {
     "@codemirror/legacy-modes": "6.5.4",

@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { LEAVE, dirtyStore, type LeaveVerb } from "../ui/dirty";
+import { LEAVE, type LeaveVerb } from "../ui/dirty";
 import { toast } from "../ui/Toast";
 
 /** 关页签 / 切文件 / 回退前那一张确认卡（设计侧第十二轮 S18 §一.1）。
@@ -49,7 +49,15 @@ export function LeaveGuard({ path, verb, onCancel, onDiscard, onSave }: {
  *  - 「不要了」→ 丢掉改动，resolve(true)
  *  - 「回去接着改」/ 落盘等超时 → resolve(false)
  */
-export function useLeaveGuard() {
+/** ⚠️ 收一个**按项目的**「未落盘」视图（M15-1 S2）。
+ *  原来它直接读全局 `dirtyStore`，而那张表的键现在是 `<项目目录>/<相对路径>` ——
+ *  这道闸只有相对路径，**它不知道自己在为哪个项目拦**。
+ *  并存时后果最重的是 `onDiscard`：它会去 `drop` 一条**另一个项目**的登记，
+ *  于是那个项目那份没落盘的改动再也不会被拦一下。 */
+export function useLeaveGuard(dirty: {
+  has(path: string): boolean;
+  drop(path: string): void;
+}) {
   const [pending, setPending] = useState<{ path: string; verb: LeaveVerb } | null>(null);
   const done = useRef<((ok: boolean) => void) | null>(null);
   const timer = useRef<number | null>(null);
@@ -64,18 +72,18 @@ export function useLeaveGuard() {
   const askLeave = useCallback((path: string, verb: LeaveVerb) => new Promise<boolean>((resolve) => {
     /* ⚠️ 不脏就**同步**放行 —— 别让「干净时也走一趟 microtask」这种时序变化
        渗进十来个打开入口里。那类变化不会报错，只会让某一处双击变成单击。 */
-    if (!path || !dirtyStore.has(path)) { resolve(true); return; }
+    if (!path || !dirty.has(path)) { resolve(true); return; }
     if (done.current) { resolve(false); return; }   // 已经在问了，不叠第二张卡
     done.current = resolve;
     setPending({ path, verb });
-  }), []);
+  }), [dirty]);
 
   const guardNode = pending ? (
     <LeaveGuard
       path={pending.path}
       verb={pending.verb}
       onCancel={() => settle(false)}
-      onDiscard={() => { dirtyStore.drop(pending.path); settle(true); }}
+      onDiscard={() => { dirty.drop(pending.path); settle(true); }}
       onSave={() => {
         /* ⚠️ **不自己落盘 —— 让那个格式模块自己落。**
            内容在它手里（插件在自己的 iframe 里，工作台读不到），
@@ -88,7 +96,7 @@ export function useLeaveGuard() {
            等不到就**不走**，并说一句 —— 悄悄走掉等于把改动丢了。 */
         let n = 0;
         timer.current = window.setInterval(() => {
-          if (!dirtyStore.has(path)) { settle(true); return; }
+          if (!dirty.has(path)) { settle(true); return; }
           if (++n > 40) {                     // 40 × 150ms = 6 秒
             toast(`还没落完，先没${verb.short}`, "这个文件的改动还在，你可以再按一次 ⌘S", "error");
             settle(false);

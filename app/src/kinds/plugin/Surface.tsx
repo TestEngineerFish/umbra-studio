@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "../../ui/Toast";
-import { dirtyStore } from "../../ui/dirty";
+import { dirtyOf } from "../../ui/dirty";
 import { PopoverAt, PopItem, PopSep } from "../../ui/Popover";
 import { chromeKey, dropChrome, setChrome, setSender } from "./chrome";
 import type { MenuItem, ViewContext } from "../context";
+import { allInActive, focusChatInput } from "../../workbench/scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 插件 UI（A 面）的宿主（M11-5）。**插件画在它自己的一张网页里，我们只给一块矩形。**
  *
@@ -122,7 +123,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
         /* 同一个插件的几个 frame 互通。**宿主只转发，不看内容** ——
            看内容就等于在宿主里维护插件的数据模型，那是插件自己的事。
            只转给**同一个插件**的 frame（按 name 前缀认），不会串到别的插件去。 */
-        for (const f of Array.from(document.querySelectorAll<HTMLIFrameElement>(`iframe[data-plugin="${CSS.escape(pluginId)}"]`))) {
+        for (const f of allInActive<HTMLIFrameElement>(`iframe[data-plugin="${CSS.escape(pluginId)}"]`)) {
           if (f.contentWindow && f.contentWindow !== e.source) f.contentWindow.postMessage({ t: "share", key: m.key, value: m.value }, "*");
         }
         return;
@@ -130,7 +131,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
       if (m.t === "toast") { toast(m.title, m.body, m.level ?? "ok"); return; }
       /* 未落盘状态归宿主管：关页签要拦、退出要拦，这些都发生在插件的矩形之外 */
       if (m.t === "dirty") {
-        dirtyStore.set(ctx.path, m.on);
+        dirtyOf(ctx.project.dir).set(ctx.path, m.on);
         /* 从「脏」变「干净」= 刚落盘（或者放弃了）。版本历史那枚药丸要跟着变 ——
            不派发的话药丸上还写着旧版号，而**旧版号和「落盘失败」长得一模一样**。
            放弃改动时也会走到这里，多取一次 `file_versions` 很便宜，不值得为它再加一条消息。 */
@@ -144,7 +145,7 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
            那一下的意图是「我要跟 AI 说话」，不该因此弹一句「先选中几行」。 */
         if (m.label) ctx.select("range", { kind: "range", label: m.label, detail: m.detail });
         ctx.ui.expandChat();
-        setTimeout(() => document.getElementById("chatInput")?.focus(), 50);
+        focusChatInput();
         return;
       }
       if (m.t === "menu") {
@@ -240,7 +241,9 @@ export function PluginSurface({ ctx, pluginId, entry, role = "body" }: {
     ref.current?.contentWindow?.postMessage({ t: "changed", path: ctx.path }, "*");
   }, [tick, ctx.path]);
   /* 换文件 / 卸载时把未落盘标记清掉 —— 留着的话关页签会一直被拦 */
-  useEffect(() => () => { dirtyStore.set(ctx.path, false); }, [ctx.path]);
+  /* ⚠️ 依赖要带上 `ctx.project.dir`（M15-1 S2）：登记处的键现在是
+     `<项目目录>/<相对路径>`，少了它卸载时会去清**另一个项目**那一条。 */
+  useEffect(() => () => { dirtyOf(ctx.project.dir).set(ctx.path, false); }, [ctx.path, ctx.project.dir]);
 
   return (
     <div className="flex-1 min-w-0 relative bg-canvas">

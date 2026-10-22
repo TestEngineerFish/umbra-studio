@@ -6,6 +6,7 @@ import { Glyph } from "../ui/Glyph";
 import { CtxMenu, itemsFor, type CtxActions, type CtxTarget } from "./ctxmenu";
 import { PopoverAt } from "../ui/Popover";
 import { kindDef } from "@shared/kinds";
+import { inActive } from "./scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 常驻目录列里的那棵树（M8-11，形制按设计侧第六轮的 S11 窄列 / S12）。
  *
@@ -150,7 +151,7 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
       if (need.length) onExpandedChange([...expanded, ...need]);
       for (const p2 of need) if (children[p2] === undefined) void load(p2);
       setFlash(path);
-      setTimeout(() => document.querySelector(`[data-path="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), need.length ? 400 : 60);
+      setTimeout(() => inActive(`[data-path="${CSS.escape(path)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), need.length ? 400 : 60);
       setTimeout(() => setFlash((f) => (f === path ? null : f)), 1200);
     };
     window.addEventListener("ud-locate-file", on); return () => window.removeEventListener("ud-locate-file", on);
@@ -404,7 +405,7 @@ function GotoFile({ q, setQ, drafts, indexed, current, onPick, onClose, anchor }
             const to = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : mv ? (hit + mv + rows.length) % rows.length : -1;
             if (to < 0) return;
             e.preventDefault(); setAct(to);
-            document.getElementById(rowId(to))?.scrollIntoView({ block: "nearest" });
+            inActive(`#${CSS.escape(rowId(to))}`)?.scrollIntoView({ block: "nearest" });
           }} />
         </div>
         <div id="goto-list" role="listbox" className="flex-1 overflow-auto pb-1">
