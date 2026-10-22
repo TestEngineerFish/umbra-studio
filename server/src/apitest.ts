@@ -1849,6 +1849,123 @@ console.log("\n㉒ 本地 CLI 的 directWrite + 转换那两条（#166 / #173 / 
      "清旧目录按「进程还在不在」判而**不是按时间**（按时间会删掉一个跑了一整天的壳正在用的那个）");
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ㉓ 流式回复的解帧与累加（issue #134）
+
+   通道 A / C 改成 `stream: true`。⚠️ 它修的不是「逐字出字」那个体验，是一条
+   **数据丢失**：`stream: false` 时响应头要等到整段生成完才回来，而 undici 默认
+   `headersTimeout = 300 秒` —— 慢模型写一整份稿超过 5 分钟就 `HeadersTimeoutError`
+   断掉，报成「请求失败」，**这一轮产出全丢**。
+
+   ⚠️ issue 自己写着「按 `index` 拼 `tool_calls[i].function.arguments` 这段 ~40 行要自己写」，
+   而它**正好是坑多的那一段**。抽成纯函数之后下面这些坑**一条网络都不用走**。
+   > **把「难做对的那一段」从 I/O 里摘出来，它就从「要联网才能测」变成「一个函数」。**
+   ══════════════════════════════════════════════════════════════════════ */
+console.log("\n㉓ 流式回复的解帧与累加（issue #134）");
+{
+  const { createAccumulator, createSseReader } = await import("./stream.js");
+  const enc = new TextEncoder();
+  /** 把一串 SSE 文本按**任意切点**喂进去，拿累加结果 —— 切点是这一节的主角。 */
+  const run = (sse: string, cuts: number[] = []) => {
+    const acc = createAccumulator();
+    const rd = createSseReader((d) => acc.feed(d));
+    const bytes = enc.encode(sse);
+    let at = 0;
+    for (const c of [...cuts, bytes.length].sort((a, b) => a - b)) {
+      if (c <= at) continue;
+      rd.push(bytes.subarray(at, Math.min(c, bytes.length)));
+      at = Math.min(c, bytes.length);
+    }
+    if (at < bytes.length) rd.push(bytes.subarray(at));
+    rd.end();
+    return acc.result();
+  };
+  const frame = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
+  const delta = (c: string) => frame({ choices: [{ delta: { content: c } }] });
+
+  /* ── ⓐ 基本累加 + `[DONE]` ── */
+  const r1 = run(delta("你") + delta("好") + delta("，世界") + "data: [DONE]\n\n");
+  ok(r1.content === "你好，世界" && r1.done, "三帧正文拼起来，`[DONE]` 收到了", `${JSON.stringify(r1.content)} · done=${r1.done}`);
+  /* ⚠️ **没收到 `[DONE]` 要能分辨** —— 「模型说完了」和「流断在中间」是两件事 */
+  const r2 = run(delta("半句"));
+  ok(r2.content === "半句" && !r2.done, "**没有 `[DONE]` 时 `done` 为假**（流断在中间和说完了是两件事）", `done=${r2.done}`);
+
+  /* ── ⓑ 分片切在**行中间** ── */
+  const sse3 = delta("abc") + delta("def") + "data: [DONE]\n\n";
+  const r3 = run(sse3, [5, 13, 20, 27, 31]);
+  ok(r3.content === "abcdef" && r3.done, "**分片切在行中间**也拼得对（`eventsource-parser` 的职责）", JSON.stringify(r3.content));
+
+  /* ── ⓒ 分片切在**多字节字符**中间 ──
+     ⚠️ 这一条是本节最要紧的：不用 `TextDecoder({stream:true})` 的话，
+     一个被切开的中文字会变成两个 `U+FFFD` —— **而那是静默的内容损坏**
+     （M14-11 的嗅探栽过同一件事）。 */
+  const sse4 = delta("中文内容要完整") + "data: [DONE]\n\n";
+  const b4 = enc.encode(sse4);
+  /* 在每个字节边界都切一刀 —— 必然切中多字节字符的中间 */
+  const acc4 = createAccumulator();
+  const rd4 = createSseReader((d) => acc4.feed(d));
+  for (let i = 0; i < b4.length; i++) rd4.push(b4.subarray(i, i + 1));
+  rd4.end();
+  const r4 = acc4.result();
+  ok(r4.content === "中文内容要完整" && !r4.content.includes("�"),
+     "**逐字节喂也不坏中文**（切在多字节字符中间，`TextDecoder` 要用 stream 模式）",
+     JSON.stringify(r4.content));
+
+  /* ── ⓓ `tool_calls` 按 `index` 拼，而且**两个交错到达也不混** ── */
+  const r5 = run(
+    frame({ choices: [{ delta: { tool_calls: [{ index: 0, id: "c0", type: "function", function: { name: "write_file", arguments: '{"pa' } }] } }] })
+    + frame({ choices: [{ delta: { tool_calls: [{ index: 1, id: "c1", type: "function", function: { name: "read_file", arguments: '{"x"' } }] } }] })
+    + frame({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'th":"a.md"}' } }] } }] })
+    + frame({ choices: [{ delta: { tool_calls: [{ index: 1, function: { arguments: ':1}' } }] } }] })
+    + "data: [DONE]\n\n");
+  ok(r5.toolCalls.length === 2
+     && r5.toolCalls[0]?.function.name === "write_file" && r5.toolCalls[0]?.function.arguments === '{"path":"a.md"}'
+     && r5.toolCalls[1]?.function.name === "read_file" && r5.toolCalls[1]?.function.arguments === '{"x":1}',
+     "**两个工具调用分帧交错到达，按 `index` 各自拼对**（按顺序 push 会拼成乱码）",
+     JSON.stringify(r5.toolCalls.map((c) => `${c.function.name}${c.function.arguments}`)));
+
+  /* ── ⓔ `usage` 在尾帧单独来（那一帧 `choices` 是空数组）── */
+  const r6 = run(delta("hi") + frame({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 22, total_tokens: 33 } }) + "data: [DONE]\n\n");
+  ok(r6.usage?.totalTokens === 33 && r6.usage.promptTokens === 11 && r6.content === "hi",
+     "**`usage` 在尾帧单独来也拿得到**（那一帧 `choices` 是空数组，先取 usage 再看 choices）",
+     JSON.stringify(r6.usage));
+
+  /* ── ⓕ 注释行 / `\r\n` / 解析不了的帧 ── */
+  const r7 = run(": keep-alive\n\n" + delta("A") + "data: 不是 JSON\n\n" + delta("B") + "data: [DONE]\n\n");
+  ok(r7.content === "AB" && r7.done,
+     "**`: keep-alive` 注释行跳过、解析不了的帧跳过而不抛**（为一帧杂质丢掉整轮正是要修的那种事）",
+     JSON.stringify(r7.content));
+  const r8 = run((delta("X") + delta("Y")).replace(/\n/g, "\r\n") + "data: [DONE]\r\n\r\n");
+  ok(r8.content === "XY" && r8.done, "**`\\r\\n` 换行也认**（有的端点用它）", JSON.stringify(r8.content));
+
+  /* ── ⓖ `finish_reason` 带出来 ── */
+  const r9 = run(delta("写了一半") + frame({ choices: [{ delta: {}, finish_reason: "length" }] }) + "data: [DONE]\n\n");
+  ok(r9.finishReason === "length",
+     "**`finish_reason` 带出来**（`length` = 被 max_tokens 截断，和「说完了」是两件事）", String(r9.finishReason));
+
+  /* ── ⓗ 请求体真的带上了那两个字段 ── */
+  const { readFileSync: rf23 } = await import("node:fs");
+  const { join: j23 } = await import("node:path");
+  const { TOOL_ROOT: TR23 } = await import("./project.js");
+  const provSrc = rf23(j23(TR23, "server", "src", "provider.ts"), "utf8");
+  /* ⚠️⚠️ **先剥注释再搜** —— 第一版直接搜 `stream: false`，而它命中的是
+     **我自己写在旁边解释为什么要改的那段话**，于是判据红了而产品是对的。
+     > **一条判据分不清「代码」和「解释它的注释」，就会把正确的注释报成缺陷**
+     > （`doc/00` §107 那条的**第 5 次** —— 这说明「判据搜源码」这件事
+     > 本身需要一个共用的剥注释工具，而现在每处各写一遍）。 */
+  const codeOnly = provSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+  ok(/stream: true/.test(codeOnly) && !/stream: false/.test(codeOnly),
+     "**请求体是 `stream: true`**（而且会执行的代码里没有残留的 `stream: false`）",
+     `true=${/stream: true/.test(codeOnly)} · false=${/stream: false/.test(codeOnly)}`);
+  ok(/stream_options: \{ include_usage: true \}/.test(provSrc),
+     "带 `stream_options.include_usage`（流式下 `usage` 要显式要）");
+  /* ⚠️ 这一条钉的是**分寸**：流断在中间时把已经收到的那部分带出来，而不是整轮丢掉 */
+  ok(/partial\.content \|\| partial\.toolCalls\.length/.test(provSrc),
+     "**流断在中间时把已经收到的那部分带出来**（整轮丢掉正是这条 issue 要修的事）");
+}
+
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 

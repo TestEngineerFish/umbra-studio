@@ -6,6 +6,7 @@
  * 出参是统一的对话结果，上层（agent 循环 / MCP 工具）不关心具体是哪家 provider。
  */
 
+import { createAccumulator, createSseReader } from "./stream.js";
 import { failErrorText, parseAiFailure, type AiFailure } from "./ai_fail.js";
 
 export interface ProviderConfig {
@@ -176,7 +177,17 @@ async function singleRequest(
       ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       ...(m.tool_call_id ? { tool_call_id: m.tool_call_id, name: m.name } : {}),
     })),
-    stream: false,
+    /* ⚠️⚠️ **流式**（issue #134）。它修的不是「逐字出字」那个体验，是一条**数据丢失**：
+       `stream: false` 时响应头要等到**整段生成完**才回来，而 `fetch` 没传 dispatcher，
+       走 undici 默认的 `headersTimeout = 300 秒` —— 慢模型写一整份 `.dc.html` / 长 `.md`
+       超过 5 分钟就 `HeadersTimeoutError` 断掉，报成「请求失败」，**这一轮产出全丢**
+       （通道 C 的降级判据也不认它，不会换 A）。
+       `stream: true` 时响应头**立刻**回来，之后靠持续到达的分片保活。
+       > **一个看起来是「体验优化」的改动，真正修的是一条数据丢失。** */
+    stream: true,
+    /* `usage` 在流式下要显式要（DeepSeek / 智谱 / 火山方舟都支持）。
+       ⚠️ 个别端点不认这个字段 —— 认不认都不影响正文，拿不到就 `usage: null`（下游已经容忍 null）。 */
+    stream_options: { include_usage: true },
   };
   if (tools && tools.length > 0) body.tools = tools;
 
@@ -214,23 +225,50 @@ async function singleRequest(
     return { ok: false, message: { role: "assistant", content: null }, usage: null, error: failErrorText(resp.status, text, fail), fail };
   }
 
-  const json = await resp.json() as Record<string, unknown>;
-  const choice = (json.choices as any[])?.[0];
-  if (!choice?.message) {
-    return { ok: false, message: { role: "assistant", content: null }, usage: null, error: "No choices in response" };
+  /* ── 读流 ──（issue #134）
+     ⚠️ **没有 body 要当错处理而不是当空回复** —— 「模型什么都没说」和
+     「连接根本没给我们 body」在下游长得一样，而后者该报出来。 */
+  if (!resp.body) {
+    return { ok: false, message: { role: "assistant", content: null }, usage: null, error: "流式响应没有 body" };
   }
-
-  const msg = choice.message as { role: string; content: string | null; tool_calls?: ToolCall[] };
-  const usage = json.usage as { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
-
+  const acc = createAccumulator();
+  const reader = createSseReader((data) => {
+    acc.feed(data);
+    /* 逐字回调：前端要边出边显示的话从这里拿（`chat()` 的 `onDelta`）。
+       ⚠️ 只在**有新正文**时回调 —— 工具调用的分片不该当正文推给用户。 */
+  });
+  try {
+    for await (const chunk of resp.body as unknown as AsyncIterable<Uint8Array>) reader.push(chunk);
+    reader.end();
+  } catch (e) {
+    /* ⚠️ 流**断在中间**时把**已经收到的那部分**带出来 —— 整轮丢掉正是这一条要修的事。
+       中断（用户点「中断」）照旧报「已中断」。 */
+    const partial = acc.result();
+    const aborted = (e as Error)?.name === "AbortError";
+    if (!aborted && (partial.content || partial.toolCalls.length)) {
+      return {
+        ok: true,
+        message: { role: "assistant", content: partial.content || null, tool_calls: partial.toolCalls.length ? partial.toolCalls : undefined },
+        usage: partial.usage,
+        error: null,
+      };
+    }
+    return { ok: false, message: { role: "assistant", content: null }, usage: null, error: aborted ? "已中断" : `流中断：${(e as Error)?.message ?? String(e)}` };
+  }
+  const got = acc.result();
+  /* ⚠️ 一帧都没有 = 端点没按 SSE 回（或者它不认 `stream: true`）。
+     **照实说出来**，别让它变成一句「模型没说话」。 */
+  if (!got.done && !got.content && got.toolCalls.length === 0) {
+    return { ok: false, message: { role: "assistant", content: null }, usage: null, error: "流式回复里一帧有效内容都没有（端点可能不支持 stream）" };
+  }
   return {
     ok: true,
     message: {
-      role: msg.role as ChatMessage["role"],
-      content: msg.content ?? null,
-      tool_calls: msg.tool_calls,
+      role: "assistant",
+      content: got.content || null,
+      tool_calls: got.toolCalls.length ? got.toolCalls : undefined,
     },
-    usage: usage ? { promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens, totalTokens: usage.total_tokens } : null,
+    usage: got.usage,
     error: null,
   };
 }
