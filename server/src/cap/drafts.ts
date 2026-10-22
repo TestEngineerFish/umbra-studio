@@ -64,7 +64,10 @@ function requireAdopted(dir: string, file: string): void {
   if (isDesignProject(dir)) return;
   throw new ToolError(err(X.BAD_INPUT, file, { kind: "path", name: dir },
     "这个目录还没接管为设计项目，不建稿",
-    { fix: "设计稿要能预览和编辑，得先往这个目录里放预览壳与运行时副本（约 600 KB）。先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`），再建稿。只看、只改已有的文件不需要接管。" }));
+    /* ⚠️ 这个数要和弹窗上那个**一致**：原来写的是「约 600 KB」，而那是我装闸时
+       还没量就先写下的 —— 量出来是 **17 个文件 · 约 750 KB**。
+       **两处说同一件事而数字不一样，哪个对都不要紧，要紧的是用户会发现我们在猜。** */
+    { fix: "设计稿要能预览和编辑，得先往这个目录里放预览壳与运行时副本（17 个文件 · 约 750 KB）。先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`），再建稿。只看、只改已有的文件不需要接管。" }));
 }
 
 defineCap({
