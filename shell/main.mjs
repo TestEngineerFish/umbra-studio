@@ -21,8 +21,26 @@ app.setName("Umbra Studio");
    核心读 UMBRASTUDIO_STATE_DIR，没设时退回自己的根 —— 开发模式什么都不变。
    注意 setName 要在前面：getPath("userData") 用 app 名做目录名。 */
 if (app.isPackaged && !process.env.UMBRASTUDIO_STATE_DIR) process.env.UMBRASTUDIO_STATE_DIR = app.getPath("userData");
-if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
-app.commandLine.appendSwitch("remote-debugging-port", "0");
+/** 单实例锁 —— ⚠️ **`--mcp` 模式不抢**（issue #191）。
+ *
+ *  锁落在 `userData` 里，而两种模式共用同一个 `userData`。原来这一句**不分模式**，
+ *  于是最常见的那种用法直接不可用：**用户开着界面，秘书同时连上来** ——
+ *  外部客户端起 `… --mcp` → 拿不到锁 → `app.quit()` → stdio 当场关闭，
+ *  客户端看到的是 `MCP error -32000: Connection closed`，**一句解释都没有**。
+ *  而「当 MCP 用（给别的模型客户端）」写在 CLAUDE.md §3 里，是正式支持的场景。
+ *  > **实测**：`shelltest` 的 MCP 那一节在主实例活着时就是这个读数，
+ *  > 排查了一轮才定位到是锁，而不是产品坏了 ——
+ *  > **「拿不到锁」和「坏了」在报错里长得一样。**
+ *
+ *  ⚠️ 单实例是**给窗口模式**的（避免开出两个主界面）；
+ *  MCP 模式是一台 server，本来就该允许多个客户端各起一个。 */
+if (!IS_MCP && !app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
+/* ⚠️ `--mcp` 模式**不开 CDP**（issue #191）：它不跑体检，而
+   `DevToolsActivePort` 是 `userData` 里的**一个文件** —— 两个进程都写的话
+   后起的覆盖先起的，于是**主实例的体检会连到 MCP 进程那个 Chromium 上**。
+   这一条今天不一定炸（体检只在主实例里发起），但它是一个「两个进程写同一个
+   文件、而读的人不知道」的结构，和 #189 那条索引覆盖是同一个形状。 */
+if (!IS_MCP) app.commandLine.appendSwitch("remote-debugging-port", "0");
 for (const f of ["disable-background-networking", "disable-component-update", "disable-sync", "no-first-run", "no-pings"]) app.commandLine.appendSwitch(f);
 
 /** 未落盘提示的依据：启动写 session.json { cleanExit:false }，正常退出改 true；下次启动看到 false 就是被强杀过 */
@@ -377,11 +395,14 @@ app.on("second-instance", (_e, argv) => {
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("activate", () => { if (!wins.size && hub) void createMainWindow(); });
-app.on("before-quit", () => { writeSession({ cleanExit: true, at: new Date().toISOString() }); });
+/* ⚠️ `--mcp` 不写（issue #191）：「上次没正常退出」是**窗口模式**的概念，
+   而 MCP 进程的生命周期由客户端决定（断开 stdio 就该走） ——
+   让它去写这个标记，等于让它替用户的那个窗口说话。 */
+app.on("before-quit", () => { if (!IS_MCP) writeSession({ cleanExit: true, at: new Date().toISOString() }); });
 
 app.whenReady().then(async () => {
-  const prev = readSession();
-  writeSession({ cleanExit: false, at: new Date().toISOString() });
+  const prev = IS_MCP ? null : readSession();
+  if (!IS_MCP) writeSession({ cleanExit: false, at: new Date().toISOString() });
   await loadCore();
   hub = await core.hubStart();
   wireIpc();

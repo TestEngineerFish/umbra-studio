@@ -563,19 +563,57 @@ await app.close();
 {
   const { Client } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js");
   const { StdioClientTransport } = await import("/Users/sam/Documents/SourceTree/Geek/UmbraStudio/server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js");
-  /* ⚠️ **MCP 实例用它自己的 `userData`**，不和上面那个窗口实例共用。
-     理由不是测试方便，而是**产品代码里的一条真实约束**：`main.mjs` 第 24 行
-     `requestSingleInstanceLock()` 是**无条件**的，`--mcp` 模式也要取锁 ——
-     于是「用户开着 app 的同时，外部 MCP 客户端起 `Umbra Studio --mcp`」会**直接退出**，
-     秘书接不上。那是另一条缺陷（已单独报出），不在这一节的范围里；
-     这里给它独立的 userData 只是**让这一节测它自己该测的东西**，不掩盖那件事。 */
-  const UDD_MCP = mkdtempSync(join(tmpdir(), "umbra-shelltest-mcp-"));
-  const t1 = Date.now(); const tr = new StdioClientTransport({ command: bin, args: [`--user-data-dir=${UDD_MCP}`, SHELL, "--mcp"], env, cwd: SHELL, stderr: "pipe" }); const c = new Client({ name: "t", version: "0" });
-  await c.connect(tr); const tools = await c.listTools(); const r = await c.callTool({ name: "list_projects", arguments: {} }); const j = JSON.parse(r.content[0].text);
-  console.log("--mcp: initialize", Date.now() - t1, "ms · tools", tools.tools.length, "· list_projects ok", j.ok);
-  await c.close(); await new Promise(r => setTimeout(r, 800)); const alive = await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[U]mbraStudio/shell.*--mcp'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); });
+  /* ⚠️⚠️ **持锁的那个实例必须在起 MCP 之前就位**（issue #191 的判据本体）。
+     第一版把这段放在 MCP 连上**之后** —— 那一刻锁是空的，MCP 当然连得上；
+     等再去问 pid，holder 已经起来了，于是两个读数拼在一起**看着完全正常**，
+     而缺陷版照样绿。
+     > **一条判据里，造前提的代码必须排在被测行为之前** ——
+     > 而这件事读代码比读读数容易看出来（`doc/00` §163.4 的第 3 种变体）。
+     ⚠️ 跑到这一节时上面那个 `app` 实测已经不在了（前面有「强杀 → 重开」和几次开关窗口），
+     所以**判据自己把前提造出来**：活着就用它，不活着就起一个窗口模式的实例当「持锁的那一个」。
+     ⚠️ 实测佐证（独立探针）：无条件取锁的代码下，带 `--mcp` 的第二个实例**退出码 0**。 */
+  let holder = app, ownHolder = false, mainPid = null;
+  try { mainPid = await holder.evaluate(() => process.pid); } catch { mainPid = null; }
+  if (!mainPid) {
+    holder = await launchShell();
+    await mainWindow(holder);
+    ownHolder = true;
+    try { mainPid = await holder.evaluate(() => process.pid); } catch { mainPid = null; }
+  }
+
+  /* ⚠️⚠️ **MCP 实例和上面那个窗口实例共用同一个 `userData`** —— 这是**故意的**，
+     因为那才是真场景：**用户开着界面，秘书同时连上来**（issue #191）。
+     原来 `main.mjs:24` 的 `requestSingleInstanceLock()` 不分模式，于是这条路
+     直接不可用：拿不到锁 → `app.quit()` → stdio 当场关闭，客户端只看到
+     `MCP error -32000: Connection closed`。
+     > 第一版判据给它单开了一个 `userData`，于是**它绿着，而产品是坏的** ——
+     > 那正是「判据在测别的东西也会绿」（`doc/00` §114.6）。
+     > **把判据从真场景上挪开，就等于把那个缺陷藏起来。** */
+  const t1 = Date.now(); const tr = new StdioClientTransport({ command: bin, args: [`--user-data-dir=${UDD}`, SHELL, "--mcp"], env, cwd: SHELL, stderr: "pipe" }); const c = new Client({ name: "t", version: "0" });
+  /* ⚠️ **连不上要打读数而不是抛**（issue #191 的反向验证逼出来的）：
+     缺陷版下 `connect` 抛 `MCP error -32000: Connection closed`，
+     而一条判据红**不该让它后面的节全都不跑** —— 那会把「一条坏了」放大成
+     「后面那些一条都没验到」，而汇总行看不出区别。 */
+  let tools = { tools: [] }, j = { ok: false }, mcpErr = "";
+  try {
+    await c.connect(tr); tools = await c.listTools();
+    const r = await c.callTool({ name: "list_projects", arguments: {} }); j = JSON.parse(r.content[0].text);
+  } catch (e) { mcpErr = (e && e.message) || String(e); }
+  console.log("--mcp: initialize", Date.now() - t1, "ms · tools", tools.tools.length, "· list_projects ok", j.ok, mcpErr ? `· ✗ ${mcpErr}` : "");
+  try { await c.close(); } catch { /* 没连上就没什么可关的 */ }
+  await new Promise(r => setTimeout(r, 800)); const alive = await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[U]mbraStudio/shell.*--mcp'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); });
   console.log("--mcp: 客户端断开后壳进程还活着:", alive, "(壳有窗口，stdin 关了不退出是预期；秘书用时窗口可见)");
-  try { rmSync(UDD_MCP, { recursive: true, force: true }); } catch { /* 清不掉也不算错 */ }
+  /* ⚠️⚠️ 这一条是 #191 的判据本体，而**前提必须写进断言里**：
+     第一版只断言「MCP 起得来」，于是**装回无条件取锁它照样绿** ——
+     因为那一刻主实例到底活不活着，判据自己不知道。
+     > **「前提没成立它也绿」**（`doc/00` §163.4 同族，本轮第 2 次）——
+     > 而这一条的前提正是整条缺陷的触发条件：**主实例持有锁**。
+     所以先去问主进程的 pid（问得到 = 它活着），把它和结论**绑在同一条断言里**。 */
+  const mcpOk = tools.tools.length > 0 && j.ok;
+  console.log(`--mcp（主实例同时活着）: ${mainPid && mcpOk ? `✓ 主实例 pid ${mainPid} 还活着，MCP 共用 userData 照样起得来（${tools.tools.length} 件工具）`
+    : !mainPid ? "✗ **这一条没验到** —— 主实例已经不在了，而缺陷只在它活着时才触发"
+    : `✗ 被单实例锁顶掉了（issue #191）${mcpErr ? " —— " + mcpErr : ""}`}`);
+  if (ownHolder) await holder.close();
 }
 /* ── 命令行带一个路径进来（M14-5 / `doc/11` Q59–Q61）──
    「右键 › 打开方式」和「双击」走的是 macOS 的 `open-file` 事件，**判据写不进来**
