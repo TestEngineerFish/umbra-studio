@@ -156,14 +156,56 @@ const clickRow = async (row, label) => {
 
 
 const errs = [];
-pg.on("console", (m) => { const t = m.text(); if (m.type() === "error" && !NOISE.some((r) => r.test(t))) errs.push(t.slice(0, 120)); });
+/* ⚠️⚠️ **CSP 拦下稿里引的站外脚本，是沙箱在干活，不是 error**（2026-10-24 从「零 error」里拆出来）。
+   链条：`.dc.html` 在 C3 之后落 `html` kind → 由 html 插件在一个 `script-src 'self'` 的
+   iframe 里渲染 → 稿里那行 `<script src="https://unpkg.com/react@18.3.1/…">` 被响应头上的
+   CSP 拦住。**这正是那道闸该做的事**（插件 A 面刻意不给 `allow-same-origin`，
+   也不许它从站外拉代码执行）。
+   混在「零 error」里的后果有两层，第二层更糟：
+   ① 那条判据**永远红**，而它钉的是「产品没在控制台里报错」—— 它从此什么都不钉了；
+   ② **一条红混在一片红里，就不会被单独追问** —— 实测它在日志里躺了好几轮。
+   > **把一件预期行为留在「出错计数」里，等于主动把那个计数废掉。**
+   所以它单独收集、单独成条（判准见下面那一节）。 */
+const CSP_RE = /Content Security Policy|Refused to (?:load|execute|connect)/i;
+/* ⚠️⚠️ **一件预期行为在控制台里留的是两条，不是一条**（第一版只拆走了一条，而「零 error」照样红）。
+   实测两条：
+   ① 浏览器的 `Loading the script 'https://unpkg.com/react@…' violates … "script-src 'self'"`；
+   ② **稿自己报的** `[dc] failed to load React or boot: Error: failed to load https://unpkg.com/react@…`
+      —— 那是它自己的错误处理在说同一件事的后果。
+   只拆走 ① 的话，② 继续把「零 error」钉死，**而它读起来像另一个毛病**。
+   > **一个被拦住的东西会自己喊一声** —— 分类的时候要把「拦截」和「被拦者的反应」一起算。
+   所以 ② 单独收一桶，并且判据**钉归属**：它报的那个 URL 必须正是被拦下的那一个
+   （不然就是别的东西加载失败，那才是真问题）。 */
+/* ⚠️⚠️⚠️ **同一件预期行为有三个出口，而我两次以为自己拆完了。**
+   第一版只拆了①，「零 error」照样红；第二版拆了①②，还是红 —— 第三种是**未捕获异常**，
+   它走的是 `pageerror` 那个**另一个监听器**，压根不经过上面这段分类。实测三条：
+   ① `Loading the script 'https://unpkg.com/react@…' violates … "script-src 'self'"`（浏览器）
+   ② `[dc] failed to load React or boot: Error: failed to load https://unpkg.com/react@…`（稿自己打的）
+   ③ `pageerror: Error: failed to load https://unpkg.com/react@…`（稿抛出来、没人接）
+   > **一件事有几个出口，不是想出来的 —— 是把计数器盯到零为止才知道的。**
+   所以分类**收到一处** `classify()`，两个监听器都走它 ——
+   和 §162 那条「报信包在 `fetchFn` 本身上，不是在六个调用点各加一行」同一个形状：
+   **在每个出口各写一遍判断，漏一个就静默复发，而症状和没修一模一样。** */
+const LOAD_FAIL_RE = /failed to load https?:\/\//i;
+const cspBlocks = [];
+const bootFails = [];
+/** 一条控制台/页面错误该算哪一类。**唯一的分类处** —— 加出口只改这里。 */
+const classify = (t) => {
+  if (CSP_RE.test(t)) { cspBlocks.push(t.slice(0, 200)); return; }
+  if (LOAD_FAIL_RE.test(t)) { bootFails.push(t.slice(0, 200)); return; }
+  if (!NOISE.some((r) => r.test(t))) errs.push(t.slice(0, 160));
+};
+pg.on("console", (m) => { if (m.type() === "error") classify(m.text()); });
 /* ⚠️ **把 4xx 的 URL 也记下来**（2026-10-06 加）：
    浏览器给的控制台文本是「Failed to load resource: the server responded with a status of 404」——
    **不带 URL**。而那条判据红了之后第一句话一定是「哪个 404？」，
    于是只能靠猜或者另起一个探针。**一条说不出「是哪一个」的判据，红了也用不上。** */
 const bad4xx = [];
 pg.on("response", (r) => { if (r.status() >= 400) bad4xx.push(`${r.status()} ${r.url().replace(/[?&]token=[^&]*/, "")}`); });
-pg.on("pageerror", (e) => { const t = String(e); if (!NOISE.some((r) => r.test(t))) errs.push("pageerror: " + t.slice(0, 120)); });
+/* ⚠️ `pageerror` 也走 `classify` —— 原来它自己判一遍 NOISE，于是上面拆出去的那两类
+   **从这个出口原样漏回「零 error」里**（实测第三种形态就是从这儿来的）。
+   加前缀是为了读数里看得出是哪个出口。 */
+pg.on("pageerror", (e) => classify("pageerror: " + String(e)));
 
 await pg.goto(URL_, { waitUntil: "domcontentloaded" });
 /* 「起来了」的判据：树里长出了节点。
@@ -707,9 +749,10 @@ process.on("uncaughtException", async (e) => {
        静默 `errs.length = 0` 就是「把仪器调成零」，和它要防的那件事同一个形状。 */
     const dropped = [...new Set(bad4xx)];
     const nErr = errs.length;
-    errs.length = 0; bad4xx.length = 0;
+    const nCsp = cspBlocks.length + bootFails.length;
+    errs.length = 0; bad4xx.length = 0; cspBlocks.length = 0; bootFails.length = 0;
     console.log(`  · 清掉残留之后重新进了一次（清理前界面开着：${wasOpen ?? "没开"}）`
-      + `；清理阶段的噪声不计入：error ${nErr} 条 · 4xx ${dropped.length} 种`
+      + `；清理阶段的噪声不计入：error ${nErr} 条 · 4xx ${dropped.length} 种 · CSP 拦截 ${nCsp} 条`
       + (dropped.length ? ` —— ${dropped.slice(0, 3).join(" · ")}` : ""));
   }
 }
@@ -2303,8 +2346,17 @@ else {
 }
 
 console.log("\n控制台");
-ok(errs.length === 0, "零 error（已排除解析期的模板洞噪声）",
-   errs.length ? `${errs[0]}${bad4xx.length ? ` ⟵ 4xx：${[...new Set(bad4xx)].slice(0, 3).join(" · ")}` : ""}` : "");
+/* ⚠️ detail 要说出**有几种**、是哪几种 —— 原来只打 `errs[0]`，于是「红了之后第一句话
+   一定是『还有别的吗』」（和 4xx 那条同一个纪律：**一条说不出「是哪一个」的判据，红了也用不上**）。
+   实测吃过这个苦：同一件事三种形态，每拆掉一种就露出下一种，而每一轮只看得到一种。 */
+{
+  const kinds = [...new Set(errs.map((t) => t.replace(/https?:\/\/\S+/g, "<URL>").slice(0, 110)))];
+  ok(errs.length === 0, "零 error（已排除解析期的模板洞噪声；CSP 拦截与被拦者的反应另有两条判据）",
+     errs.length
+       ? `${errs.length} 条 / ${kinds.length} 种：${kinds.slice(0, 3).join(" ⎹ ")}`
+         + (bad4xx.length ? ` ⟵ 4xx：${[...new Set(bad4xx)].slice(0, 3).join(" · ")}` : "")
+       : `干净（另外：CSP 拦下 ${cspBlocks.length} 条 · 被拦者喊了 ${bootFails.length} 声，各有判据）`);
+}
 
 /* ⚠️ **这一条是关于判据自己的**（2026-10-22 加，geek-99 要求补）。
    上面那条「零 error」只看得到控制台那句 `Failed to load resource … 400`，
@@ -2326,6 +2378,40 @@ ok(errs.length === 0, "零 error（已排除解析期的模板洞噪声）",
   ok(ofSample.length === 0,
      "**4xx 里没有一条指向回归自己的样本**（有 = 这噪声是判据造的，不是产品的错）",
      ofSample.length ? ofSample.slice(0, 3).join(" · ") : `4xx 共 ${seen.length} 种，没有一种指向样本`);
+}
+
+/* ── CSP 拦截：**预期行为，单独成条**（2026-10-24，收集器那段写了为什么拆）──
+   ⚠️ 这一条钉的是「**被拦下的只有站外的东西**」，而不是「至少拦到一条」。
+   两个理由：
+   ① 「至少一条」会让它依赖「这一轮有没有打开过引了 CDN 的稿」—— 换个样本它就红，
+     而红的理由和产品无关（`doc/00` §145.4：**「至少一条」几乎总是假判据**）；
+   ② 反面那一半已经有人守着：插件沙箱那一节查的是**响应头上有没有 CSP**，
+     那条不依赖任何样本。**这一条管「拦对了没有」，那一条管「闸在不在」。**
+   所以它在一轮没碰到 CDN 稿的时候读数是「没拦到」而**照样绿** —— 这是刻意的：
+   它不是在证明沙箱在干活，是在证明**没有本该放行的东西被误拦**。 */
+{
+  const origin = (() => { try { return new URL(URL_).origin; } catch { return "\u0000"; } })();
+  const urls = [...new Set(cspBlocks.map((t) => (t.match(/https?:\/\/[^\s'"]+/) ?? ["(说不出 URL)"])[0]))];
+  /* 自己人被拦 = 真问题（插件 import `/__shared/…` 那条路就靠 `'self'` 放行，
+     它一旦出现在这张表里，说明 CSP 收得太紧 —— 而症状是「插件加载不出来」）。 */
+  const ours = urls.filter((u) => !u.startsWith("http") || u.startsWith(origin));
+  ok(ours.length === 0,
+     "**被 CSP 拦下的只有站外脚本**（稿里引的 unpkg —— 插件 A 面 `script-src 'self'`，拦住它是沙箱在干活）",
+     urls.length ? `${urls.length} 个：${urls.join(" · ")}` : "这一轮一条都没拦到（没打开引了 CDN 的稿）");
+
+  /* ⚠️ **被拦者自己喊的那一声，判准是「归属」不是「有没有」。**
+     稿里的 `[dc] failed to load …` 只要指的是上面那张被拦清单里的 URL，就是同一件事的后果；
+     指向别的 URL 就是真的加载失败（比如我们自己的 `/__shared/…` 没上去），那必须红。
+     ⚠️ 这一条**不断言「至少有一声」** —— 同上一条，那会让它依赖这一轮开过哪份稿。 */
+  const orphan = bootFails.filter((t) => {
+    const u = (t.match(/https?:\/\/[^\s'")]+/) ?? [])[0];
+    return !u || !urls.some((b) => b === u || u.startsWith(b) || b.startsWith(u));
+  });
+  ok(orphan.length === 0,
+     "**稿自己报的那句加载失败，指的就是被 CSP 拦下的那个 URL**（是拦截的后果，不是另一个毛病）",
+     bootFails.length
+       ? `${bootFails.length} 声，${orphan.length ? "其中 " + orphan.length + " 声对不上：" + orphan[0].slice(0, 90) : "全部对得上"}`
+       : "这一轮一声都没有");
 }
 
 /* ── 插件 UI 的边界（M11-4）──
@@ -5162,7 +5248,8 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
      收尾那条「项目里的 `.umbrastudio/chats/` 一个字节都没被碰」），
      **5 条是原来因为会话写在旧位置而跳过的**。
    · 2026-10-24 第二批又加了 **2 条**（市场那一节的两个前提各一条 —— 见那一节的注释）→ 该跑 **447**。
-   · 加上**本来就该跑、而今天前提没成立的 2 条** = **449**。
+   · 第三批 **+2**（CSP 拦截拆出来 1 条 + 「被拦者自己喊的那一声」归属 1 条）→ 该跑 **449**。
+   · 加上**本来就该跑、而今天前提没成立的 2 条** = **451**。
      那 2 条是 ◨ 开合（image 没声明 `panels`，宿主不画那颗钮）——
      它是这一轮**唯一一节自己打印了「没验到」**的，所以它是唯一一个有证据的缺口。
      留在分母里是**刻意的**：下次谁把这一节的样本换回一个有 `panels` 的格式，读数会自己对上。
@@ -5179,7 +5266,7 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
    > 把第三种算成第二种，就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 449;
+const EXPECT_AT_LEAST = 451;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
