@@ -35,8 +35,33 @@ const note = (s) => console.log(`  · ${s}`);
  *  接不上渲染进程、后面二十条一条没跑，而它打的是 `✓ 打包产物 24/24`、退出码 0。
  *  > **一个带「为什么停下」参数的收尾函数，自己就知道这一轮没跑完 —— 而它还是打了对勾。**
  *  （`selftest` 的汇总行 7c-2b 栽过同一个形状：那一类为空时「零 error」仍然成立。） */
-/** 起过的实例，**全记在这儿** —— `bye` 要靠它收尾（见下）。 */
+/** 起过的实例，**全记在这儿** —— `bye` 和下面那条兜底要靠它收尾。 */
 const spawned = [];
+/** 这一轮用的沙箱目录（`mkdtempSync` 之后填上）—— 兜底清理要删它。 */
+let sandboxForCleanup = null;
+
+/* ⚠️⚠️ **崩溃不走 `bye`**（2026-10-24 实测踩到，而这是 `uitest` 早就有、这边缺的那一半）。
+   我给 `bye` 加了「中止路也清进程」之后，以为清理齐了 —— 然后一轮**未捕获异常**
+   （`ReferenceError: shut is not defined`）直接崩掉，`bye` 压根没跑。
+   代价量出来了：**4 个实例在后台跑着 + 9 个沙箱目录 2.4 GB**（打包产物 331 MB × 若干轮）。
+   > **「清理必须跑，判据可以不跑」这条纪律，`bye` 只覆盖了「我决定停下」那一半；
+   > 「我崩了」那一半要另外兜。** 而两者在日志里长得一样：都只是输出变短了。
+   ⚠️ 这里**只清不判**（判据的结论这一轮本来就不可信了），而且同步 kill + 同步删目录 ——
+   handler 里 await 不可靠。
+   ⚠️ 自己再抛就直接退，不然两个 handler 互相触发、进程挂住（`uitest` 那边同一条）。 */
+let emergency = false;
+process.on("uncaughtException", (e) => {
+  if (emergency) { process.exit(1); return; }
+  emergency = true;
+  console.log("\n⚠️ 有东西抛出来了 —— 下面是紧急清理（这一轮的判据结论不可信）");
+  console.log("   " + String(e?.stack ?? e).split("\n").slice(0, 3).join(" ⎹ ").slice(0, 300));
+  let killed = 0;
+  for (const pr of spawned) { try { pr.kill("SIGKILL"); killed++; } catch { /* 已经退了 */ } }
+  let removed = false;
+  try { if (sandboxForCleanup) { rmSync(sandboxForCleanup, { recursive: true, force: true }); removed = true; } } catch { /* 删不掉就算了 */ }
+  console.log(`  · 紧急清理：杀掉 ${killed} 个实例 · 沙箱目录${removed ? "已删" : "没删掉（自己看一眼 /var/folders/**/us-pack-*）"}`);
+  process.exit(1);
+});
 const bye = (why) => {
   /* ⚠️⚠️ **中止路也要清进程**（2026-10-24 实测踩到）。
      七条 `bye(...)` 里原来只有一条走了 `shut()`，其余五条把实例留着 ——
@@ -244,7 +269,8 @@ ok(sigBefore === "自洽", "签名自洽（不会被 macOS 判「已损坏」）
 /* ── 二关：换个地方真跑 ──────────────────────────────────
    拷到跟仓库毫无关系的目录。若壳或核心还偷偷指着仓库，这里就会露。 */
 console.log("\n二 · 换地方真跑（模拟干净机器：产物脱离仓库，状态目录全新）");
-const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "us-pack-")));   // realpath：macOS 的 /var 是 /private/var 的软链，不解开对不上主进程报的路径
+const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "us-pack-")));
+sandboxForCleanup = sandbox;   // ⚠️ 立刻登记给兜底清理 —— 崩在后面任何一行，这个目录都得删掉   // realpath：macOS 的 /var 是 /private/var 的软链，不解开对不上主进程报的路径
 const appCopy = join(sandbox, basename(TARGET));
 cpSync(TARGET, appCopy, { recursive: true, verbatimSymlinks: true });
 const projCopy = join(sandbox, "proj");
@@ -299,7 +325,7 @@ const logLines = async () => {
   const txt = await readFile(logFile, "utf8").catch(() => "");
   return txt.trim().split("\n").filter((l) => l.startsWith("{"));
 };
-/** 读那一行。`after` = 已经有几行了，**只认比它更新的那一行**。
+/** 读那一行。给了 `pid` 就**按 pid 取自己那一个实例的**；否则退回「比 `after` 更新的那一行」。
  *
  *  ⚠️⚠️ **不能只取「最后一行」**（2026-10-24 实测踩到）：日志是 `flag: "a"` 追加的，
  *  而这一套会起**两个实例**（一次验首页、一次带目录冷启动）。
@@ -308,8 +334,17 @@ const logLines = async () => {
  *  `connectOverCDP(…:53709) 失败: ECONNREFUSED`，而**那个端口确实曾经是对的**。
  *  > **一个累积型的日志，读「最后一行」只在「只有一个写者」时才等于「这一次的」。**
  *  （和「判据读到上一轮的状态」同一族 —— 这次上一轮就在同一次运行里。） */
-const readLog = async (after = 0) => {
+const readLog = async (after = 0, pid = null) => {
   const ls = await logLines();
+  /* ⚠️ **按 pid 认是首选**（`main.mjs` 2026-10-24 起每行带 pid）——
+     「比 after 更新的最后一行」只是退路：它在「同一时刻只有一个写者」时才对，
+     而这一套会同时留着两个实例（单实例锁那一条）。 */
+  if (pid != null) {
+    for (let i = ls.length - 1; i >= 0; i--) {
+      try { const o = JSON.parse(ls[i]); if (o.pid === pid) return o; } catch { /* 跳过坏行 */ }
+    }
+    return null;
+  }
   if (ls.length <= after) return null;
   try { return JSON.parse(ls[ls.length - 1]); } catch { return null; }
 };
@@ -325,7 +360,9 @@ const launch = async (extraArgs = []) => {
      而「超时」这个读数说不出「它压根没起来」。单实例锁没拿到就是这条路（退出码 0）。 */
   let exited = null;
   proc.on("exit", (code) => { exited = code; });
-  const log = await waitFor("autotest 日志", async () => (exited === null ? await readLog(before) : "exited"), 60000);
+  /* ⚠️ 按**这个子进程自己的 pid** 取 —— 见 `readLog`。
+     ⚠️ `proc.pid` 是 Electron 主进程的 pid，而日志里写的是 `process.pid`（同一个）。 */
+  const log = await waitFor("autotest 日志", async () => (exited === null ? await readLog(before, proc.pid) : "exited"), 60000);
   if (log === "exited" || exited !== null) {
     return { proc, browser: null, win: null, log: null, exited };
   }
@@ -356,23 +393,24 @@ const dumpErr = () => console.log(errLines.length ? "    主进程 stderr:\n" + 
  *  （那种「只在测试里走的分支」迟早会和真实行为分叉）。
  *  只有一个显示器时它是空操作，并**说出来** —— 不然「挪过去了」和
  *  「这台机器只有一个屏」读数一样。和 `shelltest` 的 `park` 是同一份。 */
-/** ⚠️⚠️ **2026-10-24 起这件做不到了，而它是 sam 提的要求，所以照实说而不是悄悄删。**
- *  摆窗口要 `BrowserWindow.setBounds()`，那只有**主进程**给得了 ——
- *  而新的进门方式（`connectOverCDP`）接的是**渲染进程**那一侧。
+/** ⚠️⚠️ **挪窗口到非主显示器：2026-10-24 从判据搬进了主进程。**
+ *  原来 `packtest` 自己 `app.evaluate(BrowserWindow.setBounds)` 摆 ——
+ *  调试口收进测试态之后，判据只通到**渲染进程**，`setBounds` 没了（主进程才有）。
  *  > **一个只有主进程能做的动作，在一条只通到渲染进程的路上没有替代品。**
- *  三条可能的出路都有代价，交 geek-99 / sam 定：
- *  ① 接受「这一套的窗口出现在主屏上」（`shelltest` 那一套**不受影响** —— 它跑的是源码、
- *    `_electron.launch` 照旧能用，因为 fuse 只在打包产物上）；
- *  ② 给产品加一个「启动位置」参数 —— 而那正是原来刻意不做的事
- *    （「不改产品代码，位置由测试自己摆，不给主进程加一个只有测试会设的开关」）；
- *  ③ 从外面摆（`osascript` / System Events）—— 要辅助功能授权，而且它动的是系统 UI。
- *  现在的行为：**只说一句**，不假装摆过。 */
-
+ *  所以（geek-99 定）在主进程里加了一个**只在 `UMBRASTUDIO_AUTOTEST_LOG` 置位时才生效**的
+ *  初始窗口位置（`main.mjs` 的 `autotestBounds`，可用 `UMBRASTUDIO_AUTOTEST_DISPLAY`
+ *  点名显示器），条件和调试口**同一个变量**。结论写进 autotest 日志的 `parked`。
+ *  ⚠️ 这是「不给主进程加只有测试会设的开关」那条纪律的一次**例外**，所以条件要窄 ——
+ *  而它换来的是 sam 2026-10-22 那个要求（主屏他自己在用）能继续成立。 */
 
 /** 收掉一个实例：先断 CDP，再杀进程，再等它真的走。
  *  ⚠️ **不能只断 CDP** —— 那只是断了我们这头的连接，进程还在，
  *  而下一次 `launch` 会被单实例锁挡住、退出码 0，读数变成「产物起来就退了」。
- *  > **「我不看它了」和「它结束了」是两件事。** */
+ *  > **「我不看它了」和「它结束了」是两件事。**
+ *  ⚠️ 2026-10-24 这个定义被我自己误删过一次：改上面那段 `park` 说明时，
+ *  替换的区间把它一起切掉了，读数是 `ReferenceError: shut is not defined`。
+ *  > **按「两个锚点之间」替换文本，会把夹在中间的东西一起换掉** ——
+ *  而它恰好报在很后面（第 490 行），看着像另一处的问题。 */
 const shut = async (a) => {
   try { await a.browser?.close(); } catch { /* 连接可能已经没了 */ }
   try { a.proc?.kill(); } catch { /* 已经退了 */ }
@@ -400,10 +438,17 @@ if (app.exited !== null && app.exited !== undefined) {
     + `检查有没有别的实例正开着，以及 --user-data-dir 有没有真的生效`);
 }
 if (!win) { dumpErr(); rmSync(sandbox, { recursive: true, force: true }); bye("接不上渲染进程（CDP 那条路）—— 日志里有没有 cdp？"); }
-console.log("窗口位置: 主屏上 —— ⚠️ 新进门方式摆不动窗口（只有主进程能摆，见上面那段说明）");
+{
+  /* ⚠️ **只有一个显示器时照实跳过，不算红**（geek-99 定）——
+     「挪过去了」和「这台机器只有一个屏」必须在读数上分得开。 */
+  const pk = app.log?.parked ?? null;
+  if (!pk) console.log("窗口位置: 读不到 `parked`（主进程那行日志里没有它？）");
+  else if (pk.ok) ok(true, "**测试态窗口挪到了非主显示器**（主屏留给人用，sam 2026-10-22 的要求）", `「${pk.label}」@ ${pk.x},${pk.y} · 共 ${pk.displays} 个屏`);
+  else console.log(`窗口位置: 没验到 —— ${pk.why}（共 ${pk.displays} 个屏）。这台机器只有一个屏时这一条本来就没地方验`);
+}
 /* 这一关靠哪条路进门，**写进读数** —— 不写的话下次有人看到「第二关全绿」
    不会知道它绕过了主进程，也不会知道因此少了哪条（摆窗口那条）。 */
-console.log(`进门方式: 普通子进程 + connectOverCDP（${app.log?.cdp ? `端口 ${app.log.cdp}` : "没读到 cdp"}）—— 不接主进程 inspector（fuse 关着）`);
+console.log(`进门方式: 普通子进程 + connectOverCDP（${app.log?.cdpPort ? `端口 ${app.log.cdpPort}` : "没读到 cdp"}）—— 不接主进程 inspector（fuse 关着）`);
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 90000 });
 ok(true, "启动到首页", `${Date.now() - t0} ms`);
 
@@ -529,6 +574,49 @@ await new Promise((r) => setTimeout(r, 1200));
 /* ── 三关：写过一轮之后还起得来 ────────────────────────
    钉住第一条缺陷：状态若写进 .app，ad-hoc 签名会失效，第二次启动就被判「已损坏」。
    一关已经把签名基线校准成「自洽」，这里量到的「仍然自洽」才说明得了问题。 */
+/* ── ⚠️⚠️ **没有 `UMBRASTUDIO_AUTOTEST_LOG` 时，产物一个调试口都不开**（2026-10-24，乙）──
+   这一条是「乙」这条路的代价的**读数**：乙让测试态和用户态跑在不同的开关组合下，
+   而那正是 fuse 那件事刚教过的（「测的不再是发出去那一份」）。
+   所以「用户那份不开」这件事**必须自己有判据**，不能靠记得。
+   > **一个按条件生效的加固，它的「条件不满足时真的没生效」那一半，才是要钉的那一半。**
+
+   三件一起钉（它们在 `main.mjs` 里共用同一个条件）：
+   ① CDP 端口**连不上**（不是「日志里没写」—— 那只说明没人告诉我们）；
+   ② `userData` 里**不出现** `DevToolsActivePort`（Chromium 只在开了调试口时写它）；
+   ③ **没有体检窗口**（`about:blank#umbrastudio-check` 那个隐藏窗口）。
+   ⚠️ ③ 没法从外面直接数窗口（我们接不上主进程），所以**用 ① 的手段反过来问**：
+   调试口既然没开，就没有任何 target 可列 —— 于是 ③ 和 ① 在读数上合成一条，
+   **照实写在判据的话里**，不假装单独验到了。
+   ⚠️ 这一次**不给 `UMBRASTUDIO_AUTOTEST_LOG`**，所以也拿不到 hub/令牌 ——
+   只能从外面看「端口在不在、文件在不在」，而那恰好就是要验的东西。 */
+{
+  const { spawn: spawn2 } = await import("node:child_process");
+  const ud2 = join(sandbox, "userdata-nolog");
+  const envNoLog = { ...process.env };
+  delete envNoLog.UMBRASTUDIO_AUTOTEST_LOG;      // ⚠️ 删掉而不是设空串 —— `!!""` 也是 false，但删掉更贴近用户的环境
+  const pr = spawn2(exeCopy, [`--user-data-dir=${ud2}`], { env: envNoLog, cwd: sandbox, stdio: ["ignore", "pipe", "pipe"] });
+  spawned.push(pr);
+  const seen = [];
+  pr.stderr?.on("data", (d) => seen.push(String(d)));
+  /* 等它真起来 —— 等「`userData` 里出现 Chromium 自己的文件」，不定时等。
+     ⚠️ 等的是**别的**文件（不是 DevToolsActivePort），不然这条判据就循环了。 */
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (existsSync(join(ud2, "Local Storage")) || existsSync(join(ud2, "Preferences")) || existsSync(join(ud2, "session.json"))) break;
+  }
+  const portFile = join(ud2, "DevToolsActivePort");
+  ok(!existsSync(portFile),
+     "**没有 `AUTOTEST_LOG` 时：`userData` 里不出现 `DevToolsActivePort`**（Chromium 只在开了调试口时写它）",
+     existsSync(portFile) ? `它在：${portFile.replace(sandbox, "<sandbox>")}` : "不在");
+  /* ⚠️ 顺带把 stderr 里那行 `DevTools listening on …` 也查一遍 ——
+     两条证据各自独立：文件是 Chromium 写的，那一行是它打的。 */
+  ok(!/DevTools listening on/.test(seen.join("")),
+     "**而且它一个字都没说「DevTools listening on」**（开了调试口的话这一行一定在）"
+     + " —— 这一条同时说明**没有体检窗口**：口没开，就没有 target 可列",
+     seen.join("").match(/DevTools listening on \S+/)?.[0] ?? "没有这一行");
+  await shut({ proc: pr });
+}
+
 console.log("\n三 · 写过一轮之后（状态落在哪、还起不起得来）");
 const stateFiles = execFileSync("sh", ["-c", `find ${JSON.stringify(userData)} -name workspace.json -o -name ai_config.json | sed 's|${userData}|<userData>|'`], { encoding: "utf8" }).trim();
 ok(/workspace\.json/.test(stateFiles), "workspace.json 落在 userData", stateFiles.split("\n").join(" · "));

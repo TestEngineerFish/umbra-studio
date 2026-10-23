@@ -1,9 +1,11 @@
 /** Umbra Studio 桌面壳（M9-2）。doc/00 §五十 的做法：
  *  - 核心（server/dist）直接 import 进主进程：起 hub 服务 + 按需起项目服务；带 --mcp 时再把 stdio 交给 MCP（秘书 / 其它模型客户端就把这个可执行文件当 MCP server 起）
- *  - 体检走自带 Chromium：开一个隐藏窗口 + remote-debugging-port=0，把 DevTools 端口写进 UMBRASTUDIO_CDP（M9-3）
+ *  - ⚠️ 调试口（`remote-debugging-port`）与那个隐藏的体检窗口**只在 `UMBRASTUDIO_AUTOTEST_LOG`
+ *    置位时才开**（2026-10-24，geek-99 定「乙」）。原来是**所有非 MCP 启动都开** ——
+ *    见下面 `IS_AUTOTEST` 那一段，那里写了它为什么必须收掉。
  *  - 单实例 / 菜单 / 最近项目 / 未落盘提示（上次没正常退出）
  *  前端只通过 preload 暴露的 window.umbraHost 碰壳（host adapter desktop 实现）。 */
-import { app, BrowserWindow, Menu, dialog, shell, ipcMain, Notification, nativeTheme } from "electron";
+import { app, BrowserWindow, Menu, dialog, shell, ipcMain, Notification, nativeTheme, screen } from "electron";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -80,7 +82,35 @@ if (!IS_MCP && !app.requestSingleInstanceLock()) { app.quit(); process.exit(0); 
    后起的覆盖先起的，于是**主实例的体检会连到 MCP 进程那个 Chromium 上**。
    这一条今天不一定炸（体检只在主实例里发起），但它是一个「两个进程写同一个
    文件、而读的人不知道」的结构，和 #189 那条索引覆盖是同一个形状。 */
-if (!IS_MCP) app.commandLine.appendSwitch("remote-debugging-port", "0");
+/** 这一次启动是不是**自动化测试**在起。
+ *
+ *  ⚠️⚠️⚠️ **调试口从「所有非 MCP 启动都开」收到「只有测试才开」**（2026-10-24，geek-99 定）。
+ *
+ *  ### 它原来开放了什么（实测，不是推断）
+ *  `remote-debugging-port` 是**浏览器级**的开关 —— 开了就是全部 target。
+ *  对正在跑的那份包 `curl http://127.0.0.1:<port>/json/list` 实测 **4 个目标**：
+ *  **主窗口 `/__app/`** · 两个插件 A 面 iframe · 体检那个隐藏窗口。
+ *  接上主窗口（只读探针）拿到：**preload 的桥**（`pickDirectory` / `revealInFinder` /
+ *  `openExternal` / `pathsForDrop` …）+ **32 字符的本地 API 令牌** + hub 地址。
+ *  拿到那个令牌 = 拿到 `/__ud/*` 的全部能力 —— **正是 Q42 / issue #30 要堵的那条路**。
+ *  > **一道闸守住了「令牌怎么到页面」，而另一个开关把「页面本身」开放了出去。**
+ *  > 两者在威胁模型上是同一件事，而它们在代码里隔着 150 行、属于两个不同的功能 ——
+ *  > 这就是为什么 Q42 结案之后没人发现它被绕过了。
+ *  ⚠️ **而这个口在 10-22 已经发出去的那个包里就有。**
+ *
+ *  ### 为什么能直接收掉：它已经没有消费者
+ *  它当初是为 M9-3「体检走自带 Chromium」开的，而 **`render.ts` 在 C3（M16-7c-2a）删了**。
+ *  `git grep` 核过：读 `UMBRASTUDIO_CDP` 的只剩这个文件自己写的那一行 + 两条判据 + 文档历史，
+ *  **`server/` 下零命中**；`checkWin` 这个变量**只被赋值、一次都没被读过**。
+ *  > **一个只被写、从不被读的变量，是「这件事已经没有下游」的最直接证据。**
+ *  ⚠️ 而**接下来第一个用上它的人会给它一个新的存在理由** —— `packtest` 的新进门方式
+ *  就接在这个口上（2026-10-24 同一天）。所以条件要和那条路**用同一个变量**。
+ *
+ *  ### 为什么条件就是 `UMBRASTUDIO_AUTOTEST_LOG`，不另起一个
+ *  geek-99 的理由：**能在用户机器上设环境变量的进程，本来就有本机执行权** ——
+ *  所以复用这个变量不额外扩大威胁面，而多一个变量就多一处会忘记对齐的地方。 */
+const IS_AUTOTEST = !!process.env.UMBRASTUDIO_AUTOTEST_LOG;
+if (!IS_MCP && IS_AUTOTEST) app.commandLine.appendSwitch("remote-debugging-port", "0");
 for (const f of ["disable-background-networking", "disable-component-update", "disable-sync", "no-first-run", "no-pings"]) app.commandLine.appendSwitch(f);
 
 /** 未落盘提示的依据：启动写 session.json { cleanExit:false }，正常退出改 true；下次启动看到 false 就是被强杀过 */
@@ -228,9 +258,16 @@ function cdpPortFromDevTools() {
   try { return Number(readFileSync(join(app.getPath("userData"), "DevToolsActivePort"), "utf8").split("\n")[0]) || null; } catch { return null; }
 }
 
+/** 开那个隐藏窗口并把 CDP 端口写进环境变量。**只在测试态做**（见 `IS_AUTOTEST`）。
+ *
+ *  ⚠️ 非测试态直接回 `null`：调试口压根没开（`appendSwitch` 那一行也带了同一个条件），
+ *  `DevToolsActivePort` 不会出现，这个窗口也不开 —— **三件一起收，同一个条件**。
+ *  ⚠️ 那个窗口原来的用处是给 `render.ts` 当体检页（标记 `about:blank#umbrastudio-check`），
+ *  而 `render.ts` C3 删了。留着它只是白开一个渲染进程 + 多一个 CDP target。 */
 async function createCheckWindow() {
+  if (!IS_AUTOTEST) return null;
   checkWin = new BrowserWindow({ show: false, width: 1440, height: 900, webPreferences: { backgroundThrottling: false } });
-  await checkWin.loadURL("about:blank#umbrastudio-check");   // 标记：核心 render.ts 按它找体检页（CDP_PAGE_MARK）
+  await checkWin.loadURL("about:blank#umbrastudio-check");
   const port = cdpPortFromDevTools();
   if (port) process.env.UMBRASTUDIO_CDP = `http://127.0.0.1:${port}`;
   return port;
@@ -333,13 +370,57 @@ function bootData() {
 /** 开一个工作窗口。**返回它** —— 调用方（新窗口那条路）要往它发事件。
  *  ⚠️ 原来这个函数把结果写进 `mainWin` 单例；现在它只认一个局部变量，
  *  **让「忘了用返回值」变成一个显式的错**，而不是悄悄作用在别的窗口上。 */
+/** 测试态的初始窗口位置：**挪到非主显示器**。非测试态回 `null`（一个字不改用户的行为）。
+ *
+ *  ⚠️⚠️ **这是「不给主进程加只有测试会设的开关」那条纪律的一次例外，所以条件要窄。**
+ *  原来 `packtest` 自己用 `app.evaluate(BrowserWindow.setBounds)` 摆窗口 ——
+ *  2026-10-24 调试口收进测试态之后，判据只通到**渲染进程**，`setBounds` 没了（主进程才有）。
+ *  > **一个只有主进程能做的动作，在一条只通到渲染进程的路上没有替代品。**
+ *  sam 2026-10-22 的要求是「测试窗口一律挪到非主显示器」（主屏他自己在用），
+ *  所以 geek-99 定：在主进程里加一个**只在 `UMBRASTUDIO_AUTOTEST_LOG` 置位时才生效**的位置。
+ *  条件和调试口**用同一个变量** —— 多一个变量就多一处会忘记对齐的地方。
+ *
+ *  ⚠️ `UMBRASTUDIO_AUTOTEST_DISPLAY` 可选：给显示器名的一段（如 `GE246Q`）或序号（`1`）。
+ *  不给就取「第一个不是主屏的」。**找不到就回 `null` 并说一句** ——
+ *  静默回退的话「挪过去了」和「这台机器只有一个屏」读数一样（`park` 原来那段注释的原话）。 */
+/** 上一次 `autotestBounds()` 的结论，**写进 autotest 日志给判据看**。
+ *  ⚠️ 不让判据去扒 stderr：那是给人读的，格式一改判据就红在措辞上
+ *  （本仓库记过「判据钉文案」栽过的那次：等页面里出现「N 份稿」，而那串字被重画移走了）。 */
+let parkedTo = null;
+function autotestBounds() {
+  if (!IS_AUTOTEST) return null;
+  const want = (process.env.UMBRASTUDIO_AUTOTEST_DISPLAY ?? "").trim();
+  const all = screen.getAllDisplays();
+  const prim = screen.getPrimaryDisplay();
+  const others = all.filter((d) => d.id !== prim.id);
+  let pick = null;
+  if (want) {
+    const n = Number(want);
+    pick = Number.isInteger(n) ? all[n] ?? null
+      : all.find((d) => String(d.label ?? "").toLowerCase().includes(want.toLowerCase())) ?? null;
+    if (pick && pick.id === prim.id) pick = null;   // 点名了主屏 = 没地方挪
+  }
+  pick = pick ?? others[0] ?? null;
+  if (!pick) {
+    parkedTo = { ok: false, displays: all.length, why: `没有非主显示器可挪${want ? `（点名了「${want}」）` : ""}` };
+    console.error(`[shell] 测试态：${parkedTo.why}（共 ${all.length} 个屏）—— 窗口会出现在主屏上`);
+    return null;
+  }
+  const w0 = pick.workArea;
+  parkedTo = { ok: true, displays: all.length, label: String(pick.label ?? pick.id), x: w0.x, y: w0.y };
+  console.error(`[shell] 测试态：窗口挪到「${parkedTo.label}」${w0.width}×${w0.height} @ ${w0.x},${w0.y}`);
+  return { x: w0.x + 40, y: w0.y + 40, width: Math.min(1280, w0.width - 80), height: Math.min(840, w0.height - 80) };
+}
+
 async function createMainWindow() {
   /* 新窗口错开一点位置，不要严丝合缝叠在上一个上面（看着像没开成） */
   const front = targetWin(null);
   const off = front ? front.getBounds() : null;
+  const parked = autotestBounds();   // 测试态挪到扩展屏；非测试态是 null，下面的 ...(parked ?? {}) 不生效
   const win = new BrowserWindow({
     ...(off ? { x: off.x + 28, y: off.y + 28 } : {}),
     width: 1440, height: 900, minWidth: 900, minHeight: 600, title: app.getName(), show: false,
+    ...(parked ?? {}),   // ⚠️ 放在尺寸之后：测试态的位置与尺寸要盖住上面那两行
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#13151a" : "#f6f7f9",
     webPreferences: {
       preload: join(HERE, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: false,
@@ -471,9 +552,23 @@ app.whenReady().then(async () => {
        这一整块只在 `UMBRASTUDIO_AUTOTEST_LOG` 置位时才跑。
        ⚠️ 不写令牌、不写项目路径 —— 这一行会落在磁盘上。 */
     try {
+      /* ⚠️⚠️ **每行带 `pid`**（2026-10-24，geek-99 第 4 条）。这个文件是 `flag: "a"` 追加的，
+         而一次 `packtest` 会起**好几个实例**（验首页 / 带目录冷启动 / 单实例锁那条）。
+         读「最后一行」只在**只有一个写者**时才等于「这一次的」—— 实测踩过：
+         第二个实例还没写，判据拿着**上一个实例已经死掉的 CDP 端口**去连，
+         读数是 `connectOverCDP(…:53709) 失败: ECONNREFUSED`，而**那个端口确实曾经是对的**。
+         > **一个累积型的日志，读「最后一行」只在「只有一个写者」时才等于「这一次的」。**
+         带上 `pid` 之后读的人可以**按自己起的那个进程取**，不靠「最后一行」这个脆弱的约定。
+         ⚠️ `cdp` 这一项原来是**端口号**（`53327`），而读的人多半以为是 URL ——
+         实测它被当 URL 传给 `connectOverCDP` 时抛、被 catch 吃成「接不上」。
+         所以这里**两样都给**：`cdpPort`（数字，明摆着）+ `cdp`（完整 URL，拿来就能用）。
+         > **一个名字说不清自己是什么形状的字段，会被下一个读的人猜错一次。** */
       writeFileSync(process.env.UMBRASTUDIO_AUTOTEST_LOG, JSON.stringify({
-        hub: hub.url, cdp, coreRoot: CORE_ROOT, packaged: app.isPackaged, electron: process.versions.electron,
+        pid: process.pid,
+        hub: hub.url, cdpPort: cdp, cdp: cdp ? `http://127.0.0.1:${cdp}` : null,
+        coreRoot: CORE_ROOT, packaged: app.isPackaged, electron: process.versions.electron,
         stateDir: process.env.UMBRASTUDIO_STATE_DIR ?? null, userData: app.getPath("userData"),
+        parked: parkedTo,   // 测试态挪窗口的结论（`{ok,displays,label|why}`），给判据看
       }) + "\n", { flag: "a" });
     } catch { /* ignore */ }
   }

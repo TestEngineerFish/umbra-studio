@@ -99,7 +99,21 @@ await win.waitForFunction(() => /最近打开|还没有项目/.test(document.bod
   .catch(async (e) => { console.error("首页没出来，当前页面文字：", JSON.stringify((await win.evaluate(() => document.body.innerText)).slice(0, 300))); throw e; });
 console.log("launch→home:", Date.now() - t0, "ms | projects:", await win.evaluate(() => document.querySelectorAll("li").length), "| host:", await win.evaluate(() => ({ kind: window.umbraHost?.kind, pick: window.umbraHost?.capabilities().pickDirectory.ok })));
 console.log("windows:", await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(w => ({ visible: w.isVisible(), url: w.webContents.getURL().replace(/token=[^&]+/, "token=…").slice(0, 60) }))));
-console.log("cdp env in main:", await app.evaluate(() => process.env.UMBRASTUDIO_CDP ?? null));
+/* ⚠️ **口径 2026-10-24 改了**：调试口（`remote-debugging-port`）与那个隐藏的体检窗口
+   现在**只在 `UMBRASTUDIO_AUTOTEST_LOG` 置位时才开**（geek-99 定「乙」，理由在
+   `main.mjs` 的 `IS_AUTOTEST` 那一段：它原来把**主窗口 + preload 的桥 + 本地 API 令牌**
+   都暴露给本机任何进程）。
+   ⚠️⚠️ **而这一套本身就是测试态** —— 第 11 行的 `env` 自己设了
+   `UMBRASTUDIO_AUTOTEST_LOG`（末尾那行 `autotest log:` 就是它读的）。
+   所以这里的期望是「**开着**」，不是 `null`。
+   ⚠️ 我第一版在这儿写了「预期 null」，而它是**读错了代码**：
+   `shelltest` 跑完照样打出 `cdp env in main … http://127.0.0.1:56635`、`windows: 2`。
+   > **一句写在日志里的「预期」，没有任何机制保证它和产品一致** ——
+   > 它不会红（日志行没有断言），只会让下一个读日志的人以为产品坏了。
+   这也正好是「乙」在这一侧的另一半：**条件满足时它真的开**。
+   ⚠️ 打出来而不是断言：这一套是「打读数给人看」的风格（它没有 ok/fail 计数）。 */
+console.log("cdp env in main (这一套设了 AUTOTEST_LOG，所以预期**开着**):", await app.evaluate(() => process.env.UMBRASTUDIO_CDP ?? null));
+console.log("windows (测试态预期 2 个：主窗口 + 体检那个隐藏窗口):", await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length));
 // 菜单「打开目录」→ 事件 → 前端 open_project
 await app.evaluate(({ BrowserWindow }, dir) => { const w = BrowserWindow.getAllWindows().find(w => w.isVisible()); w.webContents.send("host:event", { type: "open-dir", dir }); }, S + "/umbra_copy");
 /* ⚠️ 判据**不要写死稿数**（2026-09-28 实测栽过：写着 `58 份稿`，而测试副本是 38 份，
@@ -431,21 +445,15 @@ console.log("workbench:", await win.evaluate(() => document.querySelector("heade
   try { rmS(linkAbs, { force: true }); rmS(OUTD, { recursive: true, force: true }); } catch { /* 清不掉也不算错 */ }
 }
 
-// 体检：走项目自己的服务，主进程里 render_check 应经 CDP（UMBRASTUDIO_CDP 已设）
-/* ⚠️ 路径**只有一个来源**：环境变量 `S`（2026-09-28 实测栽过）。
-   原来这里是字面量 `"<scratchpad>/umbra_copy"`，而第 7 行同一个目录走的是 `process.env.S` ——
-   **同一个脚本里两种传法混着**。照文档只替换那个占位符的话，第 18 行拿到的是
-   `undefined/umbra_copy`，工作台永远开不出来，而超时报在第 24 行那条判据上，
-   看着像「产品打不开目录」。**夹具的问题和产品的问题报出来的样子一样**（§111.3 同一族）。 */
-const r = await win.evaluate(async (dir) => {
-  // 从 React 状态拿不到句柄，直接用 hub 的 open_project 再拿一次 url/token（幂等）
-  const hub = window.__UD_APP; const o = await (await fetch(`${hub.url}__ud/open_project?token=${hub.token}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dir }) })).json();
-  const c = await (await fetch(`${o.data.url}__ud/check?token=${o.data.token}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: "PC 吐司.dc.html" }) })).json();
-  for (let i = 0; i < 60; i++) { await new Promise(r => setTimeout(r, 500)); const s = await (await fetch(`${o.data.url}__ud/check_status?job=${c.data.jobId}&token=${o.data.token}`)).json(); if (s.data && s.data.running === false) return { ok: s.data.ok, res: s.data.result && s.data.result.result }; }
-  return { timeout: true };
-}, S + "/umbra_copy");
-console.log("check via CDP:", JSON.stringify(r).slice(0, 200));
-console.log("chrome processes launched by core? (ps count of headless chrome):", await new Promise(res => { const p = spawn("sh", ["-c", "ps aux | grep -c '[h]eadless.*--disable-background-networking'"]); let o = ""; p.stdout.on("data", d => o += d); p.on("close", () => res(o.trim())); }));
+/* ⚠️⚠️ **体检那一整块 2026-10-24 删掉了，和 `packtest` 删的是同一个病。**
+   它调 `__ud/check` / `__ud/check_status`，而**那两条路由 C3（M16-7c-2a）删了**
+   （连 `render.ts` / `rendertest` 一起）。「用自带 Chromium 跑体检」这个功能已经不存在。
+   > **一条判据钉的那个功能被删掉之后，它不会变红，它会抛** —— 而抛比红更糟：
+   > 它把后面所有判据一起带走。
+   顺带那条「有没有 headless chrome 进程」也没有意义了（没人去 launch 浏览器了）。
+
+   ⚠️ 这一套跑的是**源码**（`_electron.launch`），所以它**不受 fuse 影响** ——
+   `packtest` 那边换进门方式是因为打包产物关掉了 `--inspect`，这边照旧能接主进程。 */
 // 单实例：第二个实例应立刻退出
 /* ⚠️ **第二个实例必须用同一个 `--user-data-dir`** —— 单实例锁就落在那里面。
    不带的话它撞上的是**用户装的那个 app**，于是这条判据「退出码 0」看着对，
