@@ -1226,6 +1226,59 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   ok("副本也走了写入口（**有 v1 快照** —— `writeAtomic` 直写不会有）",
      existsSync(join(D2, "坏稿副本.dc.html")) && dupSnaps > 0, `${dupSnaps} 份快照`);
 
+  /* ── ①½ **「复制一份」对任何文件都成立**（M16-8 ②，2026-10-24）──
+     ⚠️⚠️ 原来 `duplicateDraft` 一律补 `.dc.html` 后缀、一律按 utf8 读写，于是：
+     · 复制一份 `.md` 得到 **`xxx.md 副本.dc.html`** —— 一个谁都打不开的名字；
+     · 复制一张 `.png` **内容会被弄花** —— 文件在、打得开、只是坏了。
+       > **「写坏了」和「没写」长得完全不一样，而前者更难发现**（#108 那条）。
+     M16-7a 为此把 `FileTree` 的 `isDraft` 写成常量 `false`（**把假按钮藏起来**）——
+     而藏起来不等于修好：MCP 面和 HTTP 面一直露着它。
+     > **一个只对一种扩展名成立的能力，挂在一个对任何文件都显示的入口上，就是一个假按钮。**
+
+     ⚠️ 判准认**真值**，而且每种情况问的是不同的事：
+     ① 后缀跟着源走（`.md` 还是 `.md`）· ② **二进制逐字节一致**（这一条是上面那个「弄花」的闸）·
+     ③ 双扩展名不许拆错（`A.dc.html` → `A 副本.dc.html`，不是 `A.dc 副本.html`）·
+     ④ 没有扩展名的不许给它补一个 · ⑤ 顺延的序号加在**基名**后面。 */
+  {
+    const { baseAndExt } = await import("./project.js");
+    ok("`baseAndExt` 认双扩展名（`A.dc.html` 的后缀是 `.dc.html`，不是 `.html`）",
+       baseAndExt("A.dc.html").ext === ".dc.html" && baseAndExt("A.dc.html").base === "A"
+       && baseAndExt("笔记.md").ext === ".md" && baseAndExt("无扩展名").ext === ""
+       && baseAndExt("a.b.c.png").base === "a.b.c",
+       JSON.stringify([baseAndExt("A.dc.html"), baseAndExt("无扩展名")]));
+
+    /* 三个样本：文本 · **真二进制** · 没有扩展名 */
+    const PNG = Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001"
+      + "0d0a2db40000000049454e44ae426082", "hex");
+    await writeFile(join(D2, "复制样本.md"), "# 标题\n\n正文\n", "utf8");
+    await writeFile(join(D2, "复制样本.png"), PNG);
+    await writeFile(join(D2, "复制样本无后缀"), "纯文本\n", "utf8");
+
+    const r1 = await duplicateDraft(proj92, "复制样本.md").catch(() => null);
+    ok("**复制 `.md` 得到 `.md`**（原来会得到 `复制样本.md 副本.dc.html`）",
+       r1?.newPath === "复制样本 副本.md", r1?.newPath ?? "（抛了）");
+
+    const r2 = await duplicateDraft(proj92, "复制样本.png").catch(() => null);
+    const sameBytes = r2?.newPath
+      ? (await readFile(join(D2, r2.newPath))).equals(PNG) : false;
+    ok("**复制一张图，字节逐字节一致**（原来按 utf8 读写 → 文件在、打得开、内容坏了）",
+       r2?.newPath === "复制样本 副本.png" && sameBytes,
+       `${r2?.newPath ?? "（抛了）"} · 字节一致=${sameBytes}`);
+
+    const r3 = await duplicateDraft(proj92, "复制样本无后缀").catch(() => null);
+    ok("没有扩展名的**不给它补一个**", r3?.newPath === "复制样本无后缀 副本", r3?.newPath ?? "（抛了）");
+
+    const r4 = await duplicateDraft(proj92, "复制样本.md").catch(() => null);
+    ok("**顺延的序号加在基名后面**，不是加在扩展名后面", r4?.newPath === "复制样本 副本 2.md", r4?.newPath ?? "（抛了）");
+
+    /* ⚠️ **对照：稿那一条路没被我改坏。** 少了这一条，上面五条全绿也可能是
+       「通用化的同时把 `.dc.html` 那条路弄断了」—— 而那是这个改动最可能的副作用。 */
+    const r5 = await duplicateDraft(proj92, "坏稿.dc.html", { newName: "双扩展名对照" }).catch(() => null);
+    ok("**（对照）`.dc.html` 那条路照旧**（双扩展名没拆错，而且仍走稿的写入口）",
+       r5?.newPath === "双扩展名对照.dc.html", r5?.newPath ?? "（抛了）");
+  }
+
   /* ── ② 引用改不成时回执必须说（issue #92）──
      ⚠️⚠️ **2026-10-23（M16-7c-2d）换了拒因，而判据本身一个字没放松。**
      原来的拒因是「稿里有 error 级诊断 → `writeDraft` 拒」，而 C3 之后引用改写走

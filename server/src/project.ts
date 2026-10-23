@@ -776,6 +776,17 @@ async function newDraftToDisk(
   return { errorDiags: r.diags.filter((d) => d.level === "error").length };
 }
 
+/** 把一个文件名拆成「基名 + 扩展名后缀」。**一处定义** —— 复制 / 顺延都要用它。
+ *
+ *  ⚠️⚠️ **它必须认双扩展名**：`A.dc.html` 的基名是 `A`、后缀是 `.dc.html`，
+ *  而 `basename(path, extname(path))` 会给出 `A.dc` + `.html` ——
+ *  于是副本叫 `A.dc 副本.html`，**一个谁都打不开的名字**。
+ *  ⚠️ 没有扩展名的文件（`README`）后缀是空串，不要给它补一个。 */
+export function baseAndExt(name: string): { base: string; ext: string } {
+  const m = /^(.*?)((?:\.dc)?\.[^.]+)$/.exec(name);
+  return m ? { base: m[1]!, ext: m[2]! } : { base: name, ext: "" };
+}
+
 export async function duplicateDraft(
   p: Project,
   path: string,
@@ -783,7 +794,13 @@ export async function duplicateDraft(
 ): Promise<DuplicateDraftResult> {
   const srcAbs = draftPath(p, path);
   const srcDir = dirname(srcAbs);
-  const srcBase = basename(path).replace(/\.dc\.html$/, "");
+  /* ⚠️⚠️ **后缀跟着源文件走，不写死 `.dc.html`**（M16-8 ②，2026-10-24）。
+     原来这里是 `basename(path).replace(/\.dc\.html$/, "")` + 下面无条件补 `.dc.html` ——
+     于是复制一份 `.md` 得到 **`xxx.md 副本.dc.html`**，一个谁都打不开的名字。
+     M16-7a 为此把 `FileTree` 的 `isDraft` 写成常量 `false`（**把这个假按钮藏起来**），
+     而藏起来不等于修好：MCP 面和 HTTP 面一直露着它。
+     > **一个只对一种扩展名成立的能力，挂在一个对任何文件都显示的入口上，就是一个假按钮。** */
+  const { base: srcBase, ext: srcExt } = baseAndExt(basename(path));
 
   /* ⚠️ **新名字要守**（issue #70，2026-10-05）。原来 `newName` 原样进 `resolve` ——
      `duplicate_draft({ newName: "../../x" })` 把副本写到**项目目录外面**，
@@ -796,21 +813,24 @@ export async function duplicateDraft(
      先补的话 `"../x"` 会变成 `"../x.dc.html"`，形状判定看到的还是一段路径，
      但报错文案里会多出一个用户没写的后缀，让人看不懂。 */
   const want = opts.newName ?? srcBase + " 副本";
-  const bad = plainNameProblem(want.replace(/\.dc\.html$/i, ""));
+  /* ⚠️ 校验之前先把**源文件的后缀**摘掉（调用方可能带、也可能不带）——
+     原来摘的是写死的 `.dc.html`，对 `.md` 不生效，于是 `plainNameProblem` 看到的是
+     `xxx.md`，而那里的「名字里不许有点」之类判定对一个合法文件名报错就说不清了。 */
+  const stripExt = (x: string) => (srcExt && x.toLowerCase().endsWith(srcExt.toLowerCase()) ? x.slice(0, -srcExt.length) : x);
+  const bad = plainNameProblem(stripExt(want));
   if (bad) {
     throw new ToolError(err(X.BAD_INPUT, path, { kind: "key", name: "newName" },
       `副本名不合法：${bad}`, { fix: "newName 是一个名字（副本会建在原稿同一个目录里），不是路径。" }));
   }
-  let newBase = want;
-  if (!newBase.endsWith(".dc.html")) newBase += ".dc.html";
+  let newBase = stripExt(want) + srcExt;
 
-  // 如果名字冲突，加序号
+  // 如果名字冲突，加序号（⚠️ 序号加在**基名**后面，不是加在扩展名后面）
   let newAbs = resolve(srcDir, newBase);
   if (existsSync(newAbs)) {
     let i = 2;
-    const baseWithoutExt = newBase.replace(/\.dc\.html$/, "");
+    const baseWithoutExt = stripExt(newBase);
     do {
-      newBase = `${baseWithoutExt} ${i}.dc.html`;
+      newBase = `${baseWithoutExt} ${i}${srcExt}`;
       newAbs = resolve(srcDir, newBase);
       i++;
     } while (existsSync(newAbs) && i < 100);
@@ -824,9 +844,25 @@ export async function duplicateDraft(
       "副本的路径跨出了项目目录", { fix: "这是我们的 bug，不是你的输入问题 —— 请报一条 issue。" }));
   }
 
-  // 复制内容
-  const content = await readFile(srcAbs, "utf8");
-  const { errorDiags } = await newDraftToDisk(p, relative(p.dir, newAbs).split(sep).join("/"), content, "copy");
+  /* ── 复制内容：**两条写入口各走各的**（和 `copy_into_project` 同一条口径）──
+     ⚠️⚠️ 原来这里一律 `readFile(srcAbs, "utf8")` + `newDraftToDisk` ——
+     两个后果，第二个更糟：
+     ① 非设计稿会被当成稿去跑 dc 校验；
+     ② **二进制文件按 utf8 读进来再写出去就花了** —— 复制一张 `.png`，
+        文件在、打得开、只是**内容坏了**。`#108` 那条教训的原话：
+        **「写坏了」和「没写」长得完全不一样，而前者更难发现。** */
+  const newRelForWrite = relative(p.dir, newAbs).split(sep).join("/");
+  let errorDiags: number | undefined;
+  if (newRelForWrite.endsWith(".dc.html")) {
+    const content = await readFile(srcAbs, "utf8");
+    ({ errorDiags } = await newDraftToDisk(p, newRelForWrite, content, "copy"));
+  } else {
+    /* 第二条写入口收 Buffer（#108 之后它认字节）—— 图片 / 压缩包照样复制得对。
+       ⚠️ 动态 import：`write.ts` 依赖 `project.ts`，静态 import 回去会成环
+       （和 `newDraftToDisk` 那里同一个理由）。 */
+    const { writeAnyFile } = await import("./files.js");   // ⚠️ 第二条写入口住在 files.ts，不在 write.ts
+    await writeAnyFile(p, newRelForWrite, await readFile(srcAbs));
+  }
 
   /* ⚠️ `relative()` 而不是 `slice(p.dir.length + 1)`（issue #70 第 3 点）——
      后者假设 `newAbs` 一定以 `p.dir` 开头，而那正是上面两道闸要保证的事；

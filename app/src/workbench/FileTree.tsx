@@ -244,15 +244,11 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
             ev.preventDefault(); ev.stopPropagation();
             setCtx({ x: ev.clientX, y: ev.clientY, target: e.isDir
               ? { kind: "dir", path: e.path, name: e.name }
-              /* ⚠️ `isDraft` 原来是 `e.kind === "dc"`，而 C3（M16-7）之后那个条件**永远为假** ——
-                 右键菜单里的「复制一份」会因此消失。
-                 ⚠️ **而不能改成 `true`**：`duplicateDraft` 硬编码了 `.dc.html`
-                 （`project.ts:797`：`if (!newBase.endsWith(".dc.html")) newBase += ".dc.html"`），
-                 对一份 `.md` 调它会生成 `xxx.md 副本.dc.html` —— **那是个假按钮**。
-                 ⏳ 所以这一项**先照实消失**，等 M16-8 把乙组并进 `file_*`（有了通用的
-                 「复制一份」）再接回来。那时这个字段该改名成「能不能复制」。
-                 > **一个永远为假的条件是下一个人的陷阱**，所以写成常量并把理由留在这里。 */
-              : { kind: "file", path: e.path, name: e.name, isDraft: false } });
+              /* ⚠️ 这里原来带一个 `isDraft: false` 的常量字段 —— C3 之后
+                 `e.kind === "dc"` 永远为假，而当时不能改成 `true`（`duplicateDraft`
+                 硬编码 `.dc.html`，对 `.md` 是个假按钮）。M16-8 ② 把那件能力通用化了，
+                 于是**字段整个去掉**，「复制一份」对任何文件都在。 */
+              : { kind: "file", path: e.path, name: e.name } });
           }}
           /* ── 拖进来落在这一行（场景 ③）──
              ⚠️ **落在文件行上算「放进它所在的目录」**，不是「放到这个文件上」：

@@ -17,7 +17,7 @@ import { askText } from "../ui/Ask";
  */
 export type CtxTarget =
   | { kind: "dir"; path: string; name: string }
-  | { kind: "file"; path: string; name: string; isDraft: boolean }
+  | { kind: "file"; path: string; name: string }
   | { kind: "blank" }
   | { kind: "multi"; paths: string[] };
 
@@ -78,7 +78,13 @@ export function itemsFor(t: CtxTarget, a: CtxActions): CtxItem[] {
     { label: "带进会话", run: () => a.toChat([t.path]) },
     SEP,
     { label: "重命名", hint: "F2", run: () => a.rename(t.path) },
-    ...(t.isDraft ? [{ label: "复制一份", run: () => a.duplicate(t.path) }] : []),
+    /* ⚠️ 这一项原来挂在 `isDraft` 上（= `kind === "dc"`），C3 之后那个条件永远为假 ——
+       于是它消失了，而 M16-7a 刻意**没有**把它改成 `true`：那时 `duplicateDraft`
+       硬编码 `.dc.html`，对 `.md` 会生成 `xxx.md 副本.dc.html`，**那是个假按钮**。
+       M16-8 ② 把那件能力通用化之后（后缀跟着源走 + 二进制逐字节复制），
+       这一项对任何文件都成立，所以**字段整个去掉**而不是改成 `true`：
+       > **一个恒为真的条件和没有条件，应该写成没有条件** —— 留着它下一个人要去查它守什么。 */
+    { label: "复制一份", run: () => a.duplicate(t.path) },
     { label: "复制路径", run: () => a.copyPath(t.path) },
     { label: "在访达中显示", run: () => a.reveal(t.path) },
     SEP,
