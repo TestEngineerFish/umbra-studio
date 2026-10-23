@@ -1,6 +1,6 @@
 # 给 plugins 的改动说明：`.dc.html` 预览里的 React 加载（html 插件）
 
-**交办人**：geek-99 转交 · **写于** 2026-10-24 · **开发侧（Studio）** 写
+**交办人**：geek-99 转交 · **写于** 2026-10-24 · **最终版**（§5 两件已由 geek-99 定） · **开发侧（Studio）** 写
 **范围**：`com.umbra.html` 的 `preview.mjs`（srcdoc 拼装那一层）。Studio 这边配套做的见 §4。
 ⚠️ **Studio 不改 umbra-plugins 仓**，这份是说明不是补丁。
 
@@ -82,9 +82,11 @@ function loadReactUmd() {
 
 只在**三个条件同时成立**时拼：
 
-1. 这个 `<script src>` 指向的是稿自己的运行时（判法建议：内联进来的文本里出现
-   `loadReactUmd` 或 `[dc] failed to load React`，**按内容判而不是按文件名判** ——
-   文件名用户可以改，而我们要的是「这段代码会去加载 React」这件事）；
+1. 这个 `<script src>` 指向的是稿自己的运行时 —— **按内容判，不按文件名判，也不按 CDN 域名判**
+   （geek-99 2026-10-24 定：**「三个包 × 三个 CDN」那条白名单撤掉**）。
+   判法建议：内联进来的文本里出现 `loadReactUmd` 或 `[dc] failed to load React`。
+   理由：文件名用户可以改，域名是运行期才出现的，而我们要的是
+   **「这段代码会去加载 React」**这件事本身。
 2. 稿要的**大版本**和 Studio 提供的本地副本一致（见 §4 的 `major` 字段）；
    大版本对不上 → **不拼**，照拦；
 3. 本地副本拿得到（§4）。
@@ -94,8 +96,13 @@ function loadReactUmd() {
 geek-99 定的：大版本对不上、或者是别的站外脚本，**一律照拦**，同时在预览里给一行可见提示，
 **写明被拦的 URL**。文字和位置先用最朴素的做法（后面他再交给设计侧）。
 
-建议最朴素的做法：插件自己那一层（**不是 srcdoc 里**）在预览区上方放一行文字，形如
-`这份稿要从网上取 <URL>，预览里不允许联网，所以没有取 —— 画面可能不完整。`
+建议最朴素的做法：插件自己那一层（**不是 srcdoc 里**）在预览区上方放一行文字。
+**两种情况两句话**（geek-99 2026-10-24 定）：
+
+| 情况 | 提示要说什么 |
+| --- | --- |
+| 站外脚本被拦（含大版本对不上的 React） | `这份稿要从网上取 <URL>，预览里不允许联网，所以没有取 —— 画面可能不完整。` **URL 拿得到就写，拿不到就写包名。** |
+| 稿要 Babel（JSX） | **「这份稿需要 Babel 转译，预览不支持」这层意思** —— ⚠️ **不能只甩一个被拦的 URL**：用户看到一个 unpkg 地址不知道那是什么，而「用了 JSX 所以预览看不了」他一眼就懂。 |
 ⚠️ **不要放进 srcdoc** —— 那会增删元素，破坏点选下标（§3.1）。
 
 ## 4. Studio 这边配套做什么（我们的活）
@@ -111,20 +118,30 @@ geek-99 定的：大版本对不上、或者是别的站外脚本，**一律照�
 - 形状：导出**源码字符串**，而不是让它自己执行 ——
   因为我们要的是「把这段文本拼进 srcdoc」，不是「在插件页里跑 React」。
 
-建议的模块形状（Studio 提供，名字待定稿）：
+**Studio 已做好，这是最终的路径与形状**（实测 `GET /__shared/dc-umd.js` → 200 ·
+145 852 字节 · `text/javascript; charset=utf-8`）：
 
 ```js
-// /__shared/dc-umd.js
-export default {
-  react:    { major: 18, version: "18.3.1", src: "/* react.production.min.js 全文 */" },
-  reactDom: { major: 18, version: "18.3.1", src: "/* react-dom.production.min.js 全文 */" },
-  babel:    { major: 7,  version: "7.29.0", src: "/* @babel/standalone babel.min.js 全文 */" },
-};
+import { react, reactDom } from "/__shared/dc-umd.js";
+// 或 import dcUmd from "/__shared/dc-umd.js";  →  { react, reactDom }
+
+react     // { version: "18.3.1", major: 18, src: "<react.production.min.js 全文，10 751 字节>" }
+reactDom  // { version: "18.3.1", major: 18, src: "<react-dom.production.min.js 全文，131 835 字节>" }
 ```
 
-## 5. ⚠️ 两件要 geek-99 先定的
+- **没有 `babel`**（§5 A 已定）。
+- `major` 给 §3.2 条件 2 用（大版本对不上一律照拦）。它是从包自己的 `package.json`
+  算出来的，**不手写** —— 手写的那一天它就会和依赖分叉。
+- `src` 是**源码文本**，不是一个会自己执行的模块。
+- 出处 `app/shared-src/dc-umd.build.mjs`，重新生成 `npm --prefix app run build:dc-umd`，
+  **产物进仓库**（`shared/` 的老规矩，前提是断网可用）。字节读的是 `app` 已声明的依赖
+  `react@^18.3.1` / `react-dom@^18.3.1` 自带的 `umd/`，所以**字节在仓库里只存一份**。
+  ⚠️ 实测对拍过三份 md5 完全一致：`node_modules` 里的 · Studio 7c-2b 删掉的那份 `runtime/` vendor ·
+  用户稿旁边那份存量（`e91b2616…` / `7d4842a9…`）。**同一份字节，三个出处。**
 
-**① Babel 要不要 vendor。** 实测体积：
+## 5. ✅ 两件已定（geek-99 2026-10-24）
+
+**① Babel 不 vendor（已定）。** 只 vendor react + react-dom。实测体积：
 
 | 包 | 体积 |
 | --- | --- |
@@ -136,15 +153,16 @@ export default {
 而且**每次预览一份用 JSX 的稿都要把 2.9 MB 的字符串拼进 srcdoc**。
 ⚠️ 另外：`window.__resources` 那张映射表里**从来没有 Babel**（只有 react 与 react-dom）——
 也就是说 Babel 一直是从 CDN 取的，断网时本来就不工作。
-**我的建议**：先只 vendor react + react-dom，Babel 留着照拦 + 给提示（§3.3），
-等真有人撞到「我的稿用 JSX 而预览空白」再决定。**不替你定，等你一句话。**
+**裁决**：只 vendor react + react-dom。**JSX 稿照拦，并给那行可见提示**，
+而且提示里**不能只给一个被拦的 URL** —— 要写明「**这份稿需要 Babel 转译，预览不支持**」这层意思。
+等真有人撞到再议。
 
-**② 三个 CDN 的地址都要认，而「认」的粒度是什么。** 你说地址来自 unpkg / jsdelivr / cdnjs。
-按 §3.2 的判法，插件其实**不需要认地址** —— 它判的是「这段代码会去加载 React」。
-认地址只在 §3.3 那行提示里有用（要写明被拦的 URL，而 URL 是运行期才出现的）。
-⚠️ 所以**「只认三个包 × 三个 CDN」这条白名单，在内联方案里没有落点**。
-如果你要的是「只给这三个包开绿灯、别的照拦」，那它等价于 §3.2 的条件 1 ——
-**按「它要加载什么」判，而不是按「它从哪个域名加载」判**。
+**② 白名单撤掉（已定）。** 原定「只认 react / react-dom / @babel/standalone 三个包 ×
+unpkg / jsdelivr / cdnjs 三个 CDN」。在内联方案里**它没有落点** ——
+插件判的是「这段代码会去加载 React」，不是「它从哪个域名加载」。
+
+**裁决**：撤掉白名单，**按内容判**（§3.2 条件 1）。那行提示里的 URL
+**拿得到就写，拿不到就写包名**。
 
 ## 6. 不做什么
 

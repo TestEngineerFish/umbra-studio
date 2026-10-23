@@ -2501,6 +2501,27 @@ console.log("\n插件 UI 的边界（M11-4）");
         const sharedMsg = await inner.locator("body").evaluate(() => (window).__shared ?? "（探针没跑）").catch(() => "（读不到）");
         ok(typeof sharedMsg === "string" && sharedMsg.startsWith("宿主共享库到了"),
            "**插件 import 得到宿主共享库**（CodeMirror 这类大依赖放一份就够）", String(sharedMsg).slice(0, 70));
+
+        /* ═══ `dc-umd.js`：React 的 UMD **源码文本**（2026-10-24，geek-99 定的内联方案）═══
+           `.dc.html` 预览是 srcdoc + 不透明源，CSP 只放内联脚本 —— 所以 html 插件要的不是
+           「在自己页面里跑 React」，是「拿到源码文本去拼进 srcdoc」。
+           ⚠️ 这一条**在插件 frame 里**跑，CSP 才真的作用在它身上：
+           在顶层页面 import 成功说明不了任何事（那一层的 CSP 不一样）。
+           ⚠️ 判准认**真值**：版本 / 字节数 / 以及「内容真的是 React」
+           （banner 里的 `@license React` + 它自己的文件名 + 真代码里的 `__SECRET_INTERNALS`）。
+           > 只认「长度大于 0」的话，一份 404 回来的 HTML 也能让它绿。
+           ⚠️ 它和 `codemirror.js` 那条**不是重复**：那一条验「import 得到 + 跑得起来」，
+           这一条验「**取回来的是字节而不是行为**」—— 同一条路，两种用法。 */
+        let umdMsg = "（探针没跑）";
+        for (let i = 0; i < 40; i++) {
+          umdMsg = await inner.locator("body").evaluate(() => (window).__dcumd ?? "").catch(() => "");
+          if (umdMsg) break;
+          await pg.waitForTimeout(250);
+        }
+        if (!umdMsg) umdMsg = "（等了 10 秒还没跑完）";
+        ok(/react 18\.[\d.]+\/major 18\/\d{4,}B\/是真的/.test(umdMsg) && /react-dom 18\.[\d.]+\/major 18\/\d{5,}B\/是真的/.test(umdMsg),
+           "**插件取得到 React 的 UMD 源码文本**（`/__shared/dc-umd.js`，拼进 `.dc.html` 预览的 srcdoc 用）",
+           String(umdMsg).slice(0, 140));
         /* ⚠️ **「import 得到」和「跑得起来」是两件事**，后者才是 M10-2 的地基。
            CM 靠 CSS-in-JS 注入 `<style>`（CSP 只给了 `style-src 'unsafe-inline'`），
            还要 contenteditable / Range / ResizeObserver 那一套在沙箱 iframe 里都正常。
@@ -5268,7 +5289,8 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
      **5 条是原来因为会话写在旧位置而跳过的**。
    · 2026-10-24 第二批又加了 **2 条**（市场那一节的两个前提各一条 —— 见那一节的注释）→ 该跑 **447**。
    · 第三批 **+2**（CSP 拦截拆出来 1 条 + 「被拦者自己喊的那一声」归属 1 条）→ 该跑 **449**。
-   · 加上**本来就该跑、而今天前提没成立的 2 条** = **451**。
+   · 第四批 **+1**（`/__shared/dc-umd.js` —— 插件取得到 React 的 UMD 源码文本）→ 该跑 **450**。
+   · 加上**本来就该跑、而今天前提没成立的 2 条** = **452**。
      那 2 条是 ◨ 开合（image 没声明 `panels`，宿主不画那颗钮）——
      它是这一轮**唯一一节自己打印了「没验到」**的，所以它是唯一一个有证据的缺口。
      留在分母里是**刻意的**：下次谁把这一节的样本换回一个有 `panels` 的格式，读数会自己对上。
@@ -5285,7 +5307,7 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
    > 把第三种算成第二种，就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 451;
+const EXPECT_AT_LEAST = 452;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

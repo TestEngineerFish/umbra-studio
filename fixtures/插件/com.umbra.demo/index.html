@@ -29,6 +29,25 @@
     import("/__shared/probe.mjs")
       .then((m) => { window.__shared = m.SHARED_OK; })
       .catch((e) => { window.__shared = "失败 " + String(e).slice(0, 80); });
+    /* ①½ **`dc-umd.js`：把 React 的 UMD 源码当字符串取回来**（2026-10-24）。
+       `.dc.html` 预览是 srcdoc + 不透明源，CSP 只放内联脚本 —— 所以 html 插件要的不是
+       「在自己页面里跑 React」，而是「拿到 React 的**源码文本**去拼进 srcdoc」。
+       这一条钉的就是那条路：**插件页的 CSP 下，import 得到这个模块，而且内容是真的 React。**
+       ⚠️ 判准认真值：`src` 里要出现 React UMD 的自述字符串，不是「长度大于 0 就算过」——
+       一个空壳模块或者一份 404 的 HTML 都能让「长度 > 0」成立。 */
+    import("/__shared/dc-umd.js")
+      .then(({ react, reactDom }) => {
+        /* ⚠️ 判准是量出来的，不是猜的：banner 里有 `@license React` 和**它自己的文件名**，
+           而 `__SECRET_INTERNALS` 是**真代码里**的标记 ——
+           只认许可证注释的话，一段只有注释的空壳也能过。 */
+        const real = (x, own) => typeof x?.src === "string"
+          && x.src.includes("@license React") && x.src.includes(own) && x.src.includes("__SECRET_INTERNALS");
+        window.__dcumd = `react ${react.version}/major ${react.major}/${react.src.length}B/`
+          + `${real(react, "react.production.min.js") ? "是真的" : "内容不像 React"} · `
+          + `react-dom ${reactDom.version}/major ${reactDom.major}/${reactDom.src.length}B/`
+          + `${real(reactDom, "react-dom.production.min.js") ? "是真的" : "内容不像 React"}`;
+      })
+      .catch((e) => { window.__dcumd = "失败 " + String(e).slice(0, 90); });
     /* ② **CodeMirror 在插件沙箱里真的跑得起来吗** —— 这一条比 ① 要紧得多。
        CM 靠 CSS-in-JS 注入 `<style>`，而插件的 CSP 只给了 `style-src 'self' 'unsafe-inline'`；
        它还要 contenteditable、Range、ResizeObserver 那一套。

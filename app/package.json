@@ -13,7 +13,8 @@
     "multiprojtest": "node multiprojtest.mjs",
     "svgplugintest": "node svgplugintest.mjs",
     "projsettingstest": "node projsettingstest.mjs",
-    "dcgonetest": "node dcgonetest.mjs"
+    "dcgonetest": "node dcgonetest.mjs",
+    "build:dc-umd": "node shared-src/dc-umd.build.mjs"
   },
   "dependencies": {
     "@codemirror/legacy-modes": "6.5.4",
