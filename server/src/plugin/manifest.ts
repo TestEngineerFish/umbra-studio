@@ -1,6 +1,6 @@
 import { PLUGIN_DEFAULT_PRIORITY } from "../shared/kinds.js";
 import { PLUGIN_ID_RE, PLUGIN_VERSION_RE } from "./paths.js";
-import { isBuiltinKind } from "../shared/kinds.js";
+import { isBuiltinKind, isClaimable } from "../shared/kinds.js";
 
 /** 插件清单（M11-4，需求见 `doc/20`）。
  *
@@ -133,6 +133,15 @@ export function checkManifest(m: unknown): { ok: boolean; problems: ManifestProb
        而且迟早和 `kinds.ts` 对不上**的假清单 —— 读的人会以为清单说了算。
        `code` 那几十个扩展名尤其不该在两处各写一遍。 */
     if (!ext.length && !isBuiltinKind(String(k.id))) bad(at + ".ext", "至少要认一个扩展名（认领内置类型时才可以空着）");
+    /* ⚠️ **认领一个不许被认领的类型，要在装的时候就拒**（M16-3，2026-10-23）。
+       原来这件事**只在注册时静默跳过**（`store.ts registerPluginKinds` 里一个 `continue`）——
+       于是插件装成功了、列表里好好的，而它声称的那个能力**静默失效**，
+       用户看不出为什么。
+       > **「装上了但那一件不生效」比「装不上」难查得多**，因为前者没有任何一处会说话。
+       今天唯一关着的是 `dc`（`claimable: false`）。 */
+    if (isBuiltinKind(String(k.id)) && !isClaimable(String(k.id))) {
+      bad(at + ".id", `${String(k.id)} 不许被插件认领 —— 它是产品的核心格式，接管它等于整个产品坏掉`);
+    }
     for (const e of ext) {
       if (typeof e !== "string" || !/^\.[a-z0-9.]+$/.test(e)) bad(at + ".ext", `扩展名要是小写并带点，比如 .mp4（得到 ${String(e)}）`);
     }

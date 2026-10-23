@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { STATE_ROOT, TOOL_ROOT } from "../project.js";
 import { checkManifest, type PluginManifest } from "./manifest.js";
 import { verifyInstalled } from "./pack.js";
-import { PLUGIN_DEFAULT_PRIORITY, isBuiltinKind, registerKind, unregisterKindsFrom } from "../shared/kinds.js";
+import { PLUGIN_DEFAULT_PRIORITY, isBuiltinKind, isClaimable, registerKind, unregisterKindsFrom } from "../shared/kinds.js";
 import { PLUGIN_ID_RE, pluginIdDir } from "./paths.js";
 import { compareVersion } from "./version.js";
 import { pickBuiltin } from "./builtin_upgrade.js";
@@ -210,8 +210,32 @@ export async function registerPluginKinds(): Promise<{ id: string; kinds: string
     const ids: string[] = [];
     for (const k of p.manifest.kinds ?? []) {
       /* **认领**内置类型：类型本来就在表里，不用（也不能）再注册一次。
-         只有内置插件能这么做 —— 第三方插件认领 `dc` 就等于劫持设计稿。 */
-      if (isBuiltinKind(k.id)) { if (p.bundled) ids.push(k.id); continue; }
+       *
+       *  ⚠️⚠️ **M16-3（2026-10-23）把判准从「是不是 bundled」换成「这个类型允不允许被认领」。**
+       *  原来这里写的是 `if (p.bundled) ids.push(k.id)`，理由写在旧注释里：
+       *  「只有内置插件能这么做 —— 第三方插件认领 `dc` 就等于劫持设计稿」。
+       *  **而那个理由只对 `dc` 成立**，不对 `md` / `json` / `html` / `code` 成立 ——
+       *  `dc` 本来就有 `claimable: false` 精确守着（`shared/kinds.ts`）。
+       *  > **它用「是不是 bundled」这个粗判准，去守一件 `isClaimable` 已经守住的事。**
+       *
+       *  撤掉它是 sam 2026-10-23 那条产品边界的要求（`doc/11` Q79）：
+       *  「不应该有『内置插件』这个说法」—— 而「只有出厂插件能认领 `.md`」
+       *  正是那个说法在代码里最硬的一处。
+       *
+       *  ⚠️ **换完之后前后端口径才一致**：前端 `loader.ts:64` 一直是按
+       *  `isClaimable` 放行的，而这里按 `bundled` 拦。两边不一致的后果是**静默的** ——
+       *  一个第三方 md 插件装上去，前端注册成功、服务端不认，
+       *  而**没有任何一边会说话**（症状：「插件装上了，但文件在列表里看着没变化」）。
+       *
+       *  ⚠️ 顺带比原来**更严**：`bundled` 插件现在也认领不了 `dc` 了。
+       *  那是对的 —— `claimable: false` 的注释写着「设计稿被接管等于整个产品坏掉」，
+       *  而那句话对出厂插件一样成立。已核三个出厂插件认领的是
+       *  code/json/csv/source · html · md/mdx/qmd/rmd，**没有一个认领 `dc`**。
+       *
+       *  ⚠️ 护栏换成了 `PLUGIN_MAX_PRIORITY`(95)：`md` 是 90，所以第三方插件
+       *  **可以**用 95 盖过内置的 markdown —— 那正是要的（用户装了就该让它赢）；
+       *  而 `dc` 是 100 > 95，抢不走。 */
+      if (isBuiltinKind(k.id)) { if (isClaimable(k.id)) ids.push(k.id); continue; }
       try {
         registerKind({
           id: k.id, label: k.label, icon: k.icon, priority: k.priority ?? PLUGIN_DEFAULT_PRIORITY,
