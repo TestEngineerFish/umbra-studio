@@ -10,7 +10,6 @@
  *    node shell/packtest.mjs shell/out/win-unpacked            验 win：只查结构，跑不了
  *  测试项目用 PROJ 指定，默认 projects/Umbra_design_next。
  */
-import { _electron as electron } from "../server/node_modules/playwright-core/index.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync, rmSync, cpSync, mkdtempSync, realpathSync, readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -28,7 +27,19 @@ let pass = 0, fail = 0;
 const location_hint = (b) => (b.inUrl ? "地址里有 token=，不该有" : "地址里没有 token=");
 const ok = (cond, name, detail = "") => { if (cond) { pass++; console.log(`  ✓ ${name}${detail ? ` — ${detail}` : ""}`); } else { fail++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`); } };
 const note = (s) => console.log(`  · ${s}`);
-const bye = (why) => { console.log(`\n${fail === 0 ? "✓" : "✗"} 打包产物 ${pass}/${pass + fail}${why ? ` · ${why}` : ""}\n`); process.exit(fail === 0 ? 0 : 1); };
+/** 收尾并退出。`why` 非空 = **这一轮没跑完**。
+ *
+ *  ⚠️⚠️ **带 `why` 一律算没通过**（2026-10-24 修）。原来它是
+ *  `fail === 0 ? "✓" : "✗"` + `exit(fail === 0 ? 0 : 1)` —— 于是「跑到一半就停」
+ *  和「全跑完且全绿」**在汇总行和退出码上完全一样**。实测当天就吃到：
+ *  接不上渲染进程、后面二十条一条没跑，而它打的是 `✓ 打包产物 24/24`、退出码 0。
+ *  > **一个带「为什么停下」参数的收尾函数，自己就知道这一轮没跑完 —— 而它还是打了对勾。**
+ *  （`selftest` 的汇总行 7c-2b 栽过同一个形状：那一类为空时「零 error」仍然成立。） */
+const bye = (why) => {
+  const okAll = fail === 0 && !why;
+  console.log(`\n${okAll ? "✓" : "✗"} 打包产物 ${pass}/${pass + fail}${why ? ` · **没跑完**：${why}` : ""}\n`);
+  process.exit(okAll ? 0 : 1);
+};
 
 console.log(`\n打包产物验收 · ${TARGET.replace(REPO + "/", "")}\n`);
 
@@ -232,10 +243,95 @@ const userData = join(sandbox, "userdata");
 const logFile = join(sandbox, "autotest.log");
 const env = { ...process.env, UMBRASTUDIO_AUTOTEST_LOG: logFile };
 const errLines = [];
-const launch = async () => {
-  const a = await electron.launch({ executablePath: exeCopy, args: [`--user-data-dir=${userData}`], env, cwd: sandbox });
-  a.process().stderr?.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => errLines.push(l)));
-  return a;
+/* ⚠️ CDP 端口和那行日志都是**主进程起来之后才写的**，而「窗口出现」比它们早。
+   2026-09-26 实测过一次偶发：同样的产物，一次没有 CDP、一次有 ——
+   那不是产品的问题，是判据抢跑。**等它，别抢**（最多 15 秒）。
+   抢跑的判据比没有判据更糟：它偶尔红一次，人就开始怀疑判据而不是怀疑产品。 */
+const waitFor = async (label, read, ms = 15000) => {
+  const t = Date.now();
+  for (;;) {
+    const v = await read().catch(() => null);
+    if (v) return v;
+    if (Date.now() - t > ms) return null;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+};
+
+/* ⚠️⚠️⚠️ **进门方式 2026-10-24 换掉了，而换的理由是一道有意为之的加固。**
+   原来走 `_electron.launch`（Playwright 接**主进程的 Node inspector**）。
+   `fb56145`（10-22）为 #138 把签名包的 `--inspect` 关掉
+   （`electronFuses.enableNodeCliInspectArguments: false`）—— 那条路从此不通，
+   症状是 `TimeoutError: Timeout 180000ms exceeded`，而**上一次这一关全绿是 10-06**。
+   > **一道为了安全关掉的入口，正是测试用来进门的那一个。**
+   > 加固和可测性在这里是同一扇门的两面。
+
+   三条路里选了第三条（geek-99 2026-10-24 定）：**fuse 不动，换判据的进门方式** ——
+   前两条（打包时放开 fuse / 另打一份可测版）都会让「测的不再是发出去那一份」。
+
+   新方式：起成**普通子进程** → 读 `UMBRASTUDIO_AUTOTEST_LOG` 那一行 →
+   按里面的 `cdp` 走 `chromium.connectOverCDP`（那是**渲染进程**那一侧，不是主进程）。
+   ⚠️ **代价要照实列**（geek-99 要求「哪条验不了就照实列出来，不准悄悄少掉」）：
+   · 主进程那几条读数（`packaged` / `stateDir` / `userData` / `cdp` / `electron`）
+     改从那一行日志拿 —— 为此给 `main.mjs` 那一块补了 `stateDir` / `userData` 两项；
+   · **「把窗口挪到非主显示器」做不到了** —— 那要 `BrowserWindow`，只有主进程给得了。
+     见下面 `moveOffMain` 处的说明。
+   · 「打开一个没建过索引的目录」换成**从命令行传目录**，而这一换是**加强**：
+     它现在走的是产品真有的那条路（M14-5 的 argv / 冷启动双击），不是注入一个 IPC 事件。 */
+const { chromium } = await import("../server/node_modules/playwright-core/index.mjs");
+const { spawn } = await import("node:child_process");
+
+/** 读 autotest 那一行（主进程写的）。读不到回 `null` —— **不抛**：
+ *  抛掉的话后面二十条判据一条都不跑，而输出里只有一个栈，看不出「是坏了还是没跑到」。 */
+const logLines = async () => {
+  const txt = await readFile(logFile, "utf8").catch(() => "");
+  return txt.trim().split("\n").filter((l) => l.startsWith("{"));
+};
+/** 读那一行。`after` = 已经有几行了，**只认比它更新的那一行**。
+ *
+ *  ⚠️⚠️ **不能只取「最后一行」**（2026-10-24 实测踩到）：日志是 `flag: "a"` 追加的，
+ *  而这一套会起**两个实例**（一次验首页、一次带目录冷启动）。
+ *  第二次 `launch` 时新实例还没写，「最后一行」指的是**上一个实例**的 ——
+ *  于是判据拿着一个已经死掉的 CDP 端口去连，读数是
+ *  `connectOverCDP(…:53709) 失败: ECONNREFUSED`，而**那个端口确实曾经是对的**。
+ *  > **一个累积型的日志，读「最后一行」只在「只有一个写者」时才等于「这一次的」。**
+ *  （和「判据读到上一轮的状态」同一族 —— 这次上一轮就在同一次运行里。） */
+const readLog = async (after = 0) => {
+  const ls = await logLines();
+  if (ls.length <= after) return null;
+  try { return JSON.parse(ls[ls.length - 1]); } catch { return null; }
+};
+
+/** 起一个实例并接上它的渲染进程。回 `{ proc, browser, win, log }`，接不上则 `win` 为 `null`。 */
+const launch = async (extraArgs = []) => {
+  const before = (await logLines()).length;   // 只认比这更新的那一行，见 `readLog`
+  const proc = spawn(exeCopy, [`--user-data-dir=${userData}`, ...extraArgs], { env, cwd: sandbox, stdio: ["ignore", "pipe", "pipe"] });
+  proc.stderr?.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => errLines.push(l)));
+  proc.stdout?.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => errLines.push(l)));
+  /* ⚠️ 进程提前退出要**当场说出来**：它退出之后下面那些等待只会等到超时，
+     而「超时」这个读数说不出「它压根没起来」。单实例锁没拿到就是这条路（退出码 0）。 */
+  let exited = null;
+  proc.on("exit", (code) => { exited = code; });
+  const log = await waitFor("autotest 日志", async () => (exited === null ? await readLog(before) : "exited"), 60000);
+  if (log === "exited" || exited !== null) {
+    return { proc, browser: null, win: null, log: null, exited };
+  }
+  if (!log?.cdp) return { proc, browser: null, win: null, log, exited };
+  /* ⚠️⚠️ **`cdp` 那个字段是端口号，不是 URL** —— 实测它写的是 `53327`，
+     而 `connectOverCDP` 要 `http://127.0.0.1:53327`。
+     第一版直接把它当 URL 传，`connectOverCDP` 抛、被 `.catch` 吃成 `null`，
+     读数变成「接不上渲染进程 —— 日志里有没有 cdp？」**而日志里有**。
+     > **一个被 catch 吃掉的类型错误，会伪装成「那个东西不在」。**
+     ⚠️ 两种都认（将来谁把它改成完整 URL 也不会坏）。 */
+  const cdpUrl = /^https?:\/\//.test(String(log.cdp)) ? String(log.cdp) : `http://127.0.0.1:${log.cdp}`;
+  const browser = await chromium.connectOverCDP(cdpUrl).catch((e) => { errLines.push(`connectOverCDP(${cdpUrl}) 失败: ${String(e.message).slice(0, 120)}`); return null; });
+  const ctx = browser?.contexts()[0];
+  /* 工作台那个窗口可能还没挂上来 —— 等它，别抢（§113 那条）。 */
+  let win = ctx?.pages().find((pg) => /__app\//.test(pg.url())) ?? null;
+  for (let i = 0; !win && i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    win = browser?.contexts()[0]?.pages().find((pg) => /__app\//.test(pg.url())) ?? null;
+  }
+  return { proc, browser, win, log, exited };
 };
 const dumpErr = () => console.log(errLines.length ? "    主进程 stderr:\n" + errLines.slice(-12).map((l) => "      " + l.slice(0, 220)).join("\n") : "    主进程 stderr 一行都没有");
 /** 把这个实例的所有窗口挪到**非主显示器**上（sam 2026-10-22 的要求）。
@@ -246,30 +342,54 @@ const dumpErr = () => console.log(errLines.length ? "    主进程 stderr:\n" + 
  *  （那种「只在测试里走的分支」迟早会和真实行为分叉）。
  *  只有一个显示器时它是空操作，并**说出来** —— 不然「挪过去了」和
  *  「这台机器只有一个屏」读数一样。和 `shelltest` 的 `park` 是同一份。 */
-const park = async (a) => {
-  const r = await a.evaluate(({ BrowserWindow, screen }) => {
-    const prim = screen.getPrimaryDisplay();
-    const other = screen.getAllDisplays().find((d) => d.id !== prim.id);
-    if (!other) return null;
-    const w0 = other.workArea;
-    for (const w of BrowserWindow.getAllWindows()) {
-      if (w.isDestroyed()) continue;
-      try { w.setBounds({ x: w0.x + 40, y: w0.y + 40, width: Math.min(1280, w0.width - 80), height: Math.min(840, w0.height - 80) }); } catch { /* 隐藏窗口摆不动没关系 */ }
-    }
-    return { x: w0.x, y: w0.y, w: w0.width, h: w0.height };
-  }).catch(() => null);
-  return r;
+/** ⚠️⚠️ **2026-10-24 起这件做不到了，而它是 sam 提的要求，所以照实说而不是悄悄删。**
+ *  摆窗口要 `BrowserWindow.setBounds()`，那只有**主进程**给得了 ——
+ *  而新的进门方式（`connectOverCDP`）接的是**渲染进程**那一侧。
+ *  > **一个只有主进程能做的动作，在一条只通到渲染进程的路上没有替代品。**
+ *  三条可能的出路都有代价，交 geek-99 / sam 定：
+ *  ① 接受「这一套的窗口出现在主屏上」（`shelltest` 那一套**不受影响** —— 它跑的是源码、
+ *    `_electron.launch` 照旧能用，因为 fuse 只在打包产物上）；
+ *  ② 给产品加一个「启动位置」参数 —— 而那正是原来刻意不做的事
+ *    （「不改产品代码，位置由测试自己摆，不给主进程加一个只有测试会设的开关」）；
+ *  ③ 从外面摆（`osascript` / System Events）—— 要辅助功能授权，而且它动的是系统 UI。
+ *  现在的行为：**只说一句**，不假装摆过。 */
+
+
+/** 收掉一个实例：先断 CDP，再杀进程，再等它真的走。
+ *  ⚠️ **不能只断 CDP** —— 那只是断了我们这头的连接，进程还在，
+ *  而下一次 `launch` 会被单实例锁挡住、退出码 0，读数变成「产物起来就退了」。
+ *  > **「我不看它了」和「它结束了」是两件事。** */
+const shut = async (a) => {
+  try { await a.browser?.close(); } catch { /* 连接可能已经没了 */ }
+  try { a.proc?.kill(); } catch { /* 已经退了 */ }
+  for (let i = 0; i < 40 && a.proc && a.proc.exitCode === null; i++) await new Promise((r) => setTimeout(r, 150));
 };
 
-const mainWindow = async (a) => { for (let i = 0; i < 300; i++) { const w = a.windows().find((w) => w.url().includes("__app")); if (w) return w; await new Promise((r) => setTimeout(r, 200)); } throw new Error("主窗口没出来"); };
-
 const t0 = Date.now();
+/* ⚠️⚠️ **第一次起**不带参数 —— 后面那条判据等的是**首页**（「最近打开 / 还没有项目」）。
+   第一版我把目录直接从命令行传进去，于是 app 直奔工作台、首页那两个词永远不出现，
+   读数是 `page.waitForFunction: Timeout 90000ms exceeded`。
+   > **我把「打开目录」那一条改强了，而它改掉了另一条判据的前提。**
+   （§163.5 同族：「判据把后面判据要用的前置状态改掉了」—— 这次是在同一个文件里自己踩的。）
+   所以分两次起：**这一次验首页那一路**，打开目录那一条在下面单独起一次、带 argv。 */
 let app = await launch();
-let win = await mainWindow(app);
-{
-  const at = await park(app);
-  console.log("窗口位置:", at ? `挪到非主显示器 ${at.w}×${at.h} @ ${at.x},${at.y}（不抢主屏）` : "只有一个显示器，没地方挪 —— 窗口会出现在主屏上");
+let win = app.win;
+if (app.exited !== null && app.exited !== undefined) {
+  /* ⚠️ **进程提前退了要说清是哪一种** —— 退出码 0 多半是单实例锁
+     （用户自己的 Studio 正开着），而那和「产物坏了」完全是两件事。
+     这条路 2026-10-24 真踩过：`--user-data-dir` 被 `main.mjs` 静默盖掉 →
+     共用同一把锁 → 第二个实例 `process.exit(0)`，而 Playwright 报
+     `Process failed to launch!`，一句和真因毫无关系的话。 */
+  dumpErr();
+  rmSync(sandbox, { recursive: true, force: true });
+  bye(`产物起来就退了（退出码 ${app.exited}）—— 退出码 0 多半是单实例锁：`
+    + `检查有没有别的实例正开着，以及 --user-data-dir 有没有真的生效`);
 }
+if (!win) { dumpErr(); rmSync(sandbox, { recursive: true, force: true }); bye("接不上渲染进程（CDP 那条路）—— 日志里有没有 cdp？"); }
+console.log("窗口位置: 主屏上 —— ⚠️ 新进门方式摆不动窗口（只有主进程能摆，见上面那段说明）");
+/* 这一关靠哪条路进门，**写进读数** —— 不写的话下次有人看到「第二关全绿」
+   不会知道它绕过了主进程，也不会知道因此少了哪条（摆窗口那条）。 */
+console.log(`进门方式: 普通子进程 + connectOverCDP（${app.log?.cdp ? `端口 ${app.log.cdp}` : "没读到 cdp"}）—— 不接主进程 inspector（fuse 关着）`);
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 90000 });
 ok(true, "启动到首页", `${Date.now() - t0} ms`);
 
@@ -324,29 +444,13 @@ ok(boot.has && boot.tokenLen > 0, "打包版里令牌经 preload 到了页面", 
 }
 ok(!boot.inUrl, "**而地址里不带令牌**（带了会进历史记录、也会被 webContents.getURL() 读到）", location_hint(boot));
 
-/* ⚠️ CDP 端口和那行日志都是**主进程起来之后才写的**，而「窗口出现」比它们早。
-   2026-09-26 实测过一次偶发：同样的产物，一次没有 CDP、一次有 ——
-   那不是产品的问题，是判据抢跑。**等它，别抢**（最多 15 秒）。
-   抢跑的判据比没有判据更糟：它偶尔红一次，人就开始怀疑判据而不是怀疑产品。 */
-const waitFor = async (label, read, ms = 15000) => {
-  const t = Date.now();
-  for (;;) {
-    const v = await read().catch(() => null);
-    if (v) return v;
-    if (Date.now() - t > ms) return null;
-    await new Promise((r) => setTimeout(r, 300));
-  }
-};
-const probe = await waitFor("cdp", async () => {
-  const x = await app.evaluate(({ app }) => ({
-    packaged: app.isPackaged, stateDir: process.env.UMBRASTUDIO_STATE_DIR ?? null,
-    userData: app.getPath("userData"), cdp: process.env.UMBRASTUDIO_CDP ?? null, electron: process.versions.electron,
-  }));
-  return x.cdp ? x : null;
-}) ?? await app.evaluate(({ app }) => ({
-  packaged: app.isPackaged, stateDir: process.env.UMBRASTUDIO_STATE_DIR ?? null,
-  userData: app.getPath("userData"), cdp: process.env.UMBRASTUDIO_CDP ?? null, electron: process.versions.electron,
-}));
+/* ⚠️ 主进程那几条读数**只能从 autotest 日志那一行拿**（`app.evaluate` 那条路随
+   `--inspect` 一起没了）。为此给 `main.mjs` 那一块补了 `stateDir` / `userData` 两项 ——
+   **不是给产品加功能**：那一整块只在 `UMBRASTUDIO_AUTOTEST_LOG` 置位时才跑。
+   ⚠️ 读不到就给一个全空的对象，让下面三条**各自红**，而不是整个崩 ——
+   崩掉的话后面二十条一条都不跑，而输出里只有一个栈。 */
+/* ⚠️ 直接用 `launch` 已经拿到的那一行 —— 再读一次就又会撞上「最后一行是谁的」那个坑。 */
+const probe = app.log ?? {};
 ok(probe.packaged === true, "主进程认得自己是打包版", `Electron ${probe.electron}`);
 ok(probe.stateDir === probe.userData, "状态目录 = userData（不是 .app 内部）", probe.stateDir ?? "(没设)");
 ok(!!probe.cdp, "自带 Chromium 的 CDP 端口已就绪", probe.cdp ?? "(没有)");
@@ -354,18 +458,20 @@ ok(!!probe.cdp, "自带 Chromium 的 CDP 端口已就绪", probe.cdp ?? "(没有
 /* 日志同理要等。**而且读不到时要报红，不能让整个测试崩** ——
    崩掉的话后面二十条判据一条都不跑，而输出里只有一个 ENOENT 栈，
    看不出「是坏了还是没跑到」。 */
-const logLine = await waitFor("log", async () => {
-  const txt = await readFile(logFile, "utf8").catch(() => "");
-  const last = txt.trim().split("\n").pop();
-  return last && last.startsWith("{") ? last : null;
-});
-const coreRoot = logLine ? (JSON.parse(logLine).coreRoot ?? "") : "";
+const coreRoot = probe.coreRoot ?? "";   // 同一行日志，不再读第二遍
 ok(!!coreRoot && coreRoot.startsWith(appCopy), "核心根指着拷过来的产物，没指回仓库",
   coreRoot ? coreRoot.replace(sandbox, "<sandbox>") : "(等不到主进程那行日志)");
 
-await app.evaluate(({ BrowserWindow }, dir) => {
-  BrowserWindow.getAllWindows().find((w) => w.isVisible()).webContents.send("host:event", { type: "open-dir", dir });
-}, projCopy);
+/* ⚠️ **打开目录单独起一次，而且走命令行**（M14-5 的 argv / 冷启动那条路）。
+   原来是 `app.evaluate` 往渲染进程注入一个 `host:event` —— 那要主进程，没了。
+   换成 argv 之后这一条**变强了**：它走的是产品真有的那条路，不是注入一个事件。
+   ⚠️ 必须另起一个实例：上面那个已经在首页上，而**单实例锁**意味着
+   「再起一个带路径的」会被第一个接走（`second-instance`）—— 那是另一条路，
+   这里要验的是**冷启动带路径**。所以先收掉第一个。 */
+await shut(app);
+app = await launch([projCopy]);
+win = app.win;
+if (!win) { dumpErr(); rmSync(sandbox, { recursive: true, force: true }); bye("带目录冷启动时接不上渲染进程"); }
 /* ⚠️ **判据钉在结构上，不钉文案**（2026-09-26 修）。
    原来等的是页面里出现「N 份稿」—— 那串字在第八/九轮重画时从工作台移走了
    （现在只在首页的项目卡上，而打开项目之后首页就不在了）。
@@ -381,34 +487,29 @@ await win.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').l
   && !/核心断开/.test(document.body.innerText), null, { timeout: 90000 }).catch(() => {});
 const rows = await win.evaluate(() => document.querySelectorAll('[role="treeitem"]').length);
 ok(rows > 0, "打开一个从没建过索引的目录（索引现建）", `目录树 ${rows} 条`);
-if (!(rows > 0)) { dumpErr(); await app.close(); rmSync(sandbox, { recursive: true, force: true }); bye("卡在索引这一步，后面没跑"); }
+if (!(rows > 0)) { dumpErr(); await shut(app); rmSync(sandbox, { recursive: true, force: true }); bye("卡在索引这一步，后面没跑"); }
 
-/* 体检：自带 Chromium 那条路的唯一硬判据。渲染不出来和渲染对了长得一样，只有读数能分。
-   判活认 `alive`（页面里 1+1===2 算得出来），走的哪个浏览器认 `browser.from` ——
-   `UMBRASTUDIO_CDP` 才说明用的是 Electron 自带那个，不是这台机器恰好装了 Chrome。 */
-const check = await win.evaluate(async (dir) => {
-  const hub = window.__UD_APP;
-  const post = (u, b) => fetch(u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((r) => r.json());
-  const o = await post(`${hub.url}__ud/open_project?token=${hub.token}`, { dir });
-  const list = await (await fetch(`${o.data.url}__ud/drafts?token=${o.data.token}`)).json();
-  const file = list.data.drafts.find((d) => !d.file.includes("/"))?.file;   // 字段是 file（api.ts 的 drafts 路由），不是 path
-  const c = await post(`${o.data.url}__ud/check?token=${o.data.token}`, { file });
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    const s = await (await fetch(`${o.data.url}__ud/check_status?job=${c.data.jobId}&token=${o.data.token}`)).json();
-    if (s.data && s.data.running === false) {
-      const dig = (v) => { if (!v || typeof v !== "object") return null; if ("alive" in v && "browser" in v) return v; for (const x of Object.values(v)) { const r = dig(x); if (r) return r; } return null; };
-      const r = dig(s.data);
-      return { file, found: !!r, alive: r?.alive, from: r?.browser?.from, nodes: r?.nodeCount, ms: r?.renderMs, raw: r ? null : JSON.stringify(s.data).slice(0, 500) };
-    }
-  }
-  return { file, timeout: true };
-}, projCopy);
-ok(check.alive === true, "体检跑通，页面判活（1+1）", `${check.file} · ${check.nodes} 个节点 · ${check.ms} ms`);
-ok(check.from === "UMBRASTUDIO_CDP", "用的是 Electron 自带 Chromium，不是系统装的浏览器", `browser.from = ${check.from ?? "(没读到)"}`);
-if (!check.found) console.log("    读不到读数，原始返回:", check.raw ?? "(超时)");
+/* ⚠️⚠️ **体检那两条判据 2026-10-24 整块删掉了，而理由是「它钉的东西不存在了」。**
+   它原来钉「自带 Chromium 那条路」：调 `__ud/drafts` 找一份稿 → `__ud/check` 起体检 →
+   `__ud/check_status` 轮询 → 认 `alive` 和 `browser.from === "UMBRASTUDIO_CDP"`。
+   而 **C3 把这三条路由全删了**（`list_drafts` 在 7b/7c 撤、`check` / `check_status` 在
+   M16-7c-2a 删，连 `render.ts` / `rendertest` 一起）。
+   症状：`page.evaluate: TypeError: Cannot read properties of undefined (reading 'drafts')` ——
+   **判据在读一个不存在的字段，然后把整关带崩**。
 
-await app.close();
+   > **一条判据钉的那个功能被删掉之后，它不会变红，它会抛。**
+   > 而抛出来比红更糟：它把它后面所有判据一起带走（`doc/00` 那条「一个判据抛出来，
+   > 代价不是它自己红，是它后面所有判据都没跑」）。
+
+   ⚠️ **这一块属于「三种不跑」里的第二种：它已经不该存在，从分母里拿掉。**
+   不是「等以后补回来」—— 自带 Chromium 体检这个功能 C3 已经整条删了。
+   ⚠️ 抓到它的是 geek-99 要求的那个**对照实验**（临时放开 fuse 跑一次）：
+   没有那一次，换完进门方式之后这一条会以**另一种面目**再红一次，
+   而那时我会以为是新进门方式的问题。
+   > **「证明只是进门方式的问题」这个对照，证出来的是「确实还有别的病」。** */
+
+
+await shut(app);
 await new Promise((r) => setTimeout(r, 1200));
 
 /* ── 三关：写过一轮之后还起得来 ────────────────────────
@@ -421,11 +522,12 @@ const insideApp = execFileSync("sh", ["-c", `find ${JSON.stringify(join(appCopy,
 ok(insideApp === "0", ".app 内部没有被写进任何状态", `命中 ${insideApp} 个`);
 const sigAfter = verify(appCopy);
 ok(sigAfter === "自洽", "跑过一轮之后签名仍然自洽（没被自己毁掉）", `${sigBefore} → ${sigAfter}`);
-app = await launch(); win = await mainWindow(app); await park(app);
+app = await launch(); win = app.win;
+if (!win) { dumpErr(); bye("第二次启动接不上渲染进程"); }
 await win.waitForFunction(() => /最近打开|还没有项目/.test(document.body.innerText), null, { timeout: 90000 });
 const recent = await win.evaluate(() => /proj/.test(document.body.innerText) ? "记住了" : "没记住");
 ok(recent === "记住了", "第二次启动照样起来，最近打开记在 userData 里", recent);
-await app.close();
+await shut(app);
 
 
 /* ── 四关：打包版当 MCP server 起 ──────────────────────
@@ -454,12 +556,15 @@ console.log("\n四 · 打包版当 MCP server 起（秘书接入那条路）");
    前提是**真有**第一个在跑 —— 锁是按 userData 目录拿的，没人持锁时第二个进程就是第一个，
    不退出反而是对的（这条判据第一版就是这么写错的）。 */
 {
-  const { spawn } = await import("node:child_process");
-  const first = await launch(); await mainWindow(first); await park(first);
+  const first = await launch();
+  /* ⚠️ 这一条只要**第一个真在跑**，不需要接上它的渲染进程 —— 所以不判 `win`。
+     而「真在跑」要看它**没有提前退出**：第一个自己就退了的话，第二个不退反而是对的，
+     那时这条判据红在一个错的理由上。 */
+  ok(first.exited === null || first.exited === undefined, "（前提）第一个实例真的在跑着", `exited=${String(first.exited)}`);
   const second = spawn(exeCopy, [`--user-data-dir=${userData}`], { env, stdio: "ignore" });
   const code = await new Promise((res) => { const t = setTimeout(() => { second.kill(); res("6 秒还没退"); }, 8000); second.on("exit", (c) => { clearTimeout(t); res(c); }); });
   ok(code === 0, "有实例在跑时，第二个立刻退出（单实例锁）", `退出码 ${code}`);
-  await first.close();
+  await shut(first);
 }
 
 /* ⚠️ **插件 B 面的 QuickJS 在打包版里起得来吗**（Q48 / issue #94，2026-10-06）。

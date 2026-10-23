@@ -459,7 +459,22 @@ app.whenReady().then(async () => {
   for (const p of pathsFromArgv(process.argv)) queued.push(p);
   while (queued.length) openPath(queued.shift());
   if (process.env.UMBRASTUDIO_AUTOTEST_LOG) {
-    // 壳内自测：把关键读数写一行，Playwright _electron 之外的最低限度证据
-    try { writeFileSync(process.env.UMBRASTUDIO_AUTOTEST_LOG, JSON.stringify({ hub: hub.url, cdp, coreRoot: CORE_ROOT, packaged: app.isPackaged, electron: process.versions.electron }) + "\n", { flag: "a" }); } catch { /* ignore */ }
+    /* 壳内自测：把关键读数写一行，**Playwright `_electron` 之外的最低限度证据**。
+       ⚠️⚠️ **2026-10-24 起这不再是「最低限度」，是唯一的那条路** ——
+       `fb56145` 把 `--inspect` 关掉之后（`enableNodeCliInspectArguments: false`），
+       Playwright 的 `_electron.launch` 接不上主进程，`packtest` 第二关整关跑不了。
+       > **一道为了安全关掉的入口，正是测试用来进门的那一个。**
+       所以判据改成「起成普通子进程 → 读这一行 → 按 `cdp` 走 `connectOverCDP`」，
+       而**主进程那几条读数只能从这一行拿** —— 补了 `stateDir` / `userData` 两项
+       （原来它们走 `app.evaluate`，而那条路没了）。
+       ⚠️ 加字段是**给判据补一条它验不了的东西**，不是给产品加功能：
+       这一整块只在 `UMBRASTUDIO_AUTOTEST_LOG` 置位时才跑。
+       ⚠️ 不写令牌、不写项目路径 —— 这一行会落在磁盘上。 */
+    try {
+      writeFileSync(process.env.UMBRASTUDIO_AUTOTEST_LOG, JSON.stringify({
+        hub: hub.url, cdp, coreRoot: CORE_ROOT, packaged: app.isPackaged, electron: process.versions.electron,
+        stateDir: process.env.UMBRASTUDIO_STATE_DIR ?? null, userData: app.getPath("userData"),
+      }) + "\n", { flag: "a" });
+    } catch { /* ignore */ }
   }
 });
