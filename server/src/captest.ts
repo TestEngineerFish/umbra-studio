@@ -507,13 +507,36 @@ console.log("\n⑯ 品牌名散不散（2026-10-22）");
      **改的不只是名字，是语义** —— plist 里这两个键**只有一份、所有语言环境共用**
      （没有 `.lproj` / `InfoPlist.strings`），所以「英文那一份」这个说法不成立。
      ⏳ 真要分语言得加 `InfoPlist.strings`，那时英文那份读 `studioNameEn`。 */
+  /* ⚠️⚠️ **这两条的话 2026-10-24（M17-1）过期了，而值没变。**
+     它们原来写着「**不分语言**」—— 那时 `Info.plist` 里确实只有一份。
+     现在显示名**按语言分**（`.lproj/InfoPlist.strings`，由 `afterPack` 写），
+     而 `Info.plist` 里这一份变成了**兜底值**。
+     > **一个值没变而它的身份变了，判据的断言照样绿、而它的话开始骗人** ——
+     > 这正是「文案里写着一个前提，前提变了文案就开始骗人」的同族（`validate.ts` 那条）。
+     所以这两条改的是**措辞**，断言一个字没放松；分语言那一半的判据在 `packtest`
+     （要真产物才验得到：`plutil` 解析 + `Bundle.preferredLocalizations` 的语言匹配）。 */
   ok(ext["CFBundleDisplayName"] === B.bundleDisplayName,
-     "`CFBundleDisplayName` 等于 `bundleDisplayName`（Finder / Dock 显示它，**不分语言**）",
+     "`CFBundleDisplayName` 等于 `bundleDisplayName`（它是**兜底值** —— 各语言那一份在 `.lproj`，`packtest` 验）",
      `${ext["CFBundleDisplayName"]} vs ${B.bundleDisplayName}`);
   ok(ext["CFBundleName"] === B.bundleDisplayName,
      "`CFBundleName` 等于 `bundleDisplayName`（菜单栏兜底，`setName` 失败时就靠它）",
      `${ext["CFBundleName"]}`);
 
+
+  /* ── 分语言那张表自己的性质（M17-1）──
+     ⚠️ 这一条**不是** `packtest` 那几条的重复：那边验「产物里写对了没有」，
+     这边验「**这张表本身的约定**」—— 而约定错了的话，产物会被正确地写错。
+     判准两条：① 兜底值**是中文那一份**（`.lproj` 不生效时所有人看到它，
+     选中文 = 不生效时和今天一样）· ② 英文那一份真的是英文名（不是又一份中文）。
+     > **一个「哪种失败更糟」的取舍，要有一条判据钉着它，不然下一个人会按「哪个更规范」改掉它。** */
+  ok(B.bundleDisplayName === B.studioName,
+     "**兜底显示名是中文那一份**（`.lproj` 不生效时所有人看到它 —— 选中文是因为那时「和今天一样」）",
+     `${B.bundleDisplayName}`);
+  ok(B.bundleDisplayNameByLocale.en === B.studioNameEn
+     && B.bundleDisplayNameByLocale.zh_CN === B.studioName
+     && Object.keys(B.bundleDisplayNameByLocale).length >= 2,
+     "**分语言那张表派生自 `studioName` / `studioNameEn`**（不是手抄的字面量）",
+     JSON.stringify(B.bundleDisplayNameByLocale));
   /* ── ⓑ 「打开方式」右键菜单里那两行 + 包描述 ── */
   /* ⚠️ 这两条**分开数**：第一版把包描述也混进了「那两行」里，于是 `=== 2` 对不上而红 ——
      **判据红了而产品是对的**。两件事问的不是同一个问题，就不该用同一个数组。 */

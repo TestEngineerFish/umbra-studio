@@ -94,10 +94,37 @@ export const studioNameEn = `${productNameEn} Studio`;
  *
  *  所以按 geek-99 那条**带条件的**指示执行（只有一份 → 保持中文名），
  *  并把名字改对：**它是 bundle 的显示名，不分语言**。
- *  ⏳ 真要分语言（中文系统「长尾雀 Studio」/ 英文系统「Quetail Studio」）得加
- *  `.lproj` 下的 `InfoPlist.strings`，那是一件**要打包验**的新工作（`doc/12` 记一条）。
- *  按「一个还没用上的名字先别加」，英文那一份**现在不加常量** —— 要用时读 `studioNameEn`。 */
+ *  ⚠️ **2026-10-24（M17-1）分语言做掉了**，而这个常量的语义**没变**：
+ *  它仍然是 `Info.plist` 里那一份，也就是**兜底值** —— 没有被 `.lproj` 覆盖的语言看它。
+ *  分语言那张表在下面 `bundleDisplayNameByLocale`。 */
 export const bundleDisplayName = studioName;
+
+/** **按系统语言显示的 bundle 名**（M17-1，2026-10-24）。
+ *  `afterPack` 据此往 `.app/Contents/Resources/<语言>.lproj/InfoPlist.strings` 里写
+ *  `CFBundleDisplayName` / `CFBundleName`，Finder / Dock / 关于面板按用户的语言取。
+ *
+ *  ### ⚠️⚠️ 兜底值为什么留中文，而不是换成英文
+ *  判据是**哪一种失败更糟**，不是「哪个更规范」：
+ *  · 兜底换英文 → 万一 `.lproj` 这条路不生效（目录名对不上、签名把它剥掉、
+ *    以后 Electron 改了语言目录名…），**中文用户会看到英文**，比今天差；
+ *  · 兜底留中文 → 不生效时**和今天完全一样**，生效时英文系统拿到英文。
+ *  而这条路**在改名的人手上验不了**：要真改系统语言才看得见，那是用户的系统设置。
+ *  > **一个只能在别人的机器上才看得见的改动，要把它的失败模式选成「和今天一样」。**
+ *
+ *  ### ⚠️ 语言目录名用 Electron 自己声明的那几个
+ *  实测上一次的真产物里有 **55 个 `.lproj`**（Chromium 的语言包），中英文是
+ *  `zh_CN` / `zh_TW` / `en` / `en_GB` —— **都是空目录**。写进它自己声明的那几个，
+ *  而不是另造 `zh-Hans.lproj`：`CFBundle` 认 `zh_CN` 这种旧式名，而
+ *  **一个应用「有哪些语言」是按 `.lproj` 目录名算的** —— 另造一个等于多声明一种语言。
+ *  ⏳ `zh_TW` 这一份写的是**简体的「长尾雀」**，也就是今天那些用户看到的东西。
+ *  繁体该写「長尾雀」还是别的，**是一个起名决定，不是一个实现决定** —— 留给 sam / geek-99。
+ *  在它定之前照原样，**不自己发明一个繁体名**。 */
+export const bundleDisplayNameByLocale: Readonly<Record<string, string>> = {
+  en: studioNameEn,
+  en_GB: studioNameEn,
+  zh_CN: studioName,
+  zh_TW: studioName,
+};
 
 /** **冻结的应用身份名** —— 它决定 `.app` 的文件名、`userData` 目录、TCC 授权与钥匙串归属。
  *

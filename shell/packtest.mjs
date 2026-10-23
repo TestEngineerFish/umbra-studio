@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, statSync, rmSync, cpSync, mkdtempSync, realpathSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve, dirname, basename } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -88,6 +88,66 @@ for (const f of [
   ...builtinFiles(),
   "core/server/node_modules/@modelcontextprotocol/sdk/package.json",
 ]) ok(existsSync(join(RES, f)), f);
+
+/* ── `Info.plist` 的显示名按语言分（M17-1，2026-10-24）────────────────────
+   中文系统的 Finder / Dock 显示「长尾雀 Studio」，英文系统显示「Quetail Studio」。
+   `afterPack` 往 `.app/Contents/Resources/<语言>.lproj/InfoPlist.strings` 里写那两个键。
+
+   ⚠️⚠️ **这一节必须在 `packtest` 里，开发模式一定测不出来** —— 开发时压根没有 `.app`。
+   ⚠️ 判准走 **`plutil`**（系统自己的解析器）而不是读字符串：
+   `.strings` 是一种有格式的东西，「文件里有这几个字」和「系统解析得出这个值」是两件事，
+   而**后者才是 Finder 走的那条路**。
+   ⚠️ **而「某个语言下显示什么」也不是读文件能回答的** —— 它要走 `Bundle.preferredLocalizations`
+   那套语言匹配（实测：现代的 `zh-Hans` 会匹配到旧式目录名 `zh_CN`，这件事猜不出来）。
+   那一半在 `shell/lprojcheck.swift` 里，由下面这条判据调它。
+
+   ⚠️ **兜底值单独一条，而且判准是「它没被换成英文」**：
+   `.lproj` 这条路要是不生效（目录名对不上、签名剥掉、Electron 改名…），
+   所有人看到的就是兜底值。兜底留中文 = 不生效时和今天一样；换英文 = 中文用户看到英文。
+   > **一个只能在别人的机器上才看得见的改动，要把它的失败模式选成「和今天一样」。** */
+if (IS_MAC) {
+  const { execFileSync: exec0 } = await import("node:child_process");
+  const rawOf = (key) => {
+    try { return exec0("plutil", ["-extract", key, "raw", join(TARGET, "Contents", "Info.plist")], { encoding: "utf8" }).trim(); }
+    catch { return "(读不到)"; }
+  };
+  const B = await import(pathToFileURL(join(REPO, "server", "dist", "shared", "brand.js")).href);
+  ok(rawOf("CFBundleDisplayName") === B.bundleDisplayName,
+     "`Info.plist` 里的兜底显示名**是中文那一份**（`.lproj` 不生效时，所有人看到的就是它）",
+     `${rawOf("CFBundleDisplayName")} vs ${B.bundleDisplayName}`);
+
+  /* 每种语言各一条：**`plutil` 解析得出来**，而且值等于 `brand.ts` 那张表里的。 */
+  const miss = [];
+  const wrong = [];
+  for (const [loc, want] of Object.entries(B.bundleDisplayNameByLocale)) {
+    const f = join(TARGET, "Contents", "Resources", `${loc}.lproj`, "InfoPlist.strings");
+    if (!existsSync(f)) { miss.push(`${loc}.lproj`); continue; }
+    let got = "(解析不出来)";
+    try { got = exec0("plutil", ["-extract", "CFBundleDisplayName", "raw", f], { encoding: "utf8" }).trim(); } catch { /* 下面报 */ }
+    if (got !== want) wrong.push(`${loc}=${got}≠${want}`);
+  }
+  ok(miss.length === 0 && wrong.length === 0,
+     "**每种语言的 `InfoPlist.strings` 都在，而且 `plutil` 解析出来等于 `brand.ts` 那张表**",
+     miss.length || wrong.length ? `缺 ${miss.join("·") || "无"} · 对不上 ${wrong.join("·") || "无"}`
+       : `${Object.keys(B.bundleDisplayNameByLocale).length} 种：${Object.entries(B.bundleDisplayNameByLocale).map(([k, v]) => `${k}=${v}`).join(" · ")}`);
+
+  /* ⚠️⚠️ **这一条才是用户那件事**：某个系统语言下，Finder 到底显示什么。
+     前面两条只说明「文件写对了」，而**写对了不等于匹配得上** ——
+     语言匹配是系统的事（`zh-Hans` → `zh_CN` 这一跳就是实测才知道的）。
+     > **「文件在那儿」和「系统会用它」是两件事，而判据很容易只问前一件。**
+     ⚠️ 没有 `swiftc` 就**照实说没验到**，不静默跳过（那会让这一条在 CI 上永远「通过」）。 */
+  let langOut = "";
+  try {
+    const bin = join(REPO, "shell", ".lprojcheck");
+    exec0("swiftc", ["-O", "-o", bin, join(REPO, "shell", "lprojcheck.swift")], { stdio: "pipe" });
+    langOut = exec0(bin, [TARGET], { encoding: "utf8" }).trim();
+  } catch (e) { langOut = `(跑不起来：${String(e.message).slice(0, 60)})`; }
+  const want = (lang, name) => new RegExp(`${lang} → [^\n]*「${name}」`).test(langOut);
+  ok(want("en", B.bundleDisplayNameByLocale.en) && want("zh-Hans", B.bundleDisplayNameByLocale.zh_CN)
+     && want("zh-Hant", B.bundleDisplayNameByLocale.zh_TW),
+     "**按系统语言真的取到了对应的名字**（走 `Bundle.preferredLocalizations`，和 Finder 同一条路）",
+     langOut.replace(/\n/g, " ⎹ ").slice(0, 200));
+}
 // 不该在包里的：编译期依赖、我们的回归基准、收设计侧稿的暂存处、插件
 /* `core/.umbrastudio` 是 M11-4 加的**预防闸**（当时并没有漏进去 —— 打包配置逐项列目录，
    没有拷仓库根的项）。钉它是因为：**插件装在 STATE_ROOT，开发时那就是仓库根**，
