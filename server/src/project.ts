@@ -117,7 +117,7 @@ export async function migrateUdDir(dir: string): Promise<boolean> {
   for (const n of names) await cp(join(oldDir, n), join(newDir, n), { recursive: true });
   return true;
 }
-migrateUdDirSync(STATE_ROOT);   // 工具自己的 ai_config / workspace / outgoing 记录
+migrateUdDirSync(STATE_ROOT);   // 工具自己的 ai_config / workspace 等（原注释还提了「outgoing 记录」，那条路 C3 删了）
 
 /* ── 启动时扫一次我们自己的状态目录，清掉原子写留下的孤儿（M14-9，2026-10-22）──
  *

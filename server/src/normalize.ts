@@ -9,7 +9,7 @@
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { RUNTIME_DIR, expandDsAlias, fixDsDepth, type Project } from "./project.js";
+import { expandDsAlias, fixDsDepth, type Project } from "./project.js";
 import { NODE_ATTR, stampNodes } from "./nodeid.js";
 import { sweepTmpIn, tmpNameFor } from "./tmpfiles.js";   // 临时文件的唯一出处（M14-9）
 

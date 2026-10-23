@@ -73,14 +73,19 @@ const EXE = IS_MAC ? join(TARGET, "Contents", "MacOS", "Umbra Studio") : join(TA
 ok(existsSync(EXE) && (IS_MAC ? (statSync(EXE).mode & 0o111) !== 0 : true), "可执行文件在" + (IS_MAC ? "且可执行" : ""));
 for (const f of [
   "core/server/dist/index.js", "core/server/dist/project.js", "core/server/package.json",
-  "core/app/dist/index.html", "core/runtime/support.js", "core/runtime/react.production.min.js",
-  "core/ui/S1-稿件索引.dc.html", "core/ui/_ds-tool/tokens.css",
+  "core/app/dist/index.html",
+  /* ⚠️⚠️ **这里原来钉四样，2026-10-23（M16-7c-2b / C3）全删了，换成插件桥一件。**
+     `core/runtime/support.js` + `react.production.min.js`：dc 的运行时副本，
+     `ensureRuntimeBeside` 往每份稿旁边拷的那三个 —— 没有读者了。
+     `core/ui/*`：工具界面稿，随设计侧协议一起删。
+     ⚠️ **`runtime/` 这个目录仍然要进包**，因为里面还剩一件：插件桥。
+     > 一个目录从「带四样」变成「带一样」时，判据要钉**剩下那一样**，
+     > 而不是只把删掉的几条划掉 —— 否则「整个目录漏进包」会没人发现。 */
+  "core/runtime/umbra-plugin.js",
   /* 内置插件必须进包：不进的话打包版**打开 .md 只有通用文件卡**，
      而这在开发模式下测不出来（开发时 TOOL_ROOT 就是仓库根，插件天然在）。 */
   /* S4 起内置插件是 sync-plugins 拉进来的构建产物，版本目录不再固定是 1.0.0 —— 按包里实际那一版找 */
   ...builtinFiles(),
-  "core/doc/06-写稿规则.md", "core/doc/03-渲染与交互逻辑.md",   // get_syntax_guide 真读这两份
-  "core/server/node_modules/playwright-core/index.mjs",         // 体检经 CDP 也要它
   "core/server/node_modules/@modelcontextprotocol/sdk/package.json",
 ]) ok(existsSync(join(RES, f)), f);
 // 不该在包里的：编译期依赖、我们的回归基准、收设计侧稿的暂存处、插件
@@ -89,8 +94,19 @@ for (const f of [
    将来谁为了省事加一条「把仓库根某处也拷进去」，插件就会跟着进包，
    变成 `.app` 里的只读文件 —— 卸不掉也更新不了，而这在开发模式下测不出来
    （开发时两个 root 都可写，`doc/00` §63.1 同一个坑）。 */
+/* ⚠️ 2026-10-23（C3）这张「不该在包里」的名单加了两条，而两条的理由不同：
+   · `core/doc` —— 它当初进包**只为 `get_syntax_guide` 读那两份写稿规则**（`doc/00` §63.1 那一批
+     逼出过「doc/ 没进包」）。那件工具 7b 删了，于是 2.0 MB · 48 份文档跟着撤出。
+     > **不是新决定，是一个决定的理由消失之后它自己该有的样子。**
+   · `core/ui` —— 整个目录删了（原来这里只钉 `core/ui/_incoming` 不进包）。
+   ⚠️ **`core/server/node_modules/playwright-core` 没列进来**，而它的理由也没了
+   （原来钉它「体检经 CDP 也要它」，体检删了）——
+   但它现在是**判据**在用（`uitest` / `hometest` / `actxtest` 都要），
+   而把它从包里排除要先在 `extraResources` 加 filter。
+   > **「这个东西的理由没了」和「它该从包里拿掉」是两步，中间那一步是加排除规则。**
+   没做那一步之前不钉「它没进包」—— 那会红在一个我们还没做的改动上。 */
 for (const f of ["core/server/node_modules/typescript", "core/server/node_modules/@types",
-                 "core/fixtures", "core/ui/_incoming", "core/.umbrastudio"])
+                 "core/fixtures", "core/ui", "core/doc", "core/.umbrastudio"])
   ok(!existsSync(join(RES, f)), `${f} 没进包`);
 
 if (!IS_MAC) {

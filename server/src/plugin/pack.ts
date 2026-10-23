@@ -10,7 +10,7 @@ import { publisherKeyPath } from "./pubkey.js";
  *
  *  **`.umbraplugin` = gzip 过的一个 JSON 容器**，零依赖、跨平台。
  *
- *  为什么不是 zip：`outgoing.ts` 那样 shell 调 `zip` 是开发脚本的做法，
+ *  为什么不是 zip：shell 调 `zip` 是开发脚本的做法（`outgoing.ts` 当年就那么写，它已随 C3 删掉），
  *  **打包后的应用不能指望用户机器上装了什么**（Windows 尤其没有 unzip）。
  *  `node:zlib` 是内置的，两个平台行为一致。
  *  这和 §85.2 里「`execPath` 不能写死 `node`」是同一条规矩。

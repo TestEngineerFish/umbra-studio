@@ -3,7 +3,6 @@
  *  1. `fixtures/静态/` —— **工具自己的基准**，随仓库走，精确匹配 `expect.json`。
  *     该报的没报、不该报的报了，都算失败。这是唯一能证明「不该报的没报」的一块 ——
  *     语料里不存在的写法，再多语料也照不出来。
- *  2. `ui/` —— 工具界面稿。判据：**一条 error 都不许有**（这几份是我们自己写的）。
  *  3. `projects/<名>` —— 用户的真实语料。**有就跑，没有就跳过**：那是用户自己的项目，
  *     不进这个仓库，clone 下来不该因为它缺席就跑不了回归。判据是「零误报」——
  *     语料里的真缺陷列在 KNOWN_REAL 里，那是稿的问题，不是工具的。
@@ -194,35 +193,32 @@ function dsDepthBlock(): number {
   return bad;
 }
 
-/** 工具自己的界面稿。它们不在 projects/ 下，原来整块没被回归覆盖 ——
- *  而这几份恰恰是改得最勤的（每个批次都动）。判据比语料更严：
- *  **一条 error 都不许有**，因为这几份是我们自己写的，没有「稿的历史问题」可推。
- *  import 以 ui/ 为基准解析（S7 引 IconGlyph），所以这里用 ui/ 当 dir。 */
+/* ⚠️⚠️ **第二层「工具界面稿 `ui/`」2026-10-23（M16-7c-2b / C3）整层删了。**
+ *  它对 `ui/` 的 28 份稿跑 `validateDraft`，判据比语料更严（**一条 error 都不许有**，
+ *  因为那几份是我们自己写的）。`ui/` 随设计侧协议一起删了，这一层没有对象。
+ *
+ *  ⚠️⚠️ **删它的时候抓到一句假话，而那句假话是汇总行说的**：
+ *  `ui/` 删掉之后这一层**空着跑过去**（0 份稿 / 0 条 error），
+ *  而末行照样打印「**界面稿零 error**」。
+ *  > **一个「某一类全都没问题」的汇总，在那一类为空时仍然成立 ——
+ *  > 而它读起来像验过了。**
+ *  对照：`captest` 同一时刻**诚实地红了**（「找得到界面稿 — 0 份」），
+ *  因为它有一条前提判据。**汇总行是「判据在没有样本时测的是今天恰好没事」最容易藏身的地方。**
+ *
+ *  ⚠️ `dsDepthBlock()`（`@ds` 相对深度）**和 `ui/` 无关**，所以留着 ——
+ *  它测的是落盘归一化时 `@ds` 按稿的深度展开成几层 `../`，走的是纯函数。 */
 async function uiBlock(): Promise<number> {
   fxBad += dsDepthBlock();
-  bar("工具界面稿 ui/");
-  const uiDir = join(TOOL_ROOT, "ui");
-  const uiP = { ...fxP, dir: uiDir };
-  let uiErr = 0;
-  for (const f of (await readdir(uiDir)).filter((x) => x.endsWith(".dc.html")).sort()) {
-    const v = validateDraft(uiP, f, await readFile(join(uiDir, f), "utf8"), f);
-    const e = v.diags.filter((d) => d.level === "error");
-    const w = v.diags.filter((d) => d.level === "warning");
-    uiErr += e.length;
-    console.log(`  ${f.slice(0, 29).padEnd(30)} ${String(e.length).padStart(3)} ${String(w.length).padStart(5)} ` +
-      `${String(v.stats.elements).padStart(6)}  ${v.stats.holeAuditSkipped ? "放弃" : "已做"}    ` +
-      `${[...new Set(e.map((d) => d.code))].join(" ")}`);
-    for (const d of e) console.log(`      ✗ ${d.code} ${d.locator?.name ?? ""} — ${d.message}`);
-    for (const d of w) console.log(`      · ${d.code} ${d.locator?.name ?? ""} — ${d.message}`);
-  }
-  return uiErr;
+  return 0;
 }
 
-/** 三块的结论合成一条。基准和界面稿任一不过就是失败 —— 语料那块只看误报。 */
+/** 两块的结论合成一条。基准不过就是失败 —— 语料那块只看误报。
+ *  ⚠️ **「界面稿零 error」那一段去掉了，不是改成「0 条」** ——
+ *  留着它会在没有稿可测时说一句假话（见 `uiBlock` 上面那段）。
+ *  > **汇总行里的每一段，都要对应一件真的被量过的事。** */
 function finish(fx: number, unknownErr: number, uiErr: number): never {
   const parts = [
     fx ? `基准 ${fx} 条没过` : "基准全过",
-    uiErr ? `界面稿 error ${uiErr} 条` : "界面稿零 error",
     unknownErr ? `语料表外 error ${unknownErr} 条` : "语料零误报",
   ];
   const fail = fx + unknownErr + uiErr;

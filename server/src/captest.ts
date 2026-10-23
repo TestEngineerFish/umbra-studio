@@ -164,78 +164,25 @@ for (const n of wasHttpOnly) {
   await rm(dir, { recursive: true, force: true });
 }
 
-/* ══════════ 界面稿也是调用方（M11-7 第一批栽过，`00` §九十）══════════
-   本项目的设计稿是**可运行**的：`ui/*.dc.html` 自己会 `fetch` 本地 API。
-   所以「这条路由没人调」不能只看 `app/src` —— 那只是半个世界。
+/* ⚠️⚠️ **「界面稿也是调用方」这一整节 2026-10-23（M16-7c-2b / C3）删了，
+   连同它的 `KNOWN_GONE` 名单。**
 
-   M11-7 第一批就是这么栽的：判定 8 条路由「前端零调用」，
+   它存在的理由（M11-7 第一批栽的那次）值得整段留着：
+   本项目的设计稿是**可运行**的 —— `ui/*.dc.html` 自己会 `fetch` 本地 API，
+   所以「这条路由没人调」不能只看 `app/src`。当时判定 8 条路由「前端零调用」、
    顺手合并了 `restore_draft`、改了 `delete_draft` 的入参，**当场把 S1 弄坏了**，
-   而全套回归照样全绿 —— 因为**没有任何判据覆盖「稿调 API」这条路**。
+   而全套回归照样全绿 —— 因为没有任何判据覆盖「稿调 API」这条路。
 
-   这一节就是补那个缺口：把稿里出现的路由名全抓出来，逐个核对它还在不在。 */
-{
-  const { readdir, readFile } = await import("node:fs/promises");
-  const { join } = await import("node:path");
-  const { httpRoutes } = await import("./cap/index.js");
-  const UI = join(process.cwd(), "..", "ui");
-  const apiSrc = await readFile(join(process.cwd(), "src", "api.ts"), "utf8");
-  const handwritten = new Set([...apiSrc.matchAll(/route === "([a-z_]+)"/g)].map((m) => m[1]!));
-  const fromCaps = httpRoutes();
+   `ui/` 随设计侧协议一起删了，这一节没有调用方可查。
+   ⚠️ **而它的接班人已经在了**：7c-1 新增的「前端（`app/src`）也是调用方」那一节
+   （66 个调用点对账），它在 7c-2a 当天就抓到 `adopt_project（Sheets.tsx）`。
+   > **一节判据删掉之前，先确认它防的那类事还有没有东西在防。**
+   这一次有（而且形状一样：从**调用写法**抽候选，不拿现存路由表去搜）。
 
-  let files: string[] = [];
-  try { files = (await readdir(UI)).filter((f) => f.endsWith(".dc.html")); } catch { /* 没有 ui/ 就跳过 */ }
-  ok(files.length > 0, "找得到界面稿（这一节要拿它们当调用方来核）", `${files.length} 份`);
+   ⚠️ `KNOWN_GONE` 当时写明「7c 删完 `ui/` 之后这个名单里的每一条都会变成
+   『稿里压根没有这个调用』，到那时这个名单要删掉 —— **它为空还留着，就是下一个人的困惑**」。
+   照办了。 */
 
-  /* ⚠️ **候选名单必须独立于「现在有什么」**（M11-7 第二批栽过）。
-     第一版是「拿现存路由表去稿里搜」—— 那是**循环的**：
-     路由一改名就从名单里消失，判据永远不会检查它，于是永远绿着。
-     它看起来在工作（30 条全过），实际上**对它要防的那件事完全免疫**。
-
-     改成按**调用写法**从稿里抽候选。目前两种：
-     ① `this.api("路由名", …)` ② 存进数据再调（`{ route: "project_archive" }`）。
-     稿里换新写法时要在这里补一条 —— 抓不到的那一条就是下一个盲区。 */
-  const PATTERNS = [/\bapi\(\s*["'`]([a-z][a-z0-9_]*)["'`]/g, /\broute\s*:\s*["'`]([a-z][a-z0-9_]*)["'`]/g];
-
-  /** ⚠️⚠️ **设计稿那一套的路由 2026-10-23（M16-7b / C3）删掉了，而稿还在（7c 删）。**
-   *
-   *  于是这条判据会报 `locate` / `validate` 缺失 —— **而它报得对**：
-   *  `ui/` 里那几份稿确实在调已经不存在的路由。
-   *  只是那些稿**已经没人打开了**（7a 摘掉 dc 模块之后），
-   *  `buildProject` 还会部署它们，所以用户直接在浏览器里打开会报错 ——
-   *  **一个真实但很小的中间状态问题，7c 删掉 `ui/` 和部署逻辑时一起消失。**
-   *
-   *  这里**不放宽判据**（那等于让它对下一次真的漏改也免疫），
-   *  而是把「这几条是 C3 删掉的」显式列出来：
-   *  · 7c 删完 `ui/` 之后这个名单里的每一条都会变成「稿里压根没有这个调用」，
-   *    到那时这个 `KNOWN_GONE` 要删掉 —— **它为空还留着，就是下一个人的困惑**。
-   *  · 而名单之外的任何一条缺失照旧报红，那正是这条判据的用处（§九十）。 */
-  const KNOWN_GONE = new Set(["locate", "validate", "comments", "changes", "source", "snapshot", "drafts"]);
-  const missing: string[] = [];
-  const goneButUsed: string[] = [];
-  const seen = new Set<string>();
-  for (const f of files) {
-    const src = await readFile(join(UI, f), "utf8");
-    for (const re of PATTERNS) {
-      for (const m of src.matchAll(re)) {
-        const route = m[1]!;
-        if (seen.has(route)) continue;
-        seen.add(route);
-        if (!handwritten.has(route) && !fromCaps.has(route)) {
-          (KNOWN_GONE.has(route) ? goneButUsed : missing).push(`${route}（${f}）`);
-        }
-      }
-    }
-  }
-  ok(seen.size > 0, "稿里真的有调 API", `用到 ${seen.size} 条路由`);
-  ok(missing.length === 0, "**界面稿用到的路由一条都没少**（改路由前先想想稿在不在用）", missing.join(" · "));
-  /* ⚠️ 这一条**刻意是 `console.log` 不是 `ok`** —— 它既不是「过了」也不是「坏了」，
-     它是一个**要在 7c 清掉的中间状态**。用 ✓ 会让人以为没事，用 ✗ 会让全套变红
-     而那条红不该拦住任何人。 */
-  if (goneButUsed.length) {
-    console.log(`  ⚠ 中间状态：稿里还在调 ${goneButUsed.length} 条 C3 删掉的路由 —— ${goneButUsed.slice(0, 4).join(" · ")}`);
-    console.log("           那几份稿已经没人打开（M16-7a 摘掉了 dc 模块），7c 删掉 ui/ 和部署逻辑时一起消失。");
-  }
-}
 
 /* ══════════ **前端（`app/src`）也是调用方，而它原来一条判据都没有** ══════════
    上面那一节钉的是 `ui/` 的设计稿，2026-10-23（M16-7b）证明了那还不够：

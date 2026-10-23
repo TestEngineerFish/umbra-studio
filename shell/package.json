@@ -66,21 +66,6 @@
         "to": "core/runtime"
       },
       {
-        "from": "../doc",
-        "to": "core/doc",
-        "filter": [
-          "*.md"
-        ]
-      },
-      {
-        "from": "../ui",
-        "to": "core/ui",
-        "filter": [
-          "**/*",
-          "!_incoming/**"
-        ]
-      },
-      {
         "from": "../plugins",
         "to": "core/plugins"
       },
