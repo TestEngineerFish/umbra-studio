@@ -4248,8 +4248,22 @@ console.log("\n插件 UI 的边界（M11-4）");
                      "**描边是双层的：内 2px 强调色 + 外 1px 白**（一道纯蓝边在深底页面上看不见）", deco.shadow);
                   ok(deco.boxTop === elTop - 2,
                      "**往外让开 2px**（不贴着元素画，元素自己的边框才看得清）", `元素 ${elTop} → 框 ${deco.boxTop}`);
-                  ok(deco.tagText === "<button.primary>",
-                     "**左上角标签写出在选哪个元素**（同时说清「这是工具画的，不是页面自己的」）", deco.tagText);
+                  /* ⚠️⚠️ **药丸 / 标签写的是开始标签原文，不是 `<button.primary>` 那种缩写**
+                     （html 插件 1.2.2，umbra-plugins main 074ab02；plugins 会话给的结论）。
+                     ⚠️ 这里有一半是**我们判据过期**，另一半是**插件真的漏迁了**，分清很重要：
+                     · 药丸那一半：**1.2.1 就已经写原文了**（实测读数 `<button class="primary"> L6`），
+                       是判据还在期望旧写法 —— 判据过期。
+                     · 描边 / 往外让 / 标签那三类：10-17 的 E3 把桥从 `serve.ts` 搬进 `preview.mjs` 时
+                       **漏迁了**，1.2.2 按 `serve.ts` 的口径补回（`box-shadow 0 0 0 2px #3a6df0, 0 0 0 3px #fff` ·
+                       框往外让 2px · 左上角标签，顶出视口就翻进框里）—— 产品缺陷。
+                     > **「判据红了」不告诉你是哪一半** —— 而两半的处置完全相反：一半改判据，一半等插件。
+                     ⚠️ 1.2.2 还在后台等 sam 审核，所以描边 / 标签那几条**要等商城装上才真跑得通**；
+                     判据先按新口径写好（期望值改了，闸一条没松）。
+                     1.2.2 把截断也改了：**60 个字符加「…」**（原来是 48 个字符加「…>」）。 */
+                  const TAG_TEXT = '<button class="primary">';
+                  ok(deco.tagText === TAG_TEXT,
+                     "**左上角标签写出在选哪个元素**（写**开始标签原文**，同时说清「这是工具画的，不是页面自己的」）",
+                     deco.tagText || "（没有标签元素 —— 1.2.2 之前它压根不画）");
                   ok(deco.tagHits === "none",
                      "标签不接指针（接了就会把自己报成被选中的元素）", deco.tagHits);
 
@@ -4270,8 +4284,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const pill = (await plug.locator("#pill").innerText().catch(() => "")).trim();
                   /* ⚠️ 药丸现在**带源码行号**（issue #46）—— 所以不再是全等比。
                      行号从样本里算出来，不写死。 */
-                  ok(new RegExp(`^<button\\.primary>\\s+L${lineOf("button class")}$`).test(pill),
-                     "**药丸写的是开始标签缩写 + 源码行号**（不是选择器路径）", pill || "（没有药丸）");
+                  ok(pill.replace(/\s+/g, " ").trim() === `${TAG_TEXT} L${lineOf("button class")}`,
+                     "**药丸写的是开始标签原文 + 源码行号**（不是选择器路径，也不是 `<button.primary>` 那种缩写）",
+                     pill || "（没有药丸）");
                   const tip = await plug.locator("#pill").getAttribute("title").catch(() => "");
                   ok(/button/.test(tip ?? "") && /main/.test(tip ?? ""), "完整选择器路径在悬停提示里", (tip ?? "").slice(0, 50));
                   /* 三档范围 */
@@ -4283,8 +4298,12 @@ console.log("\n插件 UI 的边界（M11-4）");
                   await plug.locator("#send").click();
                   await pg.waitForTimeout(1200);
                   const sel = (await pg.locator("aside").first().innerText().catch(() => "")).replace(/\s+/g, " ");
-                  ok(/插件回归样本\.html › <button\.primary>/.test(sel), "**点选的元素挂成了 range 药丸**",
-                     (sel.match(/插件回归样本\.html › [^\s]+/) ?? ["（没找到）"])[0]);
+                  /* ⚠️ 原文里有空格（`<button class="primary">`），而 `sel` 已经把空白压成单空格 ——
+                     所以这里**不能**再按 `[^\s]+` 取词。正则由原文转义出来，不手抄。 */
+                  const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                  ok(new RegExp(`插件回归样本\\.html › ${escRe(TAG_TEXT)}`).test(sel),
+                     "**点选的元素挂成了 range 药丸**（药丸文案也是开始标签原文）",
+                     (sel.match(/插件回归样本\.html › <[^›]{0,70}/) ?? ["（没找到）"])[0].trim());
 
                   /* ═══ 给 AI 的是**源码原文 + 行号**，不是活 DOM 的 outerHTML（issue #46）═══
                      原来发的是浏览器里那棵活 DOM 的 `outerHTML` —— 属性被规整过
