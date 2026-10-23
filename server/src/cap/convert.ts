@@ -124,24 +124,23 @@ defineCap({
        引擎的占位只保证不覆盖，不知道哪些名字是工具留给自己的。 */
     const predicted = posix.join(posix.dirname(src.rel), `${basename(src.rel).replace(/\.[^./\\]+$/, "")}.${extOf(target)}`);
     if (isToolArtifactPath(predicted)) throw bad("to", `成品会叫 ${predicted}，那是工具自己用的名字`, "先把源文件改个名再转。");
-    /* ⚠️⚠️ **成品不许是一份设计稿**（issue #173）。成品名 = 源名去掉最后一个扩展名 + 目标扩展名，
-       所以源文件叫 `首页.dc.txt` / `首页.dc.md` / `首页.dc.rtf` 转 html 时：
+    /* ⚠️⚠️ **这里原来有一道「成品不许是一份设计稿」的拒（issue #173），
+       2026-10-23（M16-7c-2c / C3）删了 —— 而它和 7a 那两道一样，是「自动失效」的。**
+       判准是 `kindOf(predicted) === "dc"`，而 C3 删掉 `dc` 这个 kind 条目之后
+       `kindOf` **永不回 `"dc"`**，这个 `if` 已经进不去了。
 
-           predicted = "首页.dc" + ".html" = "首页.dc.html"
-
-       而 `isToolArtifactPath` 只认 `index.dc.html` 和几个壳 —— 于是一份**没走 `write_draft`**
-       的 `.dc.html` 落进项目：没有归一化、没有 `@ds` 展开、没有 `__resources` 注入、
-       没有节点地址、没有语义快照和 changelog。**正是 CLAUDE.md §6 纪律① 点名的那种页**
-       （断网白屏），而 `kindOf` 按后缀就把它认成设计稿，索引和稿数会把它当正常稿收进去。
-       ⚠️ 对照：`writeAnyFile` 一进门就 `kindOf(clean) === "dc"` → 拒，「设计稿用 write_draft」——
-       **同一条规矩，转换这条路上漏了**。
+       它当初修的那件事值得整段留着：源文件叫 `首页.dc.txt` 转 html 时
+       `predicted = "首页.dc" + ".html" = "首页.dc.html"` —— 于是一份**没走 `write_draft`**
+       的设计稿落进项目（没有归一化 / `@ds` 展开 / `__resources` 注入 / 节点地址 / 语义快照），
+       **正是纪律① 点名的那种页**（断网白屏）。
        > **纪律① 说「一个都不例外」，而「例外」从来不是谁故意开的口子，
        > 是一条新路径没走到那道闸前面。**
-       ⚠️ txt / rtf → html 走的是 Mac 自带的 textutil，**不需要装任何东西** —— 本机就能走到。 */
-    if (kindOf(predicted) === "dc") {
-      throw bad("to", `成品会叫 ${predicted}，那是一份设计稿（.dc.html）`,
-        "设计稿只能从 `write_draft` 那条路生成（它要做归一化、`@ds` 展开、`__resources` 注入、节点地址和语义快照）。先把源文件改个名（去掉名字里的 `.dc`）再转。");
-    }
+       这句话本身没有过期 —— 它对以后任何「新开一条写文件的路」都成立。
+
+       ⚠️ **上面 `isToolArtifactPath(predicted)` 那道拒还在工作**，别一起删：
+       它认的是 `index.dc.html` 和几个壳，而**那些文件在用户的项目里还躺着**
+       （硬约束：不删），成品撞上它们的名字照样是个问题。 */
+
 
     const [r] = await convertEngine().convert({ files: [src.abs], to: target, options: quality ? { quality } : {} });
     const base = { path: src.rel, to: target };

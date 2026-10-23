@@ -381,6 +381,23 @@ async function step6_deleteAndImpact() {
   const trashItems = await listTrash(p);
   if (trashItems.length !== 1) { fail(`回收站里应该有 1 项，实际 ${trashItems.length}`); return; }
   ok(`回收站有 ${trashItems.length} 项`);
+  /* ⚠️⚠️ **`deletedAtIso` 是 2026-10-23（M16-7c-2c）新加的，而它修的是一处
+     「前端在替服务端补救」**：`deletedAt` 是回收站那个**时间戳目录的名字**
+     （`toISOString().replace(/[:.]/g, "-")`，文件名不能有冒号），`new Date()` 解析不了 ——
+     而 `Sheets.tsx` 里有个 `trashTimeIso()` 在把它还原回来。
+     > **一个在前端补救服务端格式的函数，意味着那个格式本来就该在服务端修。**
+     ⚠️ 两条分开钉：`deletedAtIso` 真的解得出来 · 而 `deletedAt` **仍是目录名**
+     （它是 `trashPath` 的一部分，恢复那条路要用）。
+     > 两个字段语义不同就该分开钉 —— 合成一条的话「两个都变成 ISO」也会绿，
+     > 而那会悄悄弄坏恢复。 */
+  {
+    const it0 = trashItems[0]!;
+    const iso = it0.deletedAtIso;
+    expect(!!iso && !Number.isNaN(new Date(iso).getTime()),
+      `回收站那一项的 \`deletedAtIso\` 是真 ISO（界面拿它算「删于多久前」）：${iso ?? "null"}`);
+    expect(it0.deletedAt !== iso && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/.test(it0.deletedAt),
+      `而 \`deletedAt\` **仍是那个目录名**（恢复那条路按它找）：${it0.deletedAt}`);
+  }
 
   // 删除后引用方应该报 E_IMPORT_MISSING —— 这是预期的
   const pageAbs = join(p.dir, "登录页.dc.html");

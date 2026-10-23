@@ -49,7 +49,8 @@ export interface FileEntry {
 export interface ListFilesResult {
   dir: string;
   entries: FileEntry[];
-  types: { dc: number; md: number; image: number; other: number };
+  /** ⚠️ `dc` 那一档 2026-10-23（C3）去掉了 —— 它恒为 0（见服务端 `files.ts` 的注释）。 */
+  types: { md: number; image: number; other: number };
   /** 截断之前这一层有多少项。⚠️ **`recursive` 那条路上它等于 `entries.length`** ——
    *  那条路扫到上限就停，算不出项目里一共有多少（服务端那份注释写了全文）。 */
   total?: number;

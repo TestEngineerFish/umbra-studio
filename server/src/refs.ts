@@ -540,14 +540,36 @@ export async function deleteDraft(
  *  于是 `trash_file("assets/img/a.png")` 在列表里显示成一个**目录** `assets`，
  *  对它「恢复」会把整个 `assets` 目录 `rename` 到项目根，
  *  项目根已有 `assets` 时目标变成 `assets 2.dc.html`（一个目录）。 */
+/** 回收站那个时间戳目录名 → 真 ISO。还原不出来回 `null`。
+ *
+ *  ⚠️⚠️ **2026-10-23（M16-7c-2c）加的，而它修的是一处「前端在替服务端补救」。**
+ *  目录名是 `new Date().toISOString().replace(/[:.]/g, "-")`（`files.ts` 的 `trashFile`），
+ *  例如 `2026-10-23T19-08-12-345Z` —— 而 `listTrash` 原来把**目录名**直接当
+ *  `deletedAt` 给出去，于是 `Sheets.tsx` 里有一个 `trashTimeIso()` 在把它还原回来。
+ *  > **一个在前端补救服务端格式的函数，意味着那个格式本来就该在服务端修。**
+ *
+ *  ⚠️ **还原不出来回 `null`，不回一个坏 ISO**：存量目录名可能是老版本的别的格式，
+ *  硬塞进去前端会显示 `Invalid Date`（`doc/00` §170 那条 `[object Object]` 同一族）。
+ *  > **拿不准的时候给 `null`，让界面照实说「时间不详」** —— 比给一个看起来像时间的垃圾好。
+ *
+ *  ⚠️ 只还原 `T` 之后那三个 `-`：**日期部分的 `-` 不能动**。 */
+export function trashStampToIso(stamp: string): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(stamp);
+  if (!m) return null;
+  const iso = `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`;
+  /* ⚠️ 还要**真的解得出来**才算 —— 正则形状对而日期非法（`2026-13-45`）时
+     `new Date()` 回 Invalid Date，而那又是一个「看起来像时间的垃圾」。 */
+  return Number.isNaN(new Date(iso).getTime()) ? null : iso;
+}
+
 export async function listTrash(
   p: Project,
-): Promise<Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }>> {
+): Promise<Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string; deletedAtIso: string | null }>> {
   const { readdir } = await import("node:fs/promises");
   const trashRoot = assetDir(p.dir, "trash");
   if (!existsSync(trashRoot)) return [];
 
-  const items: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }> = [];
+  const items: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string; deletedAtIso: string | null }> = [];
   const timestamps = await readdir(trashRoot, { withFileTypes: true });
   for (const ts of timestamps) {
     if (!ts.isDirectory()) continue;
@@ -561,7 +583,10 @@ export async function listTrash(
           trashPath: relative(trashRoot, abs).split(sep).join("/"),
           originalPath,
           originalName: basename(originalPath),
+          /* `deletedAt` 仍是**目录名** —— 它是 `trashPath` 的一部分，恢复那条路要用它。
+             时间另给一个字段，语义就分开了（一个是地址，一个是时刻）。 */
           deletedAt: ts.name,
+          deletedAtIso: trashStampToIso(ts.name),
         });
       }
     };

@@ -53,7 +53,7 @@ ok("图片尺寸从文件头读（png 1×1 · svg 48×24）",
    所以**另一份是悄悄坏的**。两处已经抽成 `bumpTypeCount` 一处，这一条钉住另一头。
    > **两份相同的判断，就是两个会一起过期、而只有一个会被发现的地方。** */
 ok("**`listFiles` 的类型统计也对**（矢量图算进「图」那一档，不落 other）",
-  l.types.dc === 0 && l.types.md === 1 && l.types.image === 2 && l.types.other === 3, l.types);
+  l.types.md === 1 && l.types.image === 2 && l.types.other === 3, l.types);
 ok("md 摘录跳过 frontmatter", l.entries.find((e) => e.name === "需求.md")?.excerpt === "# 日志页需求");
 
 const r1 = await readAnyFile(p, "需求.md");
@@ -145,11 +145,12 @@ ok("快照元数据：version / src / at 齐", meta.length === 3 && meta[0]!.ver
 ok("**`referencesOf` 现在回空**（它扫的是「稿」，而 C3 之后没有稿了 —— `list_file_refs` 要跟着处理，见 M16-7c）",
    (await referencesOf(p, "图.png")).length === 0);
 const t = await countTypes(p);
-/* ⚠️ **`dc` 那一档现在恒为 0**（C3：没有「设计稿」这种 kind 了），而 `.dc.html`
-   按 `html` 落进 `other` —— 因为那四档是粗分类，`html` 本来就不在里面
-   （`bumpTypeCount` 的注释写着最后那个 `else` 是个黑洞）。
-   ⏳ 这四档的语义在 C3 之后要重新想（`dc` 那一档没有对象了），归 M16-7c。 */
-ok("countTypes 全项目分布（`dc` 档恒 0，`.dc.html` 按 html 落 other）", t.dc === 0 && t.md === 2 && t.image === 2 && t.other === 3, t);
+/* ⚠️ **`dc` 那一档 2026-10-23（M16-7c-2c）去掉了** —— 它恒为 0，而
+   > **一个恒为 0 的读数比没有这个读数糟**：它看起来是「这个项目没有设计稿」，
+   > 而真相是「没有设计稿这个概念了」。
+   `.dc.html` 按 `html` 落进 `other`（那三档是粗分类，`html` 本来就不在里面 ——
+   `bumpTypeCount` 的注释写着最后那个 `else` 是个黑洞，**加新 kind 的人请回来看一眼**）。 */
+ok("countTypes 全项目分布（三档；`.dc.html` 按 html 落 other）", t.md === 2 && t.image === 2 && t.other === 3, t);
 
 const mv = await moveFile(p, "图.png", "assets/图.png");
 ok("move_file 挪得动文件", mv.to === "assets/图.png" || !!mv);
@@ -1780,6 +1781,27 @@ console.log("\n⑮ 指向项目外的符号链接（issue #140）");
      flat.entries.every((e) => !e.path.includes("/")), flat.entries.filter((e) => e.path.includes("/")).length + " 条带 /");
 
   await rm(R, { recursive: true, force: true });
+}
+
+/* ── ⓢ 回收站时间戳 → 真 ISO（M16-7c-2c，2026-10-23）───────────────────────
+   纯函数，所以放在这里而不是 `lifecycletest`（那边验的是「真删一份之后那一项长什么样」）。
+   ⚠️ **三条里最要紧的是后两条**：还原不出来必须回 `null`，而不是一个坏 ISO ——
+   存量目录名可能是老版本的别的格式，硬塞进去前端会显示 `Invalid Date`
+   （`doc/00` §170 那条 `[object Object]` 同一族）。
+   > **拿不准的时候给 `null`，让界面照实说「时间不详」—— 比给一个看起来像时间的垃圾好。** */
+{
+  const { trashStampToIso } = await import("./refs.js");
+  ok("**正常目录名还原成真 ISO**", trashStampToIso("2026-10-23T10-45-00-123Z") === "2026-10-23T10:45:00.123Z",
+     trashStampToIso("2026-10-23T10-45-00-123Z") ?? "null");
+  ok("**形状不对的回 `null`**（不回原串、也不回坏 ISO）", trashStampToIso("随便一个目录名") === null,
+     String(trashStampToIso("随便一个目录名")));
+  /* ⚠️ 这一条是「正则形状对而日期非法」—— 只看正则的话它会过，
+     然后 `new Date()` 回 Invalid Date，而那又是一个「看起来像时间的垃圾」。 */
+  ok("**形状对而日期非法的也回 `null`**（`2026-13-45` 这种）", trashStampToIso("2026-13-45T99-99-99-999Z") === null,
+     String(trashStampToIso("2026-13-45T99-99-99-999Z")));
+  /* ⚠️ 日期部分的 `-` 不许被动 —— 只还原 `T` 之后那三个。 */
+  ok("日期部分的 `-` 没被当成分隔符动掉", (trashStampToIso("2026-10-23T10-45-00-123Z") ?? "").startsWith("2026-10-23T"),
+     trashStampToIso("2026-10-23T10-45-00-123Z") ?? "null");
 }
 
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);

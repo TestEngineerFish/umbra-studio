@@ -946,7 +946,7 @@ type ProjInfo = {
   draftCount: number;
   /** ⚠️ `listTrash` 真实返回的就是这四个字段 —— **没有 `size`**。
       原稿里有 `{{ item.size }}`，那是演示态的字段，画它只会显示 `undefined`。 */
-  trash?: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }>;
+  trash?: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string; deletedAtIso?: string | null }>;
 };
 
 /* ══════════ 项目设置的三块（M16-6，2026-10-23）══════════
@@ -965,25 +965,26 @@ type ProjInfo = {
  *  「标题用于**索引页**显示」→ 索引页是 `build_index` 生成的，一起删；
  *  「被删的**稿**」/「恢复后**引用关系**也会恢复」→ 回收站对任何文件成立，而引用关系是 dc 的概念。 */
 
-/** 回收站那个 `deletedAt` 转成能解析的 ISO。
+/* ⚠️⚠️ **`trashTimeIso()` 2026-10-23（M16-7c-2c）删了 —— 服务端改好了，前端不用再补救。**
  *
- *  ⚠️⚠️ **它不是 ISO，而它长得像**：`listTrash`（`refs.ts`）给的是
- *  **回收站里那个时间戳目录的名字**，而建目录时 `files.ts:937` 做过
- *  `new Date().toISOString().replace(/[:.]/g, "-")` —— 文件名不能有冒号。
- *  所以它是 `2026-10-23T10-45-00-123Z` 这种形状，`new Date()` **解析不了**，
+ *  它当初存在的理由，以及那条教训，整段留着：
+ *  `listTrash` 给的 `deletedAt` **不是 ISO，而它长得像** ——
+ *  那是回收站里那个时间戳**目录的名字**，建目录时做过
+ *  `new Date().toISOString().replace(/[:.]/g, "-")`（文件名不能有冒号）。
+ *  所以它是 `2026-10-23T10-45-00-123Z` 这种形状，`new Date()` 解析不了，
  *  直接喂给 `timeAgo` 界面上会写「删于 **Invalid Date**」（实测踩到）。
- *  ⚠️ 原稿没有这个问题，因为它是 `{{ item.deletedAt }}` **原样显示**那个串；
- *  是我搬成原生时改用了 `timeAgo`，而**假设了那个字段是 ISO**。
- *  > 一个字段叫 `deletedAt`、长得像时间戳、而实际是目录名 ——
- *  > **我按名字信了它，没去看它怎么产生的。**
- *  ⚠️ 认不出来就**原样返回**（而不是返回空或 `Invalid Date`）：
- *  一串看不懂的时间戳也比「Invalid Date」有用，至少它是真数据。
- *  ⏳ 更干净的做法是服务端另给一个真 ISO 字段 —— 那要改 `listTrash` 的返回形状，
- *  而它今天还有第二个消费者（那份稿），M16-7 删了稿之后可以做。 */
-function trashTimeIso(stamp: string): string {
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(stamp);
-  return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z` : stamp;
-}
+ *  > **一个字段叫 `deletedAt`、长得像时间戳、而实际是目录名 ——
+ *  > 我按名字信了它，没去看它怎么产生的。**
+ *
+ *  ⚠️ 而更该记的是**为什么拖到今天才修**：那段注释自己写着
+ *  「更干净的做法是服务端另给一个真 ISO 字段 —— 那要改 `listTrash` 的返回形状，
+ *  而它今天还有第二个消费者（那份稿），**M16-7 删了稿之后可以做**」。
+ *  稿 7c-2b 删了，于是这件事到期了。
+ *  > **一个「等某件事发生之后再做」的尾巴，要写在它会被重新读到的地方** ——
+ *  > 这一条写在了它自己头上，所以删那份稿的人（我）正好看见它。
+ *
+ *  现在服务端给 `deletedAtIso`（还原不出来就是 `null`），界面照实说「时间不详」。 */
+
 
 /** 基本信息：现在只剩标题（`update_project` 的另外六个字段都属于那两块要删的）。 */
 function ProjectBasicPanel({ core, info, reload }: { core: Core; info: ProjInfo | null; reload: () => void }) {
@@ -1059,7 +1060,9 @@ function TrashPanel({ core, info, reload }: { core: Core; info: ProjInfo | null;
                   <div className="text-[12px] truncate" title={it.originalPath}>{it.originalName}</div>
                   {/* ⚠️ **不显示大小** —— 原稿有 `{{ item.size }}`，而 `listTrash` 真实返回的
                       四个字段里没有 size。画一个取不到的字段只会显示 `undefined`。 */}
-                  <div className="text-[11px] text-muted truncate">{it.originalPath} · 删于 {timeAgo(trashTimeIso(it.deletedAt))}</div>
+                  {/* ⚠️ `deletedAtIso` 为 `null`（存量目录名是别的格式）时照实说「时间不详」——
+                      给一个看起来像时间的垃圾（`Invalid Date`）比不给糟。 */}
+                  <div className="text-[11px] text-muted truncate">{it.originalPath} · {it.deletedAtIso ? `删于 ${timeAgo(it.deletedAtIso)}` : "删除时间不详"}</div>
                 </div>
                 <button className="btn" disabled={!!busy}
                         onClick={() => void act("trash_restore", { trashPath: it.trashPath }, it.trashPath, `恢复了 ${it.originalName}`)}>

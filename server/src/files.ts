@@ -268,7 +268,12 @@ export interface ListFilesResult {
   dir: string;
   entries: FileEntry[];
   /** 这一层里非目录文件的类型分布，给「自动网格」与 S1 的类型统计用 */
-  types: { dc: number; md: number; image: number; other: number };
+  /** 这一层里非目录文件的类型分布。
+   *  ⚠️ **原来是四档，2026-10-23（M16-7c-2c / C3）去掉了 `dc` 那一档** ——
+   *  `kindOf` 不再回 `"dc"`，那一档**恒为 0**。
+   *  > **一个恒为 0 的读数比没有这个读数糟**：它看起来是「这个项目没有设计稿」，
+   *  > 而真相是「没有设计稿这个概念了」。 */
+  types: { md: number; image: number; other: number };
   /** 这一层实际有多少项（截断之前）。界面用它显示「还有 N 项」。
    *  ⚠️ **`recursive` 那条路上它等于 `entries.length`** —— 那条路扫到上限就停，
    *  压根不知道项目里一共有多少个文件。要说「还有多少」就得先走完全项目，
@@ -311,7 +316,7 @@ export const WALK_MAX = 5000;
  *  走进去等于拿 git 的 object 数量去填这 5000 个名额）。 */
 async function walkAll(p: Project, limit: number): Promise<ListFilesResult> {
   const entries: FileEntry[] = [];
-  const types = { dc: 0, md: 0, image: 0, other: 0 };
+  const types = { md: 0, image: 0, other: 0 };
   const { showHiddenFiles } = await (await import("./uiprefs.js")).getUiPrefs();
   let truncated = false;
   const queue: string[] = [""];
@@ -355,7 +360,7 @@ export async function listFiles(p: Project, dirRel = "", limit?: number, opts?: 
       `${dirRel || "项目根"} 不是一个目录`, { fix: "先用 list_files 看看上一层有什么" }));
   }
   const entries: FileEntry[] = [];
-  const types = { dc: 0, md: 0, image: 0, other: 0 };
+  const types = { md: 0, image: 0, other: 0 };
   /* ⚠️ **动态 import**：`uiprefs.ts` 要 `STATE_ROOT`（在 `project.ts`），静态引会绕回本文件成环 ——
      和上面读 `plugin/limits.ts` 完全同一条路。 */
   const { showHiddenFiles } = await (await import("./uiprefs.js")).getUiPrefs();
@@ -411,16 +416,15 @@ export async function listFiles(p: Project, dirRel = "", limit?: number, opts?: 
  *  **每加一种 kind，它都会默默落进 `other`**，而没有任何东西会报警。
  *  这和「安全线是白名单不是黑名单」（M14-3）是同一个形状：
  *  那次的后果是「会被误删」，这次是「会被误归类」。**加新 kind 的人请回来看一眼。** */
-function bumpTypeCount(types: { dc: number; md: number; image: number; other: number }, kind: string): void {
-  if (kind === "dc") types.dc++;
-  else if (kind === "md") types.md++;
+function bumpTypeCount(types: { md: number; image: number; other: number }, kind: string): void {
+  if (kind === "md") types.md++;
   else if (IMAGE_LIKE_KINDS.includes(kind)) types.image++;
   else types.other++;
 }
 
 /** 整个项目的类型统计（S1 的 `project.types`）。 */
-export async function countTypes(p: Project): Promise<{ dc: number; md: number; image: number; other: number }> {
-  const t = { dc: 0, md: 0, image: 0, other: 0 };
+export async function countTypes(p: Project): Promise<{ md: number; image: number; other: number }> {
+  const t = { md: 0, image: 0, other: 0 };
   const { showHiddenFiles } = await (await import("./uiprefs.js")).getUiPrefs();
   const walk = async (dirRel: string): Promise<void> => {
     for (const e of await readdir(safeJoin(p, dirRel), { withFileTypes: true })) {
