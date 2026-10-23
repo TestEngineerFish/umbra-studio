@@ -299,8 +299,20 @@ function TabMenu({ ctx, tabs, isDirty, onClose, on }: {
   );
 }
 
-/** 文件类型 → 图标名（第九轮那 56 颗里的） */
+/** 文件类型 → 图标名（第九轮那 56 颗里的）。
+ *
+ *  ⚠️⚠️ **这是第二套图标系统** —— 目录列用的是 `kindDef(kind).icon`（`shared/kinds.ts` 里那个字符），
+ *  页签条用这张表 + `Glyph`（SVG）。两套各有理由（树里一个字符就够，页签要和顶栏一套线条），
+ *  **而它们是两个会分叉的地方**：这张表少一个 kind 不会报错，只会**静默回落到通用文件图标**，
+ *  于是「同一个文件在树里是 ◇、在页签上是一张白纸」。
+ *  > **一个带 `?? 兜底` 的查表，漏一项的症状是「看起来有点不对」，不是报错。**
+ *
+ *  ⚠️ 2026-10-23 这里改了两处，而**两处都是别的改动的尾巴，自己不会报警**：
+ *  · 删 `dc`（C3 / M16-7c：没有这个 kind 了，它是一个永远查不到的死键）
+ *  · 加 `svg`（**Q84 的第五个尾巴**）—— 拆出 `svg` kind 时漏了这张表，
+ *    于是 `.svg` 的页签图标回落成通用文件。用 `file-image` 是因为 sam 定的边界是
+ *    「图片能显示就显示」，而矢量图在我们这儿**就是图**（看图模块画它）。 */
 const ICON_OF: Record<string, IconName> = {
-  dc: "file-dc", md: "file-md", image: "file-image", json: "file-json",
+  md: "file-md", image: "file-image", svg: "file-image", json: "file-json",
   code: "file-code", html: "file-web", other: "file", dir: "folder",
 };

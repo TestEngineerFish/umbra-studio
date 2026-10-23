@@ -3,7 +3,7 @@ import type { Core } from "../../api/client";
 import { fmtSize, timeAgo, type FileEntry, type ListFilesResult } from "../../api/types";
 import { toast, stuckOf, type MoveOut } from "../../ui/Toast";
 import { askText } from "../../ui/Ask";
-import { kindDef } from "@shared/kinds";
+import { IMAGE_LIKE_KINDS, kindDef } from "@shared/kinds";
 
 /** 目录视图（S12 形制，M8-3 / M8-4）。
  *  默认列表；**非目录文件里图片 ≥ 60% 且 ≥ 6 张**时自动切网格，并在视图开关旁说明为什么是网格。
@@ -19,20 +19,25 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, man
   core: Core; dirRel: string; onOpen: (path: string, isDir: boolean) => void;
   onSelectionChange: (paths: string[]) => void; selected: string[];
   manual: Record<string, "list" | "grid">;
-  /** 把读数交给工具栏与状态行：总项数、**几份稿**（`⋯` 浮层头要它，M8-33）、自动网格的理由 */
-  onCounts: (c: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" }) => void;
+  /** 把读数交给工具栏与状态行：总项数、自动网格的理由。
+   *  ⚠️ 原来还有一项 `drafts`（「3 份稿」）—— C3（M16-7）删了：
+   *  它数的是 `.dc.html`，而那不再是一种有特殊地位的文件。 */
+  onCounts: (c: { total: number; autoNote: string | null; view: "list" | "grid" }) => void;
 }) {
   const [data, setData] = useState<ListFilesResult | null>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => { setData(null); void core.get<ListFilesResult>(`files?dir=${encodeURIComponent(dirRel)}`).then((r) => { if (r.ok && r.data) setData(r.data); else toast("读目录失败", r.errors?.[0]?.message, "error"); }); }, [core, dirRel, tick]);
 
   const files = useMemo(() => (data?.entries ?? []).filter((e) => !e.isDir), [data]);
-  const images = files.filter((e) => e.kind === "image").length;
+  /* ⚠️ **矢量图也算图**（Q84 的尾巴）：拆出 `svg` kind 那一下这里漏了，
+     于是一个全是 `.svg` 的目录永远不会自动切成网格 —— 而那正是最该用网格看的目录。
+     服务端两处当时收口成了 `IMAGE_LIKE_KINDS`，前端这一处落在那次搜索外面。 */
+  const images = files.filter((e) => IMAGE_LIKE_KINDS.includes(e.kind)).length;
   const auto: "list" | "grid" = images >= AUTO_MIN && files.length > 0 && images / files.length >= AUTO_SHARE ? "grid" : "list";
   const view = manual[dirRel] ?? auto;
   const autoNote = !manual[dirRel] && auto === "grid" ? `图片 ${images} / ${files.length} · 自动网格` : null;
   /* 读数交给工具栏 —— 它和视图不在一个渲染位置，只能这样递上去 */
-  useEffect(() => { onCounts({ total: data?.entries.length ?? 0, drafts: (data?.entries ?? []).filter((e) => !e.isDir && e.name.endsWith(".dc.html")).length, autoNote, view });
+  useEffect(() => { onCounts({ total: data?.entries.length ?? 0, autoNote, view });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, autoNote, view]);
 

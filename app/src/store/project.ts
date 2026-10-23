@@ -1,139 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core, UdEvent } from "../api/client";
-import { baseName, type ChangesData, type Comment, type Diag, type Draft, type Health, type SourceData } from "../api/types";
-import { toast } from "../ui/Toast";
 
-/** 一个项目在前端的状态：稿件列表 / 当前稿 / 诊断 / 评论 / 变更 / 源码，以及拉取它们的函数。
- *  和旧前端 fetchDrafts / fetchDiagnostics / fetchComments / fetchChanges 同一份 API 用法。 */
-export function useProject(core: Core, dir: string, designProject?: boolean) {
-  const [drafts, setDrafts] = useState<Draft[]>([]);
-  const [indexed, setIndexed] = useState(true);
+/** 一个项目在前端的状态：**当前选中的文件、WS 连接、以及「这个文件什么时候变的」**。
+ *
+ *  ⚠️⚠️ **这个文件 2026-10-23（M16-7c / C3）从 19 个导出砍到 5 个。**
+ *  砍掉的 14 个全是设计稿那一套：
+ *  `drafts` / `indexed` / `fetchDrafts`（稿清单 + 自动建索引）·
+ *  `diags` / `fetchDiagnostics`（诊断，读 `validate_draft`）·
+ *  `comments` / `stash` / `fetchComments` / `fetchStash`（**节点评论**和它的暂存区，M8-32）·
+ *  `changes` / `fetchChanges`（稿的语义变更清单）·
+ *  `source` / `fetchSource`（dc 的源码视图）·
+ *  `checking` / `runCheck`（`render_check` 体检）· `rebuildIndex`。
+ *
+ *  ⚠️ **删法是「先删掉，让编译错误带路」**，而不是先 grep 一遍再删 ——
+ *  本项目反复证明过 grep 找不全（M16-7b 那两条 404 就是 grep 漏掉的）：
+ *  > **让「漏掉」变成编译错误，比让「漏掉」变成一条要人记得的纪律可靠。**
+ *
+ *  留下的五个和 dc 无关：`selected` / `select`（当前文件）·
+ *  `lastEvent` / `wsState`（WS）· `fileTick`（文件什么时候变的）。 */
+export function useProject(core: Core, dir: string) {
   const [selected, setSelectedRaw] = useState<string | null>(null);
-  const [diags, setDiags] = useState<Diag[]>([]);
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [changes, setChanges] = useState<ChangesData | null>(null);
-  const [source, setSource] = useState<SourceData | null>(null);
-  const [checking, setChecking] = useState<string | null>(null);
   const [lastEvent, setLastEvent] = useState<UdEvent | null>(null);
   const [wsState, setWsState] = useState<"open" | "closed">("closed");
-  const autoIndexed = useRef(false);
   const sel = useRef<string | null>(null); sel.current = selected;
-
-  const fetchDrafts = useCallback(async () => {
-    const r = await core.get<{ drafts?: Array<Partial<Draft> & { file: string }>; files?: string[]; indexed: boolean }>("drafts");
-    if (!r.ok || !r.data) { toast("获取稿件列表失败", r.errors?.[0]?.message, "error"); return; }
-    if (r.data.indexed === false && !autoIndexed.current) {   // 从没建过索引：壳、桥、健康读数都靠它，先建一次（只试一次）
-      autoIndexed.current = true;
-      /* ⚠️ **这一句 2026-10-21 加了条件**（M14-4 B3）：它原来是「没索引就自动建一个」，
-         而建索引=往用户目录里部署 780 KB。于是「打开目录零写入」在服务端做到了，
-         界面一挂载就**又给补回来**。
-         现在只有**已经接管过的设计项目**才自动重建；普通目录走工作台顶部那条横条
-         （服务端那边 `rebuild_index` 也装了同一道闸，两边都守）。 */
-      if (designProject !== false) {
-        try { await core.post("rebuild_index", {}); return fetchDrafts(); } catch { /* 建不了就用文件名 */ }
-      }
-    }
-    setIndexed(r.data.indexed !== false);
-    setDrafts((prev) => {
-      const old = new Map(prev.map((d) => [d.file, d]));
-      const rows: Array<Partial<Draft> & { file: string }> = r.data!.drafts ?? (r.data!.files ?? []).map((f) => ({ file: f }));
-      return rows.map((d) => ({
-        file: d.file, title: d.title || baseName(d.file).replace(/\.dc\.html$/, ""), kind: (d.kind as Draft["kind"]) || "page",
-        health: (d.health as Health) || "unchecked", healthWhy: d.healthWhy || (r.data!.indexed ? "" : "还没建过索引"),
-        diagnostics: d.diagnostics || { errors: 0, warnings: 0 }, elements: d.elements ?? old.get(d.file)?.elements ?? null,
-        version: d.version ?? old.get(d.file)?.version ?? null, updatedAt: d.updatedAt ?? null, states: d.states ?? [], imports: d.imports ?? [], importedBy: d.importedBy ?? [],
-      }));
-    });
-  }, [core]);
-
-  const fetchDiagnostics = useCallback(async (file: string) => {
-    const r = await core.get<{ diags: Diag[]; stats?: { elements?: number; kind?: string }; workspace?: { version?: string }; check?: { alive: boolean; nodeCount: number; renderMs: number; counts?: Record<string, number> } | null; checkStale?: boolean }>("validate?file=" + encodeURIComponent(file));
-    if (!r.data) return;
-    const ds = r.data.diags ?? [];
-    if (sel.current === file) setDiags(ds);
-    const errors = ds.filter((d) => d.level === "error").length, warnings = ds.filter((d) => d.level === "warning").length;
-    const chk = r.data.checkStale ? null : r.data.check;
-    // 健康四色按 indexpage.judgeHealth 的口径就地重算：宁可说不知道，不可以说通过
-    let health: Health, why: string;
-    if (errors) { health = "error"; why = `${errors} 条 error 级诊断，落盘会被拒`; }
-    else if (chk && !chk.alive) { health = "error"; why = "体检时页面没画出来"; }
-    else if (!chk) { health = "unchecked"; why = r.data.check ? "稿改过之后没再体检，旧读数不算数" : "还没跑过 render_check"; }
-    else if (warnings || (chk.counts && (chk.counts.unresolvedHoles || chk.counts.externalRequests || chk.counts.missingResources))) { health = "warn"; why = warnings ? `${warnings} 条 warning` : "体检有提醒（洞 / 外部请求 / 404）"; }
-    else { health = "ok"; why = `静态校验干净，体检 ${chk.nodeCount} 节点 · ${chk.renderMs} ms`; }
-    setDrafts((prev) => prev.map((d) => d.file === file ? { ...d, health, healthWhy: why, diagnostics: { errors, warnings }, elements: r.data!.stats?.elements ?? d.elements, kind: (r.data!.stats?.kind as Draft["kind"]) ?? d.kind, version: r.data!.workspace?.version ?? d.version } : d));
-  }, [core]);
-
-  const fetchComments = useCallback(async (file: string) => {
-    const r = await core.get<{ comments: Comment[] }>("comments?file=" + encodeURIComponent(file));
-    if (sel.current === file) setComments(r.data?.comments ?? []);
-    void fetchStash();
-  }, [core]);
-  /** 暂存的评论（还没发给 AI、也还没标已处理）。
-   *  ⚠️ **不按当前文件过滤** —— 设计侧第十一轮 §二.5：「暂存区跟着当前会话的输入框走，
-   *  切文件不会丢；每条自己带着文件路径」。评审是跨文件的，一份份发才是反常的。 */
-  const [stash, setStash] = useState<Comment[]>([]);
-  const fetchStash = useCallback(async () => {
-    const r = await core.get<{ comments: Comment[] }>("comments");
-    setStash((r.data?.comments ?? []).filter((c) => !c.sentAt && !c.resolved));
-  }, [core]);
-  const fetchChanges = useCallback(async (file: string) => {
-    const r = await core.get<ChangesData>("changes?file=" + encodeURIComponent(file));
-    if (sel.current === file) setChanges(r.ok && r.data ? r.data : null);
-  }, [core]);
-  const fetchSource = useCallback(async (file: string) => {
-    const r = await core.get<SourceData>("source?file=" + encodeURIComponent(file));
-    if (sel.current === file && r.ok && r.data) setSource(r.data);
-  }, [core]);
 
   const select = useCallback((file: string | null) => {
     setSelectedRaw(file); sel.current = file;
-    setDiags([]); setComments([]); setChanges(null); setSource(null);
-    /* ⚠️⚠️ **这里原来按文件名后缀触发三个 dc 专属请求**：
-       `if (file && /\.dc\.html$/.test(file)) { fetchDiagnostics; fetchComments; fetchChanges }`。
-       C3（M16-7）之后三件事（诊断 / 评论 / 变更清单）**都没有对象了** ——
-       诊断是 `validate_draft` 的读数、评论挂在节点地址上、变更清单是稿的语义版本，
-       所以每打开一份 `.dc.html` 就发三个**必定空**的请求，纯浪费。
-       > **一个按文件名后缀的判断，和一个按 kind 的判断，
-       > 在 kind 表变了的那一天会分道扬镳** —— 这一行就是那种后缀判断。
-       ⚠️ **照实更正一句**：我一度以为这三个请求在 C3 之后会回 **400**，
-       而实测**不会** —— 当时读数里那三条 400 的真正原因是「**那个文件被判据挪走了**」
-       （`select` 按「上次打开的文件」请求一个已经不在的路径）。
-       > **读数里的因果，不会因为它出现在我改完之后就属于我的改动。**
-       ⏳ `fetchDiagnostics` / `fetchComments` / `fetchChanges` 这三个函数、
-       以及 `panels/` 里那几个面板，现在**没有调用方了** —— 归 M16-7b 清理
-       （这一步只改「用户看到什么」，不做纯删除）。 */
   }, []);
 
-  /** 体检：POST check → 轮询 check_status；完了重建索引再拉列表（健康读数是索引算的） */
-  const runCheck = useCallback(async (file: string) => {
-    setChecking(file);
-    try {
-      const r = await core.post<{ jobId: string }>("check", { file });
-      if (!r.ok || !r.data) throw new Error(r.errors?.[0]?.message ?? "起作业失败");
-      for (let i = 0; i < 120; i++) {
-        await new Promise((res) => setTimeout(res, 1000));
-        const s = await core.get<{ running: boolean; ok: boolean | null; error?: { message?: string }; result?: { result?: { alive: boolean; nodeCount: number; renderMs: number } } }>("check_status?job=" + encodeURIComponent(r.data.jobId));
-        if (s.data && s.data.running === false) {
-          if (s.data.error) toast("体检出错", s.data.error.message, "error");
-          else { const rr = s.data.result?.result; toast(rr?.alive === false ? "体检完成：页面没画出来（1+1 都算不出）" : `体检完成：${rr?.nodeCount ?? "?"} 节点 · ${rr?.renderMs ?? "?"} ms`, undefined, rr?.alive === false ? "error" : "ok"); }
-          break;
-        }
-      }
-    } catch (e) { toast("体检失败", String((e as Error).message ?? e), "error"); }
-    finally {
-      setChecking(null);
-      try { await core.post("rebuild_index", {}); } catch { /* 旧读数 */ }
-      await fetchDrafts(); if (sel.current) void fetchDiagnostics(sel.current);
-    }
-  }, [core, fetchDrafts, fetchDiagnostics]);
-
-  const rebuildIndex = useCallback(async () => {
-    toast("正在重建索引…"); const r = await core.post("rebuild_index", {});
-    if (r.ok) { toast("索引重建完成", undefined, "ok"); await fetchDrafts(); } else toast("索引重建失败", r.errors?.[0]?.message, "error");
-  }, [core, fetchDrafts]);
-
-  // 首次进项目拉列表；WS 事件到了按需刷新
-  useEffect(() => { void fetchDrafts(); }, [fetchDrafts, dir]);
   /* 「这个文件什么时候变的」——**以文件系统为准，不管是谁改的**。
    *
    * 原来右侧详情靠 `write` 事件刷新，而 `write` 只有我们自己进程里的写入口会发。
@@ -141,24 +35,23 @@ export function useProject(core: Core, dir: string, designProject?: boolean) {
    * 于是「Codex 改完文件，右边还是旧的」（2026-09-24 用户实测）。
    * 换成认 `fs`（serve 里的 fs.watch，macOS 上底层就是 FSEvents）之后，
    * 别的编辑器、终端、甚至 Finder 改的也一样能刷 —— 判据从「谁改的」换成「文件变没变」。
-   * `write` 仍然收：它比文件事件早到一点，而且带得动 changes 列表。 */
+   * `write` 仍然收：它比文件事件早到一点。 */
   const [changedAt, setChangedAt] = useState<Record<string, number>>({});
   useEffect(() => core.events((e) => {
     setLastEvent(e);
     if (e.type === "write" || e.type === "fs") {
-      void fetchDrafts();
       const p = e.payload as { file?: string; changes?: string[] };
       const touched = [...(p.file ? [p.file] : []), ...(p.changes ?? [])];
       if (touched.length) setChangedAt((m) => { const n = { ...m }; const t = Date.now(); for (const f of touched) n[f] = t; return n; });
-      /* ⚠️ 同上（M16-7 / C3）：这里原来也按 `.dc.html` 后缀去拉诊断和变更，
-         而那两件在 C3 之后没有对象了，整个去掉。
-         （原注释说「对 .md / 图片调这两条路由是 400」—— 那条机制对**不存在的文件**
-         成立，对一份存在的非稿文件实测回的是空结果，见上面那段的更正。） */
     }
-  }, setWsState), [core, fetchDrafts, fetchDiagnostics, fetchChanges]);
+  }, setWsState), [core]);
   /** 某个文件最后一次变化的时刻。视图把它放进 deps 就会跟着重载。 */
   const fileTick = useCallback((path: string | null) => (path ? changedAt[path] ?? 0 : 0), [changedAt]);
+  /* ⚠️ `dir` 现在只是「换项目时让这个 hook 重新来一遍」的信号 —— 原来它还驱动
+     `fetchDrafts` 的 effect。留着它（而不是去掉这个参数）是因为**换项目时
+     `selected` 必须清掉**，否则新项目会带着上一个项目的选中文件。 */
+  useEffect(() => { setSelectedRaw(null); sel.current = null; }, [dir]);
 
-  return { drafts, indexed, selected, select, diags, comments, stash, changes, source, checking, lastEvent, wsState, fileTick, fetchDrafts, fetchDiagnostics, fetchComments, fetchStash, fetchChanges, fetchSource, runCheck, rebuildIndex };
+  return { selected, select, lastEvent, wsState, fileTick };
 }
 export type ProjectStore = ReturnType<typeof useProject>;

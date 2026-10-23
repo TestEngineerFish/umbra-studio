@@ -8,6 +8,7 @@ import { stripComments } from "./shared/stripcomments.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { allCaps, capsFor, httpRoutes } from "./cap/index.js";
+import { TOOL_ROOT } from "./project.js";
 
 let pass = 0, fail = 0;
 const ok = (c: boolean, what: string, detail = "") => {
@@ -230,6 +231,83 @@ for (const n of wasHttpOnly) {
     console.log(`  ⚠ 中间状态：稿里还在调 ${goneButUsed.length} 条 C3 删掉的路由 —— ${goneButUsed.slice(0, 4).join(" · ")}`);
     console.log("           那几份稿已经没人打开（M16-7a 摘掉了 dc 模块），7c 删掉 ui/ 和部署逻辑时一起消失。");
   }
+}
+
+/* ══════════ **前端（`app/src`）也是调用方，而它原来一条判据都没有** ══════════
+   上面那一节钉的是 `ui/` 的设计稿，2026-10-23（M16-7b）证明了那还不够：
+   删掉 `list_drafts` / `build_index` 之后全套跑出 `404 /__ud/drafts` 与
+   `404 /__ud/rebuild_index`，而**十九套回归没有一套会红** ——
+   前端调的是 HTTP 路由，而这个缺口正好在 `apitest`（只调它自己点名的那几条）
+   和 `uitest`（跑得到的那几条）之间。
+
+   > **判断一个前端调用会不会坏，不能只看「用户能不能点到它」 ——
+   > 还要看「它会不会自己跑」**：`fetchDrafts` 是挂载时就调的，
+   > `Sheets` 的重名检查是 `.catch(() => {})` 吞掉的（它失效之后，
+   > 长得和「查过了，没有重名」一模一样）。
+
+   ⚠️ **候选名单必须独立于「现在有什么」**（和上一节同一条纪律）——
+   拿现存路由表去前端搜是循环的。这里从**调用写法** `core.get(…)` / `core.post(…)` 抽。
+   ⚠️⚠️ **抽取方向是「宽松 + 排除」，不是「限定接收者名」** —— 这一条当场验证过：
+   第一版限定 `core.get(…)`，读数 56 条，看着挺像全的；而宽松抽是 64 条，
+   差值里有 **6 条真路由**（`hub.post("open_project")` · `api.post("reveal_dir")` ·
+   `projectCore.get("project_settings")` · `(projectCore as Core).post("cache_clear")` …）——
+   同一个 `Core` 实例，只是变量名不叫 `core`。
+   > **两个方向的代价不对称**：宽松 + 排除，漏排一个 → 假阳性 → **判据当场红，有人看**；
+   > 限定接收者名 + 白名单，漏收一个 → **静默少测一片**。
+   > 这和 M14-3「安全线是白名单不是黑名单」恰好相反，而判准是同一条：
+   > **错了之后，是会有人看见，还是没人看见。**
+   排除的两个是前端真有的非 `Core` 接收者：`mem.get("us.tabs…")`（localStorage 包装）
+   和 `REG.get("other")`（kind 注册表 Map）。
+   ⚠️ 所以**抓到的总数本身也是一条判据**：有人用别名写（`const c = core; c.get(…)`）
+   这个正则就抓不到，而「抓到 0 条」和「一条都没缺」在读数上长得一样（§160.4）。 */
+{
+  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const APP = join(TOOL_ROOT, "app", "src");
+  const apiSrc2 = await readFile(join(process.cwd(), "src", "api.ts"), "utf8");
+  const hand2 = new Set([...apiSrc2.matchAll(/route === "([a-z_]+)"/g)].map((m) => m[1]!));
+  /* ⚠️ `httpRoutes()` 回的是 **Map**。`new Set(map)` 会把 entries 数组当元素装进去，
+     于是 `has("files")` 永远为假 —— 第一版就是这么报出 49 条假缺失的（含 `files`，
+     而目录树天天在调它）。**「量到一堆缺失」的两种可能里，先排除仪器是零**（纪律④）。 */
+  const caps2 = new Set(httpRoutes().keys());
+
+  /* ⚠️⚠️ **泛型参数里可以再有 `>`**（`core.get<{ drafts?: Array<{ file: string }> }>("drafts")`）。
+     第一版写成 `(<[^>(]*>)?`，于是这一类**整条抓不到** —— 而反向验证正是这么暴露的：
+     我把 `Sheets` 的重名检查装回 `core.get(…)("drafts")`，**判据照样绿**。
+     换成非贪婪限长之后多抓到 **4 条一直在用的真路由**（`file_refs` · `records_clear_stale` ·
+     `who_handles` · `copy_into_project`）。
+     > **一条抓取式判据的盲区，只有在盲区里真有东西的时候才看得见** ——
+     > 所以反向验证要故意把样本放进最刁的那种写法里，而不是最常见的那种。 */
+  const CALL = /\.(get|post)\s*(<[\s\S]{0,200}?>)?\s*\(\s*[`"']([a-z][a-z0-9_]*)/g;
+  /** 这两个不是 `Core`，理由见上面那段注释。往前看 12 个字符就够认出接收者。 */
+  const NOT_CORE = /\b(mem|REG)$/;
+  const found = new Map<string, string>();     // 路由 → 第一次见到它的文件
+  let scannedApp = 0;
+  const walkApp = (dir: string): void => {
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { return; }
+    for (const n of names) {
+      const full = join(dir, n);
+      if (statSync(full).isDirectory()) { walkApp(full); continue; }
+      if (!/\.(ts|tsx)$/.test(n)) continue;
+      scannedApp++;
+      const src = readFileSync(full, "utf8");
+      for (const m of src.matchAll(CALL)) {
+        if (NOT_CORE.test(src.slice(Math.max(0, m.index - 12), m.index))) continue;
+        const route = m[3]!;
+        if (!found.has(route)) found.set(route, n);
+      }
+    }
+  };
+  walkApp(APP);
+  ok(scannedApp > 50, "扫到了前端源码（这一节要拿它当调用方来核）", `${scannedApp} 个文件`);
+  /* 下限按当前读数（62）留一点余量。**只拦变少不拦变多** —— 掉下去说明
+     要么正则抓不到新写法，要么前端真的少了一大片调用，两者都该当场知道。
+     ⚠️ 这一条第一次跑就救了命：正则里的 `\b` 被写文件的脚本吃成了真的退格字节，
+     于是**一条都没抓到**，而「前端用到的路由一条都没少」那条**照样绿**（0 条当然不缺）。
+     > **「抓到 0 条」和「一条都没缺」在读数上长得一模一样**（§160.4 同族）。 */
+  ok(found.size >= 62, "抓到的调用点数量没塌（抓不到 = 这一节静默失效）", `${found.size} 条路由`);
+  const appMissing = [...found].filter(([r]) => !hand2.has(r) && !caps2.has(r)).map(([r, f]) => `${r}（${f}）`);
+  ok(appMissing.length === 0, "**前端用到的路由一条都没少**（删能力前先核前端在不在用）", appMissing.join(" · "));
 }
 
 /* ── 源码里不许有裸 NUL（2026-09-30）──

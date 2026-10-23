@@ -90,16 +90,25 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
   /** 这一次已经接管过了（父组件的 `designProject` 还没刷到的时候靠它翻面） */
   const [adoptedHere, setAdoptedHere] = useState(false);
 
+  /* ⚠️⚠️ **重名检查原来调 `drafts`（`list_drafts`），而那件能力 2026-10-23（M16-7c）删了。**
+     不改的话它会**静默 404** —— `.catch(() => {})` 把失败吞掉，`existing` 停在空数组，
+     于是「这个目录里已经有同名的稿了」这句提示**永远不出现**，而界面看不出任何异常。
+     > **一个被 catch 吞掉的查询失效之后，长得和「查过了，没有重名」一模一样。**
+
+     换成列**这一个目录**（`list_files`）。顺带它比原来对 ——
+     `list_drafts` 是**全项目递归**列所有 `.dc.html`，而重名只发生在同一个目录里：
+     原来那份名单里绝大多数条目和这一问无关，只是靠 `full` 带上目录前缀才没误判。 */
   useEffect(() => {
     void core.get<{ templates?: TemplateRow[] }>("templates").then((r) => setTemplates(r.data?.templates ?? [])).catch(() => {});
-    void core.get<{ drafts?: Array<{ file: string }> }>("drafts").then((r) => setExisting((r.data?.drafts ?? []).map((d) => d.file))).catch(() => {});
-  }, [core]);
+    void core.get<{ entries?: Array<{ name: string }> }>(`files?dir=${encodeURIComponent(dir)}`)
+      .then((r) => setExisting((r.data?.entries ?? []).map((e) => e.name))).catch(() => {});
+  }, [core, dir]);
 
   const n = name.trim();
   const fileName = n ? (n.endsWith(".dc.html") ? n : n + ".dc.html") : "";
   const full = fileName ? (dir ? `${dir}/${fileName}` : fileName) : "";
   const illegal = !!n && /[\\/:*?"<>|]/.test(n);
-  const dup = !!full && existing.includes(full);
+  const dup = !!fileName && existing.includes(fileName);
   const why = illegal ? '名字里不能有 \\ / : * ? " < > |' : dup ? "这个目录里已经有同名的稿了" : "";
   const blocked = !fileName || !!why || busy;
 

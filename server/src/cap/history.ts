@@ -1,11 +1,7 @@
 import { z } from "zod";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { envelope } from "../envelope.js";
-import { X } from "../codes.js";
-import { err, ToolError } from "../envelope.js";
-import { isDesignProject, listDrafts } from "../project.js";
+import { listDrafts } from "../project.js";
 import { resolveDraft } from "../locate.js";
 import {
   changesSince, diffDrafts, humanTime, listVersions, projectChangesSince,
@@ -14,10 +10,9 @@ import {
 import { addComment, deleteComment, listComments, markCommentsSent, updateComment } from "../comments.js";
 import { listReferences } from "../refs.js";
 import { listSnapshotMeta, walkProjectFiles } from "../files.js";
-import { buildIndex, collectIndex, indexStatus, isToolPage } from "../indexpage.js";
+import { isToolPage } from "../indexpage.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
-import { indexDataFile } from "../statedirs.js";
 
 /** 版本 / 变更 / 索引 / 引用 / 评论（M11-7 第五批）。
  *
@@ -35,89 +30,23 @@ import { indexDataFile } from "../statedirs.js";
 const p = (c: CapCtx) => c.project!;
 const rel = (c: CapCtx, file: string) => resolveDraft(p(c), file);
 
-/* ⚠️⚠️ **`list_drafts` 是甲组 12 件里唯一「前端还在调」的那一件，所以它留到 M16-7c。**
+/* ⚠️⚠️ **`build_index` 与 `list_drafts` 2026-10-23（M16-7c / C3）删掉了。**
  *
- *  7b 第一版把它一起删了，而全套跑出来三个 app 判据红 —— 读数是
- *  `404 /__ud/drafts`，而 `store/project.ts` 的 `fetchDrafts` 失败时会
- *  `toast("获取稿件列表失败")`：**用户看得见的错误提示**，比一条 404 更糟。
- *
- *  ⚠️ 这推翻了我定 7b 边界时说的一句话 ——「工作台上的 dc 残留**点了不会 404**」。
- *  `fetchDrafts` **不是一个入口**，它是**挂载时就调**的。
+ *  它们是甲组 12 件里最后撤回的两件 —— 7b 第一版把它们删了，而全套跑出
+ *  `404 /__ud/drafts` 与 `404 /__ud/rebuild_index`，推翻了我定 7b 边界时
+ *  说的「工作台上的 dc 残留**点了不会 404**」。
  *  > **判断一个残留会不会坏，不能只看「用户能不能点到它」 ——
- *  > 还要看「它会不会自己跑」。**
+ *  > 还要看「它会不会自己跑」**（`fetchDrafts` 是挂载时就调的）。
  *
- *  「稿」这个概念在前端还有五六处（`store.drafts` · `Workbench` 的页签 ·
- *  `Sheets` 新建稿件弹窗查重名 · 目录视图的「N 份稿」），
- *  要和它们一起删 —— 那是 7c 的事。
- *  > **拆步骤的判准不是「这些代码是不是一类」，是「发出去那一版自洽不自洽」。** */
-/* ⚠️⚠️ **`build_index` 也留到 M16-7c，理由同 `list_drafts` —— 而我是按名字判断漏掉它的。**
- *
- *  7b 第一版把它删了，而全套跑出 `404 /__ud/rebuild_index`。
- *  ⚠️ 我前面在 `doc/12` 里明确写过「`rebuild_index` 在服务端**还在**，只是重建一个空索引」
- *  —— **那句话错了**：我删的是 `build_index`，而**它的 HTTP 路由名就叫 `rebuild_index`**。
- *  我按名字不同以为它们是两件事。
+ *  而 `build_index` 那一条我是**按名字判断漏掉的**：我删的是 `build_index`，
+ *  而**它的 HTTP 路由名就叫 `rebuild_index`**，于是我用能力名去推断路由存不存在。
  *  > 能力名和路由名不一样是本项目的常态（`list_file_versions` → `file_versions`、
- *  > `read_file` → `file`）—— 而我**用能力名去推断路由存不存在**。
+ *  > `read_file` → `file`）。
  *
- *  前端两处在调它：`store/project.ts` 的 `fetchDrafts`（没索引时自动建一次）
- *  和 `runCheck` 的收尾，还有工作台菜单里那颗「重建索引」。
- *  和那一摊一起删 —— 7c 的事。 */
-defineCap({
-  name: "build_index", title: "生成项目入口页", scope: "project",
-  summary: "把项目里的稿生成一张入口页（带健康度与缩略图）。`renderCheck: true` 会对缺截图的稿跑渲染体检补缩略图 —— **那会开浏览器，慢**。",
-  input: {
-    renderCheck: z.boolean().optional().describe("对缺截图的稿跑渲染体检生成缩略图（慢）"),
-  },
-  /* HTTP 侧叫 `rebuild_index`（前端在用）。
-     ⚠️ MCP 侧原来还有个 `serve: true` 顺手起服务 —— **不搬**：
-     从界面调它时服务本来就开着，而「读一个东西顺手起个服务」是两件事挤在一个开关里。
-     模型要起服务用 `serve_start`。 */
-  http: { route: "rebuild_index", method: "POST" },
-  run: async ({ renderCheck }, c) => {
-    const proj = p(c);
-    /* ⚠️⚠️ **这道闸是 B3 的另一半，而它比 `open_project` 那一句更要紧**（2026-10-21）。
-       `open_project` 不再无条件建索引之后，前端 `store/project.ts` 那句
-       「`indexed` 为假就 `rebuild_index`」会**立刻把它补回来** ——
-       于是「打开目录零写入」在界面上根本不成立，而 HTTP 判据全绿
-       （`apitest` 只调 `open_project`，不调这一件）。
-       > **一道闸只守住一条路等于没守**（issue #75 原话）。闸要装在「真正动手的那一层」。
-
-       这件能力**就是**往项目里部署壳与运行时的那条路（MCP 面也走它），
-       所以判准放在这里，三个门面一起守住。 */
-    if (!isDesignProject(proj.dir)) {
-      throw new ToolError(err(X.BAD_INPUT, proj.rel, { kind: "path", name: proj.dir },
-        "这个目录还没接管为设计项目，不建索引",
-        { fix: "建索引会往这个目录里放预览壳与运行时副本（约 780 KB）。要用的话先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`）。只看文件不需要它。" }));
-    }
-    const url = c.port ? `http://127.0.0.1:${c.port}/` : null;
-    const r = await buildIndex(proj, url, { renderCheck });
-    return envelope(r, [], { drafts: r.drafts, ...r.byHealth });
-  },
-});
-
-defineCap({
-  name: "list_drafts", title: "列出项目里的稿", scope: "project",
-  summary: "文件名 + 索引里算好的类型 / 健康 / 元素数 / 版本。**读的是索引缓存，不现场校验** —— 几十份稿现场校验太慢。没建过索引就只有文件名。",
-  input: {},
-  http: { route: "drafts", method: "GET" },
-  run: async (_i, c) => {
-    const proj = p(c);
-    const files = (await listDrafts(proj)).map((a) => relative(proj.dir, a).split(sep).join("/")).filter((x) => !isToolPage(x));
-    let indexed: Record<string, unknown> = {};
-    const dataFile = indexDataFile(proj.dir);
-    if (existsSync(dataFile)) {
-      try {
-        const data = JSON.parse(await readFile(dataFile, "utf8")) as { drafts?: Array<{ file: string }> };
-        for (const d of data.drafts ?? []) indexed[d.file] = d;
-      } catch { indexed = {}; }
-    }
-    return envelope({
-      project: proj.name, title: proj.title, files,
-      drafts: files.map((f) => ({ file: f, ...(indexed[f] as object | undefined ?? {}) })),
-      indexed: Object.keys(indexed).length > 0,
-    }, [], { count: files.length });
-  },
-});
+ *  ⚠️ `build_index` 身上那道闸（「还没接管为设计项目就不建索引」，B3 的另一半）
+ *  **不用手动撤** —— 它守的那件事（往项目里部署预览壳）随这件能力一起没了。
+ *  `buildIndex()` 这个**函数**还在（`api.ts` 的 `open_project` 和 `ui.ts` 还在调），
+ *  那是 7c 下一段的事。 */
 
 defineCap({
   name: "list_versions", title: "列出一份稿的版本", scope: "project",

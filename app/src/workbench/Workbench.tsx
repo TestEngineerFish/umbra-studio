@@ -1,9 +1,8 @@
 import { productName } from "@shared/brand";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Core, type ProjectEntry, type ProjectHandle } from "../api/client";
+import { Core, type ProjectEntry } from "../api/client";
 import { draftTitle, type Picked, type Selection } from "../api/types";
 import { ChatRail } from "../chat/ChatRail";
-import { composeStash } from "../chat/Stash";
 import { useChat } from "../chat/useChat";
 import type { HostAdapter } from "../host";
 import { PANEL_W, TREE_W, computeYield, kindOf, mem, type LayoutState, type PanelId } from "../layout/layout";
@@ -84,53 +83,6 @@ function ReadOnlyBar({ core, editable, onUnlocked }: { core: Core; editable?: bo
   );
 }
 
-/** 「这个目录还没接管为设计项目」那一条横条（M14-4 B3）。
- *
- *  ⚠️ **它是 B3 那半边的出路，不是装饰。** B3 让「打开一个目录」**一个字节都不写**，
- *  代价是：这种目录里 `.dc.html` 的预览壳（S2 / S6 / S8）不在，预览会 404。
- *  不给出路的话，这就从「少写了点东西」变成「**这种文件打不开**」——
- *  而后者比前者严重得多。
- *
- *  形制照 S1 那条「索引过期」齐边横条（设计侧第三轮），不新造一种。
- *  ⚠️ 文案要说清**两件事**：为什么它现在什么都没写（这是优点），
- *  以及点下去会写什么（这是代价）。只说一半的横条会让人要么不敢点、要么点完后悔。 */
-/*  ⚠️ **接管过没有这件事只有一份** —— 2026-10-22 之前它在 `AdoptBar` 自己的 `done` 里，
- *  而「新建稿件」那一问也要知道同一件事。两份 state 的话接管完一边翻面一边不翻，
- *  症状是「横条退场了，而新建稿件还在问要不要接管」。
- *  现在由 `Workbench` 持有，这里只收 props。 */
-function AdoptBar({ project, core, designProject, hasDrafts, onAdopted }: { project: ProjectHandle; core: Core; designProject?: boolean; hasDrafts: boolean; onAdopted: () => void }) {
-  const [busy, setBusy] = useState(false);
-  if (designProject !== false) return null;
-  /* ⚠️ **只有目录里真有 `.dc.html` 才出这条**（设计侧第 59 封 §4）。
-     纯 md / 纯图片的目录永远不出 —— 否则用户看文档时会被一条**和他无关**的横条一直挂着。
-     没有 `.dc.html` 却想新建稿件的人，走「新建稿件 → 先接管这个目录？」那条路就会遇到接管。
-     > **一条给不出下一步的提示，挂在那里就只是噪音。** */
-  if (!hasDrafts) return null;
-  const adopt = async () => {
-    setBusy(true);
-    const r = await core.post<{ deployed: number | null }>("adopt_project", { dir: project.dir });
-    setBusy(false);
-    if (!r.ok) { toast("接管失败", r.errors?.[0]?.message ?? "", "error"); return; }
-    onAdopted();
-    toast("已接管为设计项目", `部署了预览壳与运行时副本，现在 .dc.html 能预览了`, "ok");
-  };
-  return (
-    <div data-ud="adopt-bar" className="shrink-0 h-8 px-3 flex items-center gap-2 text-[11px] border-b border-border bg-panel2">
-      <span className="text-muted truncate flex-1 min-w-0">
-        {/* ⚠️ **「没往里写任何东西」改掉了**（设计侧 §零 C）：这条横条是**解锁之后**才出的，
-            那时用户可能已经通过我们改过他的文件 —— 这句话就成了假的。
-            改成「还没放过**自己的**文件」：那句话在解锁之后依然为真。
-            > **一句在某一段成立的话，挪到下一段就可能变成假的** —— 三段拆分之后要逐句重读。 */}
-        这是一个<b className="text-text2">普通目录</b>，我们<b className="text-text2">还没往里放过自己的文件</b>。
-        要预览 <code className="font-mono">.dc.html</code> 设计稿的话，得先放几样工具文件进来。
-      </span>
-      <button className="btn sm" disabled={busy} data-ud="adopt-btn" onClick={() => void adopt()}>
-        {busy ? "正在接管…" : "接管为设计项目"}
-      </button>
-    </div>
-  );
-}
-
 export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCloseProject, host, layout, setLayout, onHome, onSettings, openAt, onOpenedAt }: {
   /** 当前这个项目的**身份与客户端绑在一起的那个对象**（M15-1 S1）。
    *
@@ -189,7 +141,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
    *  来自 `open_project` 的那一次回执，解锁之后它不会自己变。 */
   const [unlockedHere, setUnlockedHere] = useState(false);
   const editable = unlockedHere ? true : project.editable;
-  const store = useProject(core, project.dir, designProject);
+  const store = useProject(core, project.dir);
   /** 页签三态（M8-28）。存量是 `string[]`，`normalize` 认它 */
   const [tabs, setTabsRaw] = useState<Tab[]>(() => normalize(mem.get(`us.tabs.${project.dir}`, [])));
   const setTabs = useCallback((next: Tab[]) => { setTabsRaw(next); mem.set(`us.tabs.${project.dir}`, next); }, [project.dir]);
@@ -341,7 +293,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
     onNewDraft: (dir) => setSheet({ kind: "newDraft", dir }),
     onCollapseAll: () => setLayout({ ...layout, tree: { ...layout.tree, expanded: [] } }),
     onTrashed: (paths) => { commitTrash(); setTrashed(paths); },   // 「再删一个」：上一批先落实
-    onRebuildIndex: () => void store.rebuildIndex(),
     refresh: () => setLocalTick((t) => t + 1),
   });
 
@@ -378,7 +329,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
        再过一次会**对同一件事问两遍**。 */
     const cur = fileRef.current;
     if (cur !== null && mapPath(cur) !== cur) doOpen(mapPath(cur), dirModeRef.current, "open");
-    void store.fetchDrafts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.dir]);
   /* ⚠️⚠️ **这一条不是「抢资源」，是跨项目污染**（M15-1 S2）。
@@ -416,8 +366,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
          浮层态下选完就收 —— 它盖在详情上，不收的话挡着刚打开的文件。 */
       onOpenFile={(f, dbl) => { open(f, false, dbl ? "open" : "preview"); if (!treeInline) setLayout({ ...layout, left: false }); }}
       onOpenDir={(d) => { open(d, true); if (!treeInline) setLayout({ ...layout, left: false }); }}
-      healthOf={(path) => store.drafts.find((d) => d.file === path)?.health ?? null}
-      drafts={store.drafts} indexed={store.indexed} reindexing={store.checking === "__index__"}
       actions={ctxActions} trashed={trashed} onUndoTrash={(p) => setTrashed((xs) => xs.filter((x) => x !== p))}
       tick={`${store.lastEvent?.at ?? ""}:${localTick}`}
       beforeRename={async (p) => {
@@ -445,7 +393,10 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
     />
   );
 
-  const chat = useChat(core, project.dir, { selectedDraft: dirMode ? null : file, selections, afterChanges: () => { void store.fetchDrafts(); if (file) { void store.fetchDiagnostics(file); void store.fetchChanges(file); } } });
+  /* ⚠️ `afterChanges` 原来重取**稿清单 / 诊断 / 语义变更**三样，C3（M16-7）之后那三样都没了。
+     留着这个回调是因为「AI 改完文件，右边要刷新」这件事还在 —— 现在它由 `localTick` 承担，
+     而那一下**对任何格式都成立**，不只是设计稿。 */
+  const chat = useChat(core, project.dir, { selectedDraft: dirMode ? null : file, selections, afterChanges: () => setLocalTick((t) => t + 1) });
 
   // 进项目：自动开上次看的稿（没有就第一份）
   /* ⚠️ **只有当前显示的那个实例设窗口标题**（M15-1 S2）。
@@ -481,10 +432,13 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
     const fromTabs = tabs.length ? tabs[tabs.length - 1]!.path : null;
     const last = fromTabs ?? mem.get<string | null>(`us.lastDraft.${project.dir}`, null);
     if (last) { open(last); return; }
-    /* 一个页签都没有（第一次进这个项目）：给第一份设计稿，那是这个软件最深的类型 */
-    if (!store.drafts.length) return;
-    if (store.drafts[0]) open(store.drafts[0].file);
-  }, [store.drafts]);   // eslint-disable-line react-hooks/exhaustive-deps
+    /* ⚠️ **一个页签都没有（第一次进这个项目）时什么都不开**（C3 / M16-7 改的）。
+       原来这里 `open(store.drafts[0].file)` ——「给第一份设计稿，那是这个软件最深的类型」。
+       设计稿这一档删掉之后那句理由不存在了，而**没有任何别的格式配得上「默认开这个」**：
+       随手挑一份 `.md` 或一张图打开，是替用户做了一个他没表达过的选择。
+       > **一个默认值的全部正当性来自那条理由；理由没了，默认值就该跟着没。**
+       详情区停在占位态，左边的树一直在，由他自己点。 */
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 「打开方式」要的那一份 —— **自己的 effect，依赖就是它**（issue #187）。
    *
@@ -526,12 +480,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
       /* ⌘E 展开 / 收起编辑栏（第九轮新给的键）。它归格式模块自己管，这里只发事件 */
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "e") { e.preventDefault(); if (mod.Toolbar) setEditOpen((o) => !o); }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); setLayout({ ...layout, left: !layout.left }); }
-      /* ⌘P 转到文件：入口在目录列头，收起时先展开它，不然浮层挂在一个不存在的列上 */
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        if (!layout.left) setLayout({ ...layout, left: true });
-        setTimeout(() => window.dispatchEvent(new CustomEvent("ud-goto-file")), layout.left ? 0 : 60);
-      }
       /* ⌘L 聚焦会话输入框。**原来是 ⌘J，让给底栏了**（`00` §75.4）——
          Cursor 和 VS Code 的 Copilot Chat 都用 ⌘L 聚焦聊天输入，用户正在用 Cursor。
          左栏关着时先打开再聚焦：他按这个键的意图很清楚，别让他按了没反应。
@@ -679,35 +627,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
 
   /* 会话栏**固定在左**（第八轮：换边那一态有意删了），所以不再有 side / 换边 / 关闭三个 props。
      关会话只有一个入口：顶栏的左栏钮（或 ⌘\）。 */
-  /** 「全部发给 AI」（M8-32）：合成**一条**消息发出去，成功后一次把这几条标成已发。
-   *  ⚠️ 一条而不是一条一轮 —— agent 循环每一步都要重发工具表 + 系统提示 + 全部历史，
-   *  五条评论发五轮就是五倍的钱（`CLAUDE.md` 那条读数）。 */
-  const sendStash = useCallback(async () => {
-    const rows = store.stash;
-    if (!rows.length) return;
-    expandChat();
-    /* ⚠️ 标记挂在 `onStarted` 上，**不是 `await send()` 之后** ——
-       send 要等整轮 AI 跑完才 resolve（最多 12 分钟轮询）。
-       等它的话用户点完看到暂存区半分钟不动，只会以为没发出去而重复点。
-       起作业失败时 `onStarted` 不会被调用，所以也不会错标。 */
-    void chat.send(composeStash(rows), undefined, () => {
-      /* ⚠️ 走的是 **HTTP 路由名** `comments_sent`，不是能力名 `mark_comments_sent`。
-         第一版写了能力名，结果 404 而界面只是"暂存区没清空" —— 而 404 的提示
-         被我自己的 `if (!r.ok)` 兜住变成一句 toast，很容易看成"网络抖了一下"。 */
-      void core.post("comments_sent", { ids: rows.map((c) => c.id) }).then((r) => {
-        if (!r.ok) toast("这几条发出去了，但没标成「已发」", r.errors?.[0]?.message, "error");
-        void store.fetchStash();
-        if (file) void store.fetchComments(file);
-      });
-    });
-  }, [store, chat, core, file, expandChat]);
-
-  const rail = <ChatRail chat={chat} onOpenUrl={(u) => void host.openExternal(u)} selections={selections} onDropSelection={(i) => setSelections((xs) => xs.filter((_, j) => j !== i))} onClearSelections={() => setSelections([])} contextLabel={dirMode ? (dirRel || "这个目录") : (file ? draftTitle(file) : null)}
-    currentFile={dirMode ? null : file}
-    stash={store.stash}
-    onSendStash={sendStash}
-    onDropStash={(id) => void core.post("comment_delete", { id }).then(() => { void store.fetchStash(); if (file) void store.fetchComments(file); })}
-    onLocateComment={(c) => { if (c.file !== file) open(c.file); setTimeout(() => setPicked({ file: c.file, node: c.node, tag: c.tag ?? "" }), c.file !== file ? 600 : 0); }} />;
+  const rail = <ChatRail chat={chat} onOpenUrl={(u) => void host.openExternal(u)} selections={selections} onDropSelection={(i) => setSelections((xs) => xs.filter((_, j) => j !== i))} onClearSelections={() => setSelections([])} contextLabel={dirMode ? (dirRel || "这个目录") : (file ? draftTitle(file) : null)} />;
   /* ═══ 顶栏 38px · 只放两类：「应用 / 项目」和「窗口布局」（设计侧第七轮）═══
      判据是「点了它，变的是什么」：变的是整个项目或整扇窗的才配站在这儿。
      项目路径从顶栏拿掉了 —— 它占 280px，却只是信息，没人点它，现在进项目菜单。 */
@@ -773,7 +693,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                 /* **「新建稿件」去了目录右键**（第八轮 §三）：右键点在哪里，稿就建在哪里，
                    不用在这里点完再选一次位置。 */
                 { label: "在访达中显示", run: () => void host.revealInFinder(project.dir).catch((e: Error) => toast("打开目录失败", e.message, "error")) },
-                { label: "重建索引", run: () => void store.rebuildIndex() },
                 { sep: true as const },
                 { label: "插件市场…", run: () => setMarket(true) },
                 { label: "项目设置…", hint: "⌘,", run: onSettings },
@@ -868,16 +787,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                  所以在还只读的时候摆一颗「接管为设计项目」，等于让人先点一个
                  **会往他目录里写 750 KB** 的按钮来解除一个「不动你文件」的保护。顺序反了。 */}
               <ReadOnlyBar core={core} editable={editable} onUnlocked={() => { setUnlockedHere(true); setLocalTick((t) => t + 1); }} />
-              {editable !== false && <AdoptBar project={project} core={core} designProject={designProject} hasDrafts={store.drafts.length > 0} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} />}
-            <TabBar tabs={tabs} current={dirMode ? null : file} busy={store.checking === file} isDirty={projDirty.has}
-              /* 悬停提示第二行的读数。⚠️ 只给**索引里已经算好的**那些（`.dc.html`）——
-                 图片的像素、目录的项数住在各自格式模块的 Provider 里，页签条这一层取不到。
-                 那几种的读数在 `⋯` 浮层头（`mod.meta`），不在这里重复造一套。 */
-              metaOf={(p) => {
-                const d = store.drafts.find((x) => x.file === p);
-                if (!d) return "";
-                return [d.elements != null ? `${d.elements} 元素` : null, d.version ?? null].filter(Boolean).join(" · ");
-              }}
+            <TabBar tabs={tabs} current={dirMode ? null : file} isDirty={projDirty.has}
               onPick={(p) => open(p)} onOpen={(p) => open(p, false, "open")}
               onClose={closeTab} onCloseMany={closeMany}
               onPin={(p, pinned) => setTabs(tabs.map((t) => (t.path === p ? { ...t, pinned, preview: pinned ? false : t.preview } : t)))}
@@ -911,7 +821,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                   {!dirMode && file && kind !== "dc" && (
                     <VersionPill core={core} path={file} viewing={viewing}
                       onView={(v) => setViewing(v)}
-                      onRevertDone={() => { void store.fetchDrafts(); window.dispatchEvent(new CustomEvent("ud-file-saved", { detail: file })); }}
+                      onRevertDone={() => window.dispatchEvent(new CustomEvent("ud-file-saved", { detail: file }))}
                       confirmLeave={(pth) => askLeave(pth, LEAVE.revert)} />
                   )}
                   {/* ═══ Tab 条右端三颗（第九轮 §三）═══ 位置固定，不跟着格式变。
@@ -942,9 +852,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                       aria-pressed={layout.props !== null} title={`${layout.props ? "收起" : "展开"}属性区（⌘⌥B）`}
                       className={`relative w-7 h-7 grid place-items-center rounded ${layout.props ? "bg-accentSoft text-accent" : "text-muted hover:text-text hover:bg-hover"}`}>
                       <Glyph icon="region-props" />
-                      {/* 诊断有提醒而属性区收着时挂一个 warn 点，打开就消（设计侧 §三.2） */}
-                      {!layout.props && store.diags.some((d) => d.level === "error" || d.level === "warning") &&
-                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-warn" />}
                     </button>
                   )}
                   <FileMore ctx={ctx} items={mod.menu?.(ctx) ?? []} meta={mod.meta} />
@@ -1031,7 +938,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
             spans: ["nav", "detail", "chat"],
           } : undefined}
         />
-      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} projectDir={project.dir} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} onClose={() => setSheet(null)} onCreated={async (f) => { await store.fetchDrafts(); open(f); }} />}
+      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} projectDir={project.dir} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} onClose={() => setSheet(null)} onCreated={(f) => open(f)} />}
       {drop && (
         <DropAsk paths={drop.paths} kind="tree" destLabel={drop.destDir || "项目根"} host={host}
           onClose={() => setDrop(null)}
@@ -1048,7 +955,6 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
                  就是又一条假回执（§23.1 那一族）。 */
               if (bad.length) toast(`复制了 ${n} 项，${bad.length} 项没成`, bad.map((x) => `${x.path}：${x.why}`).join("\n"), "error");
               else toast(`已复制 ${n} 项`, d.destDir || "项目根", "ok");
-              await store.fetchDrafts();
               setLocalTick((t) => t + 1);
               if (n === 1 && r.data?.written[0]) open(r.data.written[0]);
             })();

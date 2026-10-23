@@ -190,13 +190,19 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
   await pg.reload({ waitUntil: "domcontentloaded" });
   await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().waitFor({ timeout: 15000 });
   await pg.locator(`[data-ud="project-row"][data-name="${plainName}"]`).first().click();
-  const bar = pg.locator(WB + '[data-ud="adopt-bar"]');
-  /* ⚠️ **这里原来断言「接管横条出来了」，而 M14-7 之后它在这个时刻故意不出现。**
-     还只读的时候摆一颗「接管为设计项目」，等于让人先点一个会往他目录里写 750 KB
-     的按钮来解除一个「不动你文件」的保护 —— 顺序反了。
-     那条判据没有被删，**挪到了解锁之后**（下面那一组的最后一条）。
-     > **判据挪位置和判据被放松，差别在于「挪过去之后还红不红」**（§171 原话）——
-     > 拆掉「只读优先」那个条件，下面那条会红在「还只读的时候接管横条就出现了」。 */
+  /* ⚠️⚠️ **工作台顶部那条「接管为设计项目」横条 2026-10-23（M16-7c / C3）删了，
+     这一节里关于它的三条判据跟着删（不是放宽）。**
+
+     它的文案自己写着「要预览 `.dc.html` 设计稿的话，得先放几样工具文件进来」，
+     判准是 `hasDrafts`（这个目录里有没有我们的稿）—— **设计稿这一档没了之后，
+     它要解决的问题不存在了**：没有预览壳要部署，也没有「有几份稿」可问。
+     > **一个判据该删还是该挪，看的是它测的那件事还在不在** ——
+     > M14-7 那次是「顺序反了」（事还在，位置错），所以挪；这次是事没了，所以删。
+
+     ⚠️ **只读横条那一半照旧全留**（`readonly-bar` / `unlock-btn`）——
+     「随手打开的目录默认不动你的文件」和设计稿无关。
+     ⚠️ 「接管」这个**动作**还在（`adopt_project` + 新建稿件那一问），
+     所以下面的对照组没删，只是换成从**那一问**里点（见那一节）。 */
   /* ⚠️ **要等一会儿再数**（反向验证逼出来的）：自动建索引是异步的，
      横条一出现就数的话，它还没落盘 —— **两道闸全拆掉这一条也绿**。
      「打开之后没多文件」要说的是「过了一会儿也没多」。 */
@@ -222,8 +228,6 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
     ok(/只读预览/.test(roText) && /连 AI 也不行/.test(roText),
        "横条说的是「**我们默认不动它们**，连 AI 也不行」，不是 Notion 那句「需要导入」（我们不复制文件）",
        roText.replace(/\n/g, " ").slice(0, 46));
-    ok(!(await pg.locator(WB + '[data-ud="adopt-bar"]').isVisible()),
-       "**还只读的时候「接管为设计项目」那条不出现**（不能让人先点一个写 750 KB 的按钮来解锁）");
     await pg.locator(WB + '[data-ud="unlock-btn"]').click();
     await pg.waitForTimeout(1200);
     ok(!(await ro.isVisible()), "点完「开始编辑」那条横条自己退场");
@@ -236,9 +240,6 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
     ok(after1.filter((x) => !before.includes(x)).length === 0,
        "**解锁这一下也没往那个目录里放任何东西**（标记落在我们自己那边）",
        after1.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
-    await pg.locator(WB + '[data-ud="adopt-bar"]').waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
-    ok(await pg.locator(WB + '[data-ud="adopt-bar"]').isVisible(),
-       "**解锁之后「接管为设计项目」那条才出来**（两条横条一次只出一条，顺序是先只读再接管）");
   }
 
   /* ── 「新建稿件」先问一句要不要接管（2026-10-22）──
@@ -287,13 +288,26 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
        a2.filter((x) => !b2.includes(x)).join(" · ") || "一个都没多");
   }
 
-  /* 对照组：点了接管才写 —— 没有它的话上一条可能只是因为部署整条路都坏了 */
-  await pg.locator(WB + '[data-ud="adopt-btn"]').click();
+  /* 对照组：点了接管才写 —— 没有它的话上一条可能只是因为部署整条路都坏了。
+     ⚠️ **入口换了**（C3 / M16-7c）：工作台那条横条删掉之后，「接管」这个动作
+     只剩新建稿件那一问里的「接管并继续」一个入口，所以从那里点。
+     > 对照组的价值不在**哪颗按钮**，在于「这条路真的能写进去」—— 换入口不等于放宽。 */
+  await pg.locator(WB + '[data-ud="tree-more"]').first().click();
+  await pg.waitForTimeout(400);
+  await pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
+    .filter({ hasText: /新建稿件/ }).first().click();
+  await pg.waitForTimeout(600);
+  const adoptBtn = pg.locator('[data-ud="adopt-then-new"]');
+  ok(await adoptBtn.count() > 0, "（前提）那一问里有「接管并继续」这颗钮（对照组要从这里点）");
+  await adoptBtn.click();
   await pg.waitForTimeout(2500);
   const adopted = (await import("node:fs")).readdirSync(plain).sort();
   ok(adopted.includes("project.json") && adopted.includes("index.dc.html"),
-    "**对照组**：点了「接管为设计项目」才把壳写进去", `${adopted.length - before.length} 个新文件`);
-  ok(!(await bar.isVisible()), "接管完那条横条自己退场（不留一条点了没反应的提示）");
+    "**对照组**：点了「接管并继续」才把壳写进去", `${adopted.length - before.length} 个新文件`);
+  /* 接管完那一问自己退场，露出文件名表单 —— 不留一条「点了没反应」的提示 */
+  ok(await pg.locator('input[placeholder^="例如"]').count() > 0,
+    "接管完那一问退场、文件名表单接上（不是停在同一句话上）");
+  await pg.keyboard.press("Escape");
   await rm(plain, { recursive: true, force: true });
 }
 

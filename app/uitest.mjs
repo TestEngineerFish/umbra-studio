@@ -147,11 +147,22 @@ await pg.goto(URL_, { waitUntil: "domcontentloaded" });
 await pg.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').length > 0, null, { timeout: 30000 });
 await pg.waitForTimeout(1500);
 
-/* ⌘P 在**这里**测：刚启动，没有任何浮层开着。
-   放到后面测会被前几步留下的状态干扰（M8-27 实测），而那不是它自己的毛病。 */
-await pg.keyboard.press("Meta+p"); await pg.waitForTimeout(800);
-ok(await pg.locator('input[placeholder="转到文件…"]').count() === 1, "⌘P 打开「转到文件」");
-await pg.keyboard.press("Escape"); await pg.waitForTimeout(400);
+/* ⚠️⚠️ **「转到文件」（⌘P）2026-10-23（M16-7c / C3）整个删了，这一节和下面那一节
+   （列头 ⌕ + 搜索的 10 条判据）跟着删 —— 而这是一条**真的功能退化**，不是「理由消失」。**
+
+   它的交互逻辑全都和设计稿无关（120ms 防抖 · 漫游焦点 · 「还有 N 条」截断说明 ——
+   那是用户 2026-09-27 tmp.txt 第 2 条提的需求），**只有数据源是 dc 的**：
+   它搜的是 `list_drafts` 的那份名单，也就是**全项目的 `.dc.html`**。
+   设计稿这一档删掉之后那份名单是空的，而 `list_files` **不递归**（它的 summary
+   明写着「要看深层就再调一次」），补不上这个数据源。
+
+   > **「理由消失」和「数据源消失」要分开记**：AdoptBar 是前者（它问的那件事不存在了，
+   > 删掉没有代价）；这一节是后者（**用户少了一个他提过的功能**）。
+   > 把两者都写成「C3 删掉了」，下一个人就看不出哪一条是欠着的。
+
+   欠的那条已列进回执：要补回来需要给 `list_files` 加一档 `recursive`（带上限），
+   而那是一个有设计决定的改动（搜什么范围 · 上限多少 · 列表里显示什么），
+   不在「纯删除」这一批里自己定。 */
 
 console.log("\n常驻目录列（M8-11 · 设计侧第六轮 6.1 / 6.2）");
 const tree = pg.locator('[role="tree"]');
@@ -288,7 +299,12 @@ await header.locator("button[aria-haspopup=\"menu\"]").click(); await pg.waitFor
 const menuText = await pg.locator('[role="menu"]').innerText();
 ok(menuText.includes("/Users/"), "完整路径在项目菜单里（要复制路径时截断的没用）");
 /* 第八轮精简过：**「新建稿件」去了目录右键**，「复制路径」并进了路径那一栏（整块可点） */
-ok(["在访达中显示", "重建索引", "项目设置…", "关闭项目"].every((x) => menuText.includes(x)), "项目菜单只剩对整个项目的动作", menuText.split("\n").filter(Boolean).slice(2).join(" / "));
+/* ⚠️ 「重建索引」2026-10-23（M16-7c / C3）从这张单里删了 —— 它调的 `build_index`
+   往项目里部署的是设计稿预览壳，而那一整套没了。
+   ⚠️ 下面那条**反面判据**是这次补的：只删正面清单里的一项，
+   「菜单里还留着一颗点了报 404 的『重建索引』」照样全绿。 */
+ok(["在访达中显示", "项目设置…", "关闭项目"].every((x) => menuText.includes(x)), "项目菜单只剩对整个项目的动作", menuText.split("\n").filter(Boolean).slice(2).join(" / "));
+ok(!menuText.includes("重建索引"), "**「重建索引」不在菜单里了**（它那条路整条删了，留着就是点了报 404）");
 ok(!menuText.includes("新建稿件"), "项目菜单里**没有**新建稿件了（它去了目录右键）");
 ok(/点击复制/.test(menuText), "路径那一栏整块可点即复制");
 await pg.keyboard.press("Escape"); await pg.mouse.click(700, 400); await pg.waitForTimeout(300);
@@ -301,38 +317,15 @@ ok(await pg.locator('button[title="铺到详情区（多选 · 网格 · 回收�
 ok(await pg.locator('[data-ud="tree-collapse"]').count() === 0, "列头的收起钮已删（显隐只归顶栏）");
 ok(await pg.locator('[data-ud="tree-reopen"]').count() === 0, "页签条最左的展开钮也删了");
 ok(await pg.locator('[data-ud="tree-more"]').count() === 1, "目录列头换成了 ⋯（和空白处右键同一张菜单）");
-/* ⌘P 之前先确保目录开着 —— 它的入口在目录列头，列收起来时浮层挂在一个不存在的列上。
-   （代码里 ⌘P 会先展开目录，这里等它展开完） */
-if ((await pg.locator('header [data-ud="region-left"]').getAttribute("aria-pressed")) !== "true") {
-  await pg.locator('header [data-ud="region-left"]').click(); await pg.waitForTimeout(600);
-}
-/* 点列头的 ⌕ —— 这是真实入口。⌘P 走的是同一条路（代码里派发同一个事件），
-   在这一步之前测过它单独可用；放在这里测快捷键会被前面几步留下的浮层状态干扰。 */
-await pg.locator('button[title="转到文件（⌘P）"]').click(); await pg.waitForTimeout(700);
-ok(await pg.locator('input[placeholder="转到文件…"]').count() === 1, "列头的 ⌕ 打开「转到文件」");
-/* ── 搜索：打字才出结果 · 只列前 10 · 防抖（用户 tmp.txt 第 2 条，2026-09-27）──
-   他的原话：「搜索框内容为空时不要显示全部结果，只有有内容才去匹配，
-   而且匹配也需要防抖，最多显示匹配的 10 个结果之类」。
-   为什么空着不列全部：打开这个浮层不等于「我要看全部稿」—— 要看全部，目录列一直在左边。 */
-{
-  ok(await pg.locator('#goto-list [role="option"]').count() === 0, "**空着不列任何结果**（原来一打开就把全部稿铺出来）");
-  const inp = pg.locator('input[placeholder="转到文件…"]');
-  await inp.fill("."); await pg.waitForTimeout(400);
-  const n = await pg.locator('#goto-list [role="option"]').count();
-  ok(n > 0 && n <= 10, "有关键词才出结果，且**最多 10 条**", `${n} 条`);
-  /* ⚠️ 截断必须说出来 —— 「只列了前 10」和「一共就这 10 条」在界面上长得一样，
-     不说的话用户以为没有第 11 条，而他要找的那份可能正在第 11 位。 */
-  ok(await pg.locator('text=/还有 \\d+ 条/').count() === 1, "截断了就说「还有 N 条」，不静静截掉");
-  /* 防抖：连敲 5 个字，列表只该重排一次 */
-  await inp.fill("");
-  await pg.waitForTimeout(300);
-  await pg.evaluate(() => { window.__gl = 0; new MutationObserver(() => window.__gl++).observe(document.getElementById("goto-list"), { childList: true, subtree: true }); });
-  for (const ch of ["d", "c", ".", "h", "t"]) { await inp.type(ch); await pg.waitForTimeout(30); }
-  await pg.waitForTimeout(500);
-  const rerenders = await pg.evaluate(() => window.__gl);
-  ok(rerenders <= 2, "连敲 5 个字只重排一两次（120ms 防抖）", `${rerenders} 次`);
-}
-await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
+/* ⚠️ **「转到文件」那 10 条判据删了** —— 理由与去处写在上面启动那一节（搜「真的功能退化」）。
+   ⚠️ 这里**留一条反面判据**：那颗钮和那个浮层**真的不在了**。
+   不留的话，「功能删了」和「判据删了」在读数上长得一模一样，
+   而半个月后谁都说不清它是被删掉的还是被漏测的。 */
+ok(await pg.locator('button[title="转到文件（⌘P）"]').count() === 0,
+   "「转到文件」那颗钮确实不在了（C3 删的，不是漏测 —— 见上面那段）");
+await pg.keyboard.press("Meta+p"); await pg.waitForTimeout(500);
+ok(await pg.locator('input[placeholder="转到文件…"]').count() === 0,
+   "⌘P 也不再开出那个浮层（快捷键跟着摘了，不留一个按了没反应的键）");
 
 /* ── 格式注册表（M8-14）──
    这一轮把「每种文件怎么看」从 Workbench 的一条三元链搬进 `app/src/kinds/` 的独立模块。
@@ -944,8 +937,11 @@ await pg.locator('button[title="回到项目根（右键：对项目根的操作
 await pg.waitForTimeout(400);
 {
   const t = await ctxText();
-  ok(/重建索引/.test(t), "右键空白处：有重建索引（空白处 = 项目根）", t.slice(0, 70));
+  /* ⚠️ 「重建索引」2026-10-23（M16-7c / C3）从这张单里删了（它部署的是设计稿预览壳）。
+     这一条换成**反面的** —— 只删掉正面断言的话，「菜单里还留着一颗点了报 404 的钮」照样全绿。 */
+  ok(!/重建索引/.test(t), "右键空白处**没有**「重建索引」了（那条路整条删了）", t.slice(0, 70));
   ok(/全部折叠/.test(t), "右键空白处：有「全部折叠」（从列头搬进来的）");
+  ok(/新建目录/.test(t), "（对照）这张单本身还在 —— 「新建目录」照旧（删的是一项，不是整张单）");
   await closeCtx();
 }
 

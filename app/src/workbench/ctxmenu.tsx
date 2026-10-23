@@ -12,8 +12,6 @@ import { askText } from "../ui/Ask";
  *  菜单按**右键点在什么上**分三种，这是它给的判据：
  *  - **新建只出现在目录和空白处** —— 只有这两处能回答「建在哪」。
  *    在文件上右键不出新建，否则就得猜是建在它旁边还是别处。
- *  - **重建索引只出现在空白处** —— 它作用于整个项目，空白处就是项目根。
- *    右键某个目录时出现它，会让人以为只重建这一个目录。
  *  - **删除不弹确认**，菜单里直接写「移到回收站」，写的是它实际做的事，
  *    也说明了可以恢复（沿用 S1 行内撤销那一套口径）。
  */
@@ -36,7 +34,6 @@ export interface CtxActions {
   duplicate: (path: string) => void;
   trash: (paths: string[]) => void;
   collapseAll: () => void;
-  rebuildIndex: () => void;
   reveal: (path: string) => void;
   copyPath: (path: string) => void;
 }
@@ -58,7 +55,6 @@ export function itemsFor(t: CtxTarget, a: CtxActions): CtxItem[] {
       SEP,
       { label: "全部折叠", run: a.collapseAll },
       SEP,
-      { label: "重建索引", run: a.rebuildIndex },
       { label: "在访达中显示", run: () => a.reveal("") },
     ];
   }
@@ -110,7 +106,7 @@ export function makeActions(opts: {
   onOpenFile: (p: string) => void; onOpenDir: (p: string) => void;
   onToChat: (paths: string[]) => void; onRename: (p: string) => void;
   onNewDraft: (dir: string) => void; onCollapseAll: () => void;
-  onTrashed: (paths: string[]) => void; onRebuildIndex: () => void; refresh: () => void;
+  onTrashed: (paths: string[]) => void; refresh: () => void;
 }): CtxActions {
   const { core, host, projectDir } = opts;
   return {
@@ -145,7 +141,6 @@ export function makeActions(opts: {
     },
     trash: opts.onTrashed,
     collapseAll: opts.onCollapseAll,
-    rebuildIndex: opts.onRebuildIndex,
     reveal: (path) => void host.revealInFinder(path ? `${projectDir}/${path}` : projectDir).catch((e: Error) => toast("打不开", e.message, "error")),
     copyPath: (path) => void navigator.clipboard?.writeText(path.includes("\n") ? path : `${projectDir}/${path}`)
       .then(() => toast("路径已复制", undefined, "ok"), () => toast("复制不了", "浏览器不让访问剪贴板", "error")),

@@ -1,12 +1,11 @@
 import { studioName } from "@shared/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
-import type { Draft, FileEntry, Health, ListFilesResult } from "../api/types";
+import type { FileEntry, ListFilesResult } from "../api/types";
 import { isFileDrag } from "../host/drop";
 import { Glyph } from "../ui/Glyph";
 import { CtxMenu, itemsFor, type CtxActions, type CtxTarget } from "./ctxmenu";
 import { toast } from "../ui/Toast";
-import { PopoverAt } from "../ui/Popover";
 import { kindDef } from "@shared/kinds";
 import { inActive } from "./scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
@@ -34,16 +33,8 @@ export interface TreeProps {
   /** `dbl` = 双击（打开态）。单击是预览态 —— 会被下一次单击盖掉 */
   onOpenFile: (path: string, dbl?: boolean) => void;
   onOpenDir: (path: string) => void;
-  /** 稿件的健康：有提醒或错误才挂点，「通过」不挂（设计侧口径） */
-  healthOf: (path: string) => Health | null;
   /** 列头显示的项目名，点它回到根 */
   projectName: string;
-  /** 「转到文件」用的稿件表（⌘P）。列头上的这两颗钮都是**导航动作**，
-   *  第七轮把它们从页签条挪到这儿 —— 页签条只管「开着哪些文件」。 */
-  drafts: Draft[];
-  indexed: boolean;
-  /** 正在重建索引：列头下沿那条线变 2px 流动 */
-  reindexing?: boolean;
   /** 右键菜单要的动作（M8-21）。目录列和目录视图共用同一套定义，见 `ctxmenu.tsx` */
   actions: CtxActions;
   /** 已经塌成「已移到回收站 · 撤销」的那几行 */
@@ -77,9 +68,7 @@ export interface TreeProps {
 const sayOutside = (path: string): void =>
   toast("这是一条指向项目外面的链接", `${path} 指到项目目录外面。从这里读写它等于读写项目外的文件，所以不放行。要改那个文件，直接打开它真正所在的那个目录。`, "error");
 
-export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, healthOf, projectName, drafts, indexed, reindexing, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
-  const [goto, setGoto] = useState(false);
-  const [q, setQ] = useState("");
+export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, projectName, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
   const [ctx, setCtx] = useState<{ x: number; y: number; target: CtxTarget } | null>(null);
   /** 正在就地改名的那一行（设计侧 §五：重命名就地改，不弹窗 ——
    *  弹窗要把视线从树里拉走，而改名的时候人正盯着这一行） */
@@ -90,7 +79,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
   const [dropAt, setDropAt] = useState<string | null>(null);
   /** 这一行作为拖拽落点代表哪一层目录。 */
   const dirOfRow = (e: FileEntry): string => (e.isDir ? e.path : e.path.includes("/") ? e.path.slice(0, e.path.lastIndexOf("/")) : "");
-  const headRef = useRef<HTMLDivElement>(null);
   /* 每一层的内容按需拉，拉过就留在内存里。`children[path] === undefined` = 还没拉过，
      这和后端约定的「children 缺省表示未拉取、[] 表示空目录」是同一套语义。 */
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({});
@@ -137,11 +125,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
 
-  useEffect(() => {
-    const on = () => { setGoto(true); setQ(""); };
-    window.addEventListener("ud-goto-file", on); return () => window.removeEventListener("ud-goto-file", on);
-  }, []);
-
   /** 「在目录中显示」高亮的那一行（1.2 s 后退回普通的当前行，设计侧 §六.2） */
   const [flash, setFlash] = useState<string | null>(null);
   useEffect(() => {
@@ -184,7 +167,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
     for (const e of ordered) {
       const open = expSet.has(e.path);
       const isCur = e.path === current;
-      const h = e.isDir ? null : healthOf(e.path);
       /* 已移到回收站的行：**原地塌成一行撤销**，不弹确认框（沿用 S1 的口径：
          先做，再给一步回头路）。落实时机由上层的四条规则决定。 */
       if (trashed.includes(e.path)) {
@@ -294,7 +276,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           <span className="truncate flex-1 text-xs leading-none">{e.name}</span>
           {/* 「通过」不挂点（设计侧口径：只有该看的才出现）。
               TODO 未落盘的 warn 点：前端目前拿不到这个信号，等 S1 那套 hasUnsaved 接到工作台再补 */}
-          {h && h !== "ok" && h !== "unchecked" && <span className={`hdot ${h} shrink-0`} title={h === "error" ? "有错误" : "有提醒"} />}
         </div>,
       );
       if (e.isDir && open) {
@@ -307,11 +288,11 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
 
   return (
     <div className="flex-1 min-w-0 flex flex-col min-h-0">
-      {/* 列头：项目名（点回根）+ 两颗导航钮。钮常驻不 hover 才出 —— 键盘和触控都要够得着 */}
+      {/* 列头：项目名（点回根）+ `⋯`。钮常驻不 hover 才出 —— 键盘和触控都要够得着 */}
       {/* 高度和分隔线都跟页签条对齐（34px + border-b）——
           目录列通栏之后它和页签条并排，差 2px 或少一条线，那条横线就是断的 */}
       {/* 36px —— 所有模块状态栏一个值（第九轮 §二） */}
-      <div ref={headRef} data-ud="tree-head" className={`h-9 pl-2.5 pr-1 flex items-center gap-0.5 shrink-0 text-xs relative border-b border-border ${reindexing ? "busyline" : ""}`}>
+      <div data-ud="tree-head" className="h-9 pl-2.5 pr-1 flex items-center gap-0.5 shrink-0 text-xs relative border-b border-border">
         {/* 项目名**右键 = 空白处菜单**（M8-21）。
             光靠「树的空白区」不够：树一满就没有空白可点，用户等于没法在根目录新建。
             项目名就是项目根，在它上面右键最说得通。 */}
@@ -319,10 +300,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           onContextMenu={(ev) => { ev.preventDefault(); setCtx({ x: ev.clientX, y: ev.clientY, target: { kind: "blank" } }); }}
           onClick={() => onOpenDir("")} title="回到项目根（右键：对项目根的操作）">
           <Glyph icon="folder-open" className="text-muted shrink-0" /><span className="truncate">{projectName}</span>
-        </button>
-        <button className="w-6 h-6 grid place-items-center rounded text-muted hover:bg-hover hover:text-text shrink-0"
-          onClick={() => { setGoto((g) => !g); setQ(""); }} title="转到文件（⌘P）" aria-label="转到文件">
-          <Glyph icon="search" />
         </button>
         {/* 第九轮：**收起钮删掉**（用户第 14 条「有点多余」）—— 目录的显隐只归顶栏那一颗。
             这个位置换成 `⋯`，和在空白处右键是**同一张菜单**：
@@ -332,9 +309,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           title="对这个项目的操作" aria-label="更多">
           <Glyph icon="more" />
         </button>
-        {goto && headRef.current && <GotoFile q={q} setQ={setQ} drafts={drafts} indexed={indexed} current={current}
-          anchor={{ x: headRef.current.getBoundingClientRect().left + 4, y: headRef.current.getBoundingClientRect().bottom - 4, w: headRef.current.getBoundingClientRect().width - 8 }}
-          onPick={(f) => { setGoto(false); onOpenFile(f); }} onClose={() => setGoto(false)} />}
       </div>
       {/* 空白处 = 项目根（设计侧 §五）。所以在树的空白区右键，新建就落在根目录。 */}
       <div className={`flex-1 min-h-0 overflow-auto pb-2 ${dropAt === "" ? "ring-1 ring-inset ring-accent bg-accentSoft/40" : ""}`} role="tree"
@@ -369,86 +343,6 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
   );
 }
 
-/** 「转到文件」浮层。原来是页签条右边那颗「N 份稿 ▾」——
- *  按第七轮的分层，它变的是「在详情区看哪份文件」，属于导航，所以跟着目录列走。 */
-function GotoFile({ q, setQ, drafts, indexed, current, onPick, onClose, anchor }: {
-  q: string; setQ: (v: string) => void; drafts: Draft[]; indexed: boolean; current: string | null;
-  onPick: (file: string) => void; onClose: () => void; anchor: { x: number; y: number; w: number };
-}) {
-  /* ═══ 打字才出结果、防抖、只列前 10（用户 tmp.txt 第 2 条，2026-09-27）═══
-     他的原话：「点击搜索后……搜索框内容为空时不要显示全部结果，只有有内容才去匹配，
-     而且匹配也需要防抖，最多显示匹配的 10 个结果之类」。
-
-     为什么空串不列全部：**打开这个浮层的动作本身不表达「我要看全部稿」** ——
-     要看全部，目录列一直在左边。空着就列全部只有两个效果：
-     首次打开要渲染上百行（他说的「需要等待一会儿」），以及把真正的入口埋在噪音里。
-
-     防抖 120ms：筛选本身是内存里的，不花钱；**花钱的是渲染** ——
-     每敲一个字重排一次列表，在大项目上就是掉帧。 */
-  const [dq, setDq] = useState(q);
-  useEffect(() => { const t = setTimeout(() => setDq(q), 120); return () => clearTimeout(t); }, [q]);
-  const kw = dq.trim().toLowerCase();
-  const all = kw ? drafts.filter((d) => `${d.title} ${d.file}`.toLowerCase().includes(kw)) : [];
-  /* 只列前 10，**但要说出总共有几条** —— 不说的话用户以为就这 10 个，
-     而他要找的那一份可能在第 11 位（「静静截断」和「没有匹配」在界面上长得一样）。 */
-  const MAX = 10;
-  const rows = all.slice(0, MAX);
-  const more = all.length - rows.length;
-  /* ═══ 带搜索框的选择器：**焦点不离开输入框**（设计侧第九轮回复 §二.1）═══
-     浮层通用的那套漫游焦点在这里不能用 —— 它会把焦点挪到行按钮上，
-     用户接着打字就打不进去了。所以 `keys="off"`，这里自己走「高亮行」：
-     焦点始终在框里，`aria-activedescendant` 指到当前行，读屏才知道选到哪了。 */
-  const [act, setAct] = useState(0);
-  /* 挂载后一帧再置 true —— 同一帧里设初值的话浏览器不会插值，动画不会跑 */
-  const [grown, setGrown] = useState(false);
-  useEffect(() => { const r = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(r); }, []);
-  const hit = Math.min(act, Math.max(0, rows.length - 1));
-  /* 关键词一变，候选就全换了 —— 高亮必须回到第一条，不然会停在一个已经不在列表里的位置 */
-  useEffect(() => { setAct(0); }, [kw]);
-  const rowId = (i: number) => `goto-row-${i}`;
-  /* 转到文件自己管内边距（输入框有 `m-1.5`）和自己的滚动，所以 `pad` 给 0 */
-  return (
-      <PopoverAt x={anchor.x} y={anchor.y} onClose={onClose} width={anchor.w} pad="0" keys="off">
-      <div className="max-h-[60vh] flex flex-col">
-        {/* 横向展开（用户 tmp.txt 第 2 条）：浮层一开，框从 0 拉到满宽。
-            用的是既有的 `anim-col`（慢档 240ms，第九轮定的三档之一），不新造一种动画。 */}
-        <div className="anim-col m-1.5" style={{ width: grown ? "auto" : 0, opacity: grown ? 1 : 0 }}>
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="转到文件…"
-          role="combobox" aria-expanded aria-controls="goto-list"
-          aria-activedescendant={rows.length ? rowId(hit) : undefined}
-          className="w-full h-7 px-2 rounded border border-borderStrong bg-bg outline-none focus:border-accent text-xs"
-          onKeyDown={(e) => {
-            if (e.key === "Escape") { if (q) setQ(""); else onClose(); return; }
-            if (!rows.length) return;
-            /* ⏎ 走的是**高亮那一条**，不是永远第一条 —— 原来是 `rows[0]`，
-               那样 ↑↓ 选了也白选。 */
-            if (e.key === "Enter") { e.preventDefault(); onPick(rows[hit]!.file); return; }
-            const mv = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-            const to = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : mv ? (hit + mv + rows.length) % rows.length : -1;
-            if (to < 0) return;
-            e.preventDefault(); setAct(to);
-            inActive(`#${CSS.escape(rowId(to))}`)?.scrollIntoView({ block: "nearest" });
-          }} />
-        </div>
-        <div id="goto-list" role="listbox" className="flex-1 overflow-auto pb-1">
-          {!kw ? <div className="px-2 py-3 text-muted text-[11px] text-center">打几个字开始找 —— 名字或路径都行</div>
-            : rows.length ? rows.map((d, i) => (
-            <button key={d.file} id={rowId(i)} role="option" aria-selected={i === hit} tabIndex={-1}
-              onMouseEnter={() => setAct(i)}
-              className={`w-full px-2 py-1 flex items-center gap-2 text-left ${i === hit ? "bg-hover" : ""} ${d.file === current ? "bg-accentSoft" : ""}`} onClick={() => onPick(d.file)}>
-              <span className={`hdot ${d.health}`} title={d.healthWhy} />
-              <span className="truncate flex-1 text-xs">{d.title}</span>
-              <span className="text-muted font-mono text-[11px] shrink-0">{d.version ?? ""}</span>
-            </button>
-          )) : <div className="px-2 py-3 text-muted text-[11px] text-center">没有匹配的稿</div>}
-        </div>
-        {/* 截断要说出来 —— 「只列了前 10」和「一共就这 10 条」不是一回事 */}
-        {more > 0 && <div className="px-2 h-6 flex items-center border-t border-border text-[11px] text-muted">还有 {more} 条 —— 再多打几个字缩小范围</div>}
-        {!indexed && <div className="px-2 h-7 flex items-center border-t border-border text-[11px] text-muted">还没建索引 —— 项目菜单里「重建索引」</div>}
-      </div>
-      </PopoverAt>
-  );
-}
 
 const Loading = ({ depth }: { depth: number }) => (
   <div className="flex items-center gap-1.5 text-[11px] text-muted" style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT + 20 }}>
