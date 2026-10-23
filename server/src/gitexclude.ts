@@ -50,30 +50,35 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { writeAtomic } from "./normalize.js";
 
 /** 整段的起止标记。**带标记才认得出、才撤得掉**（geek-99 的要求）。 */
-const OPEN = "# <umbra-studio> 这一段由 Umbra Studio 维护（接管那个目录时写的），别手改";
-const CLOSE = "# </umbra-studio>";
+/* ⚠️⚠️ **这两个标记 export 出去了（2026-10-23）**，而理由不是「判据要用」，
+   是「**判据不许手抄它**」：`dropExcluded` 靠 `indexOf(OPEN)` 定位存量块，
+   手抄一个差一个字的标记，判据就变成「撤掉我自己编的一个块」—— 而它会绿。
+   我在改写 `apitest` ⑳ 时**先写下了这条担心，然后在三行之后手抄了一个短版**，
+   当场红在「撤不掉」上。
+   > **让「一字不差」由编译器保证，而不是由我记得。**
+   ⚠️ 顺带：**这两个字符串不该再改** —— 用户机器上已经写进 `.git/info/exclude`
+   的那些块用的是这一版标记，改了就撤不掉存量。 */
+export const EXCLUDE_OPEN = "# <umbra-studio> 这一段由 Umbra Studio 维护（接管那个目录时写的），别手改";
+export const EXCLUDE_CLOSE = "# </umbra-studio>";
+const OPEN = EXCLUDE_OPEN;
+const CLOSE = EXCLUDE_CLOSE;
 
-/** 要排除的那几样 = 接管真的会往项目里放的东西。
- *
- *  ⚠️ **和 `indexpage.ts` 那份部署清单是同一件事的两头**，所以它要跟着变。
- *  实测接管写 17 个文件，按名字归成下面这几条（`S*.dc.html` 一条通配就够）。
- *  ⚠️ 这里**不列 `project.json`** —— 那是「这个目录是设计项目」的标记，
- *  **它该进版本**（同事 clone 下来才知道这是个设计项目）。
- *  > 排除清单和部署清单不是同一张：**有一样东西我们放进去、而且希望它留下**。 */
-export const EXCLUDE_LINES: readonly string[] = [
-  "# 工具产物：预览壳、入口页、索引数据、皮肤、运行时副本。都可由稿件重算。",
-  "index.dc.html",
-  "index-data.js",
-  "S*.dc.html",
-  "IconGlyph.dc.html",
-  "icons.js",
-  "_ds-tool/",
-  "support.js",
-  "react.production.min.js",
-  "react-dom.production.min.js",
-  ".umbradesign/",
-  ".umbrastudio/",
-];
+/* ⚠️⚠️ **`EXCLUDE_LINES` 与 `ensureExcluded` 2026-10-23（M16-7c-2a / C3）删了，
+   而 `dropExcluded` 留着 —— 这一对的去留不同，理由不同。**
+
+   那张清单列的是「接管真的会往项目里放的东西」（预览壳 · 入口页 · 运行时副本 ·
+   `.umbradesign/`），而 C3 之后**没有东西再往用户的项目里放了**，
+   所以「把它们加进 `.git/info/exclude`」这件事没有对象。
+   ⚠️ 核的时候量到一件事：`ensureExcluded` **在产品代码里已经零调用** ——
+   它原来住在 `buildIndex` 里，而唯一还在调它的是 `apitest` 自己。
+   > **一个只剩判据在调的函数，判据测的是它自己还在。**
+
+   而 `dropExcluded`（**撤**掉那个块）**必须留着**：用户机器上**已经写进去**的那个块
+   还在他的 `.git/info/exclude` 里，「清除缓存」要能把它撤掉（`purge.ts`）。
+   它只靠 OPEN / CLOSE 两个标记定位，不依赖上面那张清单 —— 所以删清单不影响它。
+   > **「以后不再做这件事」和「把以前做过的撤干净」是两件事，
+   > 而后者要的代码比前者久。** */
+
 
 export interface ExcludeResult {
   /** 写到哪个 `info/exclude`（相对或绝对，给回执看）。`null` = 没写 */
@@ -113,32 +118,6 @@ export function gitDirFor(dir: string): { gitDir: string | null; why?: string } 
   return { gitDir: gd };
 }
 
-/** 把那一段写进（或更新）`<GIT_DIR>/info/exclude`。**幂等**：整段替换。
- *
- *  ⚠️ 回 `file: null` 的每一种情况都带 `why` —— 调用方要能照实转告，
- *  而「没写」在这里是**正常结果之一**，不是错误。 */
-export async function ensureExcluded(projectDir: string): Promise<ExcludeResult> {
-  const { gitDir, why } = gitDirFor(projectDir);
-  if (!gitDir) return { file: null, why };
-  const file = join(gitDir, "info", "exclude");
-  const block = [OPEN, ...EXCLUDE_LINES, CLOSE].join("\n");
-  try {
-    const cur = existsSync(file) ? await readFile(file, "utf8") : "";
-    const a = cur.indexOf(OPEN);
-    const z = cur.indexOf(CLOSE);
-    let next: string;
-    if (a >= 0 && z > a) next = cur.slice(0, a) + block + cur.slice(z + CLOSE.length);
-    else next = (cur ? cur.replace(/\s*$/, "") + "\n\n" : "") + block + "\n";
-    if (next === cur) return { file, why: "已经是最新的，没动" };
-    await mkdir(dirname(file), { recursive: true });
-    await writeAtomic(file, next);
-    return { file };
-  } catch (e) {
-    /* ⚠️ 写不下去**不抛** —— 这是「顺手帮个忙」，失败就是没帮上。
-       让接管因为排除规则写不进去而失败，是把主次关系搞反了。 */
-    return { file: null, why: `写不进 ${file}：${e instanceof Error ? e.message : String(e)}` };
-  }
-}
 
 /** 把那一段撤掉（「忘掉这个项目」时顺手清）。回有没有真撤掉。
  *

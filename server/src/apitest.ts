@@ -640,7 +640,7 @@ console.log("\n⑩ 探图结果不许盖掉期间的改动（issue #59）");
    ⚠️ 判据必须验到**「进程还活着」** —— 只验「回了 400」的话，
    一个在别处崩掉的实现也可能先把 400 写出去。所以后面再打一条正常请求。 */
 {
-  const { startStatic } = await import("./render.js");
+  const { startStatic } = await import("./sendfile.js");
   const { mkdtemp, writeFile: wf, rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
   const { tmpdir } = await import("node:os");
@@ -1056,196 +1056,107 @@ console.log("\n⑮ 缩略图走路由（M14-4 B2）");
   ok(r3.status === 404, "**`..` 爬不出缓存目录**（`serveStatic` 的 `isInside`）", String(r3.status));
 }
 
-/* ── 打开一个普通目录：**一个字节都不写**（M14-4 B3）──
-   这是这一整批的验收点，而它**必须在真 HTTP 面上测** —— `open_project` 是
-   HTTP 门面自己的一段逻辑（那句 `if (design && !s.indexExists) await buildIndex(…)`）。
-   ⚠️ 判据是**数盘上的东西**，不是看回执：回执说「打开了」和「它没往里写」是两句话。 */
-console.log("\n⑯ 打开普通目录不写一个字节 · 接管才部署（M14-4 B3）");
+/* ══════════ ⑯ 打开普通目录不写一个字节（M14-4 B3）══════════
+   ⚠️⚠️ **这一节 2026-10-23（M16-7c-2a / C3）改写过：承诺变强了，而对照组没了。**
+
+   原来它测两半：① 打开普通目录一个文件都不多 · ② **接管之后才部署**（对照组）。
+   ② 那一半的全部对象（预览壳 / 入口页 / 运行时副本 / `project.json`）随 C3 删掉了，
+   连 `create_draft` 那道「先接管」的闸也删了（它三条理由全是 dc 的）。
+
+   而 ① **现在是无条件成立的**，比 B3 当时那句更强：
+   > B3 当时是「只有**没接管过的**目录才不写」，现在是「**打开任何目录都不写**」。
+
+   ⚠️ **对照组没了，所以这一节要自己防住「它可能只是因为整条路都坏了而绿」**。
+   原来那个防线是 ② （接管真的写得进去，说明部署这条路是通的）。
+   现在换成：**在同一个目录里真建一份稿**，证明「能写」这条路还通 ——
+   > 「什么都没写」和「什么都写不了」在文件数上长得一模一样，
+   > 而后者是个严重缺陷。**一个「没做某件事」的判据，必须有另一条证明它做得了别的事。** */
+console.log("\n⑯ 打开普通目录不写一个字节（M14-4 B3 · C3 之后无条件成立）");
 {
-  const { mkdtemp: mkt3, writeFile: wf3, readdir: rd3, readFile: rf3 } = await import("node:fs/promises");
+  const { mkdtemp: mkt3, writeFile: wf3, readFile: rf3, rm: rm3, readdir: rd3 } = await import("node:fs/promises");
   const { tmpdir: td3 } = await import("node:os");
   const { join: join3 } = await import("node:path");
-  const { realpathSync: rp4 } = await import("node:fs");
-  /* 造一个「像用户文档目录那样」的普通目录：几份 .md，没有 project.json */
-  const plain = rp4(await mkt3(join3(td3(), "umbra-plain-")));
-  await wf3(join3(plain, "测试清单.md"), "# 清单\n", "utf8");
-  await wf3(join3(plain, ".gitignore"), "node_modules/\n", "utf8");
-  /* ⚠️⚠️ **这两行是 2026-10-22 补的样本，而缺了它们这一节在一个真缺陷上全绿。**
-     「别人发来一份设计稿」现实里就是这个样子：稿 + `support.js` + `.umbradesign/select-bridge.js`
-     （那个目录名是格式与协议级标识，一起发过来的）。
-     而 `buildProject()` 第一句 `migrateUdDir(dir)` 看见 `.umbradesign/` 就把它
-     整个拷成 `.umbrastudio/` —— **于是「打开普通目录零写入」在这个样本上不成立**。
-     两件事叠起来才成这样：① 那个目录名今天不只是「旧配置目录」；
-     ② B1/B2 把项目里的 `.umbrastudio/` 搬空之后，「新目录不在才搬」这个守卫
-     **从几乎永假翻成了永真**。
-     > **判据在没有样本的时候，测的是「今天恰好没事」。** */
-  await wf3(join3(plain, "别人发来的.dc.html"),
-    '<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><div>稿</div></x-dc></body></html>\n', "utf8");
-  await (await import("node:fs/promises")).mkdir(join3(plain, ".umbradesign"), { recursive: true });
-  await (await import("node:fs/promises")).copyFile(
-    join3(TOOL_ROOT, "runtime", "select-bridge.js"), join3(plain, ".umbradesign", "select-bridge.js"));
-  const before = (await rd3(plain)).sort();
+  const { realpathSync: rps3 } = await import("node:fs");
 
-  const o1 = await fetch(`${s.url}__ud/open_project?token=${encodeURIComponent(s.token)}`, {
-    method: "POST", headers: { "content-type": "application/json", origin: s.url.replace(/\/$/, "") },
-    body: JSON.stringify({ dir: plain }),
-  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { designProject?: boolean; url?: string; token?: string } }>);
-  /* ⚠️⚠️ **项目级路由认的是「这台服务是为哪个目录起的」，不是请求体里的 `dir`**
-     （`api.ts`：`project: cap.scope === "project" ? ctx.project : null`）。
-     所以要测「在这个普通目录里建稿」，必须打**它自己那台服务** ——
-     `open_project` 的回执给的就是那台的 url 与 token。
-     第一版我把 `dir` 塞进请求体发给夹具那台，于是量的是夹具（而且夹具当时已经被删了）。
-     > **参数名对了不等于它被读了。** */
+  const plain = rps3(await mkt3(join3(rps3(td3()), "umbra-plain-")));
+  await wf3(join3(plain, "说明.md"), "# 随手打开的目录\n", "utf8");
+  await wf3(join3(plain, ".gitignore"), "node_modules/\n", "utf8");
+  const walk3 = async (): Promise<string[]> => {
+    const out: string[] = [];
+    const rec = async (d: string, base = plain): Promise<void> => {
+      for (const e of await rd3(d, { withFileTypes: true })) {
+        const abs = join3(d, e.name);
+        out.push(abs.slice(base.length + 1));
+        if (e.isDirectory()) await rec(abs, base);
+      }
+    };
+    await rec(plain);
+    return out.sort();
+  };
+  const before = await walk3();
+
+  const o1 = await (await post("open_project", { dir: plain })).json() as { ok?: boolean; data?: { dir?: string; url?: string; token?: string }; errors?: Array<{ message?: string }> };
+  ok(o1.ok === true, "普通目录打得开（不是报错，也不是被拦去「新建项目」）");
+  /* ⚠️⚠️ **要发给 `plain` 自己那台服务**，不是夹具那台（`open_project` 的回执给了它的 url 与 token）。
+     这条教训原来就写在这一节里，而我改写时**把它和判据一起删了，然后在十分钟内重犯**：
+     第一版我把 `dir: plain` 塞进请求体发给夹具那台 —— `create_draft` 的 input 里压根没有 `dir`，
+     于是稿建到了夹具项目里，而判据在 `plain` 里找不到它。
+     > **参数名对了不等于它被读了。**（原文的那句话，一个字没改）
+     > ⚠️ 而更该记的是：**删掉一节判据时，连它记下的教训一起删了 ——
+     > 而那条教训正是我下一步要犯的错。** */
   const pu = (o1.data?.url ?? "").replace(/\/$/, "");
   const pt = o1.data?.token ?? "";
   const ppost = (route: string, body: unknown) => fetch(`${pu}/__ud/${route}?token=${encodeURIComponent(pt)}`, {
     method: "POST", headers: { "content-type": "application/json", origin: pu }, body: JSON.stringify(body),
   });
-  ok(o1.ok === true, "普通目录打得开（不是报错，也不是被拦去「新建项目」）");
-  ok(o1.data?.designProject === false, "回执说清它**不是**设计项目", String(o1.data?.designProject));
-  const after = (await rd3(plain)).sort();
+  /* ⚠️ **等一会儿再数**：部署那条路原来是异步的，而「写了但还没写完」和「没写」
+     在立刻数的时候长得一样（这条等待是 M14-4 B3 那一轮反向验证逼出来的）。 */
+  await new Promise((r) => setTimeout(r, 1200));
+  const after = await walk3();
   ok(after.join("|") === before.join("|"), "**打开之后那个目录一个文件都没多**（B3 的全部意义）",
-     after.filter((x) => !before.includes(x)).join(" · ") || `${after.length} 项，和打开前一样`);
+     after.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
   ok(await rf3(join3(plain, ".gitignore"), "utf8") === "node_modules/\n", "**他的 .gitignore 一个字节都没动**");
+  /* ⚠️ `designProject` 这个字段 C3 之后不回了（接管没了），所以不再断言它 ——
+     **而「不断言一个不存在的字段」和「忘了断言」要能分清**，所以这一句留在这儿。 */
 
-  /* ── 「新建稿件」那道闸（2026-10-22）──
-     ⚠️⚠️ **它原来是 B3 的一条后门，而 B3 自己的判据看不见它**：
-     打开目录零写入，而在同一个目录里建一份稿**静默写 5 个文件 · 227 KB**
-     （稿 1 KB + 运行时副本 4 份 226 KB），写完还是半残的 —— 预览壳不在，
-     编辑档那个 iframe 404。
-     ⚠️ 闸装在 `cap/drafts.ts`（三个门面汇流处）而不是前端：
-     装在前端的话 AI 一句「在这个目录里建一份稿」就绕过去了（#75 原话）。 */
+  /* ── 对照组：能写这条路还通（见上面那段注释）──
+     ⚠️⚠️ **撞出一件好事：「打开普通目录不写一个字节」现在有两道独立的保证。**
+     第一版对照组直接 `create_draft`，被拒了，读数是「**这个目录还是只读预览**」——
+     那是 M14-7 的只读闸（B3 之外的第二道），而它拒得对。
+     所以对照组改成**先解锁再建**，这样它一条顶三件：
+     ① 只读闸真的在守 · ② 解锁之后写得动（不是「什么都写不了」）· ③ 写进去的只有那一份稿。
+     > **一个「被拒了」的读数，先问是哪道闸拒的** —— 两道闸守着同一件事时，
+     > 判据撞上哪一道都会红，而只有读数说得出是哪一道。 */
   {
-    const before2 = (await rd3(plain)).sort();
-    const cd = await ppost("create_draft", { path: "新稿.dc.html", source: "blank" })
-      .then((r) => r.json() as Promise<{ ok: boolean; errors?: Array<{ message?: string; fix?: string; locator?: { name?: string } }> }>);
-    /* ⚠️ 连「拒的是哪个目录」一起钉住 —— 不然它在**别的**目录上被拒也绿（刚栽过一次） */
-    ok(cd.ok === false && cd.errors?.[0]?.locator?.name === plain,
-       "**普通目录里建稿被拦住**（原来静默写 227 KB），而且拒的就是这个目录",
-       `${cd.ok} · ${cd.errors?.[0]?.locator?.name ?? "(没说是哪个)"}`);
-    /* ⚠️ 钉的是**拒因告诉了用户该怎么办**，不是「拒了」—— 只断言 ok:false 的话，
-       任何别的毛病（路由名错了、参数缺了）也会让它绿（§161.5 那一族）。 */
-    const why = `${cd.errors?.[0]?.message ?? ""} ${cd.errors?.[0]?.fix ?? ""}`;
-    ok(why.includes("接管"), "拒因说得出出路（「先接管为设计项目」），不是干巴巴一句「不行」", why.slice(0, 60));
-    const after2 = (await rd3(plain)).sort();
-    ok(after2.join("|") === before2.join("|"), "**被拒的那一下一个字节都没写**（不是写了一半再报错）",
-       after2.filter((x) => !before2.includes(x)).join(" · ") || "一个都没多");
-    /* `duplicate_draft` 是同一条路的另一个入口 —— 目录里那份别人发来的稿，复制一下也会写运行时 */
-    const dd = await ppost("duplicate_draft", { path: "别人发来的.dc.html" })
-      .then((r) => r.json() as Promise<{ ok: boolean }>);
-    ok(dd.ok === false, "「复制一份稿」也走同一道闸（一道闸只守住一条路等于没守）", String(dd.ok));
-  }
-
-  /* 接管之后才部署 —— 对照组。没有它的话上面那条「没多文件」可能只是因为部署整条路都坏了 */
-  const o2 = await fetch(`${s.url}__ud/adopt_project?token=${encodeURIComponent(s.token)}`, {
-    method: "POST", headers: { "content-type": "application/json", origin: s.url.replace(/\/$/, "") },
-    body: JSON.stringify({ dir: plain }),
-  }).then((r) => r.json() as Promise<{ ok: boolean; data?: { deployed?: number | null } }>);
-  const adopted = (await rd3(plain)).sort();
-  ok(o2.ok === true && adopted.includes("project.json"), "**对照组**：接管之后 project.json 才出现", String(o2.ok));
-  ok(adopted.includes("index.dc.html") && adopted.includes("support.js"),
-     "接管之后壳与运行时才部署（不然上一条「没多文件」可能只是整条路坏了）",
-     `${adopted.length - before.length} 个新文件`);
-  ok((o2.data?.deployed ?? 0) > 0, "回执说出部署了几份壳", String(o2.data?.deployed));
-  /* ⚠️ **这一条是上面那道闸的对照组**：接管之后同一个请求要能成。
-     没有它的话，「建稿被拒」可能只是因为建稿这条路整个坏了 —— 而那一样会绿。 */
-  {
-    const cd2 = await ppost("create_draft", { path: "新稿.dc.html", source: "blank" })
-      .then((r) => r.json() as Promise<{ ok: boolean; errors?: Array<{ message?: string }> }>);
-    ok(cd2.ok === true, "**对照组**：接管之后同一个「建稿」请求就成了（闸不是把功能拆了）", String(cd2.ok) + " " + (cd2.errors?.[0]?.message ?? ""));
+    const locked = await (await ppost("create_draft", { path: "锁着就不该成.dc.html", source: "blank", title: "x" })).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
+    ok(locked.ok === false && /只读/.test(locked.errors?.[0]?.message ?? ""),
+       "**还没解锁时建稿被拒，而且说得出为什么**（M14-7 那道闸，B3 之外的第二道）",
+       locked.errors?.[0]?.message ?? String(locked.ok));
+    const unlock = await (await ppost("start_editing", {})).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
+    ok(unlock.ok === true, "（前提）「开始编辑」解锁成了", String(unlock.ok) + " " + (unlock.errors?.[0]?.message ?? ""));
+    const cd = await (await ppost("create_draft", { path: "新稿.dc.html", source: "blank", title: "新稿" })).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
+    ok(cd.ok === true, "**对照组**：解锁之后真建一份稿是成的 —— 「什么都没写」不是因为「什么都写不了」",
+       String(cd.ok) + " " + (cd.errors?.[0]?.message ?? ""));
     ok((await rd3(plain)).includes("新稿.dc.html"), "而且稿真的落盘了");
+    /* ⚠️⚠️ **这一条是 C3 的新承诺，而它原来不成立**：建一份稿只多**那一份稿**。
+       `ensureRuntimeBeside` 删掉之前，同一个请求会静默多写 **225 KB** 的运行时副本
+       （`support.js` + 两个 React UMD），而那正是「新建稿件先问接管」那道闸存在的理由。 */
+    const made = (await walk3()).filter((x) => !before.includes(x));
+    ok(made.length === 1 && made[0] === "新稿.dc.html",
+       "**建一份稿只多那一份稿**（不再顺手拷 225 KB 运行时副本，也没有被拒那一次的半成品）", made.join(" · ") || "(一个都没多)");
   }
-  await rmdirAll(plain, { recursive: true, force: true });
+
+  await rm3(plain, { recursive: true, force: true });
 }
 
-/* ── 收尾：自己造的兜底仓库（M14-6）──
-   ⚠️ 这一套在系统临时目录下建过项目 → `STATE_ROOT/.umbrastudio/git/` 里多一个仓库，
-   而删临时目录**删不掉它**（「清掉自己造的文件」和「清掉自己造的状态」是两件事，`00` §166）。
-   判准只有一条：指向系统临时目录、而那个目录已经不在了。`onlyDead` 保证不碰还活着的。
-   ⚠️ 这一条是**实测补的**：filetest / lifecycletest 装了收尾之后，跑完一整轮
-   仓库数还是 2 → 5 —— 多出来的正是这三套（captest / difftest / apitest 的 rmw）。
-   **「有的测装了收尾」不等于「残留不再增长」。** */
-/* ── ⑰ 接管弹窗上那几个数**是不是真的**（2026-10-22）──
-   ⚠️⚠️ **`hometest` 那条「照实说出会写多少」是循环的** —— 它从渲染出来的 DOM 里
-   读 753 KB，而那个 753 KB 就是写在 `Sheets.tsx` 里的字面量。
-   **一条判据引用了它要检查的东西，就是循环**（§91 原话）：改了部署清单，
-   界面上的数当场过期，而那条判据照样绿。
-   所以这里**真接管一个干净的普通目录，数盘上的文件和字节**，再和界面上写的那几个数对账。
-   > **一个数写在界面上就会过期 —— 要让它过期的那一刻有东西报红。** */
-console.log("\n⑰ 接管弹窗上那几个数是真的（非循环对账）");
-{
-  const { mkdtemp: mkt5, writeFile: wf5, readFile: rf5 } = await import("node:fs/promises");
-  const { tmpdir: td5 } = await import("node:os");
-  const { join: j5 } = await import("node:path");
-  const { readdirSync: rds5, statSync: sts5, realpathSync: rp5 } = await import("node:fs");
-  const { serveStart: ss5 } = await import("./serve.js");
-  const { buildIndex: bi5 } = await import("./indexpage.js");
-  const { buildProject: bp5 } = await import("./project.js");
+/* ⚠️⚠️ **⑰「接管弹窗上那几个数是真的」2026-10-23（M16-7c-2a / C3）整节删了。**
+ *  它真接管一个干净目录、数盘上的文件和字节，再和界面上写的「17 个文件 · 约 750 KB」对账 ——
+ *  而接管这件事本身没有了（`adopt_project` 与那条横条都删了）。
+ *  ⚠️ 它当初存在的理由仍然成立，值得留在这里：
+ *  > **一个数写在界面上就会过期 —— 要让它过期的那一刻有东西报红。**
+ *  > （`hometest` 那条「照实说出会写多少」是**循环的** —— 它读的就是 `Sheets.tsx` 的字面量。）
+ *  下次再有「界面上写一个量出来的数」的地方，照这一节的办法做：**不读那个字面量，去数真东西。** */
 
-  const walk5 = (d: string, base = d): Array<[string, number]> => {
-    const out: Array<[string, number]> = [];
-    for (const e of rds5(d, { withFileTypes: true })) {
-      const q = j5(d, e.name);
-      if (e.isDirectory()) out.push(...walk5(q, base));
-      else out.push([q.slice(base.length + 1), sts5(q).size]);
-    }
-    return out;
-  };
-
-  const d5 = rp5(await mkt5(j5(rp5(td5()), "umbra-adoptcount-")));
-  await wf5(j5(d5, "我的笔记.md"), "# 笔记\n", "utf8");
-  const b5 = new Set(walk5(d5).map((x) => x[0]));
-  /* 接管 = 写 project.json + buildIndex（`api.ts` 的 adopt_project 就这两步） */
-  await wf5(j5(d5, "project.json"), JSON.stringify({ name: "adoptcount" }, null, 2) + "\n", "utf8");
-  const pr5 = await bp5(d5);
-  const sv5 = await ss5(pr5);
-  await bi5(pr5, sv5.url);
-  const new5 = walk5(d5).filter((x) => !b5.has(x[0]));
-  const files5 = new5.length;
-  const kb5 = Math.round(new5.reduce((a, x) => a + x[1], 0) / 1024);
-  /* 运行时副本那四件 —— 「建一份稿本来也要写的那 226 KB」说的就是它们 */
-  const RT = ["support.js", "react.production.min.js", "react-dom.production.min.js", j5(".umbradesign", "select-bridge.js")];
-  const rtKb5 = Math.round(new5.filter((x) => RT.includes(x[0])).reduce((a, x) => a + x[1], 0) / 1024);
-
-  const sheet = await rf5(j5(TOOL_ROOT, "app", "src", "sheets", "Sheets.tsx"), "utf8");
-  const said = (re: RegExp) => Number(re.exec(sheet)?.[1] ?? NaN);
-  const saidTotal = said(/<b className="text-text2">约 (\d+) KB<\/b><\/span>/);
-  /* ⚠️ 表结构变了（设计侧第 59 封 §零 A：每一行都要写文件数），所以这里跟着改。
-     **而它红在这一刻是对的** —— 它钉的是「界面上那个数 = 实测」，
-     表一改它就该来问一次。顺带现在能钉得更紧：**分项加起来也要等于合计**。 */
-  const saidFiles = said(/合计 (\d+) 个/);
-  const rowCounts = [...sheet.matchAll(/<Row n=\{(\d+)\}/g)].map((m) => Number(m[1]));
-  /* 表改成了 `<Row n={…} label="…" kb="…" …/>`，所以按 label 抽 */
-  const rowKb = (label: string) => said(new RegExp(`<Row n=\\{\\d+\\} label="${label}" kb="(\\d+) KB"`));
-  const saidRt = rowKb("运行时副本");
-  const saidShells = rowKb("预览壳");
-  ok(!Number.isNaN(saidTotal) && !Number.isNaN(saidFiles) && !Number.isNaN(saidRt),
-     "（前提）从弹窗源码里**真的抽出了**那三个数（抽不出来的话下面几条测的是 NaN）",
-     `${saidFiles} 个 · ${saidTotal} KB · 运行时 ${saidRt} KB`);
-  ok(saidFiles === files5, "**接管弹窗说的文件数 = 实测文件数**", `界面 ${saidFiles} · 实测 ${files5}`);
-  /* ⚠️ **分项也要加得起来**（设计侧把数加了一遍才发现原来 8+4+2+1=15≠17）。
-     > 一张「合计」对得上、而分项加不起来的表，是一张还没被人加过的表。 */
-  const rowSum = rowCounts.reduce((a, b) => a + b, 0);
-  ok(rowCounts.length > 0 && rowSum === files5,
-     "**那张表的分项加起来 = 实测文件数**（不是只有合计那一行对）",
-     `${rowCounts.join(" + ")} = ${rowSum} · 实测 ${files5}`);
-  /* ⚠️ 容差 12 KB 不是放松，是**那个数本来就浮动**：实测 749–759 KB，
-     随目录里已有几份稿变（入口页要装索引数据、壳要注入 `__resources`）。
-     所以界面上写的是「约 750 KB」——**写一个精确到个位的数反而是假精度**。
-     而**文件数不浮动**（上面那条按等号钉）。 */
-  ok(Math.abs(saidTotal - kb5) <= 12, "**接管弹窗说的总字节 ≈ 实测总字节**（±12 KB，那个数随稿件数浮动 749–759）", `界面约 ${saidTotal} KB · 实测 ${kb5} KB`);
-  ok(Math.abs(saidRt - rtKb5) <= 2, "**「运行时副本 4 份」那个数 = 实测那四件的字节**（这一项不浮动，按等号钉）", `界面 ${saidRt} KB · 实测 ${rtKb5} KB`);
-  const shellsKb5 = Math.round(new5.filter((x) => /^(S\d|IconGlyph)/.test(x[0]) || x[0] === "icons.js").reduce((a, x) => a + x[1], 0) / 1024);
-  /* ⚠️ 「预览壳」那一行现在**不含图标表**了（设计侧要求 `icons.js` 单列一行），
-     所以这里也要把它从实测里分出来 —— **判据的分组要和界面的分组一致**，
-     不然它会红在「我们按两种方式切同一堆文件」上。 */
-  const iconsKb5 = Math.round(new5.filter((x) => x[0] === "icons.js").reduce((a, x) => a + x[1], 0) / 1024);
-  ok(Math.abs(saidShells - (shellsKb5 - iconsKb5)) <= 12, "**「预览壳」那一行的数 ≈ 实测那 8 份（不含图标表）**",
-     `界面 ${saidShells} KB · 实测 ${shellsKb5 - iconsKb5} KB（8 份壳）+ ${iconsKb5} KB（图标表单列）`);
-  ok(Math.abs(rowKb("图标表") - iconsKb5) <= 2, "**「图标表」那一行的数 = 实测 `icons.js`**",
-     `界面 ${rowKb("图标表")} KB · 实测 ${iconsKb5} KB`);
-  await rmdirAll(d5, { recursive: true, force: true });
-}
 
 /* ── ⑱ 把外部文件拖进项目 = 复制进来（M14-5 下半 · 场景 ③，2026-10-22）──
    ⚠️⚠️ **这是整个工具里唯一一处会复制用户文件的能力**，而用户 2026-10-21 的硬约束是
@@ -1439,136 +1350,126 @@ console.log("\n⑲ 只读预览 + 一键解锁（M14-7）");
   }
 }
 
-/* ── ⑳ 排除规则写进 `.git/info/exclude`，不碰用户的 `.gitignore`（B3，2026-10-22）──
-   ⚠️⚠️ **这一节的第一条是一句假话的判据化。** 接管弹窗上原来写着
-   「`.gitignore` 也不动」，而实测**有 `.gitignore` 的目录接管时它会被改**
-   （14 → 415 字节）—— 那句话假的原因是**我量接管时的样本里没有 `.gitignore`**
-   （第五次「判据在没有样本的时候，测的是今天恰好没事」，
-   而这一次它让假话进了用户看得见的界面）。
-   **所以这一节的样本里必须有 `.gitignore`** —— 这就是它存在的全部理由。
-   ⚠️ 设计侧是靠「§5 和 §6 两段互相矛盾」发现它的，**不是靠量** ——
-   内部一致性检查抓得到样本抓不到的东西。 */
-console.log("\n⑳ 排除规则进 .git/info/exclude，不碰用户的 .gitignore（B3）");
+/* ══════════ ⑳ 存量项目里那个排除块撤得掉（B3 的收尾）══════════
+   ⚠️⚠️ **这一节 2026-10-23（M16-7c-2a / C3）改写过，而改写的分寸是这一段的重点。**
+
+   原来它测的是 `ensureExcluded`：接管时把工具产物（预览壳 / 入口页 / 运行时副本）
+   **加进** `.git/info/exclude`，而且**不碰用户的 `.gitignore`**。
+   C3 之后没有东西再往用户的项目里放，那件事整个消失 ——
+   核的时候还量到 `ensureExcluded` **在产品代码里已经零调用**（它原来住在 `buildIndex` 里）。
+   > **一个只剩判据在调的函数，判据测的是它自己还在。**
+
+   **而 `dropExcluded` 留着，它的判据也必须留**：用户机器上**已经写进去**的那个块
+   还躺在他的 `.git/info/exclude` 里，「清除缓存」要能把它撤掉（`purge.ts`）。
+   > **「以后不再做这件事」和「把以前做过的撤干净」是两件事，而后者要的代码比前者久。**
+
+   ⚠️⚠️ **worktree 与子模块那两个真样本一个都没删**，因为它们钉的是 `gitDirFor` ——
+   `dropExcluded` 能不能生效全靠它算对。原来那段注释里的读数值得整段留着：
+
+   | | 自己解析出来的 gitdir | 写进它的 `info/exclude` 之后 `git status` |
+   | --- | --- | --- |
+   | 真子模块 | `parent/.git/modules/sub` | **0 行（干净）** |
+   | 真 worktree | `main/.git/worktrees/wt` | **✗ 16 行全冒出来了** |
+
+   病根：**git 读 `info/exclude` 用的是 common dir，不是 per-worktree 那个 GIT_DIR。**
+   而第一版判据断言的是「文件写进了我算出来的那个路径」—— 那确实成功了，所以它绿。
+   > **「写对了地方」和「生效了」是两件事，而只有真问 git 才分得开。**
+   > 而**手搓的样本和真样本「形状一样」** —— 一样到足以让判据通过，
+   > 却不足以暴露 worktree 那一跳。**同形不等于同一回事。**
+
+   所以这一节现在的办法是：**手写一个带标记的块进去**（模拟老版本留下的存量），
+   然后让 `dropExcluded` 撤它，**再真问一次 git** 确认那几行真的不再被排除。 */
+console.log("\n⑳ 存量项目里那个排除块撤得掉（B3 的收尾）");
 {
-  const { mkdtemp: mkA, writeFile: wfA, mkdir: mdA, readFile: rfA, rm: rmA } = await import("node:fs/promises");
+  const { mkdtemp: mkA, writeFile: wfA, mkdir: mdA, rm: rmA } = await import("node:fs/promises");
   const { tmpdir: tdA } = await import("node:os");
   const { join: jA } = await import("node:path");
   const { existsSync: exA, realpathSync: rpA, readFileSync: rfsA } = await import("node:fs");
-  const { ensureExcluded, dropExcluded, gitDirFor } = await import("./gitexclude.js");
-  const { buildIndex: biA } = await import("./indexpage.js");
-  const { buildProject: bpA } = await import("./project.js");
-  const { serveStart: ssA } = await import("./serve.js");
+  const { dropExcluded, gitDirFor, EXCLUDE_OPEN, EXCLUDE_CLOSE } = await import("./gitexclude.js");
+  const { execFileSync: ex3 } = await import("node:child_process");
+  const gitIn = (args: string[], cwd: string) => ex3("git",
+    ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...args],
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 
-  /** 造一个**真的 git 仓库**（`git init`），里面一个项目目录。 */
-  const mkRepo = async (tag: string) => {
-    const repo = rpA(await mkA(jA(rpA(tdA()), `umbra-b3-${tag}-`)));
-    const { execFileSync } = await import("node:child_process");
-    execFileSync("git", ["init", "-q"], { cwd: repo });
-    return repo;
+  /** 老版本留下的那个块长什么样。
+   *  ⚠️⚠️ **标记从产品 import，不手抄** —— 第一版我在上面写了「要一字不差」，
+   *  然后手抄成 `# <umbra-studio>`（产品那个是一整句「…别手改」），
+   *  当场红在「撤不掉」上：`dropExcluded` 用 `indexOf(OPEN)` 找不到我编的那个块。
+   *  > **写下一条担心，和把它落实，是两件事** —— 而我这一轮已经栽过三次。
+   *  > 让编译器替我保证。 */
+  const OPEN_MARK = EXCLUDE_OPEN;
+  const CLOSE_MARK = EXCLUDE_CLOSE;
+  const legacyBlock = [OPEN_MARK, "index.dc.html", "support.js", CLOSE_MARK].join("\n") + "\n";
+  /** 往一个仓库的 `info/exclude` 写进存量块（经 `gitDirFor` 定位，和产品同一条路） */
+  const plantLegacy = async (dir: string): Promise<string | null> => {
+    const gd = gitDirFor(dir).gitDir;
+    if (!gd) return null;
+    await mdA(jA(gd, "info"), { recursive: true });
+    await wfA(jA(gd, "info", "exclude"), "# 我自己的规则/\n\n" + legacyBlock, "utf8");
+    return jA(gd, "info", "exclude");
   };
 
-  /* ⓐ **接管一个有 `.gitignore` 的目录 → 那个文件一个字节都不许动** */
+  /* ── ⓐ 普通仓库：撤得掉，而且别人写的东西一个字没动 ── */
   {
-    const repo = await mkRepo("有gitignore");
-    await wfA(jA(repo, ".gitignore"), "node_modules/\n", "utf8");
-    const gi0 = rfsA(jA(repo, ".gitignore"), "utf8");
-    await wfA(jA(repo, "我的笔记.md"), "# 笔记\n", "utf8");
-    await wfA(jA(repo, "project.json"), JSON.stringify({ name: "b3" }), "utf8");
-    const pr = await bpA(repo);
-    const sv = await ssA(pr);
-    await biA(pr, sv.url);
-    ok(rfsA(jA(repo, ".gitignore"), "utf8") === gi0,
-       "**接管之后他的 `.gitignore` 一个字节都没动**（原来会被追加 14 → 415 字节）",
-       `${gi0.length} 字节，没变`);
-    /* 排除规则去了该去的地方 */
-    const ex = jA(repo, ".git", "info", "exclude");
-    ok(exA(ex) && /umbra-studio/.test(rfsA(ex, "utf8")),
-       "**排除规则写进了 `.git/info/exclude`**（只在本机生效、不进版本、不是用户的文件）");
-    /* ⚠️ **真问 git**：那 17 个生成物不出现在 `git status` 里。
-       这一条是整节的要点 —— 前两条是「写对了地方」，这一条才是「他看不到那一屏红」。
-       **只断言文件写对了的话，排除规则写错内容也会绿。** */
-    const { execFileSync: ex2 } = await import("node:child_process");
-    const st = ex2("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: repo, encoding: "utf8" });
-    const noisy = st.split("\n").filter((l) => l.trim())
-      .filter((l) => /index\.dc\.html|index-data\.js|^.. S\d|IconGlyph|icons\.js|_ds-tool|support\.js|react(-dom)?\.production|umbradesign|umbrastudio/.test(l));
-    ok(noisy.length === 0, "**`git status` 里一个生成物都不出现**（真问 git，不是看我们写了什么）",
-       noisy.join(" · ") || st.split("\n").filter((l) => l.trim()).join(" · ") || "干净");
-    /* 对照组：`project.json` **该出现** —— 它是「这是设计项目」的标记，该进版本 */
-    ok(/project\.json/.test(st), "**对照组：`project.json` 照旧出现在 `git status` 里**（它该进版本，不在排除清单里）",
-       (st.match(/.*project\.json.*/) ?? [""])[0].trim());
-    /* 撤销：「忘掉」会调它 */
+    const repo = rpA(await mkA(jA(rpA(tdA()), "umbra-drop-")));
+    gitIn(["init", "-q"], repo);
+    await wfA(jA(repo, "index.dc.html"), "<html></html>\n", "utf8");
+    const ex = await plantLegacy(repo);
+    ok(!!ex && rfsA(ex, "utf8").includes(OPEN_MARK), "（样本有效性）存量块真的写进去了", ex ?? "(null)");
+    /* ⚠️ **真问 git**：这一条钉的是「那个块当初是生效的」——
+       没有它的话，下面「撤掉之后 git 又看得见了」可能只是因为它从来没生效过。 */
+    const before = gitIn(["status", "--porcelain", "--untracked-files=all"], repo);
+    ok(!/index\.dc\.html/.test(before), "（样本有效性）**撤之前 git 真的看不见它**（块是生效的）", before.trim() || "(干净)");
     const d = await dropExcluded(repo);
-    ok(d.removed && !/umbra-studio/.test(rfsA(ex, "utf8")), "**撤得掉**（「忘掉这个项目」顺手清那一段）");
+    ok(d.removed, "**撤得掉**（「清除缓存」顺手清那一段）");
+    const after = gitIn(["status", "--porcelain", "--untracked-files=all"], repo);
+    ok(/index\.dc\.html/.test(after), "**撤完 git 又看得见那个文件了**（这才叫生效，不是「文件写对了地方」）", after.trim().split("\n")[0] ?? "");
+    ok(/我自己的规则\//.test(rfsA(ex!, "utf8")), "**`info/exclude` 里别人写的东西一个字没动**");
+    ok(!rfsA(ex!, "utf8").includes(OPEN_MARK), "我们那一段整段没了（不是只删了中间几行）");
     await rmA(repo, { recursive: true, force: true });
   }
 
-  /* ⓑ **不在 git 仓库里 → 一个字节都不写** */
+  /* ── ⓑ 不在 git 仓库里：不报错、不写、照实说没撤 ── */
   {
-    const plain = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-非git-")));
-    await wfA(jA(plain, "我的笔记.md"), "# 笔记\n", "utf8");
-    const before = (await (await import("node:fs/promises")).readdir(plain)).sort();
-    const r = await ensureExcluded(plain);
-    const after = (await (await import("node:fs/promises")).readdir(plain)).sort();
-    ok(r.file === null && /不在任何 git 仓库/.test(r.why ?? ""),
-       "**不在 git 仓库里就什么都不写**，而且说出原因", r.why);
-    ok(after.join("|") === before.join("|"), "**那个目录一个字节都没多**",
-       after.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
+    const plain = rpA(await mkA(jA(rpA(tdA()), "umbra-drop-非git-")));
+    const { readdirSync: rdsB } = await import("node:fs");
+    const walkTop = (): string[] => [...rdsB(plain)].sort();
+    const b4 = walkTop();
+    const r = await dropExcluded(plain);
+    ok(r.file === null && r.removed === false, "**不在任何 git 仓库里时不报错、也不说自己撤了**", JSON.stringify(r));
+    ok(walkTop().join("|") === b4.join("|"), "**那个目录一个字节都没多**", walkTop().join(" · ") || "(空)");
     await rmA(plain, { recursive: true, force: true });
   }
 
-  /* ⓒ **`.git` 是文件的那两种：真 `git worktree` 和真子模块**
-     ⚠️⚠️ **这一节 2026-10-22 重写过，因为第一版用手搓的 `gitdir:` 文件测，
-     而它在真 worktree 上漏掉了一个真缺陷 —— 判据照样绿。**
-     真跑一遍的读数：
-
-     | | 自己解析出来的 gitdir | 写进它的 `info/exclude` 之后 `git status` |
-     | --- | --- | --- |
-     | 真子模块 | `parent/.git/modules/sub` | **0 行生成物（干净）** |
-     | 真 worktree | `main/.git/worktrees/wt` | **✗ 16 行全冒出来了** |
-
-     病根：**git 读 `info/exclude` 用的是 common dir，不是 per-worktree 那个 GIT_DIR。**
-     而第一版判据断言的是「文件写进了我算出来的那个路径」—— 那确实成功了，所以它绿。
-     > **「写对了地方」和「生效了」是两件事，而只有真问 git 才分得开。**
-     > 而**手搓的样本和真样本「形状一样」** —— 一样到足以让判据通过，
-     > 却不足以暴露 worktree 那一跳。**同形不等于同一回事。** */
+  /* ── ⓒ 真 worktree 与 ⓓ 真子模块：`gitDirFor` 算的是 common dir，而撤要在那儿生效 ── */
   {
-    const { execFileSync: ex3 } = await import("node:child_process");
-    const gitIn = (args: string[], cwd: string) => ex3("git",
-      ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...args],
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const box = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-wt-")));
-
-    /** 在 `dir` 上接管一次，回「`git status` 里有几行生成物」+「项目里有没有被建出 `.git/info/`」 */
-    const adoptAndCheck = async (dir: string) => {
-      await wfA(jA(dir, "我的笔记.md"), "# 笔记\n", "utf8");
-      await wfA(jA(dir, "project.json"), JSON.stringify({ name: "wt" }), "utf8");
-      const pr = await bpA(dir);
-      const sv = await ssA(pr);
-      await biA(pr, sv.url);
-      const st = gitIn(["status", "--porcelain", "--untracked-files=all"], dir);
-      const noisy = st.split("\n").filter((l) => l.trim())
-        .filter((l) => /index\.dc\.html|index-data\.js|S\d.*\.dc\.html|IconGlyph|icons\.js|_ds-tool|support\.js|react(-dom)?\.production|umbradesign|umbrastudio/.test(l));
-      return { noisy, phantom: exA(jA(dir, ".git", "info")), gd: gitDirFor(dir).gitDir };
+    const box = rpA(await mkA(jA(rpA(tdA()), "umbra-drop-wt-")));
+    /** 在 `dir` 上种一个存量块、撤掉、再真问 git —— 回「算出来的 gitdir」+「撤前后 git 看不看得见」 */
+    const plantDropCheck = async (dir: string) => {
+      await wfA(jA(dir, "index.dc.html"), "<html></html>\n", "utf8");
+      const ex = await plantLegacy(dir);
+      const seenBefore = /index\.dc\.html/.test(gitIn(["status", "--porcelain", "--untracked-files=all"], dir));
+      const d = await dropExcluded(dir);
+      const seenAfter = /index\.dc\.html/.test(gitIn(["status", "--porcelain", "--untracked-files=all"], dir));
+      return { gd: gitDirFor(dir).gitDir, ex, removed: d.removed, seenBefore, seenAfter,
+               phantom: exA(jA(dir, ".git", "info")) };
     };
 
-    /* ── 真 git worktree ── */
     await mdA(jA(box, "main"), { recursive: true });
     gitIn(["init", "-q"], jA(box, "main"));
     gitIn(["commit", "-q", "--allow-empty", "-m", "init"], jA(box, "main"));
     gitIn(["worktree", "add", "-q", "../wt", "-b", "wtb"], jA(box, "main"));
     ok(!exA(jA(box, "wt", ".git", "HEAD")), "（样本自己先成立）worktree 的 `.git` 是**文件**不是目录");
     {
-      const r = await adoptAndCheck(jA(box, "wt"));
-      /* ⚠️ **钉的是 common dir，不是那个 per-worktree 的 GIT_DIR** */
+      const r = await plantDropCheck(jA(box, "wt"));
       ok(r.gd === jA(box, "main", ".git"),
          "**真 worktree：算出来的是 common dir**（`main/.git`），不是 `main/.git/worktrees/wt`", r.gd ?? "(null)");
-      ok(r.noisy.length === 0,
-         "**真 worktree 里接管之后 `git status` 干净** —— 第一版这里是 16 行（写进了 per-worktree 那个 GIT_DIR，git 不读它）",
-         r.noisy.length ? "✗ " + r.noisy.length + " 行" : "0 行");
+      ok(!r.seenBefore && r.removed && r.seenAfter,
+         "**真 worktree 里那个块生效、而且撤得掉** —— 写进 per-worktree 那个 GIT_DIR 的话 git 压根不读它",
+         JSON.stringify({ 撤前看不见: !r.seenBefore, 撤掉了: r.removed, 撤后看得见: r.seenAfter }));
       ok(!r.phantom, "**项目里没有被凭空建出 `.git/info/`**（把 `.git` 文件当目录用就会这样）");
     }
 
-    /* ── 真子模块（本地 `file://`，**一条都不联网**）── */
     await mdA(jA(box, "childwork"), { recursive: true });
     gitIn(["init", "-q", "-b", "main"], jA(box, "childwork"));
     await wfA(jA(box, "childwork", "a.txt"), "hi\n", "utf8");
@@ -1584,41 +1485,14 @@ console.log("\n⑳ 排除规则进 .git/info/exclude，不碰用户的 .gitignor
     gitIn(["submodule", "add", "-q", `file://${box}/child.git`, "sub"], jA(box, "parent"));
     ok(!exA(jA(box, "parent", "sub", ".git", "HEAD")), "（样本自己先成立）子模块的 `.git` 也是**文件**");
     {
-      const r = await adoptAndCheck(jA(box, "parent", "sub"));
+      const r = await plantDropCheck(jA(box, "parent", "sub"));
       ok(r.gd === jA(box, "parent", ".git", "modules", "sub"),
          "**真子模块：算出来的是它自己那个 modules 目录**", r.gd ?? "(null)");
-      ok(r.noisy.length === 0, "**真子模块里接管之后 `git status` 干净**",
-         r.noisy.length ? "✗ " + r.noisy.length + " 行" : "0 行");
+      ok(!r.seenBefore && r.removed && r.seenAfter, "**真子模块里那个块也生效、也撤得掉**",
+         JSON.stringify({ 撤前看不见: !r.seenBefore, 撤掉了: r.removed, 撤后看得见: r.seenAfter }));
       ok(!r.phantom, "**子模块目录里没有被凭空建出 `.git/info/`**");
     }
-
-    /* 不在仓库里 / 问不出来 → 不写（和 ⓑ 那一节是同一条，这里只补「说出了原因」） */
-    const bad = rpA(await mkA(jA(rpA(tdA()), "umbra-b3-非git-")));
-    const rb = await ensureExcluded(bad);
-    ok(rb.file === null && /不在任何 git 仓库里/.test(rb.why ?? ""),
-       "**问不出 common dir 就不写，并说出原因**", rb.why);
-    await rmA(bad, { recursive: true, force: true });
     await rmA(box, { recursive: true, force: true });
-  }
-
-  /* ⓓ 幂等：写两次只有一段 */
-  {
-    const repo = await mkRepo("幂等");
-    await wfA(jA(repo, "x.md"), "x", "utf8");
-    await ensureExcluded(repo);
-    await ensureExcluded(repo);
-    const txt = await rfA(jA(repo, ".git", "info", "exclude"), "utf8");
-    ok((txt.match(/<umbra-studio>/g) ?? []).length === 1, "**写两次只有一段**（整段替换，幂等）",
-       `${(txt.match(/<umbra-studio>/g) ?? []).length} 段`);
-    /* 别人写的东西不许动 */
-    await wfA(jA(repo, ".git", "info", "exclude"), "我自己的规则/\n\n" + txt, "utf8");
-    await ensureExcluded(repo);
-    const t2 = await rfA(jA(repo, ".git", "info", "exclude"), "utf8");
-    ok(/我自己的规则\//.test(t2), "**`info/exclude` 里别人写的东西一个字没动**");
-    await dropExcluded(repo);
-    const t3 = await rfA(jA(repo, ".git", "info", "exclude"), "utf8");
-    ok(/我自己的规则\//.test(t3) && !/umbra-studio/.test(t3), "**撤掉我们那一段之后，别人那一行还在**", JSON.stringify(t3.trim()));
-    await rmA(repo, { recursive: true, force: true });
   }
 }
 

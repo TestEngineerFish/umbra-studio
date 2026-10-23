@@ -132,12 +132,13 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
    *  会把 **A 的未落盘登记一起清掉** → A 那份改动再也不会被拦一下，刷新就没了。
    *  理由全文在 `ui/dirty.ts` 的 `dirtyOf`。 */
   const projDirty = useMemo(() => dirtyOf(project.dir), [project.dir]);
-  /** 这个目录接管过没有。`project.designProject` 是进来时的读数，
-   *  接管之后 `project` 这个 prop 不会自己变（它来自 `open_project` 的那一次回执），
-   *  所以本地记一次翻面。**两个用它的地方（横条 · 新建稿件那一问）读的是同一份。** */
-  const [adoptedHere, setAdoptedHere] = useState(false);
-  const designProject = adoptedHere ? true : project.designProject;
-  /** 解锁过编辑没有（M14-7）。和 `adoptedHere` 同一个理由：`project` 这个 prop
+  /* ⚠️ **「接管过没有」这件本地状态 2026-10-23（M16-7c-2a / C3）删了** ——
+     它的两个用处（工作台那条横条 · 新建稿件那一问）都没了，服务端也不再回 `designProject`。
+     ⚠️ 下面那个 `unlockedHere` **形状一样而理由不同，所以留着**：
+     它是 M14-7 的只读解锁（「我们默认不动你的文件」），和设计稿无关。
+     > 两个长得一样的本地翻面状态，一个随 dc 走、一个留下 ——
+     > 判准是「它翻的那件事还在不在」，不是「它看起来像不像」。 */
+  /** 解锁过编辑没有（M14-7）。`project` 这个 prop
    *  来自 `open_project` 的那一次回执，解锁之后它不会自己变。 */
   const [unlockedHere, setUnlockedHere] = useState(false);
   const editable = unlockedHere ? true : project.editable;
@@ -946,7 +947,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
             spans: ["nav", "detail", "chat"],
           } : undefined}
         />
-      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} projectDir={project.dir} designProject={designProject} onAdopted={() => { setAdoptedHere(true); setLocalTick((t) => t + 1); }} onClose={() => setSheet(null)} onCreated={(f) => open(f)} />}
+      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={(f) => open(f)} />}
       {drop && (
         <DropAsk paths={drop.paths} kind="tree" destLabel={drop.destDir || "项目根"} host={host}
           onClose={() => setDrop(null)}

@@ -119,6 +119,10 @@ for (const n of wasHttpOnly) {
        前者是 HTTP 路由名混进了工具名。统一成动作在前的 list_chats / get_chat */
     chat_list: "和 list_chats 重复，统一成 list_chats（HTTP 路由仍叫 chat_list）",
     chat_get: "改名 get_chat（MCP 习惯动作在前；HTTP 路由仍叫 chat_get）",
+    /* ── C3（M16-7，2026-10-23）：设计稿那一整套 ── */
+    render_check: "C3：真实渲染体检，验收对象是 .dc.html 设计稿（render.ts 整个删了）",
+    check_browser: "C3：它只回答「render_check 会用哪个浏览器」，随 render_check 走。⚠️ findBrowser 这个函数没删，搬去了 browser.ts —— app/actxtest 还要它",
+    check_runtime: "C3：报告「哪个放稿的目录缺 support.js 与两个 React UMD」，而那三个文件连往哪拷都没有了（ensureRuntimeBeside 一起删）",
   };
   let base = "";
   try {
@@ -396,46 +400,15 @@ for (const n of wasHttpOnly) {
    ⚠️ 只钉**加载时必取**的那两种（script / link）。`<a href>` 是点击才走的导航，
    另算一笔打出来（壳里那句 `./S1-稿件索引.dc.html` 在项目里叫 `index.dc.html`，
    是真的点不开 —— 但它和「图标画不出来」不是一个量级，不混进同一条判据里）。 */
-{
-  const { mkdtemp, rm, readdir, readFile: rf } = await import("node:fs/promises");
-  const { existsSync, realpathSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { buildProject } = await import("./project.js");
-  const { buildIndex } = await import("./indexpage.js");
+/* ⚠️⚠️ **「壳自己引的旁挂资源部署了没有」这一节 2026-10-23（M16-7c-2a / C3）删了。**
+ *  它钉的是 M14-6 那条：`IconGlyph.dc.html` 会被部署进项目，而它引的 `ui/icons.js`
+ *  **掉在两个拷贝清单的缝里**（`SHELLS` 管稿、`ensureRuntimeBeside` 管 `runtime/`，它两边都不属于），
+ *  症状是「那份稿一个图标都画不出来，而稿本身打得开、排版也对」。
+ *  C3 之后没有部署这件事了 —— 两个拷贝清单都删了，缝也就没了。
+ *  ⚠️ 它的判准设计值得留下来：**候选从真部署出去的页面里抽、「在不在」去盘上看** ——
+ *  > 两头都独立于拷贝清单，所以清单漏一项它会红。
+ *  以后再有「按清单把文件拷到某处」的代码，照这个办法钉。 */
 
-  const dir = await mkdtemp(join(realpathSync(tmpdir()), "us-shellasset-"));
-  try {
-    await buildIndex(await buildProject(dir), null);
-    const pages = (await readdir(dir)).filter((f) => f.endsWith(".dc.html"));
-    ok(pages.length > 0, "部署真的把壳写出去了（这一节要拿它们当调用方）", `${pages.length} 份`);
-
-    const LOAD = [/<script\b[^>]*\bsrc="(\.\/[^"]+)"/g, /<link\b[^>]*\bhref="(\.\/[^"]+)"/g];
-    const NAV = /<a\b[^>]*\bhref="(\.\/[^"]+\.dc\.html)"/g;
-    const wanted = new Map<string, string>();   // 相对路径 → 哪份页面引的
-    const deadNav = new Set<string>();
-    for (const f of pages) {
-      const src = await rf(join(dir, f), "utf8");
-      for (const re of LOAD) for (const m of src.matchAll(re)) if (!wanted.has(m[1]!)) wanted.set(m[1]!, f);
-      for (const m of src.matchAll(NAV)) {
-        const t = decodeURI(m[1]!).replace(/^\.\//, "");
-        if (!existsSync(join(dir, t))) deadNav.add(`${t}（${f}）`);
-      }
-    }
-    ok(wanted.size > 0, "壳里真的引了本地资源", `${wanted.size} 件`);
-
-    const absent: string[] = [];
-    for (const [ref, from] of wanted) {
-      if (!existsSync(join(dir, decodeURI(ref).replace(/^\.\//, "")))) absent.push(`${ref}（${from}）`);
-    }
-    ok(absent.length === 0,
-      "**壳页面加载时要取的本地文件，部署后一件不缺**（漏一件 = 那份稿里的功能静默失效）",
-      absent.length ? absent.join(" · ") : `${[...wanted.keys()].join(" · ")} 全在`);
-
-    if (deadNav.size) console.log(`  · （另记，不计分）壳里点不开的导航链接：${[...deadNav].join(" · ")}`);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
 
 /* ── 回归不许在用户的真实项目上起服务（Q71，2026-10-21）──
 

@@ -12,10 +12,8 @@
  *  起来之后停在前台：回车重跑索引（改完稿用），Ctrl-C 退出。
  */
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { buildProject, listProjectDirs, loadProject, projectsRoot, type Project } from "./project.js";
 import { serveHold, serveStart } from "./serve.js";
-import { buildIndex, indexStatus } from "./indexpage.js";
 import { studioName } from "./shared/brand.js";
 
 const argv = process.argv.slice(2);
@@ -59,7 +57,11 @@ function openInBrowser(url: string): void {
 
 const p = await pick();
 const serve = await serveStart(p, opt("--port") ? Number(opt("--port")) : undefined);
-const built = await buildIndex(p, serve.url);
+/* ⚠️⚠️ **这里原来 `await buildIndex(p, serve.url)`** —— 生成索引页、部署预览壳与运行时副本。
+   C3（M16-7c）删掉设计稿那一整套之后它没有对象了，而**顺带解决了一件更要紧的事**：
+   `npm run ui` 过去**一起服务就往用户的项目里写十几个文件**，
+   而这个命令的用处只是「起服务 + 打开浏览器给人看」。
+   > **一个「只是让我看一眼」的命令不该改我的目录。** */
 // serve.ts 对静态服务做了 unref（MCP 不该被它挡住退出）——
 // 前台用法里它就是唯一的存活理由，必须 ref 回来，否则打印完地址就退了。
 serveHold(p.dir);   // issue #20
@@ -72,36 +74,20 @@ const entry = `${serve.url}__app/?token=${encodeURIComponent(serve.token)}`;
 console.log("");
 console.log(`  ${b(studioName)}  ${p.title}`);
 console.log(`  项目    ${p.dir}`);
-console.log(`  稿件    ${built.drafts} 份` +
-  `（ok ${built.byHealth.ok} · warn ${built.byHealth.warn} · error ${built.byHealth.error} · 没体检 ${built.byHealth.unchecked}）`);
-console.log(`  界面    ${built.shells.length} 屏 · 本地 API ${built.api ? "已注入" : "没起来"}`);
 console.log("");
 console.log(`  ${b("打开 " + entry)}`);
 console.log("");
-console.log(dim("  首页是项目列表，进项目是左会话 / 中画布 / 右面板。没 build 过前端会提示去 npm --prefix app run build。"));
-console.log(dim(`  只看稿件索引页：${serve.url}index.dc.html`));
+console.log(dim("  首页是项目列表，进项目是左目录 / 中详情 / 右会话。没 build 过前端会提示去 npm --prefix app run build。"));
 console.log("");
-console.log(dim("  回车 = 改完稿之后重跑索引 · Ctrl-C = 退出"));
+console.log(dim("  Ctrl-C = 退出"));
 console.log("");
 
 if (!flag("--no-open")) openInBrowser(entry);
 
-/* 索引是一次性扫目录的：之后改稿它不知道，页面上的元素数/健康/时间就全是旧的
-   （§26.2）。页面自己有过期横幅，这里再给一个就地重跑的办法 ——
-   不做文件监听：`build_index` 自己就往项目目录里写文件，监听会看见自己的写入。 */
-if (process.stdin.isTTY) {
-  const rl = createInterface({ input: process.stdin });
-  rl.on("line", async () => {
-    try {
-      const st = await indexStatus(p);
-      const again = await buildIndex(p, serve.url);
-      console.log(`  ↻ 索引重跑完 · ${again.drafts} 份稿` +
-        (st.stale ? dim(`（上一版已过期：${st.reason}）`) : dim("（上一版还是新的）")));
-    } catch (e) {
-      console.log(`  ✗ 重跑失败：${(e as Error).message}`);
-    }
-  });
-}
+/* ⚠️ **「回车 = 重跑索引」这一段 C3（M16-7c）删了。**
+   它存在的理由是「索引是一次性扫目录的，之后改稿它不知道」—— 而索引页没有了。
+   ⚠️ 同时删掉的是这个命令**唯一一处会往用户项目里写东西**的路径。
+   > 一个交互式入口消失之前，先问它当初为什么要有：它防的那件事还在不在。 */
 
 // 服务在前台挂住，Ctrl-C 退出
 process.on("SIGINT", () => { console.log("\n  已停。"); process.exit(0); });

@@ -16,7 +16,7 @@ import { err, ToolError } from "./envelope.js";
 import { TOOL_ROOT, type Project } from "./project.js";
 import { sendFile, isServable } from "./sendfile.js";
 import { cacheRoot } from "./statedirs.js";
-import { isToolPage } from "./indexpage.js";
+import { isToolPage } from "./files.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
 import { BUILTIN, kindOf } from "./shared/kinds.js";

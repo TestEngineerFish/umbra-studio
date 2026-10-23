@@ -22,7 +22,7 @@ import { conclusion as conclusionOf, type DiffResult } from "./diff.js";
 import { draftPath, type Project } from "./project.js";
 import { validateDraft } from "./validate.js";
 import {
-  ensureRuntimeBeside, prepareForDisk, readIfExists, resolveInProject, writeAtomic,
+  prepareForDisk, readIfExists, resolveInProject, writeAtomic,
 } from "./normalize.js";
 import { gzipSync } from "node:zlib";
 import { buildSnapshot } from "./snapshot.js";
@@ -39,7 +39,6 @@ export interface WriteOutcome {
   bytes: number;
   version: string | null;
   snapshot: string | null;
-  runtimeCopied: string[];
   unchanged: boolean;
   /** 跟上一版比出来的变更清单摘要；第一版为 null */
   change: { counts: Record<string, number>; conclusion: string } | null;
@@ -153,7 +152,7 @@ export async function writeDraft(
         refused: "并发写入冲突：你传了预期的 sha256（说明以为盘上已有一版），而盘上没有这份稿",
         steps: ["并发保护：盘上没有这份稿，而调用方给了预期版本 —— 新建时不要传 expectedSourceSha256"],
         bytes: prep.content.length, version: null, snapshot: null,
-        runtimeCopied: [], unchanged: false, change: null, changelog: null,
+        unchanged: false, change: null, changelog: null,
       },
       diags: [], stats: {},
     };
@@ -167,7 +166,7 @@ export async function writeDraft(
           refused: `并发写入冲突：盘上源码 sha256=${currentSha.slice(0, 8)}…，预期 ${opts.expectedSourceSha256.slice(0, 8)}…`,
           steps: ["并发保护：源码已被其他客户端修改，拒绝覆盖"],
           bytes: prep.content.length, version: null, snapshot: null,
-          runtimeCopied: [], unchanged: false, change: null, changelog: null,
+          unchanged: false, change: null, changelog: null,
         },
         diags: [], stats: {},
       };
@@ -192,7 +191,7 @@ export async function writeDraft(
         path: relPath, written: false,
         refused: `有 ${diags.filter((d) => d.level === "error").length} 条 error 级诊断，按契约拒绝落盘`,
         steps: prep.steps, bytes: prep.content.length, version: null, snapshot: null,
-        runtimeCopied: [], unchanged: false, change: null, changelog: null,
+        unchanged: false, change: null, changelog: null,
       },
       diags, stats,
     };
@@ -204,7 +203,7 @@ export async function writeDraft(
         path: relPath, written: false, refused: null,
         steps: [...prep.steps, "内容与盘上一致，不落盘、不新增快照"],
         bytes: prep.content.length, version: null, snapshot: null,
-        runtimeCopied: await ensureRuntimeBeside(abs), unchanged: true, change: null, changelog: null,
+        unchanged: true, change: null, changelog: null,
       },
       diags, stats,
     };
@@ -213,7 +212,6 @@ export async function writeDraft(
   await writeAtomic(abs, prep.content);
 
   // ④ 运行时副本与稿同层
-  const runtimeCopied = await ensureRuntimeBeside(abs);
   const rtDiags: Diagnostic[] = [];
   if (!existsSync(join(dirname(abs), "support.js"))) {
     rtDiags.push(warn(X.IO, relPath, { kind: "file", name: "support.js" },
@@ -262,7 +260,7 @@ export async function writeDraft(
       steps,
       bytes: prep.content.length, version,
       snapshot: snapFile.slice(p.dir.length + 1),
-      runtimeCopied, unchanged: false,
+      unchanged: false,
       change: rec.diff ? { counts: rec.diff.counts, conclusion: conclusionOf(rec.diff) } : null,
       changelog: rec.changelog,
     },

@@ -47,18 +47,12 @@ function Sheet({ head, body, foot, onClose, wide }: { head: React.ReactNode; bod
 const Field = ({ label, children, note, err }: { label: string; children: React.ReactNode; note?: string; err?: boolean }) => <label className="flex flex-col gap-1"><span className="text-muted">{label}</span>{children}{note && <span className={err ? "text-err" : "text-muted"}>{note}</span>}</label>;
 const inputCls = "h-8 px-3 rounded border border-border bg-bg outline-none focus:border-accent";
 
-/** 接管那张表的一行。**文件数是必填的** —— 设计侧第 59 封 §零 A 抓到的那条：
- *  原来那张表只有「预览壳 8 份」这种混在标签里的数，于是**分项加不到合计**，
- *  而我自己从来没把它加一遍。
- *  > 把文件数变成一个必填的 prop，「忘了数」在类型上就不成立了
- *  > （和弹窗三段必填 props 同一个做法）。 */
-const Row = ({ n, label, kb, why }: { n: number; label: string; kb: string; why: React.ReactNode }) => (
-  <div className="px-3 py-2 flex items-baseline gap-2">
-    <b className="text-text2 w-[96px] shrink-0">{label} {n} 个</b>
-    <span className="text-muted w-[52px] shrink-0 text-right font-mono">{kb}</span>
-    <span className="flex-1 leading-relaxed">{why}</span>
-  </div>
-);
+/* ⚠️ **`Row`（接管那张表的一行）2026-10-23（M16-7c-2a / C3）随那张表一起删了。**
+   它的设计值得留一句：文件数是**必填 prop** —— 设计侧第 59 封 §零 A 抓到那张表
+   「分项加不到合计」（8+4+2+1=15≠17），而我自己从来没把它加一遍。
+   > **把一个「容易忘了填」的东西变成必填 prop，「忘了」在类型上就不成立了。**
+   （同一个做法：弹窗外壳的三段必填 props。） */
+
 
 /** 新建稿件：走 create_draft（唯一写入口），建完自动选中 */
 interface TemplateRow { id: string; name: string; sub?: string }
@@ -72,14 +66,10 @@ interface TemplateRow { id: string; name: string; sub?: string }
  *  最要紧的一条是**文件名下面实时写出完整路径** ——
  *  「点『新建』之前就能知道结果」。重名或非法字符当场变红说原因，钮变灰。
  */
-export function NewDraftSheet({ core, current, dir, projectDir, designProject, onClose, onCreated, onAdopted }: {
+export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
   core: Core; current: string | null; dir: string; onClose: () => void; onCreated: (file: string) => void;
-  /** 项目根的**绝对**路径（`adopt_project` 要它）。`dir` 是项目内的相对目录，两回事 */
-  projectDir: string;
-  /** 这个目录接管过没有（`project.json` 在不在）。`false` = 普通目录，先问一句 */
-  designProject?: boolean;
-  /** 接管成功之后通知工作台（它要把 `designProject` 翻过来、横条退场） */
-  onAdopted?: () => void;
+  /* ⚠️ `projectDir` / `designProject` / `onAdopted` 三个 props C3 之后没了 ——
+     它们全为「先接管这个目录？」那一问服务（见下面那段）。 */
 }) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"page" | "component">("page");
@@ -87,8 +77,6 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
   const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [existing, setExisting] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  /** 这一次已经接管过了（父组件的 `designProject` 还没刷到的时候靠它翻面） */
-  const [adoptedHere, setAdoptedHere] = useState(false);
 
   /* ⚠️⚠️ **重名检查原来调 `drafts`（`list_drafts`），而那件能力 2026-10-23（M16-7c）删了。**
      不改的话它会**静默 404** —— `.catch(() => {})` 把失败吞掉，`existing` 停在空数组，
@@ -112,36 +100,28 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
   const why = illegal ? '名字里不能有 \\ / : * ? " < > |' : dup ? "这个目录里已经有同名的稿了" : "";
   const blocked = !fileName || !!why || busy;
 
-  /* ── 第一段：这个目录还没接管，先问一句（M14-4 收尾，2026-10-22）──
-     ⚠️⚠️ **「新建稿件」原来是 B3 那道闸的一条后门。** B3 让「打开一个普通目录」
-     一个字节都不写，而在同一个目录里建一份稿，实测**静默写 5 个文件 · 227 KB**
-     （那份稿 1 KB + 运行时副本 4 份 226 KB），而且写完还是半残的：
-     预览壳 `S2-单稿预览壳.dc.html` 不在 → **编辑档那个 iframe 404**。
-
-     ### 为什么是「问」而不是「写进去再提醒」
-     提醒是事后的。这件事的代价（往他的目录里写 227 KB）在他点下去之前就定了，
-     **而他点「新建稿件」的时候脑子里想的是「建一份稿」，不是「改造这个目录」**。
-
-     ### 为什么是两段，而不是在表单上加一条横条
-     表单上按 Enter 就提交（`blocked === false` 时），**横条是可以被 Enter 跳过的** ——
-     那就又回到「写完才知道」。两段式让那一问**必须被看见一次**；
-     而接管是**每个目录一次**的事，之后这一段就不出现了。
-     （这和首页「忘掉这个项目」的二次确认是同一个形制，不新造一种。）
-
-     ### 为什么没有第三颗按钮「只建这一份，先不接管」
-     算一下就知道那个选项没有意义：**它已经要写 227 KB**，而接管总共才
-     753 KB —— 多出来的 526 KB 换来的是属性面板、点选、就地编辑、版本对比全都能用。
-     > **那颗按钮用全部功能换了几乎没有的代价。**
-     不接管也照旧能做的事一条没少：看、改已有的文件、圈给 AI —— 那些路上没有这道闸。 */
-  const needAdopt = designProject === false && !adoptedHere;
-  const adopt = async () => {
-    setBusy(true);
-    const r = await core.post<{ deployed: number | null }>("adopt_project", { dir: projectDir });
-    setBusy(false);
-    if (!r.ok) { toast("接管失败", r.errors?.[0]?.message ?? "", "error"); return; }
-    setAdoptedHere(true); onAdopted?.();
-    toast("已接管为设计项目", "预览壳与运行时副本都放好了，接着填稿名", "ok");
-  };
+  /* ⚠️⚠️ **「先接管这个目录？」那一问 2026-10-23（M16-7c-2a / C3）整块删了。**
+   *  它挡在表单前面问「要不要先接管」，因为**建一份稿会静默写 5 个文件 · 227 KB**
+   *  （稿 1 KB + 运行时副本 4 份 226 KB），而写完还是半残的（预览壳不在 → 编辑档 iframe 404）。
+   *
+   *  C3 之后那两个理由都没了：`ensureRuntimeBeside` 删掉（运行时副本是 dc 的），
+   *  于是**建一份稿只多那一份稿**（`apitest` ⑯ 真数盘上的文件钉住了这一条）；
+   *  而「预览壳不在」在没有预览的世界里不是一个问题。
+   *  服务端那道闸（`requireAdopted`）和 `adopt_project` 这件能力同一批删了。
+   *
+   *  ⚠️ **抓到这一处的是 `captest` 当天新加的那条判据**（「前端用到的路由一条都没少」）——
+   *  读数直接打出 `adopt_project（Sheets.tsx）`。不然它会在用户点「新建稿件」时
+   *  静默 404，而界面只会卡在「正在接管…」。
+   *  > 这条判据加的理由就是 7b 那两条 404，**而它在同一天第二次兑现了**。
+   *
+   *  ⚠️ 普通目录里建稿**还有一道闸**：M14-7 的只读（出路是「开始编辑」横条）。
+   *  那道闸守的是「我们默认不动你的文件」，和设计稿无关，所以留着。
+   *
+   *  ⚠️ **删这一块时我按注释块往上找边界，连 `submit()` 一起吃掉了**（这一轮第二次）。
+   *  > 按注释块找删除起点，会在**那个注释块不属于紧邻的那段代码**时吃掉中间的东西。
+   *  两次都是编译器立刻报出来的（`onCreated is declared but never read`）——
+   *  而如果被吃掉的是一段没有类型牵连的代码（一段 `.mjs` 判据、一个只靠副作用的调用），
+   *  **它会静默消失**。 */
 
   const submit = async () => {
     if (blocked) return;
@@ -154,69 +134,6 @@ export function NewDraftSheet({ core, current, dir, projectDir, designProject, o
     if (r.ok) { toast(`已新建 ${fileName}`, dir || "项目根", "ok"); onCreated(full); onClose(); }
     else { toast("新建稿件失败", r.errors?.[0]?.message, "error"); setBusy(false); }
   };
-
-  if (needAdopt) return <Sheet onClose={onClose}
-    head={<h2 className="text-base font-semibold">先接管这个目录？</h2>}
-    foot={<>
-      <span className="flex-1" />
-      <button className="btn" onClick={onClose}>取消 Esc</button>
-      <button className="btn primary" data-ud="adopt-then-new" disabled={busy} onClick={() => void adopt()}>{busy ? "正在接管…" : "接管并继续"}</button>
-    </>}
-    body={<>
-      <p className="leading-relaxed">
-        这是一个<b className="text-text2">普通目录</b> —— 我们到现在<b className="text-text2">一个字节都没往里写</b>。
-        要在这里建设计稿，得先放几样工具文件进来。
-      </p>
-      {/* ⚠️ 这些数是**量出来的**（2026-10-22），不是估的。
-          一个说谎的数比没有数糟，因为它看起来是读数 —— 而上一个版本的「只加 project.json」
-          正是这么来的。
-          ⚠️ **写「约」不是含糊，是照实**：实测 749–759 KB，随目录里已有几份稿浮动
-          （入口页要装索引数据，壳要注入 `__resources`）。
-          写一个精确到个位的数反而是假精度。**文件数是 17 个，那个不浮动。**
-          ⚠️ `apitest` ⑰ 真接管一个干净目录、数盘上的字节，和这几个数对账 ——
-          `hometest` 那条只证明界面显示了这些数（**那是循环的**，它读的就是这里的字面量）。 */}
-      <div className="rounded border border-border bg-panel2 divide-y divide-border text-[11px]">
-        {/* ⚠️⚠️ **每一行都写文件数，而且加起来必须等于 17**（设计侧第 59 封 §零 A）。
-            原来这张表只有四行：`8 + 4 + 2 + 1 = 15 ≠ 17` ——
-            我把 `icons.js`（图标表）**折进了「预览壳」那一行**而没有数它，
-            又**整个漏掉了 `_ds-tool/tokens.css`**（皮肤）。
-            > **一张「合计」对得上、而分项加不起来的表，是一张还没被人加过的表。**
-            设计侧是**把数加了一遍**发现的 —— 那是我自己从来没做的一步。 */}
-        <Row n={8} label="预览壳" kb="413 KB" why={<>属性面板、点选、就地编辑、版本对比、项目设置用它们。<b className="text-text2">没有它们这几样会 404</b></>} />
-        <Row n={1} label="图标表" kb="8 KB" why={<><code className="font-mono">icons.js</code> —— 预览壳里的图标靠它，缺了那几份稿<b className="text-text2">一个图标都画不出来</b></>} />
-        {/* ⚠️ 「4 份」而正文只列了 3 样（`support.js` 和两个 React）—— 漏的是点选桥，
-            设计侧也点出来了。**一个写着「4 份」而只列了 3 样的说明，比不列更坏**。 */}
-        <Row n={4} label="运行时副本" kb="226 KB" why={<><code className="font-mono">support.js</code>、两个 React、点选桥。稿自己按相对路径引它们，<b className="text-text2">没有它们这份稿双击打开是白屏</b></>} />
-        <Row n={2} label="入口页 + 索引" kb="100 KB" why="稿件索引那一页" />
-        <Row n={1} label="皮肤" kb="2 KB" why={<><code className="font-mono">_ds-tool/tokens.css</code> —— 稿里按这个相对路径引它</>} />
-        <Row n={1} label="project.json" kb="一行" why="「这个目录是设计项目」的标记" />
-        <div className="px-3 py-2 flex items-baseline gap-2 bg-panel">
-          <b className="text-text2 w-[96px] shrink-0">合计 17 个</b>
-          <span className="w-[52px] shrink-0 text-right font-mono"><b className="text-text2">约 750 KB</b></span>
-          <span className="flex-1 text-muted leading-relaxed">都是生成物，删掉下次打开会重建</span>
-        </div>
-      </div>
-      <p className="text-muted leading-relaxed">
-        <b className="text-text2">你原来的文件一个字节都不会被改</b>，<code className="font-mono text-[11px]">.gitignore</code> 也不动
-        —— 这个目录在 git 仓库里的话，排除规则记在本机那份 <code className="font-mono text-[11px]">.git/info/exclude</code> 里（不进版本）。
-        快照、评论、回收站这些也都不在这个目录里。
-      </p>
-      {/* ⚠️ 这一段回答的是用户一定会想的那句「我就建一份稿，非得改造整个目录吗」。
-          不答的话他只会觉得这是个强制推销。答案是**算得出来的**，所以把算式给他。 */}
-      {/* ⚠️ **默认只留一句，算账收进可展开里**（设计侧 §5）：
-          「正文 3 太长，用户还没问就先答了」。那段算账一个字没删，只是不默认占屏。 */}
-      <p className="text-muted leading-relaxed">
-        只是<b className="text-text2">看、改已有的文件、圈给 AI</b>，一直不需要接管。
-      </p>
-      <details className="text-muted leading-relaxed">
-        <summary className="cursor-pointer hover:text-text">为什么不能只建这一份？</summary>
-        <p className="mt-1.5">
-          <b className="text-text2">建一份稿本身就要写上面那 226 KB 的运行时副本</b>，
-          而预览壳不在的话属性面板和点选会 404 ——
-          那等于写了 226 KB 只换来半个能用的编辑器，所以这里不给那条路。
-        </p>
-      </details>
-    </>} />;
 
   return <Sheet onClose={onClose}
     head={<h2 className="text-base font-semibold">新建稿件</h2>}

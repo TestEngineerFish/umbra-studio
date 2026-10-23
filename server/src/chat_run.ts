@@ -17,19 +17,16 @@ import {
 import { getComponent, getIcon, getToken, listComponents, listIcons, searchTokens } from "./assets.js";
 import { validateDraft } from "./validate.js";
 import { patchDraft, writeDraft } from "./write.js";
-import { missingRuntime } from "./normalize.js";
 import { getAiConfig, setAiConfig, channelSupportsImage, getChannelA, getChannelB, getOpenAiChannel, looksLikeQuotaProblem, type AiConfig } from "./ai_config.js";
 import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.js";
 import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
 import { parseStub, runStubRound } from "./chat_stub.js";
-import { findBrowser, renderCheck } from "./render.js";
 import { runLocalCli, specOf } from "./local_cli.js";
 import {
   changesSince, diffDrafts, listVersions, projectChangesSince, readSnapshot,
   resolveSnapshot, toMarkdown,
 } from "./history.js";
 import { serveStart, serveStatus, serveStop } from "./serve.js";
-import { buildIndex, collectIndex } from "./indexpage.js";
 import { locateNode } from "./locate.js";
 import { listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, revertFile, writeAnyFile } from "./files.js";
 import { revertTo, setProp } from "./edit.js";

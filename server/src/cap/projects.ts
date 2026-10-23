@@ -10,7 +10,7 @@ import { clearRecentProjects, listRecentProjects, removeRecentProject } from "..
 import { clearProjectCache, clearStaleRecords, forgetProject } from "../purge.js";
 import { listIcons, listComponents, searchTokens } from "../assets.js";
 import { listTrash } from "../refs.js";
-import { isToolPage } from "../indexpage.js";
+import { isToolPage } from "../files.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
 import { cacheAbsOf, indexDataFile } from "../statedirs.js";

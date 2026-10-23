@@ -33,7 +33,6 @@ import { locateNode } from "./locate.js";
 import { revertTo, setProp, type SlotKind } from "./edit.js";
 import { validateDraft } from "./validate.js";
 import { listComponents, listIcons, searchTokens } from "./assets.js";
-import { renderCheck } from "./render.js";
 import { get as getJob, start as startJob, view as jobView, running as runningJob } from "./jobs.js";
 import { changesSince, diffDrafts, humanTime, listVersions, projectChangesSince, readVersionMeta, snapDir, toMarkdown, workspaceState } from "./history.js";
 import { gunzipSync } from "node:zlib";
@@ -47,7 +46,7 @@ import { relative, sep } from "node:path";
 import { ToolError } from "./envelope.js";
 import { httpRoutes, type CapCtx } from "./cap/index.js";
 import { z } from "zod";
-import { buildIndex, indexStatus, isToolPage } from "./indexpage.js";
+import { isToolPage } from "./files.js";
 import { countTypes, listFiles, listSnapshotMeta, moveFile, readAnyFile, referencesOf, revertFile, trashFile, writeAnyFile } from "./files.js";
 import { runChatSend } from "./chat_run.js";
 import { updateProject, archiveProject, deleteProject, listProjectDirs, buildProject, createProject, createDraft } from "./project.js";
@@ -217,41 +216,12 @@ export async function handleApi(
 
 
 
-    // ── 长活儿：render_check 要开 Chromium（1.4~12s），做成作业 + 轮询 ──
-    if (route === "check" && req.method === "POST") {
-      if (!originOk(req, ctx.port)) {
-        json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] });
-        return true;
-      }
-      const b = await readBody(req);
-      const rel = await resolveDraft(p, str(b.file, "file"));
-      const j = startJob("render_check", projectJobKey(p, rel),
-        async () => {
-          const { result, diags } = await renderCheck(p, rel, {
-            width: typeof b.width === "number" ? b.width : undefined,
-            height: typeof b.height === "number" ? b.height : undefined,
-            allowNetwork: b.allowNetwork === true,
-          });
-          return { file: rel, result, diags };
-        },
-        (e) => e instanceof ToolError
-          ? { code: e.diagnostic.code, message: e.diagnostic.message, fix: e.diagnostic.fix }
-          : { code: "E_JOB", message: (e as Error)?.message ?? String(e) });
-      json(reply, 200, { ok: true, data: jobView(j) });
-      return true;
-    }
-
-    if (route === "check_status" && req.method === "GET") {
-      const id = str(url.searchParams.get("job"), "job");
-      const j = getJob(id);
-      if (!j) {
-        json(reply, 404, { ok: false, errors: [{ code: "E_JOB_UNKNOWN", message: `没有这个作业：${id}`,
-          fix: "作业记录活在 MCP server 进程里，重启就没了。读数本身在 .umbrastudio/checks/，可以直接 GET validate" }] });
-        return true;
-      }
-      json(reply, 200, { ok: j.ok !== false, data: jobView(j) });
-      return true;
-    }
+    /* ⚠️⚠️ **`check` / `check_status` 两条路由 2026-10-23（M16-7c-2a / C3）删了。**
+       它们是 `render_check` 的 HTTP 面（开 Chromium 要 1.4~12 秒，所以做成作业 + 轮询）。
+       ⚠️ 这是 `api.ts` 里**唯一一组异步作业路由**，而 `cap/` 那套信封分发器至今
+       没有「异步作业」这种模式 —— 它留在手写路径的理由（`cap/history.ts` 开头那段
+       「为一个用户造一层抽象，比留着一条手写路径更贵」）随它一起消失。
+       chat 那一组还在用 `startJob`，所以作业机制本身留着。 */
 
 
     /* AI 会话（M2-12：应用前端的会话面板走本地 API，和 MCP 的 chat_send 同一份逻辑） */
@@ -357,18 +327,15 @@ export async function handleApi(
       const target = await buildProject(dir);
       const { serveStart } = await import("./serve.js");
       const s = await serveStart(target);
-      /* ⚠️⚠️ **这一句 2026-10-21 加了条件**（M14-4 B3，`doc/24` §8.4）。
-         原来是无条件的 —— 于是**打开任意一个目录都会在里面部署 780 KB 的设计工具脚手架**
+      /* ⚠️⚠️ **「打开项目顺手部署脚手架」这件事 2026-10-23（M16-7c-2a / C3）彻底没有了。**
+         它的历史值得留着，因为那是本项目最贵的一条教训之一：
+         原来**无条件**部署 —— 打开任意一个目录都会在里面写 780 KB 的设计工具脚手架
          （8 份壳稿 + 运行时副本 + `index.dc.html` + 改他的 `.gitignore`）。
-         sam 2026-10-21 用它打开自己的文档目录 `Geek/doc`，当场踩到。
-
-         现在只有**用户显式接管过的设计项目**（有 `project.json`）才部署。
-         普通目录进「只看」档：能看、能改文件、能圈给 AI，**一个字节都不写**。
-         代价照实说：那种目录里 `.dc.html` 的**预览壳不在**（S2 / S6 / S8 会 404），
-         所以界面上要给一条「接管为设计项目」的出路 —— 不给的话这就从
-         「少写了点东西」变成「这种文件打不开」。 */
-      const design = isDesignProject(target.dir);
-      if (design && !s.indexExists) await buildIndex(target, s.url);   // 部署壳与令牌，否则 S2 / S6 / S8 全 404
+         sam 2026-10-21 用它打开自己的文档目录 `Geek/doc`，当场踩到；
+         M14-4 B3 给它加了条件（只对显式接管过的设计项目部署），
+         而**那个条件存在的全部理由是「普通目录里 `.dc.html` 的预览壳会 404」** ——
+         C3 删掉预览之后，那个理由和这一句一起消失。
+         > **一道「只在某些情况下才做坏事」的闸，最好的结局是那件坏事本身没有了。** */
       /* ⚠️ `identity` 要带回前端（M14-2，Q68）：这个位置**换了一个目录**时得说一句。
          不说的话用户会在一个昨天新建的目录里看到别人的快照、评论、回收站 ——
          **而静默继承不会报错**，他只会觉得「这软件的历史是乱的」。
@@ -378,7 +345,7 @@ export async function handleApi(
          ⚠️ **判准在服务端算，不在前端猜** —— 前端看不到 `records/<id>/editable`，
          而「这个目录准不准改」这件事必须和写入口那道闸**用同一个答案**，
          否则会出现「界面让你改、写入口拒了」或者反过来（比横条本身更糟）。 */
-      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity, designProject: design, editable: isEditable(target.dir) } });
+      json(reply, 200, { ok: true, data: { url: s.url, token: s.token, ws: `ws://127.0.0.1:${s.port}${API_PREFIX}ws`, name: target.name, title: target.title, dir: target.dir, app: s.url + "__app/", identity, editable: isEditable(target.dir) } });
       return true;
     }
 
@@ -488,25 +455,15 @@ export async function handleApi(
        ⚠️ **和 `create_project` 分开，故意的**：那一件还会**建一份空白稿**，
        而「我只是想让这个已有的目录能预览设计稿」不该凭空多出一份稿。
        > 把两件事做成一个按钮，等于让「接管」这个动作带上「往你目录里塞东西」。 */
-    if (route === "adopt_project" && req.method === "POST") {
-      if (!originOk(req, ctx.port)) { json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] }); return true; }
-      const b = await readBody(req);
-      const dir = str(b.dir, "dir");
-      if (!existsSync(dir)) throw new Error(`目录不存在：${dir}`);
-      const target = await buildProject(dir);
-      if (!isDesignProject(target.dir)) {
-        const { writeFile: wfP } = await import("node:fs/promises");
-        await wfP(join(target.dir, "project.json"),
-          JSON.stringify({ name: target.name, title: target.title }, null, 2) + "\n", "utf8");
-      }
-      const fresh = await buildProject(dir);
-      const { serveStart: ss } = await import("./serve.js");
-      const sv = await ss(fresh);
-      const built = await buildIndex(fresh, sv.url);
-      await touchProject(fresh.dir, fresh.name, fresh.title);
-      json(reply, 200, { ok: true, data: { dir: fresh.dir, name: fresh.name, title: fresh.title, deployed: built.shells?.length ?? null } });
-      return true;
-    }
+    /* ⚠️⚠️ **`adopt_project` 2026-10-23（M16-7c-2a / C3）删了**（设计侧第 64 封 ② 的裁决）。
+       它做两件事：写一行 `project.json` + `buildIndex` 部署预览壳与运行时副本。
+       后半件随 dc 一起没了，而前半件按新口径**不该由一个叫「接管」的动作来做** ——
+       > 口径（第 64 封 ②）：**打开任意目录不往里写任何东西；
+       > `project.json` 只在用户真改了项目设置时才写。**
+       ⚠️ 它的界面入口（工作台那条横条）7c-1 已删，服务端这一件是最后一处。
+       ⚠️ `create_draft` 那道 `requireAdopted` 闸跟着删 —— 它的三条理由全是 dc 的
+       （见 `normalize.ts` 里 `ensureRuntimeBeside` 的那段）。 */
+
     if (route === "reveal_dir" && req.method === "POST") {
       if (!originOk(req, ctx.port)) { json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] }); return true; }
       const b = await readBody(req);

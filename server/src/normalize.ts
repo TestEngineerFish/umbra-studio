@@ -22,8 +22,23 @@ export const RESOURCE_MAP: Record<string, string> = {
   "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "./react-dom.production.min.js",
 };
 
-/** 与稿同层的运行时三件套。`<script src>` 相对文档解析，所以每个放稿的目录都要有一份。 */
-export const RUNTIME_FILES = ["support.js", "react.production.min.js", "react-dom.production.min.js"];
+/* ⚠️⚠️ **`RUNTIME_FILES` / `ensureRuntimeBeside` / `missingRuntime` 三件
+   2026-10-23（M16-7c-2a / C3）删了，而它们是一整串的源头。**
+
+   它们把 `support.js` + 两个 React UMD（**225 KB**）拷到每一份稿旁边，
+   让 `.dc.html` 双击也能打开。C3 之后 `.dc.html` 落 `html` kind、不再由 dc 模块预览，
+   那三个文件**没有任何读者**。
+
+   ⚠️ **删掉它之后，下游一串闸的理由自动消失**（和 7a「删掉 kind 条目就等于撤了那两道拒」同形）：
+   · `create_draft` 的 `requireAdopted`（三条理由全是 dc 的：预览壳 404 ·
+     「225 KB vs 接管 387 KB」的对比 · 半残状态）
+   · `adopt_project`（它部署的就是这些）
+   · 工作台那条「接管为设计项目」横条（7c-1 已删）
+   > **从源头删，下游的理由自动倒下** —— 比一条条手动撤可靠，因为手动撤会漏。
+
+   ⚠️ **盘上已有的那些副本不删**（硬约束同族）：它们在用户的目录里，是他的文件。
+   这里删掉的只是「以后还会不会再拷一份」。 */
+
 
 /** ① UTF-8 无 BOM、LF、末尾恰好一个换行 */
 export function normalizeSource(s: string): string {
@@ -91,57 +106,6 @@ export function prepareForDisk(p: Project, content: string, relPath?: string) {
   return { content: out, steps, injected: r.injected, nodes: st.count };
 }
 
-/** ④ 保证稿所在目录有运行时副本；版本不一致（大小不同）就刷新。
- *
- *  ⚠️ **点选桥也按目录分发**（2026-10-06 实测挖出来的）：
- *  S2 预览壳里写的是 `BRIDGE = "./.umbradesign/select-bridge.js"` ——
- *  **相对壳自己的位置**，而 `build_index` 只把桥拷到**项目根**的 `.umbradesign/` 下。
- *  于是子目录里的稿预览时请求的是 `<子目录>/.umbradesign/select-bridge.js` → **404**，
- *  而后果是**点选在那些稿上完全不可用**（桥没加载，壳收不到任何消息）。
- *
- *  实测读数：`uploads/` 下的稿 → `404 /uploads/.umbradesign/select-bridge.js`，
- *  而同一个目录里 `support.js` **是有的** —— 因为三件套本来就按目录分发，
- *  **只有桥漏了**。
- *
- *  ⚠️ 为什么是在这里补而不是在 `build_index` 里：
- *  「这个目录里有稿」这件事只有写入口知道（`build_index` 跑的时候目录可能还不存在）。
- *  **和三件套同一个时机、同一个理由。** */
-export async function ensureRuntimeBeside(draftAbs: string): Promise<string[]> {
-  const dir = dirname(draftAbs);
-  const done: string[] = [];
-  /* 桥放 `.umbradesign/` 下 —— 那个目录名是**格式与协议级标识**，改名那一轮刻意没动（`00` §四十九） */
-  {
-    const srcBridge = join(RUNTIME_DIR, "select-bridge.js");
-    if (existsSync(srcBridge)) {
-      const udDir = join(dir, ".umbradesign");
-      const dstBridge = join(udDir, "select-bridge.js");
-      let need = !existsSync(dstBridge);
-      if (!need) {
-        const [a, b] = await Promise.all([stat(srcBridge), stat(dstBridge)]);
-        need = a.size !== b.size;
-      }
-      if (need) { await mkdir(udDir, { recursive: true }); await copyFile(srcBridge, dstBridge); done.push(".umbradesign/select-bridge.js"); }
-    }
-  }
-  for (const name of RUNTIME_FILES) {
-    const srcFile = join(RUNTIME_DIR, name);
-    if (!existsSync(srcFile)) continue;
-    const dstFile = join(dir, name);
-    let need = !existsSync(dstFile);
-    if (!need) {
-      const [a, b] = await Promise.all([stat(srcFile), stat(dstFile)]);
-      need = a.size !== b.size;
-    }
-    if (need) { await mkdir(dir, { recursive: true }); await copyFile(srcFile, dstFile); done.push(name); }
-  }
-  return done;
-}
-
-/** 缺哪些运行时文件（给诊断用，不改盘） */
-export function missingRuntime(draftAbs: string): string[] {
-  const dir = dirname(draftAbs);
-  return RUNTIME_FILES.filter((n) => existsSync(join(RUNTIME_DIR, n)) && !existsSync(join(dir, n)));
-}
 
 /** 原子写：先写临时文件再 rename，避免半截文件被浏览器读到。 */
 /** 原子写。

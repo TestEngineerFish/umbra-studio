@@ -242,11 +242,16 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
        after1.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
   }
 
-  /* ── 「新建稿件」先问一句要不要接管（2026-10-22）──
-     ⚠️ 这一条测的是**够不够得着那一问**，所以从真入口点进去：
-     目录列列头那颗 `⋯`（和在空白处右键是同一张菜单）→「新建稿件…」。
-     服务端那道闸 `apitest` ⑯ 已经钉了；这里钉的是**界面在他点下去之前问了没有** ——
-     只有服务端闸的话，用户看到的是「新建失败」而不是「要不要接管」。 */
+  /* ── 「新建稿件」在普通目录里直接给表单（C3 / M16-7c-2a 改写）──
+     ⚠️⚠️ **这一节原来测的是「先问一句要不要接管」，而那一问 2026-10-23 删了。**
+     它当初存在的理由：建一份稿会**静默写 5 个文件 · 227 KB**（稿 1 KB + 运行时副本 4 份），
+     而写完还是半残的（预览壳不在 → 编辑档 iframe 404）。
+     C3 删掉 `ensureRuntimeBeside` 之后**建一份稿只多那一份稿**，两个理由都没了。
+
+     ⚠️ **留下来的那一条是 B3 的承诺**（「取消之后那个目录一个字节都没动」）——
+     它和接管无关，所以照旧。
+     ⚠️ 新增的那一条钉的是**今天的承诺**：建完只多那一份稿。
+     > 一节判据的对象变了，要分清哪几条跟着走、哪几条本来就不是为它写的。 */
   {
     const b2 = walkPlain();
     await pg.locator(WB + '[data-ud="tree-more"]').first().click();
@@ -256,31 +261,13 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
     ok(await mk.count() > 0, "（前提）普通目录里**有**「新建稿件…」这一项（不是把入口藏掉）");
     await mk.click();
     await pg.waitForTimeout(600);
+    /* ⚠️ **直接是表单，不再有「先接管」那一问** —— 这一条是反面的：
+       留着那一问的话它会挡在前面，而文件名框就不会出现。 */
+    ok(await pg.locator('input[placeholder^="例如"]').count() > 0,
+       "**点「新建稿件」直接给文件名表单**（不再先问一句要不要接管）");
     const dlg = pg.locator('[role="dialog"]').first();
     const txt = await dlg.innerText().catch(() => "");
-    ok(/接管/.test(txt), "**先问的是「要不要接管这个目录」**，不是直接给文件名表单", txt.slice(0, 24).replace(/\n/g, " "));
-    /* ⚠️ 钉住「文件名那一格还没出现」—— 不然一个「表单上加了一条横条」的实现也会绿，
-       而那种实现**按 Enter 就能把那一问跳过去**（`blocked === false` 时直接提交）。 */
-    ok(await pg.locator('input[placeholder^="例如"]').count() === 0,
-       "那一问**挡在表单前面**（文件名框还没出现，所以 Enter 跳不过去）");
-    /* ⚠️ 这一条**只能说明界面把数显示出来了，不能说明那个数是真的** ——
-       它读的就是 `Sheets.tsx` 里的字面量，**判据引用了它要检查的东西就是循环**。
-       「那个数是真的」由 `apitest` ⑰ 真接管一个干净目录、数盘上的字节来对账。
-       这里钉的是另一件事：**那一问里有具体的量**，而不是「会加一些文件」这种话。 */
-    /* ⚠️ **钉的是「分项加起来等于合计」，不是那几个字**（设计侧第 59 封 §零 A 抓到的那条：
-       原来那张表 8+4+2+1=15≠17，因为 `icons.js` 被折进了「预览壳」那一行、
-       `_ds-tool/tokens.css` 整个漏了）。
-       > **一张「合计」对得上、而分项加不起来的表，是一张还没被人加过的表。**
-       所以这条判据**真把数加一遍** —— 措辞怎么改都不影响它，而漏一项就红。 */
-    const counts = [...txt.matchAll(/(\S+?) (\d+) 个/g)].map((m) => [m[1], Number(m[2])]);
-    const sum = counts.filter(([k]) => k !== "合计").reduce((a, [, n]) => a + n, 0);
-    const total = (counts.find(([k]) => k === "合计") ?? [, 0])[1];
-    ok(sum === 17 && total === 17,
-       "**那张表的分项加起来等于合计 17**（而不是只有合计对）",
-       `${counts.map(([k, n]) => `${k}${n}`).join(" + ")} = ${sum} · 合计写 ${total}`);
-    ok(/约 750 KB/.test(txt) && /226 KB/.test(txt),
-       "**把会写多少照实说出来**（字节数在，不是「只加一个文件」那种话）",
-       (txt.match(/[约 ]*\d+ KB/g) ?? []).join(" · "));
+    ok(!/接管/.test(txt), "弹窗里**一个「接管」字都没有**（那条线整条删了）", txt.replace(/\n/g, " ").slice(0, 40));
     await pg.keyboard.press("Escape");
     await pg.waitForTimeout(400);
     const a2 = walkPlain();
@@ -288,26 +275,36 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
        a2.filter((x) => !b2.includes(x)).join(" · ") || "一个都没多");
   }
 
-  /* 对照组：点了接管才写 —— 没有它的话上一条可能只是因为部署整条路都坏了。
-     ⚠️ **入口换了**（C3 / M16-7c）：工作台那条横条删掉之后，「接管」这个动作
-     只剩新建稿件那一问里的「接管并继续」一个入口，所以从那里点。
-     > 对照组的价值不在**哪颗按钮**，在于「这条路真的能写进去」—— 换入口不等于放宽。 */
-  await pg.locator(WB + '[data-ud="tree-more"]').first().click();
-  await pg.waitForTimeout(400);
-  await pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
-    .filter({ hasText: /新建稿件/ }).first().click();
-  await pg.waitForTimeout(600);
-  const adoptBtn = pg.locator('[data-ud="adopt-then-new"]');
-  ok(await adoptBtn.count() > 0, "（前提）那一问里有「接管并继续」这颗钮（对照组要从这里点）");
-  await adoptBtn.click();
-  await pg.waitForTimeout(2500);
-  const adopted = (await import("node:fs")).readdirSync(plain).sort();
-  ok(adopted.includes("project.json") && adopted.includes("index.dc.html"),
-    "**对照组**：点了「接管并继续」才把壳写进去", `${adopted.length - before.length} 个新文件`);
-  /* 接管完那一问自己退场，露出文件名表单 —— 不留一条「点了没反应」的提示 */
-  ok(await pg.locator('input[placeholder^="例如"]').count() > 0,
-    "接管完那一问退场、文件名表单接上（不是停在同一句话上）");
-  await pg.keyboard.press("Escape");
+  /* 对照组：真建一份稿，而且**只多那一份** —— 见上面那段注释。
+     ⚠️ 没有它的话，上一条「取消之后没动」可能只是因为建稿整条路都坏了，
+     而那两种在文件数上长得一模一样。 */
+  {
+    const b3 = walkPlain();
+    await pg.locator(WB + '[data-ud="tree-more"]').first().click();
+    await pg.waitForTimeout(400);
+    await pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
+      .filter({ hasText: /新建稿件/ }).first().click();
+    await pg.waitForTimeout(600);
+    const nameBox = pg.locator('input[placeholder^="例如"]').first();
+    await nameBox.fill("_hometest新稿");
+    await pg.waitForTimeout(300);
+    await nameBox.press("Enter");
+    /* 轮询等它落盘 —— 定时等会在机器一忙时把慢误报成坏（§113 那一族），上限 40 次 */
+    let made = [];
+    for (let i = 0; i < 40; i++) {
+      await pg.waitForTimeout(250);
+      made = walkPlain().filter((x) => !b3.includes(x));
+      if (made.length) break;
+    }
+    ok(made.length > 0, "（对照）在普通目录里真建一份稿是成的 —— 「什么都没写」不是因为「什么都写不了」",
+       made.join(" · ") || "一个都没多");
+    /* ⚠️⚠️ **这一条是 C3 的新承诺，而它原来不成立**：`ensureRuntimeBeside` 删掉之前
+       同一个动作会静默多写 225 KB（`support.js` + 两个 React UMD）。 */
+    ok(made.length === 1 && made[0] === "_hometest新稿.dc.html",
+       "**建一份稿只多那一份稿**（不再顺手拷 225 KB 运行时副本）", made.join(" · "));
+  }
+
+
   await rm(plain, { recursive: true, force: true });
 }
 

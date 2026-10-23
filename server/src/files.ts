@@ -27,7 +27,6 @@ const gzip = promisify(gzipCb);
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
-import { isToolPage } from "./indexpage.js";
 import { isInside, isInsideReal, isOutsideLink } from "./pathguard.js";
 import { writeAtomic } from "./normalize.js";
 import { listDrafts, type Project } from "./project.js";
@@ -147,6 +146,37 @@ const OUR_SEGS = new Set([UD_DIRNAME, ".umbradesign", "_ds-tool", "_runtime"]);
  *  2026-10-21 实测这两个项目只有 18 / 206 个文件（它们提交极少）——
  *  **那不是上限，所以不能拿它当理由**（「判据在没有样本的时候，测的是今天恰好没事」同族）。 */
 const OPAQUE_SEGS = new Set([".git"]);
+
+/** 工具自己部署过的壳页面。
+ *
+ *  ⚠️⚠️ **2026-10-23（M16-7c-2a / C3）从 `indexpage.ts` 搬过来的，而语义变了一半。**
+ *  原来它有两个用处：① 索引与稿件清单要排掉它（否则工具界面出现在自己的稿件列表里）·
+ *  ② 它是「我们自己产的」那条判准的一部分（隐藏 + 拒写）。
+ *  **C3 之后 ① 没有了**（不再生成索引页，也没有「稿件清单」这个概念），
+ *  而 **② 还在，并且正是它今天唯一的理由**：
+ *  用户机器上**已经部署过**的那些壳还躺在他的项目里（硬约束：不删），
+ *  认不出它们的话，它们就会以「用户的文件」的身份出现在目录树里、还能被写。
+ *
+ *  > **一个判定的两个用处里消失了一个，剩下那个会让它看起来「还在用着」——
+ *  > 而它实际守的事已经换了。** 所以这段注释写的是**今天**的理由，不是它当初的理由。
+ *
+ *  ⚠️ **这张名单只增不减，而且不该再加新的**：它认的是**历史上部署过**的东西。
+ *  删掉一个名字 = 那个壳在老用户的项目里突然变成「他的文件」。 */
+const SHELLS = new Set([
+  "S2-单稿预览壳.dc.html",
+  "S3-诊断面板.dc.html",
+  "S4-变更清单.dc.html",
+  "S5-设计系统浏览器.dc.html",
+  "S6-版本对比.dc.html",
+  "S8-项目设置.dc.html",
+  "S7-属性面板.dc.html",
+  "IconGlyph.dc.html",
+]);
+
+/** 这是工具自己部署过的页面（不是用户的文件）—— 理由见 `SHELLS` 上面那段。 */
+export function isToolPage(rel: string): boolean {
+  return rel === "index.dc.html" || SHELLS.has(rel);
+}
 
 /** ① 这是**我们自己产的**吗 —— 隐藏 + 拒写。设置开关管不着它。 */
 export function isOurArtifact(rel: string): boolean {

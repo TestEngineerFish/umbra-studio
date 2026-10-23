@@ -160,7 +160,7 @@ export async function setProp(
   if (next === src) {
     return { file: rel, node: nodeId, newNode: nodeId, kind, name, from, to: value,
       write: { path: rel, written: false, refused: null, steps: ["值与现状一致，什么都没改"],
-        bytes: src.length, version: null, snapshot: null, runtimeCopied: [], unchanged: true,
+        bytes: src.length, version: null, snapshot: null, unchanged: true,
         change: null, changelog: null } };
   }
 

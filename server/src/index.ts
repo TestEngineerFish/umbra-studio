@@ -22,11 +22,9 @@ import {
 import { getComponent, getIcon, getToken, listComponents, listIcons, searchTokens } from "./assets.js";
 import { validateDraft } from "./validate.js";
 import { patchDraft, writeDraft } from "./write.js";
-import { missingRuntime } from "./normalize.js";
 import { getAiConfig, setAiConfig, getChannelA, getChannelB, mergeChannel, type AiConfig } from "./ai_config.js";
 import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.js";
 import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
-import { findBrowser, renderCheck } from "./render.js";
 import { runChatSend } from "./chat_run.js";
 import { invokeVerb, listVerbs, onVerbsChanged, watchVerbState, zodShapeOf } from "./plugin/verbs.js";
 import { listComments } from "./comments.js";
@@ -35,7 +33,7 @@ import {
   resolveSnapshot, toMarkdown,
 } from "./history.js";
 import { serveStart, serveStatus, serveStop } from "./serve.js";
-import { buildIndex, collectIndex, isToolPage } from "./indexpage.js";
+import { isToolPage } from "./files.js";
 import { listFiles, readAnyFile, writeAnyFile, moveFile, listSnapshotMeta } from "./files.js";
 import { locateNode } from "./locate.js";
 import { revertTo, setProp } from "./edit.js";
@@ -69,23 +67,32 @@ async function run<T>(fn: () => Promise<Envelope<T>>) {
 const server = new McpServer(
   { name: "umbradesign", version: VERSION },
   {
+    /* ⚠️⚠️ **这段说明 2026-10-23（M16-7c-2a / C3）整段重写过，因为它在说谎。**
+       原来第一行写「本地**设计稿**工具（.dc.html 格式）」，而下面列的调用顺序
+       1–8 里有四件已经不存在了（`get_syntax_guide` / `validate_draft` / `write_draft`
+       是 7b 删的，`render_check` / `build_index` 是这一段删的）。
+       > **一段给模型看的说明，过期之后不会报错 —— 它会让模型去调不存在的工具，
+       > 而那看起来像模型在乱编。**
+       现在这段是**照能力表量出来写的**（101 件，`list_capabilities` 能列全），不照记忆写。 */
     instructions: [
-      `${studioName} —— 本地设计稿工具（.dc.html 格式）。`,
+      `${studioName} —— 本地目录工作台：打开一个目录，按文件类型看和改里面的文件。`,
       "",
-      "调用顺序（doc/00 §八）：",
-      "1. get_project        拿到项目路径与限额",
-      "2. get_syntax_guide   拿到模板语义与写稿规则",
-      "3. search_tokens      按需取取值 —— 不要试图取全量，tokens 有 1,200+ 个叶子",
-      "4. list_components    看有什么能复用；要复用就 get_component(mode:'contract')",
-      "5. validate_draft     静态校验，诊断带 code / 行号 / 洞名 / 改法建议",
-      "6. write_draft        唯一写入口（归一化 / @ds 展开 / __resources 注入都在这里）",
-      "7. render_check       真浏览器渲染体检 —— 唯一的验收证据",
-      "8. build_index + serve_start   生成入口页并起本地 http，人要看稿走这条",
+      "常用顺序：",
+      "1. list_projects / list_recent_projects   有哪些项目 / 最近打开过什么",
+      "2. get_project        拿到项目路径与限额",
+      "3. list_files         列目录（`recursive: true` 递归列整个项目，上限 5000）",
+      "4. read_file          读一个文件（大文件用 offset / limit 按行分页）",
+      "5. write_file         **唯一写入口**（写前校验 / 快照 / 被别人改过就拒）",
+      "6. list_file_versions / revert_file   版本与回退",
+      "7. search_in_file / global_search     在一个文件里搜 / 全项目搜",
+      "8. serve_start        起本地 http，人要在浏览器里看就走这条",
       "",
       "所有工具返回同一个信封：{ok, data, errors, warnings, stats}。",
-      "errors 非空表示这份稿不该落盘。每条诊断都有 code、定位和 fix。",
-      "⚠️ ok:true 只说明静态校验过了，不等于稿能渲染出来 —— 验收必须看 render_check。",
-      "⚠️ 带 dc-import 的稿双击打不开（Chrome 不允许对 file:// 发 fetch），必须走 serve_start。",
+      "errors 非空表示这次操作没做成（或不该做）。每条诊断都有 code、定位和 fix。",
+      "⚠️ **写回去要带上读到的那个 sha256** —— 盘上被别人改过会被拒，而不是把改动盖掉。",
+      "⚠️ 别的文件格式（Markdown / 代码 / CSV / 图片…）由插件提供能力：",
+      "   `list_plugins` 看装了什么，`plugin_verbs` 看它们挂出来的动词，`who_handles` 问某个文件谁管。",
+      "完整清单一律问 `list_capabilities`，不要照记忆猜工具名。",
     ].join("\n"),
   }
 );
@@ -107,7 +114,7 @@ server.registerTool("create_project", {
     "  <标题>.dc.html      第一份空白稿（含一个可编辑的 div）",
     "  .git/                默认初始化 git 仓库",
     "",
-    "创建完立刻 get_project 能读、build_index 能跑。",
+    "创建完立刻 get_project 能读、list_files 能列。",
     "dir 指定绝对路径；不给时默认在工具目录 projects/<name> 下。",
   ].join("\n"),
   inputSchema: {
@@ -283,70 +290,28 @@ const GUIDES: Record<string, { file: string; note: string }> = {
 // ───────────────────────── 静态校验 ─────────────────────────
 
 // ───────────────────────── 写入（唯一写入口） ─────────────────────────
+/* ⚠️ **`check_runtime` 2026-10-23（M16-7c-2a / C3）删了。**
+   它回答的是「哪个放稿的目录缺 `support.js` 与两个 React UMD —— 缺了直接打开会白屏」，
+   而那三个文件连**往哪拷**都没有了（`ensureRuntimeBeside` 一起删，见 `normalize.ts`）。
+   > 一件「报告某个东西缺不缺」的工具，在那个东西不再需要存在之后，报告的是一个假问题。 */
 
-server.registerTool("check_runtime", {
-  title: "查稿所在目录缺不缺运行时",
-  description: "列出项目里每个放稿的目录缺哪些运行时文件（support.js 与两个 React UMD）。缺了直接打开会白屏。write_draft 会自动补，这个工具只报告。",
-  inputSchema: { project: z.string() },
-}, async ({ project }) => run(async () => {
-  const p = await loadProject(project);
-  const drafts = await listDrafts(p);
-  const byDir = new Map<string, string[]>();
-  for (const abs of drafts) {
-    const miss = missingRuntime(abs);
-    /* ⚠️ 原来是 `abs.lastIndexOf("/")` —— Windows 上回 `-1`，`slice(0, -1)` 变成
-       「**文件名去掉最后一个字母**」，于是同目录的稿各算一条（issue #161）。 */
-    if (miss.length) byDir.set(dirKeyOf(abs, p.dir), miss);
-  }
-  return envelope({ missing: [...byDir.entries()].map(([dir, files]) => ({ dir, files })) },
-    [], { dirsMissing: byDir.size, draftsScanned: drafts.length });
-}));
 
-// ───────────────────────── 渲染体检 ─────────────────────────
+/* ⚠️⚠️ **`render_check` 与 `check_browser` 两件 MCP 工具 2026-10-23（M16-7c-2a / C3）删了。**
+ *
+ *  `render_check` 的描述自己写着「**这是唯一的验收证据** —— `validate_draft` 全绿不等于
+ *  能渲染」，而它验收的对象是 `.dc.html` 设计稿：起一个本地静态服务 + headless Chromium
+ *  把稿打开一次、断网查外部请求、数渲染后还剩几个洞。C3 之后没有那个对象了。
+ *  `check_browser` 的全部用处是回答「`render_check` 会用哪个浏览器」，跟着走。
+ *
+ *  ⚠️ **它带走的不只是两件工具**：`rendertest`（15 条）和 `bridgetest`（7 条，点选桥几何）
+ *  整套作废，`fixtures/渲染/` 那 18 份基准也一起删 —— 而**每份基准都钉着一条犯过的错**，
+ *  所以删之前逐份核过它钉的那条错也随 dc 一起没了（都是 SVG 几何属性上的模板洞）。
+ *
+ *  ⚠️ 纪律②「**判活只认 1+1，不看截图**」是从这件工具里长出来的，
+ *  而那条纪律本身**没有跟着删** —— 它讲的是「一张不对的截图和一个坏掉的页面长得一样」，
+ *  对任何「拿截图当证据」的场合都成立。
+ *  > **一条纪律的出处消失了，纪律本身不一定跟着消失。** */
 
-server.registerTool("render_check", {
-  title: "真实渲染体检一份稿",
-  description: [
-    "起一个本地静态服务 + headless Chromium，真的把稿打开一次。",
-    "**这是唯一的验收证据** —— validate_draft 全绿不等于能渲染（doc/04 §2.2）。",
-    "判活只认 1+1：截图会骗人，一张不对的截图和坏掉的页面在屏上长得一样。",
-    "",
-    "默认【断网】跑（allowNetwork=false）：任何外部请求都会被拦下并回报 ——",
-    "交付要能在内网机器上打开，所以这是常态检查，不是可选项。",
-    "",
-    "回报：alive / 节点数 / 渲染耗时 / 渲染后还留着的洞 / 控制台告警 /",
-    "取不到的资源 / 外部请求 / 真实解析出的样式表与它的 cssRules 条数 / 截图路径。",
-  ].join("\n"),
-  inputSchema: {
-    project: z.string(),
-    path: z.string(),
-    width: z.number().int().min(320).max(3840).optional(),
-    height: z.number().int().min(320).max(2400).optional(),
-    allowNetwork: z.boolean().optional().describe("默认 false。置 true 才允许外部请求"),
-    timeoutMs: z.number().int().min(3000).max(120000).optional(),
-    screenshot: z.boolean().optional(),
-  },
-}, async ({ project, path, width, height, allowNetwork, timeoutMs, screenshot }) => run(async () => {
-  const p = await loadProject(project);
-  const r = await renderCheck(p, path, { width, height, allowNetwork, timeoutMs, screenshot });
-  return envelope(r.result, r.diags, {
-    alive: r.result.alive, nodeCount: r.result.nodeCount, renderMs: r.result.renderMs,
-    unresolvedHoles: r.result.unresolvedHoles.length,
-    externalRequests: r.result.externalRequests.length,
-  });
-}));
-
-server.registerTool("check_browser", {
-  title: "查渲染体检用的浏览器",
-  description: "报告 render_check 会用哪个浏览器可执行文件。找不到时说清怎么配（不会自动下载浏览器）。",
-  inputSchema: {},
-}, async () => run(async () => {
-  const f = findBrowser();
-  const diags = f ? [] : [err(X.IO, "(server)", { kind: "file", name: "chromium" },
-    "找不到可用的 Chromium / Chrome",
-    { fix: "装一个 Chrome，或把可执行文件路径写进环境变量 UMBRASTUDIO_CHROMIUM" })];
-  return envelope({ browser: f, autoDownload: false }, diags);
-}));
 
 // ───────────────────────── 变更交付（doc/07）─────────────────────────
 
@@ -356,28 +321,19 @@ server.registerTool("serve_start", {
   title: "起本地静态服务",
   description: [
     "把项目目录起成本地静态服务，浏览器里打开就能看。",
-    "**带 dc-import 的稿只能这样看** —— Chrome 不允许对 file:// 发 fetch，双击打不开（doc/05 §4.2）。",
     "服务活在 MCP server 进程里，起一次就一直开着；不传 port 让系统分配。",
     "",
-    "它还挂着一个本地 JSON API（/__ud/*），给工具界面用：",
-    "  GET  locate / validate / changes / drafts",
-    "  POST set_prop / revert",
-    "**顺序要紧：先 serve_start 再 build_index** —— 令牌在 build_index 时注入壳页面，",
-    "反了的话壳拿不到令牌，诊断与点选面板就是空的（doc/00 §二十）。",
+    "它还挂着一个本地 JSON API（/__ud/*），给应用界面用（`list_capabilities` 列得全）。",
   ].join("\n"),
   inputSchema: { project: z.string(), port: z.number().int().min(1024).max(65535).optional() },
 }, async ({ project, port }) => run(async () => {
   const p = await loadProject(project);
-  let s = await serveStart(p, port);
-  /* 没索引就顺手建：壳页面（S2 / S6 / S8）、点选桥、令牌都靠 build_index 部署进项目。
-     原来这里报一条 error，应用从首页打开一个从没建过索引的项目会直接「打开项目失败」【实测 2026-09-23，umbra 57 份稿】。 */
-  let built: string | null = null;
-  if (!s.indexExists) {
-    await buildIndex(p, s.url);
-    s = { ...s, indexExists: true };
-    built = "第一次打开，已自动建索引并部署界面壳";
-  }
-  return envelope({ ...s, note: built }, []);
+  const s = await serveStart(p, port);
+  /* ⚠️⚠️ **这里原来「没索引就顺手建」** —— 部署壳页面、点选桥、注入令牌。
+     C3（M16-7c）之后没有索引页了，而**它顺带是「起个服务」这件事唯一会写盘的一步**。
+     > 「起一个静态服务」和「往用户的项目里部署十几个文件」是两件事，
+     > 而它们挤在一个工具里的理由（壳拿不到令牌就打不开）随壳一起没了。 */
+  return envelope({ ...s, note: null }, []);
 }));
 
 server.registerTool("serve_stop", {

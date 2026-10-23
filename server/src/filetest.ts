@@ -1255,10 +1255,20 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
       .replace("renderVals() { return {}; }", "renderVals() { return { t: \"hi\" }; }")
       .replace("<img src=\"坏图.png\">\n", "");
     await wd2(proj92, "子目录/稿.dc.html", MIN2, "page");
-    ok("**子目录里的稿旁边有运行时**（`support.js`）", ex3(join(sub, "support.js")));
-    ok("**子目录里也有点选桥**（原来只拷到项目根 → 子目录的稿点选不可用）",
-       ex3(join(sub, ".umbradesign", "select-bridge.js")),
-       ex3(join(sub, ".umbradesign", "select-bridge.js")) ? "在" : "✗ 没有 —— 预览时会 404");
+    /* ⚠️⚠️ **这里原来两条「子目录里有运行时 / 有点选桥」2026-10-23（M16-7c-2a / C3）删了，
+       而换上一条反面的。**
+       它们钉的是 `ensureRuntimeBeside` 按**目录**分发（根目录有不代表子目录有），
+       症状是「子目录里的稿预览时点选不可用 / 直接打开白屏」。
+       C3 之后那三个文件没有读者了，`ensureRuntimeBeside` 整个删 ——
+       于是这两条判据的对象消失。
+       ⚠️ **换成反面的，不是直接删掉**：它现在钉的是「**写一份稿不再顺手拷 225 KB**」，
+       也就是 `create_draft` 那道「先接管」闸能被删掉的全部依据。
+       > 一条判据的对象消失时，先问问**它消失这件事本身要不要被钉住**。 */
+    const stray = ["support.js", "react.production.min.js", "react-dom.production.min.js"]
+      .filter((n) => ex3(join(sub, n)));
+    ok("**写一份稿只写那一份稿**（不再往它旁边拷 225 KB 运行时副本）",
+       stray.length === 0 && !ex3(join(sub, ".umbradesign")),
+       stray.length ? "✗ 多了 " + stray.join(" · ") : "一个都没多");
   }
 
   await rm(D2, { recursive: true, force: true });

@@ -25,50 +25,21 @@ const p = (c: CapCtx) => c.project!;
 /** 模板名 → 绝对路径。模板存在项目自己的 `.umbrastudio/templates/` 下 */
 const tplPath = (dir: string, name: string) => join(assetDir(dir, "templates"), `${name}.dc.html`);
 
-/** 「这个目录还没接管为设计项目」那道闸（M14-4 收尾，2026-10-22）。
+/* ⚠️⚠️ **`requireAdopted`（「这个目录还没接管为设计项目，不建稿」）2026-10-23
+ *  （M16-7c-2a / C3）删了，而它是「从源头删、下游理由自动倒下」的一个样本。**
  *
- *  ⚠️⚠️ **「新建稿件」是 B3 那道闸的一条后门，而我原来没看见它。**
- *  B3 让「打开一个普通目录」一个字节都不写；而在同一个目录里建一份稿，
- *  实测会往那里写 **4 个文件 · 约 225 KB** 而且一句话都不说：
+ *  它三条理由全是 dc 的：① 预览壳不在 → 属性面板 / 点选 / 就地编辑全 404 ·
+ *  ② 「只建这一份」省不下什么（**已经要写 225 KB**，而接管总共才多 387 KB）·
+ *  ③ 多一种半残状态。
  *
- *  | 写什么 | 多大 | 为什么它必须在项目里 |
- *  | --- | --- | --- |
- *  | `support.js` | 69 KB | ⓒ 档：稿自己 `<script src="./support.js">`，没有它双击是白屏 |
- *  | `react.production.min.js` + `react-dom…` | 139 KB | 同上 |
- *  | `.umbradesign/select-bridge.js` | 19 KB | 点选桥 |
+ *  而②里那个 225 KB 就是 `ensureRuntimeBeside` 往稿旁边拷的运行时副本 ——
+ *  **那一件删掉之后，`create_draft` 在普通目录里只写一个 1 KB 的稿文件**，
+ *  也就是用户点「新建稿件」时明确要的那一个。于是这道闸守的那件事不存在了。
  *
- *  落点是对的（`doc/24` §八 的 ⓒ 档 **必须**落在项目里），
- *  **错的是没问过** —— 而且写完还是半残的：预览壳 `S2-单稿预览壳.dc.html` 不在，
- *  于是编辑档那个 iframe **404**。
- *  > **一个写了 225 KB 而编辑档打不开的结果，比直接拦住糟。**
- *
- *  ### 为什么是拦住，而不是「写进去再提醒」
- *  三条理由，第二条是决定性的：
- *  ① 预览壳不在 → 属性面板 / 点选 / 就地编辑全 404，`.dc.html` 一半的意义没了；
- *  ② **「只建这一份」省不下什么** —— 它已经要写 225 KB，而接管总共才多 387 KB
- *     加一行 `project.json`。**那个选项用全部功能换了几乎没有的代价**；
- *  ③ 多一种状态就多一种要解释的半残状态（§23.3 那一族）。
- *
- *  ### 为什么装在这一层
- *  `rebuild_index` 那道闸（`cap/history.ts`）的同一个理由，逐字适用：
- *  **一道闸只守住一条路等于没守**。这里是三个门面（MCP / HTTP / 应用内）
- *  汇到的那一处，装在这里三面一起守住；装在前端的话 AI 一句
- *  「在这个目录里建一份稿」就绕过去了。
- *
- *  ⚠️ **`write_draft` 没装这道闸，故意的**：那是「改用户已有的一份稿」，
- *  拒掉就从「少写了点东西」变成「**这种文件改不了**」。
- *  它那条路上 `ensureRuntimeBeside` 同样会补 225 KB，但那时候
- *  「这份稿要能单独打开」是用户自己要的结果，回执里也有 `runtimeCopied`。
- */
-function requireAdopted(dir: string, file: string): void {
-  if (isDesignProject(dir)) return;
-  throw new ToolError(err(X.BAD_INPUT, file, { kind: "path", name: dir },
-    "这个目录还没接管为设计项目，不建稿",
-    /* ⚠️ 这个数要和弹窗上那个**一致**：原来写的是「约 600 KB」，而那是我装闸时
-       还没量就先写下的 —— 量出来是 **17 个文件 · 约 750 KB**。
-       **两处说同一件事而数字不一样，哪个对都不要紧，要紧的是用户会发现我们在猜。** */
-    { fix: "设计稿要能预览和编辑，得先往这个目录里放预览壳与运行时副本（17 个文件 · 约 750 KB）。先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`），再建稿。只看、只改已有的文件不需要接管。" }));
-}
+ *  > **一道闸该不该留，看它守的那件坏事还在不在，而不是看「多一道闸更安全」。**
+ *  > 留着它的话，「新建稿件」在普通目录里会变成一个**没有出路的拒**
+ *  > （接管那条路同一批删了）—— 那比它防的那件事更糟。 */
+
 
 defineCap({
   name: "create_draft", title: "新建一份设计稿", scope: "project",
@@ -88,7 +59,6 @@ defineCap({
   http: { method: "POST" },
   run: async ({ path, source, title, sourceFile, componentName, templatePath, templateName }, c) => {
     const proj = p(c);
-    requireAdopted(proj.dir, path);
     let src;
     switch (source) {
       case "copy":
@@ -131,7 +101,6 @@ defineCap({
   input: { path: z.string(), newName: z.string().optional() },
   http: { method: "POST" },
   run: async ({ path, newName }, c) => {
-    requireAdopted(p(c).dir, path);
     const r = await duplicateDraft(p(c), path, newName ? { newName } : {});
     return envelope(r, [], { newPath: r.newPath });
   },

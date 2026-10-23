@@ -205,14 +205,18 @@ async function step2_createDrafts() {
     const a = check("登录页.dc.html");
     expect(a.res, `新建的稿有 \`__resources\`（没有它断网白屏）：${a.res}`);
     expect(a.node, `新建的稿打了节点地址（没有它点选不可用）：${a.node}`);
-    expect(a.rt, `同目录分发了运行时 \`support.js\`：${a.rt}`);
+    /* ⚠️ 原来这里是 `expect(a.rt, "同目录分发了运行时 support.js")` ——
+       C3（M16-7c-2a）删掉 `ensureRuntimeBeside` 之后**反过来了**：不该有。
+       理由与「要不要换成反面判据」的权衡在 `filetest` 那一节写了全文。 */
+    expect(!a.rt, `**没往稿旁边拷运行时**（C3 之后 support.js 没有读者了）：${!a.rt}`);
     expect(a.snaps > 0, `新建就有一版快照（\`startsAtV1\` 才不是空话）：${a.snaps} 份`);
 
-    /* ⚠️ **建到新子目录**单独验 —— 运行时三件套是**按目录**分发的，
-       根目录有不代表子目录有，而「子目录里的稿直接打开白屏」正是 #71 列的后果之一。 */
+    /* ⚠️ **建到新子目录**仍然单独验，而钉的东西反过来了：
+       原来钉「那个目录也有运行时」（三件套按目录分发，根目录有不代表子目录有），
+       现在钉「**那个目录也没有**」—— 同一个「按目录」的性质，两个方向。 */
     await createDraft(p, "新子目录/深一层.dc.html", { kind: "blank" });
     const b = check("新子目录/深一层.dc.html");
-    expect(b.rt, `**建到新子目录时那个目录也有运行时**（根目录有不代表子目录有）：${b.rt}`);
+    expect(!b.rt, `**新子目录里也没有运行时**（同一个「按目录」的性质，反过来钉）：${!b.rt}`);
     expect(b.res, `子目录里的稿也有 \`__resources\`：${b.res}`);
 
     /* ── 来源不许跨出项目（issue #69，p0）+ 副本名不许是路径（issue #70）── */

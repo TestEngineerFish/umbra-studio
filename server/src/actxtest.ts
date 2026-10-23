@@ -19,7 +19,7 @@ process.env.UMBRASTUDIO_STATE_DIR = STATE;
 process.env.UMBRASTUDIO_NO_GIT = "1";
 const { TOOL_ROOT, loadProject } = await import("./project.js");
 const { PLUGINS_DIR } = await import("./plugin/store.js");
-const { findBrowser } = await import("./render.js");
+const { findBrowser } = await import("./browser.js");
 const { serveStart, serveStop, appDistReady } = await import("./serve.js");
 
 let pass = 0, fail = 0;

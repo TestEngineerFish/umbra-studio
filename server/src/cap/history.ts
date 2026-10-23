@@ -10,7 +10,7 @@ import {
 import { addComment, deleteComment, listComments, markCommentsSent, updateComment } from "../comments.js";
 import { listReferences } from "../refs.js";
 import { listSnapshotMeta, walkProjectFiles } from "../files.js";
-import { isToolPage } from "../indexpage.js";
+import { isToolPage } from "../files.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
 

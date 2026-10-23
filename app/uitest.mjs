@@ -682,6 +682,43 @@ const barH = async (frame, id) => await frame.locator("#" + id).evaluate((el) =>
  *  （`data-kit-*`，写进 PLUGIN-SPEC）。**契约出来之后这个 helper 改成读属性，别再认文字** ——
  *  认文字的判据会在插件改一句文案时红。 */
 const KIT_WORDS = { dirty: "未落盘", draft: "草稿", conflict: "被别处改了" };
+
+/** 把 kit 那条横条清掉（判据之间的收尾）。
+ *
+ *  ⚠️⚠️ **这里栽过一次，而真正的原因是 plugins 2026-10-23 转告的，我自己没看出来。**
+ *  我原来按顺序点「用盘上的（丢掉我的）」→「放弃改动」→「丢掉草稿」，
+ *  而 **kit 1.2 起「放弃改动」会先弹一次 `umbra.menu` 二次确认**（CHANGELOG 里有，有意改的）。
+ *  点了它却不选菜单项 → **脏状态一直留着** → 下一次点文件弹「要切走吗」确认卡
+ *  → 遮罩挡住后面所有点击 → 「只读」「编码」「源码 / 树」三族全红，
+ *  而红的原因和它们自己毫无关系。
+ *
+ *  > **我在 §33.2 把级联源头归到「`#discard` 没了 + 被 catch 吞掉」，那只是其中一半** ——
+ *  > 另一半是「按文字点对了按钮，而那颗按钮的语义变了（多了一步确认）」。
+ *  > **一个被 catch 吞掉的点击失败，和一个「点成功了但没走完」的流程，症状一模一样。**
+ *
+ *  所以现在：不弹确认的那两颗优先；只剩「放弃改动」时点它，**再把宿主那张菜单走完**。 */
+const clearKitBar = async (frame) => {
+  const bar = frame.locator(".uk-bar:not([hidden])");
+  if (await bar.count().catch(() => 0) === 0) return;
+  /* 撞车态 / 草稿态有不弹确认的出路，优先走它们 */
+  for (const label of ["用盘上的（丢掉我的）", "丢掉草稿"]) {
+    const b = bar.locator(`button:has-text("${label}")`);
+    if (await b.count().catch(() => 0) > 0) { await b.first().click().catch(() => {}); await pg.waitForTimeout(700); return; }
+  }
+  /* 未落盘态只有「放弃改动」，而它会弹 `umbra.menu` —— 菜单由**宿主**画（`[data-ud="pluginmenu"]`），
+     第一项是「放弃没落盘的改动」。不走完这一步等于没清。 */
+  const give = bar.locator('button:has-text("放弃改动")');
+  if (await give.count().catch(() => 0) === 0) return;
+  await give.first().click().catch(() => {});
+  await pg.waitForTimeout(500);
+  const menu = pg.locator('[data-ud="pluginmenu"]');
+  if (await menu.count().catch(() => 0) > 0) {
+    const first = menu.locator('button, [role="menuitem"]').filter({ hasText: /放弃/ }).first();
+    if (await first.count().catch(() => 0) > 0) await first.click().catch(() => {});
+    else await menu.locator('button, [role="menuitem"]').first().click().catch(() => {});
+    await pg.waitForTimeout(700);
+  }
+};
 const kitBarH = async (frame, kind) => {
   const bar = frame.locator(".uk-bar").filter({ hasText: KIT_WORDS[kind] });
   if (await bar.count() === 0) return 0;
@@ -2947,13 +2984,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                  `TimeoutError: waiting for locator('#discard')` 的出处（3730 行那处没有 catch）。
                  > **一个被 catch 吞掉的点击失败，症状会出现在下一节。**
                  按文字点：撞车态是「用盘上的（丢掉我的）」，未落盘态是「放弃改动」。 */
-              const bar = cf.locator(".uk-bar:not([hidden])");
-              if (await bar.count().catch(() => 0) > 0) {
-                for (const label of ["用盘上的（丢掉我的）", "放弃改动", "丢掉草稿"]) {
-                  const b = bar.locator(`button:has-text("${label}")`);
-                  if (await b.count().catch(() => 0) > 0) { await b.first().click().catch(() => {}); await pg.waitForTimeout(600); break; }
-                }
-              }
+              await clearKitBar(cf);
             }
 
             /* ═══ 只读（S18 §一.4）═══ 按文件名自动进，不问内容。
