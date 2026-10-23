@@ -1423,7 +1423,23 @@ console.log("\n插件市场四屏（M11-6）");
    ⚠️ 这一节自己建样本自己收（走回收站再精确清掉），不往用户项目里留东西。 */
 console.log("\n✎ 永远显示：有能力直接编辑，没能力引导去市场（M11-6）");
 {
-  const LOCKED = "✎回归样本.mp4";
+  /* ⚠️⚠️ **样本从 `.mp4` 换成一个随机扩展名**（2026-10-24）。
+     原来写的是 `✎回归样本.mp4`，而这一条要的是「我们不认得、市场里也没有」——
+     **两个前提后来同时塌了**：M14-11 给 `.mp4` 加了内置 kind `media-video`（我们认得它了），
+     umbra-plugins 也出了 `com.umbra.video`（市场里也有了）。
+     ⚠️ 而**同一节上一条判据还在正确作证**（它只要「不认得的格式树也要刷出来」，
+     跟市场无关）—— **两条共用一个样本，前提塌了只毁掉其中一条**，
+     于是读数长得像「市场引导坏了」。
+     > **换样本要连判准一起核** —— 而判准至少有三层：这个词在哪个组件里 ·
+     > 它是文本还是属性 · 它常驻还是条件渲染。这一次塌的是更上面一层：**样本本身的性质**。
+
+     ⚠️ 新样本**不写死扩展名**，随机四个字母 —— 写死的话今天成立、明天谁加一种格式它就又塌一次，
+     而塌下来的样子是「这条判据红了」，不是「样本过期了」。
+     ⚠️ 更要紧的是**把两个前提写成断言**（下面两条）：前提在断言里，
+     哪天它不成立，红的是前提那一条，一眼看得出是样本的事而不是产品的事。
+     > **一条判据的前提不写成断言，它塌掉的那天会伪装成产品缺陷。** */
+  const RAND_EXT = "." + Array.from({ length: 4 }, () => "abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random() * 26)]).join("");
+  const LOCKED = `_uitest锁定样本${RAND_EXT}`;
   const made = await pg.evaluate(async ({ name }) => {
     const b = window.__UD_APP;
     const w = await fetch(`${b.url.replace(/\/$/, "")}/__ud/file_write?token=${encodeURIComponent(b.token)}`,
@@ -1437,6 +1453,23 @@ console.log("\n✎ 永远显示：有能力直接编辑，没能力引导去市�
     /* 顺带钉住 M11-6 修的那条：**不认得的格式，树也要刷新** ——
        新建一个 .mp4 之后它得出现在树里（磁盘监听原来按类型过滤，落到 other 的不报） */
     ok(await row.count() === 1, "新建一个**不认得的格式**，目录树照样刷出来（监听不按类型过滤）");
+    /* ── 两个前提，各自一条断言（见上面那段）── */
+    const pre = await pg.evaluate(async ({ name, ext }) => {
+      const b = window.__UD_APP;
+      const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}&token=${encodeURIComponent(b.token)}`;
+      /* ⚠️ 路由名是 `file`，**能力名才是 `read_file`** —— 今天第二次踩这个
+         （另一次是 `set_chat_channel` / `chat_channel`，见 `captest` ⑰）。
+         第一版写 `read_file?path=…`，服务端回 `E_API_ROUTE: 没有这个接口`，
+         而那个失败会被 `.catch(() => null)` 吃成「问不到」→ 前提那条红在一个错的理由上。 */
+      const rf = await fetch(u(`file?path=${encodeURIComponent(name)}`)).then((x) => x.json()).catch(() => null);
+      const wh = await fetch(u(`who_handles?ext=${encodeURIComponent(ext)}`)).then((x) => x.json()).catch(() => null);
+      return { kind: rf?.data?.kind ?? "(问不到)", hits: (wh?.data?.plugins ?? []).length, whOk: !!wh?.ok };
+    }, { name: LOCKED, ext: RAND_EXT });
+    ok(pre.kind === "other",
+       "**（前提一）我们不认得 " + RAND_EXT + "** —— 认得了的话这条路压根不该走到市场", `kind = ${pre.kind}`);
+    ok(pre.whOk && pre.hits === 0,
+       "**（前提二）市场里也没有能编辑 " + RAND_EXT + " 的插件**（真问一次 `who_handles`，不假设）",
+       `${pre.hits} 个候选` + (pre.whOk ? "" : "（who_handles 没答上来）"));
     if (await row.count()) {
       await row.click(); await pg.waitForTimeout(1600);
       const btn = pg.locator('[data-ud="toggle-edit"]');
@@ -1446,7 +1479,9 @@ console.log("\n✎ 永远显示：有能力直接编辑，没能力引导去市�
       const txt = await pg.locator("body").innerText();
       /* ⚠️ **不把人送进空市场**：第一期只有三五个插件，大多数格式都落在这里，
          说「去市场看看」然后什么都没有，比直接说清楚更伤。 */
-      ok(/还没有能编辑 \.mp4 的插件/.test(txt), "市场里没有时**照实说**，不把人送进空市场");
+      ok(new RegExp(`还没有能编辑 \\${RAND_EXT} 的插件`).test(txt),
+         "市场里没有时**照实说**，不把人送进空市场",
+         (txt.match(/还没有能编辑 \S+ 的插件/) ?? ["（没说这句话）"])[0]);
     }
     await pg.evaluate(async ({ name }) => {
       const b = window.__UD_APP;
@@ -5126,7 +5161,8 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    · 其中 **3 条是这一轮新加的**（两节各一条「会话目录按记录目录算出来了」+
      收尾那条「项目里的 `.umbrastudio/chats/` 一个字节都没被碰」），
      **5 条是原来因为会话写在旧位置而跳过的**。
-   · 加上**本来就该跑、而今天前提没成立的 2 条** = **447**。
+   · 2026-10-24 第二批又加了 **2 条**（市场那一节的两个前提各一条 —— 见那一节的注释）→ 该跑 **447**。
+   · 加上**本来就该跑、而今天前提没成立的 2 条** = **449**。
      那 2 条是 ◨ 开合（image 没声明 `panels`，宿主不画那颗钮）——
      它是这一轮**唯一一节自己打印了「没验到」**的，所以它是唯一一个有证据的缺口。
      留在分母里是**刻意的**：下次谁把这一节的样本换回一个有 `panels` 的格式，读数会自己对上。
@@ -5143,7 +5179,7 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
    > 把第三种算成第二种，就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 447;
+const EXPECT_AT_LEAST = 449;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
