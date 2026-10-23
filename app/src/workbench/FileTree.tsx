@@ -40,6 +40,8 @@ export interface TreeProps {
   actions: CtxActions;
   /** 已经塌成「已移到回收站 · 撤销」的那几行 */
   trashed: string[];
+  /** 那几行上要补的一句「有几处引用它，会断」。**只有有引用的才在这里面**（M16-8 ⑤）。 */
+  trashWarn?: Record<string, string>;
   onUndoTrash: (path: string) => void;
   /** 文件变动的信号（传最近一次事件的时刻即可）：变了就把已展开的层重新拉一遍 */
   tick: string;
@@ -69,7 +71,7 @@ export interface TreeProps {
 const sayOutside = (path: string): void =>
   toast("这是一条指向项目外面的链接", `${path} 指到项目目录外面。从这里读写它等于读写项目外的文件，所以不放行。要改那个文件，直接打开它真正所在的那个目录。`, "error");
 
-export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, projectName, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
+export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, projectName, actions, trashed, trashWarn, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
   const [goto, setGoto] = useState(false);
   const [q, setQ] = useState("");
   const [ctx, setCtx] = useState<{ x: number; y: number; target: CtxTarget } | null>(null);
@@ -179,10 +181,20 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
       /* 已移到回收站的行：**原地塌成一行撤销**，不弹确认框（沿用 S1 的口径：
          先做，再给一步回头路）。落实时机由上层的四条规则决定。 */
       if (trashed.includes(e.path)) {
+        /* ⚠️ 「有几处引用它」那一句（M16-8 ⑤）：**第二行**，而不是挤进同一行。
+           挤进去的话文件名和那句警告会**互相截断**，而目录列本来就窄。
+           ⚠️ 行高因此比 `ROW_H` 高 —— 这里**不是虚拟滚动**（`ROW_H` 只是统一行高，
+           没有按 scrollTop 切片），所以变高是安全的。
+           > **一个「行高写死」的约定，只有在有人按它算位置时才是约束。**
+           ⚠️ 用 `--tool-warn` 而不是红：这不是错误，是「你刚那一下有代价」。 */
+        const warn = trashWarn?.[e.path];
         out.push(
-          <div key={e.path} className="flex items-center gap-2 pr-2 text-[11px] text-muted" style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT }}>
-            <span className="flex-1 truncate">已移到回收站 · {e.name}</span>
-            <button className="btn sm ghost" onClick={() => onUndoTrash(e.path)}>撤销</button>
+          <div key={e.path} className="pr-2 text-[11px] text-muted" style={{ paddingLeft: 6 + depth * INDENT }}>
+            <div className="flex items-center gap-2" style={{ height: ROW_H }}>
+              <span className="flex-1 truncate">已移到回收站 · {e.name}</span>
+              <button className="btn sm ghost" onClick={() => onUndoTrash(e.path)}>撤销</button>
+            </div>
+            {warn && <div className="pb-1.5 leading-snug" data-ud="trash-warn" style={{ color: "var(--tool-warn)" }}>{warn}</div>}
           </div>,
         );
         continue;

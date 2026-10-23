@@ -187,10 +187,31 @@ const CSP_RE = /Content Security Policy|Refused to (?:load|execute|connect)/i;
    和 §162 那条「报信包在 `fetchFn` 本身上，不是在六个调用点各加一行」同一个形状：
    **在每个出口各写一遍判断，漏一个就静默复发，而症状和没修一模一样。** */
 const LOAD_FAIL_RE = /failed to load https?:\/\//i;
+/* ⚠️⚠️ **被拦之后稿自己的连锁反应**（2026-10-24，html 插件 1.3.1 装上之后才露出来）。
+   1.3.1 把 React 的 UMD **内联进 srcdoc**（S5 那条），于是稿的 `support.js` 真跑起来了 ——
+   **而那让它走到了下一层**：用 `eval` / `new Function` 编译稿里 `<script type="text/x-dc">`
+   的逻辑类。预览的 CSP 没有 `'unsafe-eval'`，于是：
+     `[dc-runtime] logic class eval FAILED for index — the template renders with props only.
+      EvalError: Evaluating a string as JavaScript violates the following CSP directive…`
+   以及它的连锁：`SyntaxError: Failed to execute 'appendChild' on 'Node'` @ `about:srcdoc`
+   （编译失败之后那套运行时继续往下走，拼出来的东西不成立）。
+   > **上一轮它在更早的地方就失败了（加载不到 React），所以这件事看不见。
+   > 修好一层，下一层才露出来。**
+   而这是**预期行为**（geek-99 2026-10-24 定：「`.dc.html` 的交互逻辑和 `dc-import`
+   在预览里照拦，只给提示，不放宽 CSP」）—— 所以它和「站外脚本被拦」同一类，
+   不该算进「零 error」。
+   ⚠️ 判准认 **`about:srcdoc`** 或 `[dc-runtime]` 这两个来源标记之一，
+   **不认消息措辞** —— 措辞是 ClaudeDesign 的 `support.js` 写的，我们不该钉它的话。 */
+const DC_SANDBOX_RE = /\[dc-runtime\]|about:srcdoc|Evaluating a string as JavaScript/i;
 const cspBlocks = [];
 const bootFails = [];
 /** 一条控制台/页面错误该算哪一类。**唯一的分类处** —— 加出口只改这里。 */
+const dcSandbox = [];
 const classify = (t) => {
+  /* ⚠️ **顺序要紧**：`dc-runtime` 那条里也含「Content Security Policy」，
+     所以**先判它**，否则它会被当成「站外脚本被拦」那一类，而那一类的判据会红在
+     「说不出 URL」上（实测就是这么红的）。 */
+  if (DC_SANDBOX_RE.test(t)) { dcSandbox.push(t.slice(0, 200)); return; }
   if (CSP_RE.test(t)) { cspBlocks.push(t.slice(0, 200)); return; }
   if (LOAD_FAIL_RE.test(t)) { bootFails.push(t.slice(0, 200)); return; }
   if (!NOISE.some((r) => r.test(t))) errs.push(t.slice(0, 160));
@@ -205,7 +226,13 @@ pg.on("response", (r) => { if (r.status() >= 400) bad4xx.push(`${r.status()} ${r
 /* ⚠️ `pageerror` 也走 `classify` —— 原来它自己判一遍 NOISE，于是上面拆出去的那两类
    **从这个出口原样漏回「零 error」里**（实测第三种形态就是从这儿来的）。
    加前缀是为了读数里看得出是哪个出口。 */
-pg.on("pageerror", (e) => classify("pageerror: " + String(e)));
+/* ⚠️ 带上 stack 的第一帧：`String(e)` 只有消息，而**消息说不出是谁抛的**。
+   实测吃过一次：`SyntaxError: Failed to execute 'appendChild' on 'Node': Unexpected token '-'`
+   —— 光看这一句猜不出它在插件里还是在稿里。 */
+pg.on("pageerror", (e) => {
+  const where = String(e?.stack ?? "").split("\n")[1]?.trim() ?? "";
+  classify("pageerror: " + String(e) + (where ? `  @ ${where}` : ""));
+});
 
 await pg.goto(URL_, { waitUntil: "domcontentloaded" });
 /* 「起来了」的判据：树里长出了节点。
@@ -749,8 +776,8 @@ process.on("uncaughtException", async (e) => {
        静默 `errs.length = 0` 就是「把仪器调成零」，和它要防的那件事同一个形状。 */
     const dropped = [...new Set(bad4xx)];
     const nErr = errs.length;
-    const nCsp = cspBlocks.length + bootFails.length;
-    errs.length = 0; bad4xx.length = 0; cspBlocks.length = 0; bootFails.length = 0;
+    const nCsp = cspBlocks.length + bootFails.length + dcSandbox.length;
+    errs.length = 0; bad4xx.length = 0; cspBlocks.length = 0; bootFails.length = 0; dcSandbox.length = 0;
     console.log(`  · 清掉残留之后重新进了一次（清理前界面开着：${wasOpen ?? "没开"}）`
       + `；清理阶段的噪声不计入：error ${nErr} 条 · 4xx ${dropped.length} 种 · CSP 拦截 ${nCsp} 条`
       + (dropped.length ? ` —— ${dropped.slice(0, 3).join(" · ")}` : ""));
@@ -1227,6 +1254,66 @@ if (await fileRow.count()) {
   ok(!/新建稿件/.test(t) && !/新建目录/.test(t), "右键文件：**没有**新建（在文件上说不清建在哪）");
   await closeCtx();
 } else ok(false, "树里没有文件行");
+
+/* ── 删掉一份被引用的稿：撤销那一行上要说「会断几处」（M16-8 ⑤，2026-10-24）──
+   这一套的口径是「**删除不弹确认**，用行内撤销代替确认」（`ctxmenu` 头上那段，沿用 S1）。
+   所以那句警告放在**撤销还有效的那一行上**：
+   > **一句「你刚才那一下会断 4 处」要在「还能收回来」的那段时间里说，才叫信息；
+   > 删完没法回头的时候说，那只是通知。**
+
+   ⚠️ 样本要**真有人引用它**：建一份组件稿 + 一份 `<dc-import>` 它的稿。
+   没有引用的话那句话**本来就不该出现**，判据会绿在一个空值上（§「判据在没有样本的时候，
+   测的是今天恰好没事」）。所以这一节自己造两份，并**各验一面**：
+   有引用的要出现、没引用的不许出现。 */
+console.log("\n删掉被引用的稿：撤销那一行说「会断几处」（M16-8 ⑤）");
+{
+  const COMP = "_uitest被引组件.dc.html", USER = "_uitest引用方.dc.html", LONE = "_uitest没人引.dc.html";
+  const mk = async (name, body) => pg.evaluate(async ({ n, b }) => {
+    const x = window.__UD_APP;
+    const r = await fetch(`${x.url.replace(/\/$/, "")}/__ud/file_write?token=${encodeURIComponent(x.token)}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: n, content: b, expectSha256: "0" }) });
+    return (await r.json()).ok;
+  }, { n: name, b: body });
+  const made = (await mk(COMP, "<!doctype html>\n<html><body><x-dc><div>组件</div></x-dc></body></html>\n"))
+    && (await mk(USER, `<!doctype html>\n<html><body><x-dc><dc-import name="${COMP.replace(/\.dc\.html$/, "")}"></dc-import></x-dc></body></html>\n`))
+    && (await mk(LONE, "<!doctype html>\n<html><body><x-dc><div>没人引我</div></x-dc></body></html>\n"));
+  if (!made) ok(false, "建不出这一组样本，这一节没测成");
+  else {
+    await settleTree(COMP);
+    const trashRow = async (name) => {
+      const row = pg.locator('[role="treeitem"]').filter({ hasText: name }).first();
+      if (!(await row.count())) return null;
+      await row.click({ button: "right" }); await pg.waitForTimeout(400);
+      await pg.locator('[role="menu"]').getByText("移到回收站", { exact: true }).click();
+      await pg.waitForTimeout(1800);   // 两件能力各一次往返
+      return (await pg.locator('[data-ud="trash-warn"]').allTextContents()).join(" ⎹ ");
+    };
+    const warnComp = await trashRow(COMP);
+    ok(typeof warnComp === "string" && /4 处 <dc-import>|1 处 <dc-import>|\d+ 处 <dc-import>/.test(warnComp),
+       "**删掉被 `<dc-import>` 引用的稿：撤销那一行上说了会断几处**（真值，不是「有句话就算过」）",
+       warnComp || "（那一行上什么都没说）");
+    /* 撤销回来 —— 这一节不往回收站留东西（纪律⑥），而且下一条要用干净的树 */
+    const undo = pg.locator("button").filter({ hasText: /^撤销$/ }).first();
+    if (await undo.count()) { await undo.click(); await pg.waitForTimeout(600); }
+
+    /* ⚠️ **反面一条**：没人引用的稿删掉时**不许**出现那句话。
+       少了它，把条件写成「总是说」也全绿 —— 而那会在每次删文件时都加一句噪声。 */
+    const warnLone = await trashRow(LONE);
+    ok(warnLone === "", "**没人引用的稿：那一行上一个字都不多说**（`affectedCount === 0` 时加一句只是噪声）",
+       warnLone === "" ? "没多说" : `多说了：${warnLone}`);
+    const undo2 = pg.locator("button").filter({ hasText: /^撤销$/ }).first();
+    if (await undo2.count()) { await undo2.click(); await pg.waitForTimeout(600); }
+  }
+  /* 收尾：三份样本一律清掉（`SAMPLE_PATS` 认得 `_uitest` 前缀，但自己清更快也更准） */
+  await pg.evaluate(async (names) => {
+    const x = window.__UD_APP;
+    const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(x.token)}`;
+    const post = (r, b) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((y) => y.json());
+    for (const n of names) await post("file_trash", { path: n }).catch(() => {});
+    const t = await fetch(u("trash")).then((y) => y.json()).catch(() => null);
+    for (const it of t?.data?.items ?? []) if (names.includes(it.originalName)) await post("trash_purge", { trashPath: it.trashPath });
+  }, [COMP, USER, LONE]);
+}
 
 /* ── 右键菜单的「复制一份」（issue #9；2026-10-24 起**对任何文件都出**）──
    #9 报的是「应用本体里一份稿建了就删不掉、改不了名」，证据指向
@@ -2366,7 +2453,7 @@ console.log("\n控制台");
      errs.length
        ? `${errs.length} 条 / ${kinds.length} 种：${kinds.slice(0, 3).join(" ⎹ ")}`
          + (bad4xx.length ? ` ⟵ 4xx：${[...new Set(bad4xx)].slice(0, 3).join(" · ")}` : "")
-       : `干净（另外：CSP 拦下 ${cspBlocks.length} 条 · 被拦者喊了 ${bootFails.length} 声，各有判据）`);
+       : `干净（另外：CSP 拦下 ${cspBlocks.length} 条 · 被拦者喊了 ${bootFails.length} 声 · 稿在沙箱里被拦 ${dcSandbox.length} 条，各有判据）`);
 }
 
 /* ⚠️ **这一条是关于判据自己的**（2026-10-22 加，geek-99 要求补）。
@@ -2406,14 +2493,32 @@ console.log("\n控制台");
   /* 自己人被拦 = 真问题（插件 import `/__shared/…` 那条路就靠 `'self'` 放行，
      它一旦出现在这张表里，说明 CSP 收得太紧 —— 而症状是「插件加载不出来」）。 */
   const ours = urls.filter((u) => !u.startsWith("http") || u.startsWith(origin));
+  /* ⚠️ **取不到 URL 时要把原文打出来** —— 「(说不出 URL)」这个读数本身说不出任何事，
+     而一条说不出「是哪一个」的判据，红了也用不上（§160 那条，这里是它的第二次）。
+     实测吃到：1.3.1 装上之后多出一条没有 URL 的 CSP 违规，而读数只有「(说不出 URL)」。 */
+  const noUrl = cspBlocks.filter((t) => !/https?:\/\//.test(t)).map((t) => t.replace(/\s+/g, " ").slice(0, 150));
   ok(ours.length === 0,
      "**被 CSP 拦下的只有站外脚本**（稿里引的 unpkg —— 插件 A 面 `script-src 'self'`，拦住它是沙箱在干活）",
-     urls.length ? `${urls.length} 个：${urls.join(" · ")}` : "这一轮一条都没拦到（没打开引了 CDN 的稿）");
+     urls.length
+       ? `${urls.length} 个：${urls.join(" · ")}` + (noUrl.length ? ` ⎹ 说不出 URL 的 ${noUrl.length} 条，原文：${noUrl[0]}` : "")
+       : "这一轮一条都没拦到（没打开引了 CDN 的稿）");
 
   /* ⚠️ **被拦者自己喊的那一声，判准是「归属」不是「有没有」。**
      稿里的 `[dc] failed to load …` 只要指的是上面那张被拦清单里的 URL，就是同一件事的后果；
      指向别的 URL 就是真的加载失败（比如我们自己的 `/__shared/…` 没上去），那必须红。
      ⚠️ 这一条**不断言「至少有一声」** —— 同上一条，那会让它依赖这一轮开过哪份稿。 */
+  /* ⚠️ **预期行为也要有一条判据钉着它的边界**：稿在沙箱里被拦的那一类，
+     只许来自 srcdoc / `[dc-runtime]`。哪天它开始从**我们自己的代码**里冒出来
+     （比如插件页或工作台），那就不是「沙箱在干活」了。
+     ⚠️ 不断言「至少有一条」—— 那会让它依赖这一轮开过哪份稿（§145.4）。 */
+  const notFromDraft = dcSandbox.filter((t) => !/\[dc-runtime\]|about:srcdoc/i.test(t));
+  ok(notFromDraft.length === 0,
+     "**稿在沙箱里被拦的那一类，只来自稿自己**（`about:srcdoc` / `[dc-runtime]`）—— "
+     + "`.dc.html` 的交互逻辑与 `dc-import` 在预览里照拦，这是定了的行为，不是缺陷",
+     dcSandbox.length
+       ? `${dcSandbox.length} 条，${notFromDraft.length ? "其中 " + notFromDraft.length + " 条不是稿里的：" + notFromDraft[0].slice(0, 90) : "全部来自稿自己"}`
+       : "这一轮一条都没有");
+
   const orphan = bootFails.filter((t) => {
     const u = (t.match(/https?:\/\/[^\s'")]+/) ?? [])[0];
     return !u || !urls.some((b) => b === u || u.startsWith(b) || b.startsWith(u));
@@ -5301,7 +5406,9 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    · 2026-10-24 第二批又加了 **2 条**（市场那一节的两个前提各一条 —— 见那一节的注释）→ 该跑 **447**。
    · 第三批 **+2**（CSP 拦截拆出来 1 条 + 「被拦者自己喊的那一声」归属 1 条）→ 该跑 **449**。
    · 第四批 **+1**（`/__shared/dc-umd.js` —— 插件取得到 React 的 UMD 源码文本）→ 该跑 **450**。
-   · 加上**本来就该跑、而今天前提没成立的 2 条** = **452**。
+   · 第五批 **+2**（M16-8 ⑤ 的界面那半：被引用的稿删掉时说会断几处 + 没人引用时不多说）→ 该跑 **452**。
+   · 第六批 **+1**（稿在沙箱里被拦的那一类只来自稿自己 —— html 1.3.1 内联 React 之后才露出来的一层）→ 该跑 **453**。
+   · 加上**本来就该跑、而今天前提没成立的 2 条** = **455**。
      那 2 条是 ◨ 开合（image 没声明 `panels`，宿主不画那颗钮）——
      它是这一轮**唯一一节自己打印了「没验到」**的，所以它是唯一一个有证据的缺口。
      留在分母里是**刻意的**：下次谁把这一节的样本换回一个有 `panels` 的格式，读数会自己对上。
@@ -5318,7 +5425,7 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
    > 把第三种算成第二种，就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 452;
+const EXPECT_AT_LEAST = 455;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

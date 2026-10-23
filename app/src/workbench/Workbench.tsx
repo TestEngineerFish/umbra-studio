@@ -286,6 +286,9 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
   const [localTick, setLocalTick] = useState(0);
   /** 拖进文件列、还没决定要不要复制的那几份（场景 ③） */
   const [drop, setDrop] = useState<{ paths: string[]; destDir: string } | null>(null);
+  /** 刚删掉那几行上要补的一句「有几处引用它，会断」。**只在有引用时才有键** ——
+   *  没有引用就什么都不说（`affectedCount === 0` 时加一句「没人引用」只是噪声）。 */
+  const [trashWarn, setTrashWarn] = useState<Record<string, string>>({});
   const ctxActions = makeActions({
     core, host, projectDir: project.dir,
     onOpenFile: (f) => open(f), onOpenDir: (d) => open(d, true),
@@ -293,7 +296,48 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
     onRename: () => {},   // 就地改名由 FileTree 自己接管（它知道是哪一行）
     onNewDraft: (dir) => setSheet({ kind: "newDraft", dir }),
     onCollapseAll: () => setLayout({ ...layout, tree: { ...layout.tree, expanded: [] } }),
-    onTrashed: (paths) => { commitTrash(); setTrashed(paths); },   // 「再删一个」：上一批先落实
+    onTrashed: (paths) => {
+      commitTrash(); setTrashed(paths);
+      /* ⚠️⚠️ **删掉之后、撤销还在的时候，把「有几处引用它」说出来**（M16-8 ⑤，2026-10-24）。
+         ### 为什么在这儿说，而不是删之前弹一个确认
+         这一套的口径是「**删除不弹确认**，菜单里直接写「移到回收站」，用行内撤销代替确认」
+         （`ctxmenu` 头上那段，沿用 S1）。所以 geek-99 定：**不弹确认，把话放进那一行**。
+         撤销还有效的时候说出来，用户该做的事（点撤销）就在同一行上。
+         > **一句「你刚才那一下会断 4 处」要在「还能收回来」的那段时间里说，才叫信息；
+         > 删完就没法回头的时候说，那只是通知。**
+
+         ### ⚠️ 为什么要问两件能力
+         「谁引用了它」有两种关系，而**并成一件的后果是具体的**（`doc/26` §7.3 全文）：
+         · `delete_impact` 认 `<dc-import name=…>`（按**组件名**），**只对 `.dc.html` 成立**；
+         · `file_refs` 认 `href` / `src` / `url()`（按**路径**），对 html / css / svg / md 成立。
+         实测同一份组件稿：前者 4 处、后者 0 处。只问一件 = 一个更弱的答案冒用了更强的名字。
+         ⚠️ 非 `.dc.html` **不问** `delete_impact` —— 它现在会回 `E_BAD_INPUT`（2026-10-24 改的），
+         问了只会在控制台留一条毫无意义的 400。 */
+      void (async () => {
+        const counts = await Promise.all(paths.map(async (path) => {
+          const isDc = /\.dc\.html$/i.test(path);
+          const [dc, byPath] = await Promise.all([
+            isDc ? core.get<{ affectedCount?: number }>(`delete_impact?path=${encodeURIComponent(path)}`) : Promise.resolve(null),
+            core.get<{ referencedBy?: unknown[]; truncated?: boolean }>(`file_refs?path=${encodeURIComponent(path)}`),
+          ]);
+          return {
+            path,
+            dc: dc?.ok ? (dc.data?.affectedCount ?? 0) : 0,
+            byPath: byPath.ok ? (byPath.data?.referencedBy?.length ?? 0) : 0,
+            /* ⚠️ 扫到上限就停时「没人引用」这句话说不了（`list_file_refs` 的 `truncated`）——
+               那时宁可不说，也不说一句可能是假的。 */
+            cut: byPath.ok ? !!byPath.data?.truncated : false,
+          };
+        }));
+        const says = counts.filter((c) => c.dc > 0 || c.byPath > 0).map((c) => {
+          const parts: string[] = [];
+          if (c.dc > 0) parts.push(`${c.dc} 处 <dc-import>`);
+          if (c.byPath > 0) parts.push(`${c.byPath} 处按路径`);
+          return { path: c.path, text: `有${parts.join("、")}引用它，会断` };
+        });
+        if (says.length) setTrashWarn(Object.fromEntries(says.map((x) => [x.path, x.text])));
+      })();
+    },
     refresh: () => setLocalTick((t) => t + 1),
   });
 
@@ -367,7 +411,8 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
          浮层态下选完就收 —— 它盖在详情上，不收的话挡着刚打开的文件。 */
       onOpenFile={(f, dbl) => { open(f, false, dbl ? "open" : "preview"); if (!treeInline) setLayout({ ...layout, left: false }); }}
       onOpenDir={(d) => { open(d, true); if (!treeInline) setLayout({ ...layout, left: false }); }}
-      actions={ctxActions} trashed={trashed} onUndoTrash={(p) => setTrashed((xs) => xs.filter((x) => x !== p))}
+      actions={ctxActions} trashed={trashed} trashWarn={trashWarn}
+      onUndoTrash={(p) => { setTrashed((xs) => xs.filter((x) => x !== p)); setTrashWarn(({ [p]: _drop, ...rest }) => rest); }}
       tick={`${store.lastEvent?.at ?? ""}:${localTick}`}
       beforeRename={async (p) => {
         /* 目录改名时，没落盘的那份可能在它**底下** —— 问的是那一份 */
