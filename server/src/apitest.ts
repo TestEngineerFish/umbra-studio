@@ -30,6 +30,25 @@ const ok = (c: boolean, what: string, detail = "") => {
   else { fail++; console.log(`  ✗ ${what}${detail ? ` — ${detail}` : ""}`); }
 };
 
+/* ⚠️⚠️ **「没验到」要出现在分母里**（2026-10-24，口径和 `uitest` 对齐）。
+   在这之前汇总行是 `pass/(pass+fail)` —— 于是跳过一条，分母**跟着少一条**，
+   读数永远长得像「全验到了」。实测两轮都这样：7c-2d 那轮 `210/210`、
+   上一轮 `208/208`，而两轮都自己打印过「· 没登录，服务端 AI 下探图那两条跳过」。
+   > **一个分母会跟着实际跑的条数一起缩的汇总行，永远报不出缺口。**
+
+   ⚠️ 而「没跑」有三种，这里**刻意分两类处理**（`doc/00` 那条「三种里第三种最危险」）：
+   · **说出来的没跑**（下面 `skip()`）—— 它该跑、也还存在，只是今天前提没成立
+     （没登录 / 这台机器没有 `mkfifo`）。进分母 + 汇总行写出理由，**但不算红**：
+     算红的话这套回归在一台没登录的机器上永远是失败，而退出码就不再是个有用的信号。
+   · **没说出来的没跑**（`EXPECT_AT_LEAST` 那道闸）—— 那是判据自己的缺陷
+     （选择器指错、`if` 没进去、`try` 吞了一整段），**一律算红**。
+   两类在日志里长得一样，而严重度完全不同 —— 所以代码里要分开，不能只有一个数。 */
+const NOT_RUN: string[] = [];
+const skip = (n: number, why: string) => {
+  for (let i = 0; i < n; i++) NOT_RUN.push(why);
+  console.log(`  · ${n} 条没验到：${why}`);
+};
+
 /* ── 夹具：**自己建一个临时项目**（Q71，2026-10-21）──
 
    原来这里是 `buildProject((await listProjectDirs())[0])` —— 也就是
@@ -120,7 +139,7 @@ console.log("\n① 同一会话还有一轮在跑时说出来（issue #35）");
 
 /* ── 绕过写入口改稿要说出来（issue #29）──
    通道 B 的 codex / cursor-agent **自带写文件的工具**，模型觉得 `apply_patch` 更顺手时
-   就会绕开我们的写入口。那样没有快照、没有归一化、没有 `__resources`，
+   就会绕开我们的写入口。那样没有快照、没有归一化、没有节点地址，
    **而且版本号不变** —— 而变更审计靠版本号判断改动，于是变更卡**显示为空**，
    界面等于在说「这一轮什么都没改」，而用户刚看着 AI 说「我改好了」。
    **界面说谎比功能缺失糟**（和 #35 那条「假回执」是同一族）。
@@ -212,7 +231,7 @@ console.log("\n④ 预览路由的三道闸（M10-3）");
   const anyHtml = drafts.find((f) => !f.isDir && /\.html$/i.test(f.name));
   if (anyHtml) {
     ok(await code(`__preview/${encodeURIComponent(anyHtml.name)}`) === 200, "正常的 .html 能预览", anyHtml.name);
-  } else console.log("  · 项目里没有 .html，正面那条跳过");
+  } else skip(1, "项目里没有 .html（正面那条）");
   ok(await code("__preview/umbra-tokens.json") === 415, "**非 .html 一律拒**（这条路由只渲染网页，不是第二条读文件的路）");
   ok(await code("__preview/..%2f..%2fetc%2fpasswd.html") === 403, "**路径逃不出项目目录**（走 `pathguard` 那一份判定，issue #19）");
   ok(await code("__preview/这个肯定没有.html") === 404, "不存在的回 404");
@@ -283,7 +302,8 @@ console.log("\n④ 预览路由的三道闸（M10-3）");
     const fifo = j2(T, "管道.html");
     let made = false;
     try { execFileSync("mkfifo", [fifo]); made = true; } catch { made = false; }
-    ok(made, "（样本有效性）临时项目里造出一个命名管道", made ? "管道.html" : "mkfifo 不可用（win？）→ 下面三条跳过");
+    ok(made, "（样本有效性）临时项目里造出一个命名管道", made ? "管道.html" : "mkfifo 不可用（win？）");
+    if (!made) skip(3, "这台机器没有 mkfifo（挂住不了，所以测不到超时那三条）");
     if (made) {
       const hitT = async (route: string) => {
         const ctl = new AbortController();
@@ -978,7 +998,7 @@ console.log(`\n⑬ 通道 A 走${platformName}服务端 AI（一·c）—— 不
       ok(!!pr && pr.saved === false && (await ac.getAiConfig()).channelA?.supportsImage === false,
          "**探完 channelA.supportsImage 没变**（那是服务端模型的结论，不记到自填模型上）", pr?.why.slice(0, 60));
     } else {
-      console.log("  · 没登录，服务端 AI 下探图那两条跳过");
+      skip(2, "没登录（服务端 AI 下探图那两条）");
     }
   } finally {
     globalThis.fetch = realFetch;
@@ -1942,5 +1962,23 @@ console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 
-console.log(fail === 0 ? `\n✓ HTTP 路由层 ${pass}/${pass + fail}\n` : `\n✗ HTTP 路由层 ${pass}/${pass + fail}\n`);
+/* ── 总数本身也是一条判据（口径同 `uitest` 文件末尾那一段）──
+   ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
+   它拦的是**没说出来的那种没跑**：`skip()` 报过的已经进分母了，减掉之后还少，
+   就说明有一节静默跳过了（而那一轮会全绿）。 */
+/* 213 = 上一轮实跑（`213/213`）· +2 = 那一轮自己打印过的「没登录」两条 —— 它们
+   原来**不在分母里**，这就是这次改口径要修的那件事。合计 **215**。 */
+const EXPECT_AT_LEAST = 215;
+const miss = NOT_RUN.length;
+const total = pass + fail + miss;
+let silent = 0;
+if (total < EXPECT_AT_LEAST) {
+  silent = EXPECT_AT_LEAST - total;
+  fail += silent;
+  console.log(`\n  ✗ **少跑了 ${silent} 条判据，而且没人说为什么**（算上说出来的 ${miss} 条也才 ${total}，该有 ${EXPECT_AT_LEAST}）`);
+  console.log("    —— 某一节静默跳过了。全绿不代表验到了：先找哪一节少了，再看读数。");
+}
+const whyNot = [...new Set(NOT_RUN)].map((w) => `${NOT_RUN.filter((x) => x === w).length} 条${w}`).join(" · ");
+console.log(`\n${fail === 0 ? "✓" : "✗"} HTTP 路由层 ${pass}/${Math.max(total, EXPECT_AT_LEAST)}`
+  + (miss ? `（${miss} 条没验到：${whyNot}）` : "") + "\n");
 process.exit(fail === 0 ? 0 : 1);
