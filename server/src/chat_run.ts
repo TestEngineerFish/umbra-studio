@@ -31,7 +31,7 @@ import {
 import { serveStart, serveStatus, serveStop } from "./serve.js";
 import { buildIndex, collectIndex } from "./indexpage.js";
 import { locateNode } from "./locate.js";
-import { listFiles, moveFile, readAnyFile, writeAnyFile } from "./files.js";
+import { listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, revertFile, writeAnyFile } from "./files.js";
 import { revertTo, setProp } from "./edit.js";
 import { touchProject, listRecentProjects, removeRecentProject, clearRecentProjects } from "./workspace.js";
 import { buildRefGraph, listReferences, renameDraft, moveDraft, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
@@ -93,10 +93,6 @@ export async function executeToolCall(p: Project, tc: ToolCall): Promise<string>
           drafts,
         });
       }
-      case "list_drafts": {
-        const drafts = (await listDrafts(p)).map((a) => a.slice(p.dir.length + 1).split("\\").join("/"));
-        return JSON.stringify({ ok: true, drafts });
-      }
 
       /* ── 泛型文件（M8）。设计稿之外的东西走这四件；`.dc.html` 在 write_file / move_file 里会被拒。
          少了它们，AI 面对 `.md` 只会一路撞 patch_draft 的「文件名必须以 .dc.html 结尾」【实测 2026-09-24】。 ── */
@@ -116,7 +112,20 @@ export async function executeToolCall(p: Project, tc: ToolCall): Promise<string>
           { expectSha256: typeof args.expectSha256 === "string" ? args.expectSha256 : undefined, origin: "AI", note: typeof args.note === "string" ? args.note : undefined });
         return JSON.stringify({ ok: true, path: r.path, snapshot: r.snapshot, previous: r.previous, bytes: r.bytes, sha256: r.sha256 });
       }
-      case "move_file": {
+ 
+      /* ══════ M16-7b 换上来的通用三件（理由见工具表那边的注释）══════ */
+      case "list_file_versions": {
+        const r = await listSnapshotMeta(p, String(args.path ?? ""));
+        return JSON.stringify({ ok: true, path: String(args.path ?? ""), snapshots: r });
+      }
+      case "read_file_version": {
+        const r = await readSnapshotContent(p, String(args.path ?? ""), String(args.version ?? ""));
+        return JSON.stringify({ ok: true, path: String(args.path ?? ""), version: String(args.version ?? ""), content: r });
+      }
+      case "revert_file": {
+        const r = await revertFile(p, String(args.path ?? ""), String(args.version ?? ""), "AI");
+        return JSON.stringify({ ok: true, ...r });
+      }     case "move_file": {
         const r = await moveFile(p, String(args.from ?? ""), String(args.to ?? ""));
         /* ⚠️ **把警告一起给模型**（issue #99，2026-10-06）。
            原来这里手挑了三个字段，把 `refused`（引用方被写入口拒绝、**引用没改成**）
@@ -136,164 +145,14 @@ export async function executeToolCall(p: Project, tc: ToolCall): Promise<string>
       }
 
       // ── 设计系统检索 ──
-      case "search_tokens": {
-        const r = await searchTokens(p, args.query as string, (args.limit as number) ?? 30);
-        return JSON.stringify({ ok: true, hits: r.hits.length, total: r.total, truncated: r.truncated });
-      }
-      case "get_token": {
-        const r = await getToken(p, args.path as string);
-        return JSON.stringify({ ok: true, ...r });
-      }
-      case "list_components": {
-        const list = await listComponents(p);
-        return JSON.stringify({ ok: true, components: list, total: list.length });
-      }
-      case "get_component": {
-        const r = await getComponent(p, args.name as string, (args.mode as "contract" | "full") ?? "contract");
-        return JSON.stringify({ ok: true, ...r });
-      }
-      case "read_draft": {
-        /* 模型要改稿，先得看见稿。2026-09-23 实测：DeepSeek 找不到 get_component(mode=full) 这条路，
-           猜了三轮节点地址后放弃；给一个名字就叫「读稿」的工具，源码里自带 data-ud-node 地址，set_prop 直接用。 */
-        const rel = args.path as string;
-        const abs = draftPath(p, rel);
-        const src = await readFile(abs, "utf8");
-        const max = 60000;
-        const nodes = (src.match(/data-ud-node="([^"]+)"/g) ?? []).length;
-        return JSON.stringify({ ok: true, path: rel, bytes: src.length, nodeAddresses: nodes,
-          note: "source 里每个元素的 data-ud-node 就是 set_prop / locate_node 要的 node 地址",
-          truncated: src.length > max, source: src.slice(0, max) });
-      }
-      case "list_icons": {
-        const r = await listIcons(p, args.query as string | undefined, (args.limit as number) ?? 60);
-        return JSON.stringify({ ok: true, viewBox: r.viewBox, icons: r.icons, total: r.total });
-      }
-      case "get_icon": {
-        const r = await getIcon(p, args.name as string);
-        return JSON.stringify({ ok: true, ...r });
-      }
-      case "get_syntax_guide": {
-        const topic = args.topic as string;
-        const g = GUIDES[topic] as { file: string; note: string } | undefined;
-        if (!g) return JSON.stringify({ ok: false, error: `未知 topic: ${topic}` });
-        const text = await readFile(join(TOOL_ROOT, "doc", g.file), "utf8");
-        return JSON.stringify({ ok: true, topic, note: g.note, source: `doc/${g.file}`, text: text.slice(0, 20000) });
-      }
 
       // ── 校验与写入 ──
-      case "validate_draft": {
-        const path = args.path as string;
-        const abs = draftPath(p, path);
-        const src = await readFile(abs, "utf8");
-        const { diags, stats } = validateDraft(p, path, src, path);
-        return JSON.stringify({ ok: true, project: p.name, path, errors: diags.filter((d) => d.level === "error").length, warnings: diags.filter((d) => d.level === "warning").length, diags: diags.slice(0, 50), stats });
-      }
-      case "write_draft": {
-        const path = args.path as string;
-        const content = args.content as string;
-        const kind = (args.kind as "page" | "component") ?? "page";
-        const r = await writeDraft(p, path, content, kind);
-        return JSON.stringify({ ok: r.outcome.written, outcome: r.outcome, stats: r.stats, errors: r.diags.filter((d) => d.level === "error").length });
-      }
-      case "patch_draft": {
-        const path = args.path as string;
-        const edits = args.edits as Array<{ old: string; new: string; count?: number }>;
-        const r = await patchDraft(p, path, edits);
-        return JSON.stringify({ ok: r.outcome.written, outcome: r.outcome, stats: r.stats, errors: r.diags.filter((d) => d.level === "error").length });
-      }
-      case "render_check": {
-        const path = args.path as string;
-        const r = await renderCheck(p, path, {
-          width: args.width as number | undefined,
-          height: args.height as number | undefined,
-        });
-        return JSON.stringify({
-          ok: true, alive: r.result.alive, nodeCount: r.result.nodeCount,
-          renderMs: r.result.renderMs,
-          unresolvedHoles: r.result.unresolvedHoles.length,
-          consoleWarnings: r.result.consoleWarnings?.length ?? 0,
-          externalRequests: r.result.externalRequests.length,
-        });
-      }
 
       // ── 版本与变更 ──
-      case "list_versions": {
-        const path = args.path as string;
-        const vs = await listVersions(p, path);
-        return JSON.stringify({ ok: true, path, versions: vs, latest: vs[vs.length - 1] ?? null, count: vs.length });
-      }
-      case "diff_drafts": {
-        const path = args.path as string;
-        const from = args.from as string;
-        const to = (args.to as string) ?? undefined;
-        const d = await diffDrafts(p, path, { from, to });
-        return JSON.stringify({ ok: true, path, from, to: to ?? "latest", counts: d.counts, changes: d.changes.slice(0, 100) });
-      }
-      case "snapshot_draft": {
-        const path = args.path as string;
-        const version = (args.version as string) ?? "工作区";
-        const snap = await resolveSnapshot(p, path, version);
-        return JSON.stringify({
-          ok: true, path, version,
-          nodes: snap.nodes.length, texts: snap.texts.length,
-          tokensUsed: snap.tokensUsed.length, branches: snap.branches.length,
-          props: snap.props,
-        });
-      }
-      case "get_changes_since": {
-        const since = args.since as string;
-        const path = (args.path as string) ?? undefined;
-        if (path) {
-          const d = await changesSince(p, path, since);
-          return JSON.stringify({ ok: true, path, since, counts: d.counts, changes: d.changes.slice(0, 100) });
-        }
-        const drafts = (await listDrafts(p)).map((a) => a.slice(p.dir.length + 1).split("\\").join("/"));
-        const rows = await projectChangesSince(p, drafts, since);
-        const changed = rows.filter((r) => r.diff && r.diff.changes.length > 0);
-        return JSON.stringify({
-          ok: true, since,
-          draftsScanned: rows.length,
-          draftsChanged: changed.length,
-          drafts: changed.map((r) => ({ path: r.path, counts: r.diff?.counts })),
-        });
-      }
-      case "revert_to": {
-        const file = args.file as string;
-        const version = args.version as string;
-        const r = await revertTo(p, file, version);
-        return JSON.stringify({ ok: true, written: r.write.written, newVersion: r.write.version, restored: r.restored });
-      }
 
       // ── 节点定位与属性编辑 ──
-      case "locate_node": {
-        const file = args.file as string;
-        const node = args.node as string;
-        const r = await locateNode(p, file, node);
-        return JSON.stringify({
-          ok: true, file, node, line: r.at.line, col: r.at.col, tag: r.tag,
-          slots: r.slots.map((s) => ({ kind: s.kind, name: s.name, value: s.value, editable: s.editable, note: s.note })),
-          inList: r.inList,
-        });
-      }
-      case "set_prop": {
-        const file = args.file as string;
-        const node = args.node as string;
-        const kind = args.kind as "style" | "attr" | "text";
-        const name = args.name as string;
-        const value = args.value as string;
-        const r = await setProp(p, file, node, kind, name, value);
-        return JSON.stringify({
-          ok: true, written: r.write.written, version: r.write.version,
-          newNode: r.newNode, bytesDelta: r.write.bytes,
-        });
-      }
 
       // ── 引用图谱 ──
-      case "list_references": {
-        const file = args.file as string | undefined;
-        const r = await listReferences(p, file);
-        return JSON.stringify({ ok: true, file: r.file ?? null, imports: r.imports, importedBy: r.importedBy, overview: r.overview?.slice(0, 30) });
-      }
 
       /* ── 格式转换（2026-10-18）。实现在能力注册表（`cap/convert.ts`），这里**只转调** ——
          MCP 面（通道 B 的本地 CLI、外部客户端）和插件面（`file.convert`）走的是同一件能力，
@@ -540,31 +399,23 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
     // 工具定义：把我们现有的 MCP 工具暴露给模型
     const tools: ToolDef[] = [
       { type: "function", function: { name: "get_project", description: "取项目配置与稿清单", parameters: { type: "object", properties: { project: { type: "string" } }, required: ["project"] } } },
-      { type: "function", function: { name: "list_drafts", description: "列出项目所有稿", parameters: { type: "object", properties: { project: { type: "string" } }, required: ["project"] } } },
-      { type: "function", function: { name: "search_tokens", description: "按路径或取值模糊检索 token", parameters: { type: "object", properties: { project: { type: "string" }, query: { type: "string" }, limit: { type: "number" } }, required: ["project", "query"] } } },
-      { type: "function", function: { name: "get_token", description: "取单个 token 全文", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" } }, required: ["project", "path"] } } },
-      { type: "function", function: { name: "list_components", description: "列出所有组件与页稿", parameters: { type: "object", properties: { project: { type: "string" } }, required: ["project"] } } },
-      { type: "function", function: { name: "get_component", description: "取组件契约或全文", parameters: { type: "object", properties: { project: { type: "string" }, name: { type: "string" }, mode: { type: "string", enum: ["contract", "full"] } }, required: ["project", "name"] } } },
-      { type: "function", function: { name: "read_draft", description: "读一份稿的源码（改稿前先读它）。返回的 HTML 里每个元素带 data-ud-node 地址，set_prop 就用这个地址", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string", description: "稿相对项目根的路径，如 测试.dc.html" } }, required: ["project", "path"] } } },
       { type: "function", function: { name: "list_files", description: "列一层目录里的所有文件（不只设计稿）。每项带 kind（dir/dc/md/image/code/html/other）、大小、快照号", parameters: { type: "object", properties: { project: { type: "string" }, dir: { type: "string", description: "相对项目根的子目录，不给就是项目根" } }, required: ["project"] } } },
       { type: "function", function: { name: "read_file", description: "读非设计稿的文件（.md / .json / .css / .svg…）。返回 content 与 sha256；改它之前先读，把 sha256 带回 write_file。二进制只给元数据", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" } }, required: ["project", "path"] } } },
       { type: "function", function: { name: "write_file", description: "写非设计稿的文件。写前用 expectSha256 校验（盘上被别人改过就拒绝），自动存快照可回退。不归一化、不动 frontmatter。.dc.html 会被拒，那个要用 write_draft", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, content: { type: "string", description: "整份新内容" }, expectSha256: { type: "string", description: "read_file 给的那个值；新建文件给 \"0\"" }, note: { type: "string", description: "这一版为什么改" } }, required: ["project", "path", "content"] } } },
       { type: "function", function: { name: "move_file", description: "改名 / 移动非设计稿的文件，并把稿里指向它的 href/src/url() 一起改掉", parameters: { type: "object", properties: { project: { type: "string" }, from: { type: "string" }, to: { type: "string" } }, required: ["project", "from", "to"] } } },
-      { type: "function", function: { name: "list_icons", description: "检索图标", parameters: { type: "object", properties: { project: { type: "string" }, query: { type: "string" }, limit: { type: "number" } }, required: ["project"] } } },
-      { type: "function", function: { name: "get_icon", description: "取图标 SVG", parameters: { type: "object", properties: { project: { type: "string" }, name: { type: "string" } }, required: ["project", "name"] } } },
-      { type: "function", function: { name: "get_syntax_guide", description: "取模板语义与写稿规则", parameters: { type: "object", properties: { topic: { type: "string", enum: ["template", "logic", "interaction", "checklist", "tokens"] } }, required: ["topic"] } } },
-      { type: "function", function: { name: "validate_draft", description: "静态校验一份稿，errors 非空=不该落盘", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" } }, required: ["project", "path"] } } },
-      { type: "function", function: { name: "write_draft", description: "整份写一份稿（唯一写入口），自动归一化/@ds展开/__resources注入/校验/快照", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, content: { type: "string" }, kind: { type: "string", enum: ["page", "component"] } }, required: ["project", "path", "content"] } } },
-      { type: "function", function: { name: "patch_draft", description: "按 {old,new} 增量替换稿中的文本", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, edits: { type: "array" } }, required: ["project", "path", "edits"] } } },
-      { type: "function", function: { name: "render_check", description: "真实渲染体检——唯一验收证据", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, width: { type: "number" }, height: { type: "number" } }, required: ["project", "path"] } } },
-      { type: "function", function: { name: "list_versions", description: "列出一份稿的版本序列", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" } }, required: ["project", "path"] } } },
-      { type: "function", function: { name: "diff_drafts", description: "两版之间的语义 diff（L1-L4 四级分类）", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, from: { type: "string" }, to: { type: "string" } }, required: ["project", "path", "from"] } } },
-      { type: "function", function: { name: "snapshot_draft", description: "取一份稿的语义快照", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, version: { type: "string" } }, required: ["project", "path"] } } },
-      { type: "function", function: { name: "locate_node", description: "把预览里点中的节点对回源码", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" }, node: { type: "string" } }, required: ["project", "file", "node"] } } },
-      { type: "function", function: { name: "set_prop", description: "改一个节点上的一处属性/样式/文本", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" }, node: { type: "string" }, kind: { type: "string", enum: ["style", "attr", "text"] }, name: { type: "string" }, value: { type: "string" } }, required: ["project", "file", "node", "kind", "name", "value"] } } },
-      { type: "function", function: { name: "revert_to", description: "把稿退回某一版（历史只增不改）", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" }, version: { type: "string" } }, required: ["project", "file", "version"] } } },
-      { type: "function", function: { name: "list_references", description: "查询稿件的引用关系（谁引用了我/我引用了谁）", parameters: { type: "object", properties: { project: { type: "string" }, file: { type: "string" } }, required: ["project"] } } },
-      { type: "function", function: { name: "get_changes_since", description: "跨版本净变更，回答「我实现的是 vX，现在最新 vY，我要改什么」", parameters: { type: "object", properties: { project: { type: "string" }, since: { type: "string" }, path: { type: "string" } }, required: ["project", "since"] } } },
+      /* ══════ 这三件是 M16-7b 换上来的通用版（2026-10-23，C3）══════
+       *
+       *  ⚠️⚠️ **摘掉 dc 那一套的时候，差点让模型丢掉一个它本来就有的能力。**
+       *  工具表里原来列的是 `list_versions` / `revert_to` —— 它们读的是
+       *  `snapDir` 里的 `v<N>.json`，也就是 **`write_draft` 存的语义快照**，
+       *  和第二条写入口存的 `s<N>` **是两套**（`files.ts` 明说不混）。
+       *  单纯摘掉它们，模型就没有「看版本 / 回退」的工具了 ——
+       *  **而那个能力对任何文件本来就有，只是工具表里列的是 dc 那一版。**
+       *  > **摘掉一件 dc 专属的工具之前，先问一句：它是不是某个通用能力的 dc 版？**
+       *  所以换上 `cap/` 里的通用三件。 */
+      { type: "function", function: { name: "list_file_versions", description: "这个文件存过哪些快照（版本号、时间、谁改的、备注）。改它之前想看历史就用它", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string", description: "相对项目根的文件路径" } }, required: ["project", "path"] } } },
+      { type: "function", function: { name: "read_file_version", description: "读某一版快照里存的原文，不动盘上那份。版本号用 list_file_versions 给的那个（形如 s3）", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, version: { type: "string", description: "快照号，形如 s3" } }, required: ["project", "path", "version"] } } },
+      { type: "function", function: { name: "revert_file", description: "把文件退回某一版。退回本身也会留一版快照，所以退错了还能再退回来", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string" }, version: { type: "string", description: "快照号，形如 s3" } }, required: ["project", "path", "version"] } } },
       { type: "function", function: { name: "list_convert_targets", description: "一个文件在这台电脑上能转成哪些格式。不能转的给 reason（如「没装 LibreOffice」）和 hint（安装命令），照实告诉用户；转之前先问它", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string", description: "相对项目根的文件路径" } }, required: ["project", "path"] } } },
       { type: "function", function: { name: "convert_file", description: "把项目里一个文件转成别的格式（图片 / 文档 / 表格 / 音视频）。成品放在源文件旁边、重名加「 (1)」、永不覆盖；返回 state / output（成品路径）/ error / note（有损提醒）/ via", parameters: { type: "object", properties: { project: { type: "string" }, path: { type: "string", description: "相对项目根的源文件路径" }, to: { type: "string", description: "目标格式，如 pdf / jpg / mp4 / docx" }, quality: { type: "number", description: "有损图片（jpg / heic / avif / webp）质量 1–100，可不给" } }, required: ["project", "path", "to"] } } },
       /* 插件动词（M13-1）：装了什么、授权到哪，表就长什么样 —— 没授权的只剩插件标了 free 的那几件（`doc/22` §3.3）。

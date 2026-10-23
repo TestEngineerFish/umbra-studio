@@ -35,6 +35,90 @@ import { indexDataFile } from "../statedirs.js";
 const p = (c: CapCtx) => c.project!;
 const rel = (c: CapCtx, file: string) => resolveDraft(p(c), file);
 
+/* ⚠️⚠️ **`list_drafts` 是甲组 12 件里唯一「前端还在调」的那一件，所以它留到 M16-7c。**
+ *
+ *  7b 第一版把它一起删了，而全套跑出来三个 app 判据红 —— 读数是
+ *  `404 /__ud/drafts`，而 `store/project.ts` 的 `fetchDrafts` 失败时会
+ *  `toast("获取稿件列表失败")`：**用户看得见的错误提示**，比一条 404 更糟。
+ *
+ *  ⚠️ 这推翻了我定 7b 边界时说的一句话 ——「工作台上的 dc 残留**点了不会 404**」。
+ *  `fetchDrafts` **不是一个入口**，它是**挂载时就调**的。
+ *  > **判断一个残留会不会坏，不能只看「用户能不能点到它」 ——
+ *  > 还要看「它会不会自己跑」。**
+ *
+ *  「稿」这个概念在前端还有五六处（`store.drafts` · `Workbench` 的页签 ·
+ *  `Sheets` 新建稿件弹窗查重名 · 目录视图的「N 份稿」），
+ *  要和它们一起删 —— 那是 7c 的事。
+ *  > **拆步骤的判准不是「这些代码是不是一类」，是「发出去那一版自洽不自洽」。** */
+/* ⚠️⚠️ **`build_index` 也留到 M16-7c，理由同 `list_drafts` —— 而我是按名字判断漏掉它的。**
+ *
+ *  7b 第一版把它删了，而全套跑出 `404 /__ud/rebuild_index`。
+ *  ⚠️ 我前面在 `doc/12` 里明确写过「`rebuild_index` 在服务端**还在**，只是重建一个空索引」
+ *  —— **那句话错了**：我删的是 `build_index`，而**它的 HTTP 路由名就叫 `rebuild_index`**。
+ *  我按名字不同以为它们是两件事。
+ *  > 能力名和路由名不一样是本项目的常态（`list_file_versions` → `file_versions`、
+ *  > `read_file` → `file`）—— 而我**用能力名去推断路由存不存在**。
+ *
+ *  前端两处在调它：`store/project.ts` 的 `fetchDrafts`（没索引时自动建一次）
+ *  和 `runCheck` 的收尾，还有工作台菜单里那颗「重建索引」。
+ *  和那一摊一起删 —— 7c 的事。 */
+defineCap({
+  name: "build_index", title: "生成项目入口页", scope: "project",
+  summary: "把项目里的稿生成一张入口页（带健康度与缩略图）。`renderCheck: true` 会对缺截图的稿跑渲染体检补缩略图 —— **那会开浏览器，慢**。",
+  input: {
+    renderCheck: z.boolean().optional().describe("对缺截图的稿跑渲染体检生成缩略图（慢）"),
+  },
+  /* HTTP 侧叫 `rebuild_index`（前端在用）。
+     ⚠️ MCP 侧原来还有个 `serve: true` 顺手起服务 —— **不搬**：
+     从界面调它时服务本来就开着，而「读一个东西顺手起个服务」是两件事挤在一个开关里。
+     模型要起服务用 `serve_start`。 */
+  http: { route: "rebuild_index", method: "POST" },
+  run: async ({ renderCheck }, c) => {
+    const proj = p(c);
+    /* ⚠️⚠️ **这道闸是 B3 的另一半，而它比 `open_project` 那一句更要紧**（2026-10-21）。
+       `open_project` 不再无条件建索引之后，前端 `store/project.ts` 那句
+       「`indexed` 为假就 `rebuild_index`」会**立刻把它补回来** ——
+       于是「打开目录零写入」在界面上根本不成立，而 HTTP 判据全绿
+       （`apitest` 只调 `open_project`，不调这一件）。
+       > **一道闸只守住一条路等于没守**（issue #75 原话）。闸要装在「真正动手的那一层」。
+
+       这件能力**就是**往项目里部署壳与运行时的那条路（MCP 面也走它），
+       所以判准放在这里，三个门面一起守住。 */
+    if (!isDesignProject(proj.dir)) {
+      throw new ToolError(err(X.BAD_INPUT, proj.rel, { kind: "path", name: proj.dir },
+        "这个目录还没接管为设计项目，不建索引",
+        { fix: "建索引会往这个目录里放预览壳与运行时副本（约 780 KB）。要用的话先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`）。只看文件不需要它。" }));
+    }
+    const url = c.port ? `http://127.0.0.1:${c.port}/` : null;
+    const r = await buildIndex(proj, url, { renderCheck });
+    return envelope(r, [], { drafts: r.drafts, ...r.byHealth });
+  },
+});
+
+defineCap({
+  name: "list_drafts", title: "列出项目里的稿", scope: "project",
+  summary: "文件名 + 索引里算好的类型 / 健康 / 元素数 / 版本。**读的是索引缓存，不现场校验** —— 几十份稿现场校验太慢。没建过索引就只有文件名。",
+  input: {},
+  http: { route: "drafts", method: "GET" },
+  run: async (_i, c) => {
+    const proj = p(c);
+    const files = (await listDrafts(proj)).map((a) => relative(proj.dir, a).split(sep).join("/")).filter((x) => !isToolPage(x));
+    let indexed: Record<string, unknown> = {};
+    const dataFile = indexDataFile(proj.dir);
+    if (existsSync(dataFile)) {
+      try {
+        const data = JSON.parse(await readFile(dataFile, "utf8")) as { drafts?: Array<{ file: string }> };
+        for (const d of data.drafts ?? []) indexed[d.file] = d;
+      } catch { indexed = {}; }
+    }
+    return envelope({
+      project: proj.name, title: proj.title, files,
+      drafts: files.map((f) => ({ file: f, ...(indexed[f] as object | undefined ?? {}) })),
+      indexed: Object.keys(indexed).length > 0,
+    }, [], { count: files.length });
+  },
+});
+
 defineCap({
   name: "list_versions", title: "列出一份稿的版本", scope: "project",
   summary: "列快照版本序列（v1、v2 …）以及项目有没有 git 兜底。版本在每次 write_draft 落盘时递增，**按稿独立计数**。",
@@ -49,19 +133,6 @@ defineCap({
   },
 });
 
-defineCap({
-  name: "snapshot_draft", title: "取一份稿的语义快照", scope: "project",
-  summary: "把 .dc.html 抽成归一化的语义快照（props / state / 状态分支 / 列表 / 子组件 / 用到的 token / 文案 / 节点与指纹）。write_draft 会自动存，这件用来看某一版的内容。",
-  input: { file: z.string(), version: z.string().optional().describe("v<N> / git ref / 「工作区」。默认「工作区」") },
-  http: { route: "snapshot", method: "GET" },
-  run: async ({ file, version }, c) => {
-    const snap = await resolveSnapshot(p(c), await rel(c, file), version ?? "工作区");
-    return envelope(snap, [], {
-      nodes: snap.nodes.length, texts: snap.texts.length,
-      tokensUsed: snap.tokensUsed.length, branches: snap.branches.length,
-    });
-  },
-});
 
 defineCap({
   name: "list_changes", title: "一份稿的版本与变更", scope: "project",
@@ -112,29 +183,6 @@ defineCap({
   },
 });
 
-defineCap({
-  name: "list_drafts", title: "列出项目里的稿", scope: "project",
-  summary: "文件名 + 索引里算好的类型 / 健康 / 元素数 / 版本。**读的是索引缓存，不现场校验** —— 几十份稿现场校验太慢。没建过索引就只有文件名。",
-  input: {},
-  http: { route: "drafts", method: "GET" },
-  run: async (_i, c) => {
-    const proj = p(c);
-    const files = (await listDrafts(proj)).map((a) => relative(proj.dir, a).split(sep).join("/")).filter((x) => !isToolPage(x));
-    let indexed: Record<string, unknown> = {};
-    const dataFile = indexDataFile(proj.dir);
-    if (existsSync(dataFile)) {
-      try {
-        const data = JSON.parse(await readFile(dataFile, "utf8")) as { drafts?: Array<{ file: string }> };
-        for (const d of data.drafts ?? []) indexed[d.file] = d;
-      } catch { indexed = {}; }
-    }
-    return envelope({
-      project: proj.name, title: proj.title, files,
-      drafts: files.map((f) => ({ file: f, ...(indexed[f] as object | undefined ?? {}) })),
-      indexed: Object.keys(indexed).length > 0,
-    }, [], { count: files.length });
-  },
-});
 
 defineCap({
   name: "list_references", title: "查询稿件的引用关系", scope: "project",
@@ -144,57 +192,6 @@ defineCap({
   run: async ({ file }, c) => envelope(await listReferences(p(c), file)),
 });
 
-defineCap({
-  name: "build_index", title: "生成项目入口页", scope: "project",
-  summary: "把项目里的稿生成一张入口页（带健康度与缩略图）。`renderCheck: true` 会对缺截图的稿跑渲染体检补缩略图 —— **那会开浏览器，慢**。",
-  input: {
-    renderCheck: z.boolean().optional().describe("对缺截图的稿跑渲染体检生成缩略图（慢）"),
-  },
-  /* HTTP 侧叫 `rebuild_index`（前端在用）。
-     ⚠️ MCP 侧原来还有个 `serve: true` 顺手起服务 —— **不搬**：
-     从界面调它时服务本来就开着，而「读一个东西顺手起个服务」是两件事挤在一个开关里。
-     模型要起服务用 `serve_start`。 */
-  http: { route: "rebuild_index", method: "POST" },
-  run: async ({ renderCheck }, c) => {
-    const proj = p(c);
-    /* ⚠️⚠️ **这道闸是 B3 的另一半，而它比 `open_project` 那一句更要紧**（2026-10-21）。
-       `open_project` 不再无条件建索引之后，前端 `store/project.ts` 那句
-       「`indexed` 为假就 `rebuild_index`」会**立刻把它补回来** ——
-       于是「打开目录零写入」在界面上根本不成立，而 HTTP 判据全绿
-       （`apitest` 只调 `open_project`，不调这一件）。
-       > **一道闸只守住一条路等于没守**（issue #75 原话）。闸要装在「真正动手的那一层」。
-
-       这件能力**就是**往项目里部署壳与运行时的那条路（MCP 面也走它），
-       所以判准放在这里，三个门面一起守住。 */
-    if (!isDesignProject(proj.dir)) {
-      throw new ToolError(err(X.BAD_INPUT, proj.rel, { kind: "path", name: proj.dir },
-        "这个目录还没接管为设计项目，不建索引",
-        { fix: "建索引会往这个目录里放预览壳与运行时副本（约 780 KB）。要用的话先「接管为设计项目」（界面上工作台顶部那条横条，或 `adopt_project`）。只看文件不需要它。" }));
-    }
-    const url = c.port ? `http://127.0.0.1:${c.port}/` : null;
-    const r = await buildIndex(proj, url, { renderCheck });
-    return envelope(r, [], { drafts: r.drafts, ...r.byHealth });
-  },
-});
-
-defineCap({
-  name: "get_index_data", title: "只取索引数据，不落盘", scope: "project",
-  summary: "按 `doc/08` S1 的数据契约返回稿件清单，**不写任何文件**。要自己渲染索引页的调用方用它，别用 build_index（那个会落盘）。",
-  input: {},
-  http: { route: "index_data", method: "GET" },
-  run: async (_i, c) => {
-    const d = await collectIndex(p(c));
-    return envelope(d, [], { drafts: d.drafts.length });
-  },
-});
-
-defineCap({
-  name: "index_status", title: "索引是不是过期了", scope: "project",
-  summary: "上次建索引之后有没有稿改过。S1 顶上那条「索引过期」横条读它。",
-  input: {},
-  http: { route: "index_status", method: "GET" },
-  run: async (_i, c) => envelope(await indexStatus(p(c))),
-});
 
 /* ── 评论：钉在节点上的一句话（M6-2）。存 `.umbrastudio/comments.json` ── */
 

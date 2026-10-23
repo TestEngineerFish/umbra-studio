@@ -915,12 +915,22 @@ export async function readSnapshotContent(p: Project, rel: string, version: stri
 }
 
 /** 回到某一版：把那一版的原文当新内容写一遍（历史不删，回退本身也留一版）。 */
-export async function revertFile(p: Project, rel: string, version: string): Promise<WriteFileResult> {
+/** 把一个文件退回某一版。
+ *
+ *  ⚠️⚠️ **`origin` 2026-10-23（M16-7b）从写死改成参数。**
+ *  原来这里是 `{ origin: "人手改" }` —— 而那是 M11-7（四）那一批
+ *  「把『谁改的』从写死的 `"人手改"` 改成 `originOf(via)`」时**漏掉的一处**。
+ *  它今天没暴露，是因为**只有界面在调它**（界面上点回退确实是人手改）。
+ *  而 7b 把「回退」交给了 AI（chat 工具表换上通用版），
+ *  于是那个写死立刻变成一条**假记录**：AI 回退的那一版会写「人手改」。
+ *  > **一个写死的值，在只有一个调用者的时候看不出错。**
+ *  不给就还是「人手改」（界面那条路一个字不用改）。 */
+export async function revertFile(p: Project, rel: string, version: string, origin: VersionOrigin = "人手改"): Promise<WriteFileResult> {
   /* ⚠️ **按字节取**（#108）：原来走 `readSnapshotContent`（utf8），
      于是「退回上一版」对任何二进制文件都是静默损坏 —— 退完文件还在、打不开。
      这是 #108 之前就有的缺陷，只是没人退过图片。 */
   const old = await readSnapshotBytes(p, rel, version);
-  const r = await writeAnyFile(p, rel, old, { origin: "人手改", note: `回到 ${version}` });
+  const r = await writeAnyFile(p, rel, old, { origin, note: `回到 ${version}` });
   r.steps.unshift(`取 ${version} 的原文`);
   return r;
 }

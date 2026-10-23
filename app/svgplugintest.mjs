@@ -77,6 +77,10 @@ const pg = await br.newPage({ viewport: { width: 1440, height: 900 } });
 const errs = [];
 pg.on("console", (m) => { if (m.type() === "error") errs.push(m.text().slice(0, 200)); });
 pg.on("pageerror", (e) => errs.push("pageerror: " + String(e).slice(0, 200)));
+/* ⚠️ **把 4xx 的「哪一个请求」抓出来** —— 「Failed to load resource: 404」这句话
+   本身不说是谁，而「控制台干净」红了之后没有这个就无从下手（照 `uitest` 的 `bad4xx`）。 */
+const bad4xx = [];
+pg.on("response", (r) => { if (r.status() >= 400) bad4xx.push(`${r.status()} ${r.url().replace(/token=[^&]*/, "token=…").slice(-80)}`); });
 let pass = 0, fail = 0;
 const ok = (c, what, d = "") => { if (c) { pass++; console.log(`  ✓ ${what}${d ? " — " + d : ""}`); } else { fail++; console.log(`  ✗ ${what}${d ? " — " + d : ""}`); } };
 
@@ -199,6 +203,7 @@ const realAfter = existsSync(realWorkspace) ? readFileSync(realWorkspace, "utf8"
 ok(realBefore === realAfter, "真实的「最近打开」一个字节没碰（全程用临时 STATE_ROOT）");
 const real = errs.filter((e) => !/favicon|ERR_ABORTED|attribute d: Expected moveto/i.test(e));
 ok(real.length === 0, "控制台没有别的报错", real.slice(0, 2).join(" | "));
+ok(bad4xx.length === 0, "**没有 4xx 请求**（有的话把是哪一个打出来）", [...new Set(bad4xx)].slice(0, 3).join(" · "));
 await br.close();
 try { await srv.stop?.(); } catch { /* 没有 stop 就算了，进程退出会带走它 */ }
 await rm(STATE, { recursive: true, force: true });

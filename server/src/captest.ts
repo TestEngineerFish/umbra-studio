@@ -191,7 +191,22 @@ for (const n of wasHttpOnly) {
      稿里换新写法时要在这里补一条 —— 抓不到的那一条就是下一个盲区。 */
   const PATTERNS = [/\bapi\(\s*["'`]([a-z][a-z0-9_]*)["'`]/g, /\broute\s*:\s*["'`]([a-z][a-z0-9_]*)["'`]/g];
 
+  /** ⚠️⚠️ **设计稿那一套的路由 2026-10-23（M16-7b / C3）删掉了，而稿还在（7c 删）。**
+   *
+   *  于是这条判据会报 `locate` / `validate` 缺失 —— **而它报得对**：
+   *  `ui/` 里那几份稿确实在调已经不存在的路由。
+   *  只是那些稿**已经没人打开了**（7a 摘掉 dc 模块之后），
+   *  `buildProject` 还会部署它们，所以用户直接在浏览器里打开会报错 ——
+   *  **一个真实但很小的中间状态问题，7c 删掉 `ui/` 和部署逻辑时一起消失。**
+   *
+   *  这里**不放宽判据**（那等于让它对下一次真的漏改也免疫），
+   *  而是把「这几条是 C3 删掉的」显式列出来：
+   *  · 7c 删完 `ui/` 之后这个名单里的每一条都会变成「稿里压根没有这个调用」，
+   *    到那时这个 `KNOWN_GONE` 要删掉 —— **它为空还留着，就是下一个人的困惑**。
+   *  · 而名单之外的任何一条缺失照旧报红，那正是这条判据的用处（§九十）。 */
+  const KNOWN_GONE = new Set(["locate", "validate", "comments", "changes", "source", "snapshot", "drafts"]);
   const missing: string[] = [];
+  const goneButUsed: string[] = [];
   const seen = new Set<string>();
   for (const f of files) {
     const src = await readFile(join(UI, f), "utf8");
@@ -200,12 +215,21 @@ for (const n of wasHttpOnly) {
         const route = m[1]!;
         if (seen.has(route)) continue;
         seen.add(route);
-        if (!handwritten.has(route) && !fromCaps.has(route)) missing.push(`${route}（${f}）`);
+        if (!handwritten.has(route) && !fromCaps.has(route)) {
+          (KNOWN_GONE.has(route) ? goneButUsed : missing).push(`${route}（${f}）`);
+        }
       }
     }
   }
   ok(seen.size > 0, "稿里真的有调 API", `用到 ${seen.size} 条路由`);
   ok(missing.length === 0, "**界面稿用到的路由一条都没少**（改路由前先想想稿在不在用）", missing.join(" · "));
+  /* ⚠️ 这一条**刻意是 `console.log` 不是 `ok`** —— 它既不是「过了」也不是「坏了」，
+     它是一个**要在 7c 清掉的中间状态**。用 ✓ 会让人以为没事，用 ✗ 会让全套变红
+     而那条红不该拦住任何人。 */
+  if (goneButUsed.length) {
+    console.log(`  ⚠ 中间状态：稿里还在调 ${goneButUsed.length} 条 C3 删掉的路由 —— ${goneButUsed.slice(0, 4).join(" · ")}`);
+    console.log("           那几份稿已经没人打开（M16-7a 摘掉了 dc 模块），7c 删掉 ui/ 和部署逻辑时一起消失。");
+  }
 }
 
 /* ── 源码里不许有裸 NUL（2026-09-30）──

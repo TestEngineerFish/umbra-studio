@@ -490,7 +490,9 @@ defineCap({
   summary: "回退**也是一次写** —— 会先给当前内容存一版快照，所以回错了还能再回来。",
   input: { path: z.string(), version: z.string() },
   http: { route: "file_revert", method: "POST" },
-  run: async ({ path, version }, c) => envelope(await revertFile(p(c), path, version)),
+  /* ⚠️ `originOf(c.via)` 要传进去 —— 不传的话 AI / 插件回退的那一版都会记成「人手改」
+     （那是 M11-7（四）漏掉的一处，M16-7b 补的）。 */
+  run: async ({ path, version }, c) => envelope(await revertFile(p(c), path, version, originOf(c.via))),
 });
 
 /* ════ 草稿暂存（M10-2c）════
