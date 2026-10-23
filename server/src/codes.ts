@@ -42,6 +42,15 @@ export const X = {
   DRAFT_NOT_FOUND: "E_DRAFT_NOT_FOUND",
   SNAPSHOT_MISSING: "E_SNAPSHOT_MISSING",
   BAD_INPUT: "E_BAD_INPUT",
+  /** 这个目录还没解锁（M14-7 / Q70），所以一个字节都不写。
+   *
+   *  ⚠️ **2026-10-23 从 `E_IO` 拆出来**（M16-1 的判据抓到的）：两条写入口原来都用 `E_IO`，
+   *  而「这个目录还没解锁」**不是一个 IO 错误** —— 它是一个状态问题，而且**有出路**
+   *  （点「开始编辑」）。用 `E_IO` 的后果在插件那一侧：
+   *  **「不让写」和「磁盘满了」对插件长得一样**，于是它没法按码分支，
+   *  只能把拒因原文抛给用户。
+   *  > **一个通用错误码会把「有出路的拒绝」和「真的出错了」混成一件事。** */
+  NOT_EDITABLE: "E_NOT_EDITABLE",
   IO: "E_IO",
 } as const;
 

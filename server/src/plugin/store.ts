@@ -1,6 +1,6 @@
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { STATE_ROOT, TOOL_ROOT } from "../project.js";
 import { checkManifest, type PluginManifest } from "./manifest.js";
 import { verifyInstalled } from "./pack.js";
@@ -25,7 +25,22 @@ export const PLUGINS_DIR = join(STATE_ROOT, ".umbrastudio", "plugins");
  *  ⚠️ 它在 `TOOL_ROOT` 而不是 `STATE_ROOT` —— 打包后那是 `.app` 里的**只读**位置，
  *  正好对：内置插件本来就不该能删能改。用户买的插件才进 `STATE_ROOT`（可写）。
  *  **两个 root 混了在开发模式下测不出来**（开发时都可写，`00` §63.1 栽过）。 */
-export const BUNDLED_DIR = join(TOOL_ROOT, "plugins");
+/** ⚠️ **临时注入点，和 `BUNDLED_DIR` 本身同生共死。**
+ *
+ *  **删除条件**：M16-5 把内置插件这个概念整个去掉的时候，连 `BUNDLED_DIR` 一起删。
+ *
+ *  为什么要有它：M16-1 要钉住「**没装任何插件时 `.md` 给纯文本**」这条承诺，
+ *  而 `TOOL_ROOT` 是从 `server/dist/` 往上**硬算**两级 —— 于是
+ *  **「没装任何插件」这个状态在判据里压根造不出来**，除非真去动仓库里的 `plugins/`。
+ *  > **要测「没有 X 的时候会怎样」，先得有办法造出「没有 X」。**
+ *  > 这条判据缺的不是「有人想到」，是**那个状态没有旋钮**。
+ *
+ *  形式照 `STATE_ROOT` 的 `UMBRASTUDIO_STATE_DIR`（`project.ts:54`）—— 不是新模式。
+ *  ⚠️ 它**不是**「只有测试会走的产品分支」：和 `UMBRASTUDIO_STATE_DIR` / `UMBRASTUDIO_PUBKEY`
+ *  一样，它只是把一个本来就该可配的根变成可配的。产品行为一个字不变。 */
+export const BUNDLED_DIR = process.env.UMBRASTUDIO_BUNDLED_DIR
+  ? resolve(process.env.UMBRASTUDIO_BUNDLED_DIR)
+  : join(TOOL_ROOT, "plugins");
 
 export interface InstalledPlugin {
   manifest: PluginManifest;

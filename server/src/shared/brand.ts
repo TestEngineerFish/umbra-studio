@@ -84,6 +84,22 @@ export const studioNameEn = `${productNameEn} Studio`;
  *  它**不等于** `studioNameEn`：后者是文件名用的 ASCII 串，前者是给人看的。 */
 export const displayNameEn = `${productName} Studio`;
 
+/** **冻结的应用身份名** —— 它决定 `.app` 的文件名、`userData` 目录、TCC 授权与钥匙串归属。
+ *
+ *  ⚠️⚠️ **这一个不跟着改名动，永远。** 理由写在 `shell/package.json` 的 `_品牌说明` 里：
+ *  改了它，用户 `/Applications` 里会多一个孤儿，**已装的数据也会失联**
+ *  （userData 换了目录 = 登录、最近打开、插件、快照全部「不见了」）。
+ *  所以它和 `appId`（`com.umbrastudio.app`）是同一类东西：**身份，不是称呼。**
+ *
+ *  ⚠️ **为什么要在这里有一份**：2026-10-23 `captest` 那道品牌闸抓到
+ *  `plaintest.ts` 里硬写了一个 `"Umbra Studio"` 去拼 userData 路径 —— 而那个值**是对的**。
+ *  闸抓的不是值错，是**来源错**：一个「值对了但硬写着」的串，下次改名时照样过期，
+ *  而**没有任何东西会提醒**。
+ *  > **把「这个值为什么不能改」写在它旁边，比把它写对一次更有用。**
+ *
+ *  显示给人看的名字一律走 `studioName` / `displayNameEn`，**不读这一个**。 */
+export const appIdentityName = "Umbra Studio";
+
 /** 账号与服务那一族的名字（账号中心 / PC / iOS / Android / 服务端 / Console / 官网）。
  *
  *  ⚠️ **值是派生的，不是字面量** —— geek-99 2026-10-22 确认整个家族一起改名

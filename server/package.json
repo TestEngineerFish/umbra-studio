@@ -46,7 +46,8 @@
     "identitytest": "npm run build && node dist/identitytest.js",
     "purgetest": "npm run build && node dist/purgetest.js",
     "actxtest": "npm run build && node dist/actxtest.js",
-    "prefstest": "npm run build && node dist/prefstest.js"
+    "prefstest": "npm run build && node dist/prefstest.js",
+    "plaintest": "npm run build && node dist/plaintest.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",

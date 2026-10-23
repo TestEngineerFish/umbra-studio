@@ -86,7 +86,7 @@ async function gitHead(p: Project): Promise<string | null> {
  *  ⚠️ 拒因里要有**出路**，不然这就从「保护」变成「这个文件改不了」。 */
 function requireEditable(p: Project): void {
   if (isEditable(p.dir)) return;
-  throw new ToolError(err(X.IO, "", { kind: "path", name: p.dir },
+  throw new ToolError(err(X.NOT_EDITABLE, "", { kind: "path", name: p.dir },
     "这个目录还是只读预览",
     { fix: `这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 \`start_editing\`。版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。` }));
 }

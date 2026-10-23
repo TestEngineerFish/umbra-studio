@@ -576,7 +576,7 @@ export async function writeAnyFile(p: Project, rel: string, content: string | Bu
      **和 `write.ts` 那一道是同一件事的两条路** —— 两条写入口各装一道，
      装一条等于没装（#75）。拒因里的出路也要一样，不然两条路上说的话不一致。 */
   if (!isEditable(p.dir)) {
-    throw new ToolError(err(X.IO, normalizeRel(p, rel), { kind: "path", name: p.dir },
+    throw new ToolError(err(X.NOT_EDITABLE, normalizeRel(p, rel), { kind: "path", name: p.dir },
       "这个目录还是只读预览",
       { fix: `这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 \`start_editing\`。版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。` }));
   }

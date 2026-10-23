@@ -34,7 +34,25 @@ const p = (c: CapCtx) => c.project!;    // scope: "project" 的能力，门面�
  *  而用户看到的是「保存成功了，图打不开」。
  *  **静默损坏比报错糟得多**（§161.3「假成功」同一条）。 */
 function decodeContent(content: string, encoding?: "utf8" | "base64"): string | Buffer {
-  if (encoding !== "base64") return content;
+  /* ⚠️⚠️ **这里必须按白名单判，不能写 `if (encoding !== "base64") return content`**
+     （2026-10-23 核 Q80 时查出来的，而它不是 Q80 引入的 —— #108 那轮就埋下了）。
+     类型签名说 `encoding` 只有两个值，**而插件这条路不跑 zod**：
+     `plugin/host.ts` 最后一行是 `cap.run(input as never, …)`，
+     `gaptest` 里也写着「插件这条路不跑 zod，手工核」。
+     于是一个插件给 `"BASE64"` / `"b64"` / `0` 都能进来，
+     而 `!== "base64"` 会把它们**当 utf8 文本写进去** ——
+     **一张花掉的图片，而回执说写成功。**
+     > **「写坏了」和「没写」长得完全不一样，而前者更难发现**（#108 自己记着的那条）。
+     ⚠️ 修在这里而**不是**在 `hostCall` 里补一道 zod：问题是「插件这条路**一律**不跑 zod」，
+     只给这一条路加闸，下一件收 enum 的能力照样漏（#75「一道闸只守住一条路等于没守」同族）。
+     ⚠️ 判准是**白名单**（列出认的）而不是黑名单（列出不认的）——
+     黑名单的话「以后多一种 encoding」会被静默当 utf8，而**没有判据会红**（M14-3 那条）。 */
+  if (encoding === undefined || encoding === "utf8") return content;
+  if (encoding !== "base64") {
+    throw new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name: "encoding" },
+      `认不出的 encoding：${JSON.stringify(encoding)}`,
+      { fix: `encoding 只能不给、给 "utf8"（写文本）或给 "base64"（写二进制）。不给就是 utf8。` }));
+  }
   const clean = content.replace(/^data:[^,]*,/, "").trim();   // 顺手吃掉 data URL 前缀
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean.replace(/\s+/g, ""))) {
     throw new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name: "content" },

@@ -1,6 +1,6 @@
 import { allCaps } from "../cap/index.js";
 import type { Project } from "../project.js";
-import { envelope, err } from "../envelope.js";
+import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
 import type { Envelope } from "../envelope.js";
 import type { PluginManifest } from "./manifest.js";
@@ -91,6 +91,22 @@ export async function hostCall(ctx: HostCtx, name: string, input: unknown): Prom
   try {
     return await cap.run(input as never, { project: ctx.project, via: "plugin" });
   } catch (e) {
+    /* ⚠️ **`ToolError` 要原样往下传，不能重新包。**（2026-10-23 核 Q80 时量到的）
+       原来这里一律 `err(X.IO, …, e.message)`，于是 **`e.diagnostic` 整个被丢掉** ——
+       而它装着 `code`（具体错误码）、`locator`（出错的是哪个键）和 `fix`（出路）。
+       两层后果，第二层更糟：
+       ① 错误码一律降级成 `E_IO` → **插件没法按错误码分支**
+         （「这个目录还是只读预览」和「磁盘满了」对插件长得一样）；
+       ② `fix` 丢了 → **插件没法把出路转述给用户**。
+       实测：普通目录里插件写文件被 B3 的闸拒掉，插件拿到的是
+       「调 write_file 时出错：这个目录还是只读预览」而**出路是空的** ——
+       而那道闸在界面上是有出路的（「接管这个目录」）。
+       > **一个 catch 重新包装异常的时候，它决定了下游还能知道多少。**
+       > 这里的下游是插件，插件的下游是用户。
+       ⚠️ 非 `ToolError` 照旧包成 `E_IO`：那种是真的意外，没有出路可给。 */
+    if (e instanceof ToolError) {
+      return { ok: false, data: e.data ?? null, errors: [e.diagnostic], warnings: [], stats: {} };
+    }
     return envelope(null, [err(X.IO, "(plugin)", { kind: "key", name: ctx.manifest.id },
       `插件 ${ctx.manifest.id} 调 ${name} 时出错：${(e as Error).message}`)]);
   }
