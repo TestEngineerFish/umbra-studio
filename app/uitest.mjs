@@ -662,6 +662,35 @@ const barH = async (frame, id) => await frame.locator("#" + id).evaluate((el) =>
   return st.display === "none" ? 0 : Math.round(el.getBoundingClientRect().height);
 }).catch(() => -1);
 
+/** 插件 SDK 公共件（`kit.mjs` v1.2）那条横条的高度。
+ *
+ *  ⚠️⚠️ **2026-10-23 加的，而它修的是 36 条红着一整天的判据。**
+ *  插件 1.3.0 把未落盘 / 草稿 / 撞车横条搬进了 SDK 的公共件，它自己的注释写着
+ *  「**v1.1 自画的未落盘横条、草稿横条、查找 / 替换面板都删了**」——
+ *  于是 `#dirty` / `#draft` 这两个 id **全插件零命中**，而 `barH` 对找不到的元素回 `-1`。
+ *  症状：`{"dirty":-1,"ro":0,"draft":-1}`，看着像「横条坏了」，其实是**判据在找一个
+ *  已经改名的东西**。三个插件的文件时间是 10-22 13:54（sync 进来那一刻），
+ *  而 7a / 7b 两批都正当地报了「其余 26 套退出码全 0」—— `uitest` 不在那 26 套里。
+ *  > **一套要「另开一个终端起服务」才能跑的判据，会在最需要它的那几天被跳过。**
+ *
+ *  ⚠️ **三条横条现在是同一个元素**（`.uk-bar`，三种态轮流用它，`bar.replaceChildren()`），
+ *  所以只能靠**它写的那句话**认出是哪一档 —— 这也是为什么这个 helper 收的是一个词。
+ *  ⚠️ 认不到就回 **0**（不是 -1）：那条 bar 在干净状态下 `hidden` 且 `childElementCount === 0`，
+ *  「不存在」和「0 高度」对这一族判据是同一件事（它们问的都是「占不占地方」）。
+ *
+ *  ⏳ geek-99 2026-10-23 已让 plugins 在 SDK 里加一份「宿主判据可以依赖的稳定选择器」契约
+ *  （`data-kit-*`，写进 PLUGIN-SPEC）。**契约出来之后这个 helper 改成读属性，别再认文字** ——
+ *  认文字的判据会在插件改一句文案时红。 */
+const KIT_WORDS = { dirty: "未落盘", draft: "草稿", conflict: "被别处改了" };
+const kitBarH = async (frame, kind) => {
+  const bar = frame.locator(".uk-bar").filter({ hasText: KIT_WORDS[kind] });
+  if (await bar.count() === 0) return 0;
+  return await bar.first().evaluate((el) => {
+    const st = getComputedStyle(el);
+    return st.display === "none" || el.hidden ? 0 : Math.round(el.getBoundingClientRect().height);
+  }).catch(() => 0);
+};
+
 /** 等目录列里出现某个名字 —— **轮询，不是定时等**（2026-10-06）。
  *
  *  ⚠️ 原来这些地方一律 `await pg.waitForTimeout(1200)` 然后**一次性**看一眼，
@@ -2735,8 +2764,14 @@ console.log("\n插件 UI 的边界（M11-4）");
             await pg.keyboard.press("End");
             await pg.keyboard.type("\n// 改了一行");
             await pg.waitForTimeout(600);
-            const barTxt = (await codeFrame.locator("#dirty:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
-            ok(/还没落盘/.test(barTxt), "**打字之后出未落盘横条**（带前后行数）", barTxt.slice(0, 50));
+            /* ⚠️ **两处跟着 kit v1.2 改了，而第二处是一个功能少了，照实记。**
+               ① 选择器：`#dirty` → `.uk-bar` 带「未落盘」（那个 id 全插件零命中了）。
+               ② 文案：v1.1 写「还没落盘」**并带前后行数**，kit v1.2 的只写「未落盘」+ 两颗钮。
+                  行数那一半**没了**，不是我们这边改的 —— 已在回执里报给 plugins 侧。
+               > **判据跟着被测的东西改，但「少了什么」要说出来**，
+               > 否则「判据放宽了」和「功能缩水了」在读数上长得一模一样。 */
+            const barTxt = (await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).innerText().catch(() => "")).replace(/\s+/g, " ");
+            ok(/未落盘/.test(barTxt), "**打字之后出未落盘横条**（⚠️ kit v1.2 起不再带前后行数）", barTxt.slice(0, 50));
             /* 改过的行有标记（S18 §一.1）：行底 warn-soft + 左边一道竖线。
                ⚠️ **必须在落盘之前读**。第一版放在 ⌘S 之后，一直是 0 ——
                落盘后 `disk` 换成新的那一版，「改过的行」自然就空了，**标记清空是对的行为**。
@@ -2747,16 +2782,19 @@ console.log("\n插件 UI 的边界（M11-4）");
             /* ⌘S 落盘 —— 挂在 window 上而不是 CM 的 keymap 里（点了横条上的钮再按也要生效） */
             await pg.keyboard.press("Meta+s");
             await pg.waitForTimeout(2200);
-            ok(await codeFrame.locator("#dirty:not([hidden])").count() === 0, "落盘之后横条收起来了");
+            ok(await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).count() === 0, "落盘之后横条收起来了");
             /* 同一件事量两次：属性（上面那条）+ **真实高度**（这一条）。
                只有后者能抓住「属性设了而 CSS 没让它消失」。 */
-            ok(await barH(codeFrame, "dirty") === 0,
+            ok(await kitBarH(codeFrame, "dirty") === 0,
                "**而且它真的不占高度了**（只看 `hidden` 属性会漏掉 CSS 盖过它的情况）",
-               `高 ${await barH(codeFrame, "dirty")}px`);
+               `高 ${await kitBarH(codeFrame, "dirty")}px`);
             {
-              const hs = { dirty: await barH(codeFrame, "dirty"), ro: await barH(codeFrame, "ro"), draft: await barH(codeFrame, "draft") };
-              ok(hs.dirty === 0 && hs.ro === 0 && hs.draft === 0,
-                 "**干净文件上三条横条一条都不占高度**（原来三条空条压着编辑器 109px）", JSON.stringify(hs));
+              /* ⚠️ **三条横条 kit v1.2 之后是同一个元素**，所以这条判据的形状跟着变了：
+                 原来量三个独立元素，现在量「那一条 bar 在任何一档上都不占地方」+「只读条」。
+                 > **判据的形状要跟着被测的东西变，而不是硬找三个已经不存在的 id。** */
+              const hs = { kit_dirty: await kitBarH(codeFrame, "dirty"), kit_draft: await kitBarH(codeFrame, "draft"), ro: await barH(codeFrame, "ro") };
+              ok(hs.kit_dirty === 0 && hs.kit_draft === 0 && hs.ro === 0,
+                 "**干净文件上横条一条都不占高度**（原来三条空条压着编辑器 109px）", JSON.stringify(hs));
             }
             /* **盘上真的变了吗** —— 这条才是落盘的证据 */
             const onDisk = await pg.evaluate(async ({ name }) => {
@@ -2806,7 +2844,7 @@ console.log("\n插件 UI 的边界（M11-4）");
               await pg.keyboard.press("End");
               await pg.keyboard.type("\n// 为了测拦截而改的一行");
               await pg.waitForTimeout(700);
-              ok(await codeFrame.locator("#dirty:not([hidden])").count() > 0, "（前置）先把它改脏，才测得到拦截");
+              ok(await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).count() > 0, "（前置）先把它改脏，才测得到拦截");
 
               /* ⚠️ 关闭钮 **dirty 时要 hover 才显示**（`hidden group-hover:grid`）——
                  未保存那颗点占着它的位置，这是编辑器通行的写法。
@@ -2833,7 +2871,7 @@ console.log("\n插件 UI 的边界（M11-4）");
               await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click();
               await pg.waitForTimeout(500);
               ok(await tabOf().count() > 0, "「回去接着改」之后页签还在");
-              ok(await codeFrame.locator("#dirty:not([hidden])").count() > 0, "「回去接着改」之后改动也还在");
+              ok(await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).count() > 0, "「回去接着改」之后改动也还在");
               /* ② 落盘再关 —— 盘上要真的变了，页签要没了 */
               await openGuard();
               await pg.locator('[role="alertdialog"] button:has-text("落盘再关")').click();
@@ -2879,8 +2917,16 @@ console.log("\n插件 UI 的边界（M11-4）");
             await pg.waitForTimeout(1000);
             await pg.keyboard.press("Meta+s");
             await pg.waitForTimeout(2000);
-            const stillDirty = await codeFrame.locator("#dirty:not([hidden])").count() > 0;
-            ok(stillDirty, "**盘上被别人改过时落盘被拒**（横条还在，改动没被静默丢掉）");
+            /* ⚠️⚠️ **这一条问的不是「未落盘」那一档，而是「改动没被静默丢掉」。**
+               kit v1.2 把三条横条合并成一个 `.uk-bar`，而撞车态写的是
+               「盘上的文件被别处改了，而这里还有没落盘的改动」—— **不含「未落盘」三个字**。
+               （v1.1 是两个独立元素，所以 `#dirty` 当时还在。）
+               我机械替换选择器时把这一条也换成了 `hasText: "未落盘"`，**那等于悄悄改掉了判准**。
+               > **一个合并了三种态的元素，判据要问的是「它现在在哪一档」，
+               > 而不是「某个 id 在不在」。** */
+            const barTxtNow = (await codeFrame.locator(".uk-bar:not([hidden])").first().innerText().catch(() => "")).replace(/\s+/g, " ");
+            const stillDirty = /未落盘|被别处改了/.test(barTxtNow);
+            ok(stillDirty, "**盘上被别人改过时落盘被拒**（横条还在，改动没被静默丢掉）", barTxtNow.slice(0, 54) || "（横条没了）");
           } else ok(false, "`.ts` 样本建好了但树里没刷出来");
           } finally {
             /* ⚠️ **切走之前先落盘** —— 2026-09-29 加了「切文件也拦」之后，
@@ -2894,9 +2940,19 @@ console.log("\n插件 UI 的边界（M11-4）");
                「放弃」那颗钮是插件自己的，一定生效。 */
             {
               const cf = pg.frameLocator('iframe[data-role="body"]');
-              if (await cf.locator("#dirty:not([hidden])").count().catch(() => 0) > 0) {
-                await cf.locator("#discard").click().catch(() => {});
-                await pg.waitForTimeout(600);
+              /* ⚠️⚠️ **`#discard` 这个 id 在 kit v1.2 里没了**（按钮是 `btn("放弃改动")` 建的，没有 id）——
+                 而 `.catch(() => {})` 把点击失败吃掉了，于是**脏状态留着**：
+                 下一次点文件弹确认卡、遮罩挡住后面所有点击，而报错指向下一节里的一行。
+                 这就是那 36 条红里一大片的**级联源头**，也是整套最后那个
+                 `TimeoutError: waiting for locator('#discard')` 的出处（3730 行那处没有 catch）。
+                 > **一个被 catch 吞掉的点击失败，症状会出现在下一节。**
+                 按文字点：撞车态是「用盘上的（丢掉我的）」，未落盘态是「放弃改动」。 */
+              const bar = cf.locator(".uk-bar:not([hidden])");
+              if (await bar.count().catch(() => 0) > 0) {
+                for (const label of ["用盘上的（丢掉我的）", "放弃改动", "丢掉草稿"]) {
+                  const b = bar.locator(`button:has-text("${label}")`);
+                  if (await b.count().catch(() => 0) > 0) { await b.first().click().catch(() => {}); await pg.waitForTimeout(600); break; }
+                }
               }
             }
 
@@ -3689,7 +3745,15 @@ console.log("\n插件 UI 的边界（M11-4）");
                          草稿那一段当场红了 6 条，而根因在这里。
                          「自己建的样本自己清」的延伸 —— **留一个脏编辑器比留一个文件更隐蔽**，
                          文件收尾扫得到，脏状态只会表现成别人的判据红。 */
-                      await bf.locator("#discard").click();
+                      /* ⚠️ `#discard` 在 kit v1.2 里没了（见上面那段）。
+                         **这一处原来没有 `.catch`，所以整套在这里抛** —— 而抛出点
+                         和真正的原因隔着好几节。按文字点，并且**点不到就说出来**
+                         （静默跳过的话，后面那几条又会红在一个和它们无关的原因上）。 */
+                      {
+                        const db = bf.locator(".uk-bar:not([hidden])").locator('button:has-text("放弃改动")');
+                        if (await db.count().catch(() => 0) > 0) await db.first().click().catch(() => {});
+                        else console.log("  ⚠ 这一步没点到「放弃改动」—— kit 的横条没出来或文案变了，下面几条可能受影响");
+                      }
                       await pg.waitForTimeout(600);
                     } else ok(false, "坏 json 样本建好了但树里没刷出来");
                     await pg.evaluate(async ({ name }) => {
@@ -3803,7 +3867,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                   ok(/在 s1 上改的/.test(bar) && /已经变成 s2/.test(bar),
                      "**说清「草稿在哪一版、盘上已经是哪一版」**（不是只说「过期了」）", bar.slice(0, 80));
                   ok(await cf.locator("#draft.stale").count() === 1, "底稿变过时横条走 warn 态（和「有东西等着你」区分开）");
-                  ok(await barH(cf, "draft") > 10, "**横条真占了高度**（只看 hidden 属性会漏掉 CSS 盖过它）", `高 ${await barH(cf, "draft")}px`);
+                  ok(await kitBarH(cf, "draft") > 10, "**横条真占了高度**（只看 hidden 属性会漏掉 CSS 盖过它）", `高 ${await kitBarH(cf, "draft")}px`);
                   /* ⚠️ 这一条是形制的核心 */
                   ok(await cf.locator("#draftRestore").isVisible() === false,
                      "**底稿变过就不给「恢复」**（直接恢复会静默盖掉别人的改动）");
@@ -3842,7 +3906,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                   ok((done.v.data?.snapshots?.length ?? 0) === 3,
                      "**覆盖前那一版还在**（它就是一次写，走写入口存旧版）", `${done.v.data?.snapshots?.length} 版`);
                   ok(done.d.data?.has === false, "覆盖之后草稿清掉了（不留一条在说已经做完的事的提示）");
-                  ok(await barH(cf, "draft") === 0, "横条收起来了，而且不占高度");
+                  ok(await kitBarH(cf, "draft") === 0, "横条收起来了，而且不占高度");
                 } else ok(false, "草稿样本建好了但树里没刷出来");
                 /* 自己建的自己清 */
                 await pg.evaluate(async ({ name }) => {
@@ -4832,16 +4896,19 @@ console.log("\n CRLF / LF 原样往返（issue #66）");
     await clearGuard();
     const fr = pg.frameLocator('iframe[data-role="body"]');
     /* ① 打开就不该脏 —— 用真实高度量，不看 `hidden` 属性（§七十二 那条） */
-    const h = await barH(fr, "dirty");
+    const h = await kitBarH(fr, "dirty");
     ok(h === 0, `**${c.label}：一打开不说「还没落盘」**（用户一个字都没改）`,
-       h === 0 ? "横条 0px" : `✗ 横条 ${h}px，写的是「${(await fr.locator("#note").innerText().catch(() => "")).trim()}」`);
+       /* ⚠️ `#note` 这个 id 在 kit v1.2 里也没了 —— 它只出现在**失败时的 detail** 里，
+          所以不改判准也不会红，只会让读数少一句「它到底写的什么」。
+          > **一个只在 detail 里用的选择器失效，症状是「红了但说不清为什么红」。** */
+       h === 0 ? "横条 0px" : `✗ 横条 ${h}px，写的是「${(await fr.locator(".uk-bar:not([hidden])").first().innerText().catch(() => "")).replace(/\s+/g, " ").trim()}」`);
 
     /* ② 改一个字该脏 —— 否则「不脏」可能是因为我把它改成了永远不脏 */
     await fr.locator(".cm-content").click();
     await pg.keyboard.press("Meta+ArrowDown"); await pg.keyboard.press("End");
     await pg.keyboard.type(" // x");
     await pg.waitForTimeout(700);
-    ok(await barH(fr, "dirty") > 0, `${c.label}：改一个字之后说未落盘（不是永远不脏）`);
+    ok(await kitBarH(fr, "dirty") > 0, `${c.label}：改一个字之后说未落盘（不是永远不脏）`);
 
     /* ③ 落盘后换行符一个都没变 */
     await pg.keyboard.press("Meta+s"); await pg.waitForTimeout(2400);
