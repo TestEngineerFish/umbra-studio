@@ -699,15 +699,29 @@ const barH = async (frame, id) => await frame.locator("#" + id).evaluate((el) =>
  *  而 7a / 7b 两批都正当地报了「其余 26 套退出码全 0」—— `uitest` 不在那 26 套里。
  *  > **一套要「另开一个终端起服务」才能跑的判据，会在最需要它的那几天被跳过。**
  *
- *  ⚠️ **三条横条现在是同一个元素**（`.uk-bar`，三种态轮流用它，`bar.replaceChildren()`），
- *  所以只能靠**它写的那句话**认出是哪一档 —— 这也是为什么这个 helper 收的是一个词。
- *  ⚠️ 认不到就回 **0**（不是 -1）：那条 bar 在干净状态下 `hidden` 且 `childElementCount === 0`，
+ *  ⚠️ **三条横条是同一个元素**（三种态轮流用它，`bar.replaceChildren()`）。
+ *  ⚠️ 认不到就回 **0**（不是 -1）：那条 bar 在干净状态下带 `hidden` 且没有子元素，
  *  「不存在」和「0 高度」对这一族判据是同一件事（它们问的都是「占不占地方」）。
  *
- *  ⏳ geek-99 2026-10-23 已让 plugins 在 SDK 里加一份「宿主判据可以依赖的稳定选择器」契约
- *  （`data-kit-*`，写进 PLUGIN-SPEC）。**契约出来之后这个 helper 改成读属性，别再认文字** ——
- *  认文字的判据会在插件改一句文案时红。 */
-const KIT_WORDS = { dirty: "未落盘", draft: "草稿", conflict: "被别处改了" };
+ *  ✅ **2026-10-23：改成读 `data-kit-*` 契约属性了**（kit 1.2.0，`sdk/kit-contract.json`
+ *  是唯一出处，说明在 PLUGIN-SPEC §4.5.2）。原来按**文案**认档位
+ *  （`.uk-bar` + `hasText("未落盘")`）—— 而那正是 §33.2 那条级联的另一半：
+ *  **按文字点对了按钮，而那颗按钮的语义变了**（kit 1.2 给「放弃改动」加了二次确认）。
+ *  > **契约属性把判据要找的东西从「文案」换成了「语义」。**
+ *  > `data-kit-action="draft-overwrite"` 不会因为加了一步确认而改名，
+ *  > 而「用草稿覆盖」这几个字会。两种写法今天读数相同，
+ *  > 差别只在**明天谁会静默失效**。
+ *
+ *  ⚠️ **而「亮不亮」这一半不交给属性**：契约文档自己写着
+ *  「『亮着』请同时看画面 —— `[hidden]` 被作者样式压过的事出过（§4.6）」。
+ *  所以下面两个 helper 的职责是分开的：**档位用属性判，亮不亮量画面。** */
+/** 契约选择器（`sdk/kit-contract.json`）。一处定义 —— 散着写等于把契约抄了 N 遍。 */
+const KIT = {
+  bar: '[data-kit="doc-bar"]',
+  barIn: (state) => `[data-kit="doc-bar"][data-kit-state="${state}"]`,
+  text: '[data-kit="doc-bar-text"]',
+  act: (a) => `[data-kit-action="${a}"]`,
+};
 
 /** 把 kit 那条横条清掉（判据之间的收尾）。
  *
@@ -722,18 +736,24 @@ const KIT_WORDS = { dirty: "未落盘", draft: "草稿", conflict: "被别处改
  *  > 另一半是「按文字点对了按钮，而那颗按钮的语义变了（多了一步确认）」。
  *  > **一个被 catch 吞掉的点击失败，和一个「点成功了但没走完」的流程，症状一模一样。**
  *
- *  所以现在：不弹确认的那两颗优先；只剩「放弃改动」时点它，**再把宿主那张菜单走完**。 */
+ *  所以现在：不弹确认的那两颗优先；只剩「放弃改动」时点它，**再把宿主那张菜单走完**。
+ *
+ *  ✅ **2026-10-23 改成按 `data-kit-action` 点**（kit 1.2.0 契约）。
+ *  原来三颗钮全按文案找（`button:has-text("用盘上的（丢掉我的）")` …）——
+ *  **那正是上面那条级联的来源**。按 action 点之后，插件改文案这里不会动；
+ *  而真要是哪一档的按钮集变了（契约说那要升 `KIT_VERSION` 次版本），
+ *  **拿不到就是拿不到**，不会点中隔壁那颗。 */
 const clearKitBar = async (frame) => {
-  const bar = frame.locator(".uk-bar:not([hidden])");
+  const bar = frame.locator(`${KIT.bar}:not([hidden])`);
   if (await bar.count().catch(() => 0) === 0) return;
-  /* 撞车态 / 草稿态有不弹确认的出路，优先走它们 */
-  for (const label of ["用盘上的（丢掉我的）", "丢掉草稿"]) {
-    const b = bar.locator(`button:has-text("${label}")`);
+  /* 撞车态 / 草稿态有不弹确认的出路，优先走它们（契约：`conflict-reload` / `draft-discard`） */
+  for (const a of ["conflict-reload", "draft-discard"]) {
+    const b = bar.locator(KIT.act(a));
     if (await b.count().catch(() => 0) > 0) { await b.first().click().catch(() => {}); await pg.waitForTimeout(700); return; }
   }
-  /* 未落盘态只有「放弃改动」，而它会弹 `umbra.menu` —— 菜单由**宿主**画（`[data-ud="pluginmenu"]`），
+  /* 未落盘态只有 `discard`，而它会弹 `umbra.menu` —— 菜单由**宿主**画（`[data-ud="pluginmenu"]`），
      第一项是「放弃没落盘的改动」。不走完这一步等于没清。 */
-  const give = bar.locator('button:has-text("放弃改动")');
+  const give = bar.locator(KIT.act("discard"));
   if (await give.count().catch(() => 0) === 0) return;
   await give.first().click().catch(() => {});
   await pg.waitForTimeout(500);
@@ -746,7 +766,7 @@ const clearKitBar = async (frame) => {
   }
 };
 const kitBarH = async (frame, kind) => {
-  const bar = frame.locator(".uk-bar").filter({ hasText: KIT_WORDS[kind] });
+  const bar = frame.locator(KIT.barIn(kind));
   if (await bar.count() === 0) return 0;
   return await bar.first().evaluate((el) => {
     const st = getComputedStyle(el);
@@ -2485,14 +2505,29 @@ console.log("\n插件 UI 的边界（M11-4）");
             await pg.keyboard.press("End");
             await pg.keyboard.type("\n// 改了一行");
             await pg.waitForTimeout(600);
-            /* ⚠️ **两处跟着 kit v1.2 改了，而第二处是一个功能少了，照实记。**
-               ① 选择器：`#dirty` → `.uk-bar` 带「未落盘」（那个 id 全插件零命中了）。
-               ② 文案：v1.1 写「还没落盘」**并带前后行数**，kit v1.2 的只写「未落盘」+ 两颗钮。
-                  行数那一半**没了**，不是我们这边改的 —— 已在回执里报给 plugins 侧。
-               > **判据跟着被测的东西改，但「少了什么」要说出来**，
-               > 否则「判据放宽了」和「功能缩水了」在读数上长得一模一样。 */
-            const barTxt = (await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).innerText().catch(() => "")).replace(/\s+/g, " ");
-            ok(/未落盘/.test(barTxt), "**打字之后出未落盘横条**（⚠️ kit v1.2 起不再带前后行数）", barTxt.slice(0, 50));
+            /* ⚠️ **选择器跟着 kit v1.2 改了**：`#dirty` → **契约属性**
+               `[data-kit="doc-bar"][data-kit-state="dirty"]`（那个 id 全插件零命中了；
+               而中间那一版按「未落盘」四个字找，2026-10-23 换掉）。
+               ⚠️⚠️ **而标题里原来那句注记「kit v1.2 起不再带前后行数」是错的，它自己的读数就在打它的脸** ——
+               detail 明明写着「未落盘 · **6 行 → 7 行**」。
+               行数那一半 v1.1→v1.2 中途确实丢过（我当时照实记了并报给 plugins），
+               而 **kit 1.2.0 把它收回来了**（CHANGELOG：「迁 kit 时丢掉的两处读数也收回来」，
+               走插件的新回调 `docState({ dirtyNote })`，code 1.3.1 给了）。
+               > **一条判据的标题里写进一个事实时，那个事实就成了读数的一部分 ——
+               > 而它不会随产品变化而变红。注记里的事实和断言里的事实，寿命完全不同。**
+               所以两件一起做：把那句过期的话删掉，**并给行数补一条真的断言**。 */
+            const barTxt = (await codeFrame.locator(KIT.barIn("dirty") + " " + KIT.text).innerText().catch(() => "")).replace(/\s+/g, " ");
+            ok(/未落盘/.test(barTxt), "**打字之后出未落盘横条**", barTxt.slice(0, 50));
+            /* ⚠️ 这一条和草稿那边的 `delta` 正好是一对，**而方向相反**：
+               `delta` 是**我们服务端**算的值经 kit 画进插件 iframe；
+               `dirtyNote` 是**插件**算的值（它知道自己编辑器里有几行）经 kit 画出来。
+               两条合起来钉住 host ↔ plugin 这条边界**两个方向都通**。
+               ⚠️ 真值由上面那几行操作定死：样本原来 6 行，`End` + `\n// 改了一行` → 7 行。
+               **只认这个真值**，不写成 `/\d+ 行 → \d+ 行/` ——
+               > 一个「有这个形状就算过」的正则，在数算错的时候照样绿。 */
+            ok(/6 行 → 7 行/.test(barTxt),
+               "**未落盘横条带上插件给的读数**（`dirtyNote`，kit 1.2.0 收回的那一处；真值 6 → 7 不是形状）",
+               barTxt.slice(0, 50));
             /* 改过的行有标记（S18 §一.1）：行底 warn-soft + 左边一道竖线。
                ⚠️ **必须在落盘之前读**。第一版放在 ⌘S 之后，一直是 0 ——
                落盘后 `disk` 换成新的那一版，「改过的行」自然就空了，**标记清空是对的行为**。
@@ -2503,7 +2538,7 @@ console.log("\n插件 UI 的边界（M11-4）");
             /* ⌘S 落盘 —— 挂在 window 上而不是 CM 的 keymap 里（点了横条上的钮再按也要生效） */
             await pg.keyboard.press("Meta+s");
             await pg.waitForTimeout(2200);
-            ok(await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).count() === 0, "落盘之后横条收起来了");
+            ok(await codeFrame.locator(KIT.barIn("dirty") + ":not([hidden])").count() === 0, "落盘之后横条收起来了");
             /* 同一件事量两次：属性（上面那条）+ **真实高度**（这一条）。
                只有后者能抓住「属性设了而 CSS 没让它消失」。 */
             ok(await kitBarH(codeFrame, "dirty") === 0,
@@ -2565,7 +2600,7 @@ console.log("\n插件 UI 的边界（M11-4）");
               await pg.keyboard.press("End");
               await pg.keyboard.type("\n// 为了测拦截而改的一行");
               await pg.waitForTimeout(700);
-              ok(await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).count() > 0, "（前置）先把它改脏，才测得到拦截");
+              ok(await codeFrame.locator(KIT.barIn("dirty") + ":not([hidden])").count() > 0, "（前置）先把它改脏，才测得到拦截");
 
               /* ⚠️ 关闭钮 **dirty 时要 hover 才显示**（`hidden group-hover:grid`）——
                  未保存那颗点占着它的位置，这是编辑器通行的写法。
@@ -2592,7 +2627,7 @@ console.log("\n插件 UI 的边界（M11-4）");
               await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click();
               await pg.waitForTimeout(500);
               ok(await tabOf().count() > 0, "「回去接着改」之后页签还在");
-              ok(await codeFrame.locator(".uk-bar:not([hidden])").filter({ hasText: "未落盘" }).count() > 0, "「回去接着改」之后改动也还在");
+              ok(await codeFrame.locator(KIT.barIn("dirty") + ":not([hidden])").count() > 0, "「回去接着改」之后改动也还在");
               /* ② 落盘再关 —— 盘上要真的变了，页签要没了 */
               await openGuard();
               await pg.locator('[role="alertdialog"] button:has-text("落盘再关")').click();
@@ -2639,13 +2674,13 @@ console.log("\n插件 UI 的边界（M11-4）");
             await pg.keyboard.press("Meta+s");
             await pg.waitForTimeout(2000);
             /* ⚠️⚠️ **这一条问的不是「未落盘」那一档，而是「改动没被静默丢掉」。**
-               kit v1.2 把三条横条合并成一个 `.uk-bar`，而撞车态写的是
+               kit v1.2 把三条横条合并成一个 `[data-kit="doc-bar"]`（靠 `data-kit-state` 分档），而撞车态写的是
                「盘上的文件被别处改了，而这里还有没落盘的改动」—— **不含「未落盘」三个字**。
                （v1.1 是两个独立元素，所以 `#dirty` 当时还在。）
                我机械替换选择器时把这一条也换成了 `hasText: "未落盘"`，**那等于悄悄改掉了判准**。
                > **一个合并了三种态的元素，判据要问的是「它现在在哪一档」，
                > 而不是「某个 id 在不在」。** */
-            const barTxtNow = (await codeFrame.locator(".uk-bar:not([hidden])").first().innerText().catch(() => "")).replace(/\s+/g, " ");
+            const barTxtNow = (await codeFrame.locator(KIT.text).first().innerText().catch(() => "")).replace(/\s+/g, " ");
             const stillDirty = /未落盘|被别处改了/.test(barTxtNow);
             ok(stillDirty, "**盘上被别人改过时落盘被拒**（横条还在，改动没被静默丢掉）", barTxtNow.slice(0, 54) || "（横条没了）");
           } else ok(false, "`.ts` 样本建好了但树里没刷出来");
@@ -3619,39 +3654,87 @@ console.log("\n插件 UI 的边界（M11-4）");
                   if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await clickRow(dRow, "草稿回归"); await pg.waitForTimeout(2800); }
                   const cf = pg.frameLocator('iframe[data-role="body"]');
 
-                  const bar = (await cf.locator("#draft").innerText().catch(() => "")).replace(/\s+/g, " ");
+                  /* ✅ **2026-10-23 这一整组换成 `data-kit-*` 契约**（kit 1.2.0）。
+                     原来全是 id（`#draft` / `#draftRestore` / `#draftOverwrite` / `#draftDiff`）
+                     和 class（`#draft.stale`）—— 那些是**插件的实现细节**，
+                     契约文档明写着判据「不认类名、不认 DOM 层级、不认 id、不认按钮上的字」。
+                     ⚠️ `#roText` / `[data-diff]` / `.cm-content` **刻意不换**：
+                     契约说「插件自己的 DOM（编辑器、只读条……）不在契约里」，
+                     它们问的是插件自己的事，不是公共件的事。
+                     > **一份契约的价值一半在它包含什么，一半在它明说不包含什么** ——
+                     > 后者让人知道哪些选择器**本来就该**随插件改版而失效。 */
+                  const bar = (await cf.locator(KIT.barIn("draft") + " " + KIT.text).innerText().catch(() => "")).replace(/\s+/g, " ");
                   ok(/没落盘的草稿/.test(bar), "**打开时出草稿横条**（编辑区仍是盘上那份）", bar.slice(0, 60));
+                  /* ⚠️ 这句话的形状由契约钉着（`kit-contract.json` 的 doc-bar note：
+                     「草稿是在 sN 上改的，盘上已经变成 sM 了」），而**具体版本号由我们的后端给** ——
+                     所以这里仍然验 s1 / s2 这两个真值，不只验句式。 */
                   ok(/在 s1 上改的/.test(bar) && /已经变成 s2/.test(bar),
                      "**说清「草稿在哪一版、盘上已经是哪一版」**（不是只说「过期了」）", bar.slice(0, 80));
-                  ok(await cf.locator("#draft.stale").count() === 1, "底稿变过时横条走 warn 态（和「有东西等着你」区分开）");
+                  ok(await cf.locator(`${KIT.bar}[data-kit-stale="true"]`).count() === 1,
+                     "底稿变过时横条走 warn 态（和「有东西等着你」区分开）—— 契约属性 `data-kit-stale`");
+                  /* ⚠️⚠️ **这一条是 2026-10-23 补的，而发现它缺的方式值得记。**
+                     上一轮读数里那句话是：
+                       「草稿是在 s1 上改的，盘上已经变成 s2 了 **· 草稿比盘上 +2 −1 行**」
+                     后面那个 `+2 −1` 是 **`staged.ts:138` 的 `lineDelta(onDisk, d.content)`** ——
+                     **我们服务端算的值**，经 kit 1.2.0 画进了插件 iframe 里的横条
+                     （kit 1.2.0 CHANGELOG：「草稿横条带宿主 `get_staged_draft` 回的 `delta`」）。
+                     它**跨了 host → plugin 这条边界**，而原来**一条判据都没有**：
+                     它只落在上一条判据的 detail 里，而那条判据查的是 `/在 s1 上改的/`。
+                     > **一个值出现在 detail 里，不等于有判据在看它。**
+                     > detail 是给人读的，断言才是闸 —— `delta` 哪天从横条上掉了，
+                     > 那条 detail 只会少两个字，而判据照旧全绿。
+                     ⚠️ 真值由样本定死：盘上是 `const a = 1;\nconst b = 别人改的;`（2 行），
+                     草稿是 `const a = 1;\nconst b = 2;\nconst 草稿加的 = 3;`（3 行）——
+                     **按行比**（不是按字节）所以是 `+2 −1`，不是 `+1 −0`。
+                     这里**只认这个真值**，不写成 `/\+\d+ −\d+/` ——
+                     > 一个「有这个形状就算过」的正则，在数算错的时候照样绿。 */
+                  ok(/草稿比盘上 \+2 −1 行/.test(bar),
+                     "**草稿横条带上服务端算的 `delta`**（跨 host → plugin 的那一个值，`+2 −1` 是真值不是形状）",
+                     bar.slice(-30));
                   ok(await kitBarH(cf, "draft") > 10, "**横条真占了高度**（只看 hidden 属性会漏掉 CSS 盖过它）", `高 ${await kitBarH(cf, "draft")}px`);
                   /* ⚠️ 这一条是形制的核心 */
-                  /* ⚠️⚠️ **这一组 2026-10-23 加了「前提不成立就不往下碰」的闸。**
-                     `#draftRestore` / `#draftOverwrite` / `#draftDiff` 三颗钮在
-                     插件 kit v1.2 里**全零命中** —— plugins 2026-10-23 确认那是**漏掉的**，
-                     已在 kit 1.2.0（`sdk/kit-contract` 分支）补回，但 CI 卡着还没发版。
-                     ⚠️ 它原来直接 `.click()`，于是**整套在这里抛**，后面所有节都没跑 ——
-                     而上一轮因此只跑到 271 条、看起来「只有 20 条红」。
+                  /* ⚠️⚠️ **前提闸留着，而它的话换了。**
+                     2026-10-23 上午那一版的闸是「三颗钮在 kit v1.2 里零命中 → 判红跳过」，
+                     理由是它原来直接 `.click()` → **整套在这里抛**，后面所有节都没跑
+                     （那一轮只跑到 271 条，看起来「只有 20 条红」）。
                      > **一个判据抛出来，代价不是它自己红，是它后面所有判据都没跑。**
-                     所以现在：前提不成立就**判红 + 说清在等什么**，然后跳过这一组。
-                     ⏳ code 1.3.1 发版 + `sync-plugins` 之后，这一组连同
-                     `data-kit-*` 那套选择器一起换（geek-99 定的顺序）。 */
-                  const hasDraftBtns = await cf.locator("#draftOverwrite").count().catch(() => 0) > 0
-                    && await cf.locator("#draftDiff").count().catch(() => 0) > 0;
+                     ⚠️ **闸不因为「这次装上了」就撤掉** —— 它守的那件坏事（抛出带走整套）
+                     和插件版本无关，下一次版本不对时它还得挡一次。
+                     只是 detail 换成**说出看到的 kit 版本**：契约把 `data-kit-version` 挂在
+                     `[data-kit="root"]` 上，而「钮没有」和「kit 根本是旧版」是两个不同的问题，
+                     读数要分得开。
+                     > **一条红的 detail 该说出「我看到了什么」，而不只是「我期望什么」。** */
+                  const kitVer = await cf.locator('[data-kit="root"]').first().getAttribute("data-kit-version").catch(() => null);
+                  const hasDraftBtns = await cf.locator(KIT.act("draft-overwrite")).count().catch(() => 0) > 0
+                    && await cf.locator(KIT.act("draft-diff")).count().catch(() => 0) > 0;
                   if (!hasDraftBtns) {
-                    ok(false, "**草稿 stale 那一组没验到** —— 三颗钮（恢复 / 用草稿覆盖 / 看差异）在 kit v1.2 里零命中，"
-                       + "plugins 已确认是漏掉的并在 1.2.0 补回，⏳ 等 code 1.3.1 发版 + sync 之后换成 `data-kit-*` 再测",
-                       `draftOverwrite=${await cf.locator("#draftOverwrite").count().catch(() => 0)} draftDiff=${await cf.locator("#draftDiff").count().catch(() => 0)}`);
+                    ok(false, "**草稿 stale 那一组没验到** —— 契约里 `draft-overwrite` / `draft-diff` 两颗钮零命中"
+                       + "（契约 `kit-contract.json`：stale 档该有它们而没有 `draft-restore`）",
+                       `kit 版本 ${kitVer ?? "读不到"} · draft-overwrite=${await cf.locator(KIT.act("draft-overwrite")).count().catch(() => 0)}`
+                       + ` · draft-diff=${await cf.locator(KIT.act("draft-diff")).count().catch(() => 0)}`);
                   } else {
-                  ok(await cf.locator("#draftRestore").isVisible() === false,
-                     "**底稿变过就不给「恢复」**（直接恢复会静默盖掉别人的改动）");
-                  ok(await cf.locator("#draftOverwrite").isVisible() === true && await cf.locator("#draftDiff").isVisible() === true,
-                     "给的是「用草稿覆盖」和「看差异」两条出路");
+                  console.log(`  · kit 版本 ${kitVer ?? "读不到"}（契约属性 data-kit-version）`);
+                  /* ⚠️ **这一条问的是「不该有」，所以不能用 `isVisible()`** ——
+                     契约说 stale 档**压根不渲染** `draft-restore`，而 `isVisible()` 对
+                     不存在的元素会抛（strict mode）。`count() === 0` 才是「不该有」的问法。
+                     > **「不该在」和「在但看不见」是两个判准，而契约说的是前者。** */
+                  ok(await cf.locator(KIT.act("draft-restore")).count() === 0,
+                     "**底稿变过就不给「恢复」**（直接恢复会静默盖掉别人的改动）—— 契约：stale 档不渲染 `draft-restore`");
+                  ok(await cf.locator(KIT.act("draft-overwrite")).isVisible() === true && await cf.locator(KIT.act("draft-diff")).isVisible() === true,
+                     "给的是「用草稿覆盖」和「看差异」两条出路（`draft-overwrite` / `draft-diff`）");
                   const shownNow = (await cf.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ");
                   ok(/别人改的/.test(shownNow), "**编辑区是盘上那份**（草稿不自动铺上去）", shownNow.slice(0, 50));
 
                   /* 看差异：草稿铺进编辑区、只读、逐行标出和盘上的差别 */
-                  await cf.locator("#draftDiff").click(); await pg.waitForTimeout(2800);
+                  await cf.locator(KIT.act("draft-diff")).click(); await pg.waitForTimeout(2800);
+                  /* ⚠️ 契约 1.2.0 新增的一档：看差异时 `data-kit-diffing="true"`，
+                     而那一档**只剩 `draft-back` 一颗钮**（Esc 同）。
+                     这一条原来没有 —— 它钉的是「正在看差异」这个状态本身能被认出来，
+                     而不只是「编辑区里出现了草稿的内容」。 */
+                  ok(await cf.locator(`${KIT.bar}[data-kit-diffing="true"]`).count() === 1
+                     && await cf.locator(KIT.act("draft-back")).count() === 1,
+                     "看差异时横条进 `diffing` 档，且只给「回到盘上那份」一条出路",
+                     `diffing=${await cf.locator(`${KIT.bar}[data-kit-diffing="true"]`).count()} · draft-back=${await cf.locator(KIT.act("draft-back")).count()}`);
                   const inDiff = (await cf.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ");
                   ok(/草稿加的/.test(inDiff), "「看差异」把草稿铺进编辑区", inDiff.slice(0, 50));
                   ok(/在看草稿/.test((await cf.locator("#roText").innerText().catch(() => "")).trim()),
@@ -3666,10 +3749,29 @@ console.log("\n插件 UI 的边界（M11-4）");
                   await pg.keyboard.press("Escape"); await pg.waitForTimeout(2600);
                   ok(/别人改的/.test((await cf.locator(".cm-content").innerText().catch(() => "")).replace(/\s+/g, " ")),
                      "**Esc 回到盘上那份**（和看旧版同一个键）");
-                  ok(await cf.locator("#draft.stale").count() === 1, "回来之后横条还在 stale 档");
+                  ok(await cf.locator(`${KIT.bar}[data-kit-stale="true"]`).count() === 1
+                     && await cf.locator(`${KIT.bar}[data-kit-diffing="true"]`).count() === 0,
+                     "回来之后横条还在 stale 档，而 `diffing` 退了（两个属性各管一件事）");
 
                   /* 用草稿覆盖：它就是一次写 —— 覆盖前那一版要还在 */
-                  await cf.locator("#draftOverwrite").click(); await pg.waitForTimeout(3200);
+                  /* ⚠️⚠️ **kit 1.2.0 起这一颗会先弹一次二次确认**（CHANGELOG 有，有意改的）——
+                     而 §33.2 那条级联的另一半正是「按文字点对了按钮，而那颗按钮的语义变了」。
+                     菜单由**宿主**画（`[data-ud="pluginmenu"]`），不走完等于没点。
+                     > **一个「点成功了但没走完」的流程，和一个被 catch 吞掉的点击失败，症状一模一样。** */
+                  await cf.locator(KIT.act("draft-overwrite")).click(); await pg.waitForTimeout(600);
+                  {
+                    const menu = pg.locator('[data-ud="pluginmenu"]');
+                    if (await menu.count().catch(() => 0) > 0) {
+                      const items = menu.locator('button, [role="menuitem"]');
+                      const n = await items.count();
+                      /* 挑「覆盖 / 用草稿」那一项；认不出就取第一项（菜单只有确认 / 取消两项时第一项是确认） */
+                      const yes = items.filter({ hasText: /覆盖|用草稿|确定|继续/ }).first();
+                      await (await yes.count() > 0 ? yes : items.first()).click().catch(() => {});
+                      console.log(`  · 「用草稿覆盖」弹了二次确认（${n} 项），已走完`);
+                      await pg.waitForTimeout(600);
+                    }
+                  }
+                  await pg.waitForTimeout(2600);
                   const done = await pg.evaluate(async ({ name }) => {
                     const b = window.__UD_APP;
                     const u = (x) => `${b.url.replace(/\/$/, "")}/__ud/${x}${x.includes("?") ? "&" : "?"}token=${encodeURIComponent(b.token)}`;
@@ -4676,7 +4778,7 @@ console.log("\n CRLF / LF 原样往返（issue #66）");
        /* ⚠️ `#note` 这个 id 在 kit v1.2 里也没了 —— 它只出现在**失败时的 detail** 里，
           所以不改判准也不会红，只会让读数少一句「它到底写的什么」。
           > **一个只在 detail 里用的选择器失效，症状是「红了但说不清为什么红」。** */
-       h === 0 ? "横条 0px" : `✗ 横条 ${h}px，写的是「${(await fr.locator(".uk-bar:not([hidden])").first().innerText().catch(() => "")).replace(/\s+/g, " ").trim()}」`);
+       h === 0 ? "横条 0px" : `✗ 横条 ${h}px，写的是「${(await fr.locator(KIT.text).first().innerText().catch(() => "")).replace(/\s+/g, " ").trim()}」`);
 
     /* ② 改一个字该脏 —— 否则「不脏」可能是因为我把它改成了永远不脏 */
     await fr.locator(".cm-content").click();
@@ -4936,8 +5038,8 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
   await pg.keyboard.press("Escape");
 }
 
-/* ── 总数那道闸的基线（2026-10-23 · 7c-3 重算：457 → 454）──
-   ⚠️⚠️ **第一版把它算成了 435，而那个算法本身是错的** —— 错法比数字值得记：
+/* ── 总数那道闸的基线（2026-10-23：457 → 454 → **456**）──
+   ⚠️⚠️ **算这个数栽过一次，而错法比数字值得记**（7c-3 当天）：
    我拿「`457 − 实跑 422 = 35`」去倒推「7c-3 删了多少判据」。
    **那两个量没有关系。** 删掉的那些判据**本来就不跑**（它们依赖 dc 样本，
    而 dc 在 7c-1 / 7c-2 就没了，那几节早已整段跳过或只走一条 `ok(false)`）——
@@ -4945,20 +5047,27 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > **我把「有多少没验到」当成了「我删了多少」。两个量都叫「差」，
    > 但一个该留在分母里催人去查，另一个该从分母里拿掉。**
    > 要算「删了多少」只有一个来源：**实跑数的前后对比**，不是期望减实际。
-   所以 **454 = 457 − 1（7c-3 真正的净删）− 2（◨ 那一组，见下）**。
-   现在的缺口 **454 − 422 = 32 条，两类，都该留在分母里**：
-   · **13 条 = 草稿 stale 那一组**（`#draftOverwrite` / `#draftDiff` 在 kit v1.2 零命中，
-     plugins 已在 1.2.0 补回）→ ⏳ 等 `sync-plugins`，然后换成 `data-kit-*`。
-   · **约 19 条 = 会话甲乙那一路**（逐节表里「删掉当前会话后点新建会话」只剩 **1 条**，
+
+   **现在这个 456 的来历**（`sync-plugins` + `data-kit-*` 改写之后重算）：
+   · `sync-plugins` 装上 code 1.3.1 / kit 1.2.0 之后，**草稿 stale 那一组 17 条全跑起来了**
+     （实跑 422 → **435**，读数 406 → 423）—— 那 13 条欠账**清掉了**，不再留在缺口里。
+   · 这一轮又补了 **2 条**（草稿横条的 `delta` · 未落盘横条的 `dirtyNote`，见各自那段注释）
+     → 该跑 **437**。
+   · 加上**本来就该跑而今天前提没成立的 19 条**（见下）= **456**。
+   缺口 **456 − 437 = 19 条，全部留在分母里**，⏳ 都在「单独查」清单上：
+   · **约 16 条 = 会话甲乙那一路**（逐节表里「删掉当前会话后点新建会话」只剩 **1 条**，
      而红里写着「（样本有效性）两条会话都在列表里 — 甲 0 · 乙 0」——
-     **样本没建成，后面十几条全跳过**）+ 市场那一条 + 浮层那一条。⏳ 单独查。
-   **唯一从分母里拿掉的是 ◨ 开合那 2 条**：image 没声明 `panels`，宿主不画那颗钮，
-   在这个样本下**永远不跑**，而 ◨ 另有两处在测（md 插件的大纲 · 插件自己那张网页）。
-   > **「这条判据现在不跑」有两种：等某件事做完，和它已经不该存在。
-   > 前者留在分母里，后者从分母里拿掉 —— 混在一起，这道闸就说不出话了。**
-   > 而**第三种最危险**：它该跑、也还存在，只是今天前提没成立 ——
-   > 那正是上面那 19 条，而把它们算成「删掉的」就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 454;
+     **样本没建成，后面十几条全跳过**）。
+   · **2 条 = ◨ 开合**（image 没声明 `panels`，宿主不画那颗钮）。
+     ⚠️ 它和上面那一类**性质不同**：这 2 条在图片样本下**永远不跑**，
+     而 ◨ 另有两处在测（md 插件的大纲 · 插件自己那张网页）。
+     留在分母里是**刻意的** —— 下次谁把这一节的样本换回一个有 `panels` 的格式时，
+     读数会自己对上；而拿掉它就等于把「这一组今天没人在这里测」这件事抹掉。
+   · **1 条** = 「点在稿上也收起浮层」那一族里随样本浮动的余量。
+   > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
+   > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
+   > 把第三种算成第二种，就等于亲手把缺口抹平。 */
+const EXPECT_AT_LEAST = 456;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
