@@ -6,6 +6,9 @@ import { countTypes, denyReason, WALK_MAX, fileSizeOf, isTextual, lineDelta, lis
 import { writeDraft } from "../write.js";
 import { draftKindOf, parseDraft } from "../draft.js";
 import { isEditable, markEditable } from "../records.js";
+/* ── M16-8 ③④ 搬来的那六件要这些（实现仍在 `refs.ts` / `project.ts`，这一次不碰）── */
+import { createFolder } from "../project.js";
+import { emptyTrash, listTrash, purgeTrash, restoreDraft } from "../refs.js";
 import { isInside } from "../pathguard.js";
 import { existsSync } from "node:fs";
 import { readFile as readFileP, readdir as readdirP, stat as statP } from "node:fs/promises";
@@ -409,11 +412,16 @@ defineCap({
    在另一种关系上有 4 处的情况下照样说出来。 */
 defineCap({
   name: "move_file", title: "改名 / 移动一个文件", scope: "project",
+  /* ⚠️ **第一句要把两种引用都说出来，而且要在前 160 个字之内**（geek-99 2026-10-24）：
+     UmbraPC 的秘书把这段 `summary` 当技能描述，**只取前 160 个字**。
+     原来第一句只说「引用它的文件一起改对」，而「`<dc-import>` 的名字也跟着改」
+     要到第三行才出现 —— 那时已经靠近截断线，而带 markdown 反引号的字数算得比看着多。
+     > **一段描述被下游截断时，「说全了」和「说在前面」是两回事** ——
+     > 而决定模型会不会派这件技能的，是没被截掉的那一半。 */
   summary: [
-    "改名或移动，**引用它的文件一起改对** —— 所以不要用系统的文件管理器搬，那样引用会断。",
-    "两种引用都跟着改，回执里分两栏：`rewrote` 是按路径的（`href` / `src` / `url()`），",
-    "`dcImports` 是 `.dc.html` 里按组件名的（`<dc-import name=…>`）。",
-    "⚠️ 目标已存在就**拒**，不会替你顺延一个序号。",
+    "改名或移动一个文件。引用它的路径（href / src / url()）和 <dc-import> 的组件名都会跟着改对，所以不要用系统的文件管理器搬 —— 那样引用会断。",
+    "回执分两栏：`rewrote` 是按路径改的，`dcImports` 是 `.dc.html` 里按组件名改的（两种关系，不混算）。",
+    "⚠️ 目标已存在就**拒**，不会替你顺延一个序号；`to` 要给完整的目标相对路径，不是目标目录。",
   ].join("\n"),
   input: { from: z.string(), to: z.string().describe("完整的目标相对路径，不是目标目录") },
   http: { route: "file_move", method: "POST" },
@@ -609,4 +617,101 @@ defineCap({
   input: {},
   http: { route: "file_types", method: "GET" },
   run: async (_i, c) => envelope({ types: await countTypes(p(c)) }),
+});
+
+/* ══════════════ 目录与回收站（M16-8 ③④ 从 `cap/drafts.ts` 搬来，2026-10-24）══════════════
+   ⚠️ **纯搬家：对外名、路由名、入参、回执、实现一个字都没动。**
+   搬的理由是它们**和设计稿一点关系都没有** —— 「回收站里有什么 / 怎么拿回来 / 怎么真删」
+   和「建一个目录」对任何文件都成立，只是历史上住在 `drafts.ts` 里。
+   ⚠️ 实现仍在 `refs.ts`（`listTrash` / `restoreDraft` / `purgeTrash` / `emptyTrash`）——
+   **这一次不碰实现**：那一摊的函数名也还带着 `Draft`，而改它是另一笔改动。
+   > **一次提交里只放一种改动** —— 搬家和改名混在一起，回归红的时候分不清是哪一种引起的。
+   ⚠️ 回收站是**两条删除路径共用**的（`trashFile` 和 `refs.ts` 的 `deleteDraft`，
+   布局都是 `<时间戳>/<原相对路径>`，issue #81 那一轮统一的），所以它跟着文件面走是对的。 */
+
+defineCap({
+  name: "create_folder", title: "新建目录", scope: "project",
+  summary: "在项目里建一个目录。稿按目录分组，目录本身不是稿。",
+  input: { path: z.string().describe("目录相对项目根的路径，如 Components 或 Pages/子目录") },
+  /* HTTP 侧原来叫 `dir_create`（资源在前），前端在用，保留 */
+  http: { route: "dir_create", method: "POST" },
+  run: async ({ path }, c) => envelope(await createFolder(p(c), path)),
+});
+
+defineCap({
+  name: "list_trash", title: "回收站里有什么", scope: "project",
+  summary: "列回收站：原路径、删除时间、回收站路径。恢复要用它给的 trashPath。",
+  input: {},
+  http: { route: "trash", method: "GET" },
+  run: async (_i, c) => {
+    const items = await listTrash(p(c));
+    return envelope({ items }, [], { count: items.length });
+  },
+});
+
+/* ⚠️ **恢复有两件，不是重叠**（M11-7 第一批误判过，`00` §九十）：
+   - `restore_trashed_by_name`（按**文件名**）：**只记得名字**的时候用 ——
+     「把我刚删的 需求.md 恢复一下」，手上没有 trashPath。
+   - `restore_trashed`（按 **trashPath**）：给**回收站列表**用 —— 那里每一项都带着自己的
+     trashPath，按它恢复才不会在同名多次删除时选错。
+   合成一条就得二选一，而两边都有真实用途。
+
+   ⚠️⚠️ **改名的理由，以及顺手更正它原来的说明**（M16-8 ③，2026-10-24）。
+   旧名 `restore_draft` 带着「稿」字，而它收的从来是**任何文件的文件名** ——
+   `listTrash` 把两条删除路径的回收站读成同一套，所以它一直能恢复 `.md` 和图片。
+   新名字和 `trash_file` / `restore_trashed` 对齐（`*_trashed*` 一族）。
+
+   ⚠️ 它原来的 summary 写着「**行内撤销用它**」—— 那句话现在是假的，而且
+   **它指的那个调用方已经不存在了**（`ui/S1-稿件索引.dc.html`，C3 删了）。
+   实测现在的行内撤销**一次都不调恢复**：删除是**延后落实的**
+   （`Workbench.tsx` 的 `commitTrash`，离开那一行时才真删），所以「撤销」
+   只是把那一行从待删清单里拿掉 —— 文件压根没离开过磁盘。
+   > **一条判据的文案里写着一个前提时，那个前提下线了，文案就开始骗人** ——
+   > 而一件能力的 summary 也一样：它会让下一个人去维护一条没有人走的路。
+   ⚠️ 而延后落实**不是可以顺手改掉的**：M16-8 ⑤ 那句「有 N 处引用它，会断」
+   靠的正是「文件还在盘上」（删完再问 `delete_impact` 实测抛「找不到稿」）。 */
+defineCap({
+  name: "restore_trashed_by_name", title: "按文件名从回收站恢复", scope: "project",
+  summary: "在回收站里按文件名找**最近删的那一份**恢复。只记得名字时用它。要精确恢复某一版（同名删过多次）请用 restore_trashed。",
+  input: { file: z.string().describe("被删掉的那个文件的文件名") },
+  http: { method: "POST" },
+  run: async ({ file }, c) => {
+    const proj = p(c);
+    const base = file.split("/").pop() ?? file;
+    /* listTrash 按时间倒序，`find` 拿到的就是**最近删的那一份** ——
+       同名删过多次时这是唯一合理的语义（用户点的是「撤销刚才那一下」）。 */
+    const hit = (await listTrash(proj)).find((t) => t.originalName === base);
+    if (!hit) return envelope(null, [{ level: "error", code: "E_TRASH_NOT_FOUND",
+      message: `回收站里没有 ${base}`, where: "(trash)", at: { kind: "key", name: base },
+      fix: "用 list_trash 看回收站里现在有什么；同名删过多次时用它给的 trashPath 调 restore_trashed。" } as never]);
+    const r = await restoreDraft(proj, hit.trashPath);
+    return envelope(r, [], { restored: r.originalPath });
+  },
+});
+
+defineCap({
+  name: "restore_trashed", title: "从回收站恢复指定的那一份", scope: "project",
+  summary: "按 list_trash 给的 trashPath 恢复。原位置已被占用时会换个名字，不会覆盖。",
+  input: { trashPath: z.string().describe("回收站路径，list_trash 给的那个") },
+  http: { route: "trash_restore", method: "POST" },
+  run: async ({ trashPath }, c) => {
+    const r = await restoreDraft(p(c), trashPath);
+    return envelope(r, [], { restored: r.originalPath });
+  },
+});
+
+defineCap({
+  name: "purge_trash", title: "永久删掉回收站里的一项", scope: "project",
+  summary: "**真删，退不回来**。删之前想清楚。",
+  input: { trashPath: z.string() },
+  http: { route: "trash_purge", method: "POST" },
+  run: async ({ trashPath }, c) => envelope(await purgeTrash(p(c), trashPath)),
+});
+
+defineCap({
+  name: "empty_trash", title: "清空回收站", scope: "project",
+  summary: "**真删，全部退不回来**。",
+  input: {},
+  http: { route: "trash_empty", method: "POST" },
+  run: async (_i, c) => envelope(await emptyTrash(p(c))),
 });
