@@ -80,11 +80,37 @@ const pg = await (await b.newContext({ viewport: { width: 1440, height: 900 } })
    `ReferenceError: Cannot access 'clickRow' before initialization`（2026-10-23 实测踩到）。
    更阴的是 `clearGuard`：它只在「第一下点不着」那条路上被调用，
    所以定义放错位置会变成**只在出错时才炸**的定时炸弹。 */
+/** 守卫卡（「这些改动不要了吗」）**不该出现在这里** —— 出现了就说明上一节留了个脏编辑器。
+ *
+ *  ⚠️⚠️ **2026-10-23 改掉了它原来的做法，而那个做法是一条六步级联的中段。**
+ *  它原来点「**回去接着改**」—— 也就是「不切走」。于是：
+ *  上一节没清干净 → 这一节点文件被守卫卡拦住 → `clearGuard` 选了「不切走」
+ *  → **iframe 一直停在上一节那个文件上** → 这一节往后所有判据都在看着**别人的界面**。
+ *  实测后果（plugins 2026-10-23 在 Studio 宿主上复现）：坏 json 那节没清干净，
+ *  于是大 json / 编码条 / 源码树三族**约 16 条全红**，而宿主和插件都是好的。
+ *
+ *  > **一个「帮你绕过去」的清理动作，会把问题搬到下一节 ——
+ *  > 而下一节的判据会老老实实报「这个功能坏了」。**
+ *
+ *  所以现在：**直接判红，并写清是哪个文件还脏着**（geek-99 定的修法）。
+ *  这样「上一节没清干净」会红在**源头那一节的下一条**，而不是冒充成
+ *  十几条「这个功能坏了」。
+ *  ⚠️ 判红之后**还是把卡收掉**（按「不要了」），否则后面每一条都会被同一张遮罩挡住 ——
+ *  **报出问题和让后面能继续跑是两件事，都要做。** */
 const clearGuard = async () => {
-  if (await pg.locator('[role="alertdialog"]').count()) {
-    await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click().catch(() => {});
-    await pg.waitForTimeout(300);
+  const card = pg.locator('[role="alertdialog"]');
+  if (!(await card.count())) return;
+  const txt = (await card.innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+  ok(false, "**不该有守卫卡拦在这里** —— 上一节留了个脏编辑器（根因在它，不在这一节）",
+     txt.slice(0, 70) || "（读不到卡上的字）");
+  /* 「不要了」= 丢弃改动并切走，这才是把世界放回原样。
+     ⚠️ 文案可能是「不要了」或「放弃」，两个都试；都点不到就连遮罩一起报出来。 */
+  for (const label of ["不要了", "放弃"]) {
+    const b = card.locator(`button:has-text("${label}")`);
+    if (await b.count().catch(() => 0) > 0) { await b.first().click().catch(() => {}); await pg.waitForTimeout(400); return; }
   }
+  ok(false, "而且这张卡**收不掉**（没找到「不要了」那颗）—— 后面的判据会被它的遮罩挡住",
+     txt.slice(0, 70));
 };
 
 /** 点树里的一行，进那一节。**13 处原来各自裸 `click()`，这是它们唯一的入口。**
@@ -3454,6 +3480,19 @@ console.log("\n插件 UI 的边界（M11-4）");
                        这次毁的不是夹具，是**界面状态**。 */
                     await cmpBtn.click().catch(() => {});       // 退出对比档
                     await pg.waitForTimeout(600);
+                    /* ⚠️⚠️ **2026-10-23 补的：退出对比档不等于清掉脏状态。**
+                       上面「拒绝一块」**改了文档内容** —— 那是未落盘状态，而这一节原来
+                       只退对比档、收编辑栏，**没放弃那个改动**。
+                       于是下一节点别的文件时被守卫卡拦住，而当时 `clearGuard` 选
+                       「回去接着改」→ iframe 停在这个文件上 → 后面几族红在别人头上。
+                       > **「把界面还回去」和「把文档还回去」是两件事** ——
+                       > 这一节原来只做了前者，而留下的脏状态比留下一个文件更隐蔽。
+                       （plugins 2026-10-23 的复现里，这一节和坏 json 那节是同一个形状。） */
+                    await clearKitBar(pf);
+                    await pg.waitForTimeout(400);
+                    ok(await kitBarH(pf, "dirty") === 0,
+                       "**这一节自己把脏状态清干净了**（「拒绝」改过内容，不清的话下一节会在看着这一节的界面）",
+                       `横条 ${await kitBarH(pf, "dirty")}px`);
                   }
                   if (await eb2.count() && (await eb2.getAttribute("aria-pressed")) === "true") {
                     await eb2.click(); await pg.waitForTimeout(400);   // 编辑栏收回去
@@ -3513,9 +3552,23 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const shown = await gf.locator("#ro").evaluate((n) => !n.hidden && getComputedStyle(n).display !== "none").catch(() => false);
                   return shown ? (await gf.locator("#roText").textContent().catch(() => "")).trim() : "";
                 };
+                /** 表头前三格的**列名**。
+                 *  ⚠️⚠️ **2026-10-23：原来直接 `innerText().trim()`，把排序箭头一起取了。**
+                 *  表头单元格里有一颗 `↕`（「表头 ↕ 排序」那次加的），于是 `innerText`
+                 *  回的是 `"订单\n↕"` —— 而 `.trim()` 去不掉**中间**那个 `\n↕`。
+                 *  后果只落在一条判据上：**「重读前是乱码」用的是「含 `�`」，
+                 *  而「读对了」用的是「精确相等」** —— 只有后者会红。
+                 *  > **同一个取值函数，一条判据用「含」、另一条用「等于」，
+                 *  > 那个多出来的装饰只会让用「等于」的那条红。**
+                 *  ⚠️ 而它**一直红着没人追问**，因为它混在那 49 条级联红里 ——
+                 *  > **一条红混在一片红里，就不会被单独追问。**
+                 *  读数证明功能一直是对的：`["订单\n↕","金额\n↕","1"]`。 */
                 const head3 = async () => {
                   const out = [];
-                  for (let i = 0; i < Math.min(3, await gf.locator(".ccell").count()); i++) out.push((await gf.locator(".ccell").nth(i).innerText()).trim());
+                  for (let i = 0; i < Math.min(3, await gf.locator(".ccell").count()); i++) {
+                    const t = await gf.locator(".ccell").nth(i).innerText();
+                    out.push((t.split("\n")[0] ?? "").trim());
+                  }
                   return out;
                 };
 
@@ -3683,8 +3736,16 @@ console.log("\n插件 UI 的边界（M11-4）");
                      "**「在源码里看」写出的是整块的行范围**（L3–6，不是它自己那一行）", act);
                   ok(/给 AI/.test(act), "选中的行右侧才挂两颗钮（不是每行都挂）", act);
 
-                  /* 跳回源码：选区要落在那几行上 */
-                  await jf.locator('.jrow[data-path="channels"] .jjump').click(); await pg.waitForTimeout(900);
+                  /* 跳回源码：选区要落在那几行上。
+                     ⚠️⚠️ **2026-10-23：这里原来 `.jjump` 单元素点击，而那一行现在有两颗**
+                     （`jjump jcopy`「复制路径」+「在源码里看」）—— Playwright 严格模式
+                     当场抛 `strict mode violation`，**整套在这里断掉**，后面所有节都没跑。
+                     ⚠️ 而它**一直没暴露过**：这一节在那条级联里被挡了很久（iframe 停在别的文件上），
+                     所以它带着「它那个时代的选择器」—— 插件 UI 在这期间多加了一颗钮。
+                     > **级联解开之后，被挡住的判据才开始说话 —— 而它们说的可能是一个新的抛出。**
+                     按**文案**点，不按 class 数：class 是实现细节，而「在源码里看」是它的意思。 */
+                  await jf.locator('.jrow[data-path="channels"] .jjump').filter({ hasText: "在源码里看" }).first()
+                    .click(); await pg.waitForTimeout(900);
                   ok(await jf.locator("#tree").isHidden(), "「在源码里看」跳回源码档");
                   const sel = await jf.locator(".cm-content").evaluate(() => String(window.getSelection() ?? ""));
                   ok(/"a"/.test(sel) && /"b"/.test(sel),
@@ -3776,16 +3837,23 @@ console.log("\n插件 UI 的边界（M11-4）");
                          草稿那一段当场红了 6 条，而根因在这里。
                          「自己建的样本自己清」的延伸 —— **留一个脏编辑器比留一个文件更隐蔽**，
                          文件收尾扫得到，脏状态只会表现成别人的判据红。 */
-                      /* ⚠️ `#discard` 在 kit v1.2 里没了（见上面那段）。
-                         **这一处原来没有 `.catch`，所以整套在这里抛** —— 而抛出点
-                         和真正的原因隔着好几节。按文字点，并且**点不到就说出来**
-                         （静默跳过的话，后面那几条又会红在一个和它们无关的原因上）。 */
-                      {
-                        const db = bf.locator(".uk-bar:not([hidden])").locator('button:has-text("放弃改动")');
-                        if (await db.count().catch(() => 0) > 0) await db.first().click().catch(() => {});
-                        else console.log("  ⚠ 这一步没点到「放弃改动」—— kit 的横条没出来或文案变了，下面几条可能受影响");
-                      }
+                      /* ⚠️⚠️ **2026-10-23 收口到 `clearKitBar`，而这是那条级联的源头。**
+                         这里原来自己点「放弃改动」—— 而 **kit 1.2 起那颗钮会先弹一次
+                         `umbra.menu` 二次确认**，没去选的话横条一直停在「未落盘」。
+                         于是下一节点大 json 时被守卫卡拦住，而 `clearGuard` 当时选的是
+                         「回去接着改」→ **iframe 一直停在这个坏 json 上** →
+                         大 json / 编码条 / 源码树三族**约 16 条全红**，而宿主和插件都是好的
+                         （plugins 2026-10-23 在 Studio 宿主上逐步复现出来的）。
+                         > **三处各写一遍清理，等于三个会各自过期的地方。**
+                         `clearKitBar` 自己处理那张菜单（撞车 / 草稿态走不弹确认的那两颗，
+                         未落盘态点完「放弃改动」再把宿主菜单走完）。
+                         ⚠️ 清完**再断言一次它真的清掉了** —— 不然这一处又会变成
+                         「点了但没生效」而静默把问题留给下一节。 */
+                      await clearKitBar(bf);
                       await pg.waitForTimeout(600);
+                      ok(await kitBarH(bf, "dirty") === 0,
+                         "**这一节自己把脏状态清干净了**（不清的话下一节会在看着这一节的界面）",
+                         `横条 ${await kitBarH(bf, "dirty")}px`);
                     } else ok(false, "坏 json 样本建好了但树里没刷出来");
                     await pg.evaluate(async ({ name }) => {
                       const b = window.__UD_APP;
@@ -3900,6 +3968,23 @@ console.log("\n插件 UI 的边界（M11-4）");
                   ok(await cf.locator("#draft.stale").count() === 1, "底稿变过时横条走 warn 态（和「有东西等着你」区分开）");
                   ok(await kitBarH(cf, "draft") > 10, "**横条真占了高度**（只看 hidden 属性会漏掉 CSS 盖过它）", `高 ${await kitBarH(cf, "draft")}px`);
                   /* ⚠️ 这一条是形制的核心 */
+                  /* ⚠️⚠️ **这一组 2026-10-23 加了「前提不成立就不往下碰」的闸。**
+                     `#draftRestore` / `#draftOverwrite` / `#draftDiff` 三颗钮在
+                     插件 kit v1.2 里**全零命中** —— plugins 2026-10-23 确认那是**漏掉的**，
+                     已在 kit 1.2.0（`sdk/kit-contract` 分支）补回，但 CI 卡着还没发版。
+                     ⚠️ 它原来直接 `.click()`，于是**整套在这里抛**，后面所有节都没跑 ——
+                     而上一轮因此只跑到 271 条、看起来「只有 20 条红」。
+                     > **一个判据抛出来，代价不是它自己红，是它后面所有判据都没跑。**
+                     所以现在：前提不成立就**判红 + 说清在等什么**，然后跳过这一组。
+                     ⏳ code 1.3.1 发版 + `sync-plugins` 之后，这一组连同
+                     `data-kit-*` 那套选择器一起换（geek-99 定的顺序）。 */
+                  const hasDraftBtns = await cf.locator("#draftOverwrite").count().catch(() => 0) > 0
+                    && await cf.locator("#draftDiff").count().catch(() => 0) > 0;
+                  if (!hasDraftBtns) {
+                    ok(false, "**草稿 stale 那一组没验到** —— 三颗钮（恢复 / 用草稿覆盖 / 看差异）在 kit v1.2 里零命中，"
+                       + "plugins 已确认是漏掉的并在 1.2.0 补回，⏳ 等 code 1.3.1 发版 + sync 之后换成 `data-kit-*` 再测",
+                       `draftOverwrite=${await cf.locator("#draftOverwrite").count().catch(() => 0)} draftDiff=${await cf.locator("#draftDiff").count().catch(() => 0)}`);
+                  } else {
                   ok(await cf.locator("#draftRestore").isVisible() === false,
                      "**底稿变过就不给「恢复」**（直接恢复会静默盖掉别人的改动）");
                   ok(await cf.locator("#draftOverwrite").isVisible() === true && await cf.locator("#draftDiff").isVisible() === true,
@@ -3938,6 +4023,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                      "**覆盖前那一版还在**（它就是一次写，走写入口存旧版）", `${done.v.data?.snapshots?.length} 版`);
                   ok(done.d.data?.has === false, "覆盖之后草稿清掉了（不留一条在说已经做完的事的提示）");
                   ok(await kitBarH(cf, "draft") === 0, "横条收起来了，而且不占高度");
+                  }   /* ← `hasDraftBtns` 那一支到此为止（见上面那段：等 code 1.3.1） */
                 } else ok(false, "草稿样本建好了但树里没刷出来");
                 /* 自己建的自己清 */
                 await pg.evaluate(async ({ name }) => {
