@@ -262,26 +262,30 @@ await mkdir(EMPTY_BUNDLED, { recursive: true });
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
 process.env.UMBRASTUDIO_BUNDLED_DIR = EMPTY_BUNDLED;
 
+/** 造一个「用户自己装的」插件：`PLUGINS_DIR/<id>/<version>/manifest.json`
+ *
+ *  ⚠️ **清单必须是真的合法清单。** 第一版我只写了 `id` / `name` / `version` / `kinds`，
+ *  而 `checkManifest` 还要 `hostApi` / `surfaces` / `permissions`，id 也必须是
+ *  小写反写域名式（我当时用了中文）—— 于是那个插件**压根装不上**，
+ *  「第三方插件认领得到 md」那条判据红了，**而它红的原因是夹具不是产品**。
+ *  > **夹具的问题和产品的问题报出来的样子一样**（§144.4：攻击样本四个全红而一个都没打中）。 */
+const fakePlugin = async (id: string, kinds: unknown[]) => {
+  const dir = join(STATE, ".umbrastudio", "plugins", id, "1.0.0");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "manifest.json"), JSON.stringify({
+    id, name: id, version: "1.0.0", hostApi: "^1",
+    surfaces: ["ui"], ui: "index.html",
+    permissions: { files: ["read"], scope: "project", net: [] },
+    kinds,
+  }), "utf8");
+  await writeFile(join(dir, "index.html"), "<!doctype html><p>判据用</p>", "utf8");
+};
+
+/* ⚠️ `fakePlugin` 和 `STATE` 一样提到块外 —— 第 ⑧⑨⑩ 三节都用它。
+   第一版它在第 ⑧ 节的块作用域里，第 ⑩ 节拿不到（`Cannot find name 'fakePlugin'`）。 */
+
 {
 
-  /** 造一个「用户自己装的」插件：`PLUGINS_DIR/<id>/<version>/manifest.json`
-   *
-   *  ⚠️ **清单必须是真的合法清单。** 第一版我只写了 `id` / `name` / `version` / `kinds`，
-   *  而 `checkManifest` 还要 `hostApi` / `surfaces` / `permissions`，id 也必须是
-   *  小写反写域名式（我当时用了中文）—— 于是那个插件**压根装不上**，
-   *  「第三方插件认领得到 md」那条判据红了，**而它红的原因是夹具不是产品**。
-   *  > **夹具的问题和产品的问题报出来的样子一样**（§144.4：攻击样本四个全红而一个都没打中）。 */
-  const fakePlugin = async (id: string, kinds: unknown[]) => {
-    const dir = join(STATE, ".umbrastudio", "plugins", id, "1.0.0");
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      id, name: id, version: "1.0.0", hostApi: "^1",
-      surfaces: ["ui"], ui: "index.html",
-      permissions: { files: ["read"], scope: "project", net: [] },
-      kinds,
-    }), "utf8");
-    await writeFile(join(dir, "index.html"), "<!doctype html><p>判据用</p>", "utf8");
-  };
   /* 认领内置 `md`，不给 ext（`manifest.ts` 允许认领型插件空着）、不给 priority（默认 50） */
   await fakePlugin("com.third.markdown", [{ id: BUILTIN.md, label: "别人的 Markdown", icon: "M" }]);
 
@@ -414,7 +418,52 @@ process.env.UMBRASTUDIO_BUNDLED_DIR = EMPTY_BUNDLED;
      **插件挂了 / 卸了，用户照样看得到图。** */
   ok(kindOf("照片.png") === B2.image,
      "**装着插件时 `.png` 的 kind 仍然是 `image`**（认领不改类型，所以卸了就退回宿主看图）", kindOf("照片.png"));
-  await rm(STATE, { recursive: true, force: true });   // ⑧⑨ 共用，统一在这里清
+  /* ══════════ ⑩ 商城里已有的 `com.umbra.svg` 和新的内置 `svg` id 撞上了 ══════════
+   *
+   *  ⚠️⚠️ **这是 §172.6 那次的同形，而我在 Q84 里没核这一点就起了 `svg` 这个 id。**
+   *  那条教训原文：**内置 id 正好落在第三方插件已经在用的名字上**
+   *  （当时是 `video` / `audio`，这次是 `svg`）。
+   *  `plugins` 报：商城里本来就有 **`com.umbra.svg` 1.2.1**，它的清单**自己定义** kind
+   *  `id: "svg"`、`ext: [".svg"]`、`priority: 85`。
+   *  > **起一个内置 id 之前，要先查商城里有没有插件在用这个名字。**
+   *
+   *  期望的结果（geek-99 定的）：新 Studio 上它**算认领 `svg`**，装了它就由它打开 `.svg`，
+   *  卸了退回宿主看图；**旧 Studio 照它自己写的 ext 走**（旧版没有内置 `svg`，
+   *  所以它走 `registerKind`，ext 和 priority 都生效）—— 所以**不许改插件的清单**。 */
+  console.log("\n⑩ 商城已有的 com.umbra.svg 撞上新的内置 svg id");
+  /* ⚠️ 清单**逐字照 plugins 报的那一份**（含 `ext` 和 `priority: 85`）——
+     照抄而不是写一个「差不多的」：差异正好可能落在被测的那一点上。 */
+  await fakePlugin("com.umbra.svg", [{ id: "svg", label: "SVG", icon: "◇", ext: [".svg"], priority: 85 }]);
+  const { listInstalled: li3 } = await import("./plugin/store.js");
+  const svgPlug = (await li3()).find((x) => x.manifest.id === "com.umbra.svg");
+  /* ① 它在新版里会不会突然变成 problem 被跳过 —— M16-3 刚加的那条
+     「认领不许认领的类型就在 checkManifest 拒」要连着核。 */
+  ok(!!svgPlug && svgPlug.problems.length === 0,
+     "**① 已装的 svg 插件在新版里没有变成 problem**（M16-3 那条新校验只拦 `claimable: false` 的，而 `svg` 是允许认领的）",
+     JSON.stringify(svgPlug?.problems ?? "压根没扫到"));
+  const got4 = await rpk2();
+  const svgRow = got4.find((r) => r.id === "com.umbra.svg");
+  ok(!!svgRow && svgRow.kinds.includes("svg" as never),
+     "**① 服务端把它当成「认领 svg」而不是「重定义内置类型」**（`store.ts` 那一支走 `isClaimable`，不抛）",
+     svgRow ? JSON.stringify(svgRow.kinds) : "一种都没登记上");
+  /* ③ priority 85 对 80 谁赢 —— ⚠️ **这个问题在这里其实不适用**，而「不适用」本身要钉住：
+     认领内置 kind 走的是 `continue`，**不调 `registerKind`**，所以插件的 `priority` 和 `ext`
+     都**不生效**，匹配仍由 `shared/kinds.ts` 的那一条说了算。
+     priority 决定的是「一个文件名匹配**多个 kind** 时选哪个 kind」，
+     而认领的是**同一个 kind** —— 没有竞争对象。 */
+  ok(kindDef("svg" as never).priority === 80,
+     "**③ 插件的 priority 85 不生效，仍是内置那条的 80** —— 认领走的路不调 `registerKind`，而它认的是同一个 kind，没有竞争",
+     String(kindDef("svg" as never).priority));
+  ok(kindOf("图标.svg") === "svg", "**③ 而结果不受影响**：`.svg` 照旧落到 `svg`");
+  /* ⚠️ **而 ext 不生效这件事有一个真实后果，要说出来**：插件声明的 ext 比内置多的那些
+     **不会被认领**。这一份正好一样（都是 `[".svg"]`），所以今天没差别 ——
+     **但这是「今天恰好一样」，不是「机制保证一样」**。 */
+  const svgExtSame = JSON.stringify(SVG_EXT) === JSON.stringify([".svg"]);
+  ok(svgExtSame,
+     "**③b 插件的 ext 和内置的恰好一致，所以 ext 不生效没造成差别** —— ⚠️ 这是「今天恰好一样」不是机制保证（插件多声明一个 `.svgz` 就不会被认领）",
+     `内置 ${JSON.stringify(SVG_EXT)} · 插件 [".svg"]`);
+
+  await rm(STATE, { recursive: true, force: true });   // ⑧⑨⑩ 共用，统一在这里清
 }
 
 console.log(fail === 0 ? `\n✓ 类型表 ${pass}/${pass + fail}` : `\n✗ 类型表 ${pass}/${pass + fail}`);

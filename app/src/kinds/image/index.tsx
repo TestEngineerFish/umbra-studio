@@ -270,7 +270,11 @@ function View({ ctx }: { ctx: ViewContext }) {
 }
 
 export const image: KindModule = {
-  ids: ["image", "svg"],
+  /* ⚠️ **只认领 `image`，不认领 `svg`** —— 而 `.svg` 照旧由这个模块画。
+     那是靠 `registry.ts` 的 `FALLBACK`（`svg` → `image`）做到的，不是靠这里多写一个 id。
+     理由见那段注释：直接认领会在 `com.umbra.svg` 装上时撞车（§172.6 同形）。
+     > **兜底和认领是两件事，混在一个字段里就会在「插件来了」那一刻炸。** */
+  ids: ["image"],
   Provider, View, Toolbar, Corner,
   /* `⋯` 浮层头的读数（M8-33）。**图片的读数就这三样，只有这一处**
      —— 原来状态行里还有一份同样的串（`Status`），2026-09-28 随那个死接口一起删了

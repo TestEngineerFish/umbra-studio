@@ -83,6 +83,34 @@ export interface KindModule {
 
 const REG = new Map<FileKind, KindModule>();
 
+/** 这种 kind **没人认领时**退回哪个模块。
+ *
+ *  ⚠️⚠️ **「兜底」和「认领」是两件事，而 `ids` 原来把它们混成了一件。**
+ *  混着的后果在「插件来了」那一刻才炸：2026-10-23 拆出 `svg` kind（Q84）时，
+ *  我让看图模块 `ids: ["image", "svg"]` 直接认领它 —— 而商城里**本来就有**
+ *  `com.umbra.svg`（它的清单自己定义 kind `svg`）。插件装上时 loader 调
+ *  `register({ ids: ["svg"] })`，撞上 `REG` 里已有的那条**当场抛**，
+ *  被 loader catch 成「这个插件没能接上」 —— **§172.6 那次（`media-video` / `media-audio`）
+ *  一模一样的症状**。
+ *
+ *  所以改成**声明兜底**，而不是让宿主模块去认领：
+ *  · 没装 svg 插件 → `REG` 里没有 `svg` → 回落到看图模块
+ *    （sam 定的边界「图片能显示就显示」—— svg 能显示，不该退化成源码）
+ *  · 装了 `com.umbra.svg` → 它注册了 `svg`，**它赢**
+ *  · 卸掉 → `REG` 里没了，**自动回落**，不需要任何「存起来再还原」的逻辑
+ *
+ *  ⚠️ 这样 `register` 那条「一种 kind 只能有一个模块」的纪律**一个字不用改** ——
+ *  它仍然该对「两个插件抢同一种格式」当场喊出来。
+ *
+ *  ⚠️ **不要把它当成通用的类型继承**：这里只放「某种 kind 没有专属模块时，
+ *  哪个现成模块画得了它」。写一条之前先问：那个模块真的画得了吗？
+ *  （看图模块画得了 `.svg` —— 它以前就在画，因为 `.svg` 曾经就是 `image` kind。） */
+const FALLBACK: Partial<Record<FileKind, FileKind>> = { svg: "image" };
+
+/** 这种 kind 有没有兜底模块 —— 给 `auditKinds()` 用：
+ *  有兜底的不算「没人认领」，否则开发期自检会对着一个**本来就该回落**的 kind 报警。 */
+export function hasFallback(kind: FileKind): boolean { return !!FALLBACK[kind]; }
+
 /* ═══ 迟到注册（M11-3，Q37）═══
    插件是**启动之后**才装上的，所以注册表不能只在模块加载时填一次。
    难的不是"往 Map 里再塞一个" —— 是**塞完之后界面要重画**：
@@ -126,9 +154,12 @@ export function unregisterFrom(pluginId: string): number {
   return n;
 }
 
-/** 取这种 kind 的模块。**永远有返回值** —— 没人认领的一律落到 `other`（文件卡）。 */
+/** 取这种 kind 的模块。**永远有返回值** —— 顺序是：
+ *  **认领它的** → **兜底它的**（见 `FALLBACK`）→ `other`（通用文件卡）。
+ *  ⚠️ 中间那一档是 Q84 加的，而它正是「装了插件归插件、卸了退回宿主」的全部实现。 */
 export function moduleFor(kind: FileKind): KindModule {
-  const m = REG.get(kind) ?? REG.get("other");
+  const fb = FALLBACK[kind];
+  const m = REG.get(kind) ?? (fb ? REG.get(fb) : undefined) ?? REG.get("other");
   if (!m) throw new Error("注册表是空的 —— `kinds/index.ts` 没被 import");
   return m;
 }

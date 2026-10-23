@@ -1,5 +1,5 @@
 import { allKinds, type FileKind } from "@shared/kinds";
-import { register, registered, type KindModule } from "./registry";
+import { hasFallback, register, registered, type KindModule } from "./registry";
 import { dc } from "./dc";
 import { dir } from "./dir";
 import { fallback } from "./fallback";
@@ -46,7 +46,10 @@ for (const m of ALL) register(m);
  *  而这一次连开发期都不会炸。所以抽成函数，装完插件再调一次。 */
 export function auditKinds(): FileKind[] {
   const claimed = new Set(registered());
-  return allKinds().filter((k) => !claimed.has(k));
+  /* ⚠️ **有兜底的不算「没人认领」**（Q84）：`svg` 没有专属模块，而看图模块兜着它
+     （`registry.ts` 的 `FALLBACK`）。不排掉的话这条自检会对着一个**本来就该回落**的
+     kind 报警，而那会让人去给它硬塞一个模块 —— 正好绕回那个撞车的坑。 */
+  return allKinds().filter((k) => !claimed.has(k) && !hasFallback(k));
 }
 
 /* ⚠️ 自检**不能在模块顶层跑了**（M11-9b）：`md` 现在由内置插件认领，
