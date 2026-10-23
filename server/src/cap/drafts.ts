@@ -127,12 +127,34 @@ defineCap({
 });
 
 defineCap({
-  name: "get_delete_impact", title: "删之前先看影响面", scope: "project",
-  summary: "谁引用了这份稿。**删之前必看** —— 有人引用还删，那些稿会缺资源。",
+  name: "get_delete_impact", title: "删之前先看影响面（只看 `<dc-import>` 那种引用）", scope: "project",
+  summary: [
+    "**哪些 `.dc.html` 用 `<dc-import name=…>` 引了这个组件。** 删 / 改名之前看它 —— 那几处会缺组件。",
+    "⚠️ **它只回答按「组件名」引用的那一种，而且只对 `.dc.html` 成立**（别的扩展名回 `E_BAD_INPUT`）。",
+    "⚠️ **按路径的引用（`href` / `src` / `url()`）请问 `list_file_refs`** —— 那是另一个问题，两件都要问。",
+  ].join("\n"),
   input: { path: z.string() },
   http: { route: "delete_impact", method: "GET" },
   run: async ({ path }, c) => {
-    const impact = await deleteDraftImpact(p(c), path);
+    /* ⚠️⚠️ **非 `.dc.html` 不许回 `affectedCount: 0`，也不许抛「找不到稿」**（2026-10-24，geek-99 定）。
+       实测对同一份 `PC 行操作.dc.html`：这件回 `affectedCount: 4`（4 处 `<dc-import>`），
+       而 `list_file_refs` 回 `referencedBy: []` —— **两件都叫「谁引用了它」，
+       而「引用」在它们嘴里是两种关系**：这件认**组件名**，那件认**路径**。
+       所以它们**不能并成一件**：并了之后「删一份组件稿之前问一句」会回「没人引用」，
+       而实际上有 4 处会断。
+       > **一个更弱的答案冒用了一个更强的名字。**
+
+       而对非 dc 文件回 `0` 是同一个病的另一种长相：`0` 读起来是「查过了，没人引用」，
+       而真相是「**这件答不了这个问题**」。原来它抛 `找不到稿 "x.md"` —— 那句话也不对：
+       文件在、只是这件能力不管它。
+       ⚠️ 用**已有的** `E_BAD_INPUT`，不新造码（和门面那道 `safeParse` 同一条口径）。 */
+    const rel = path;
+    if (!/\.dc\.html$/i.test(rel)) {
+      throw new ToolError(err(X.BAD_INPUT, rel, { kind: "file", name: rel },
+        "这件只对 `.dc.html` 成立 —— 它查的是 `<dc-import name=…>` 那种按组件名的引用",
+        { fix: "按路径的引用（href / src / url()）问 `list_file_refs`；它对 html / css / svg / md 都成立。" }));
+    }
+    const impact = await deleteDraftImpact(p(c), rel);
     return envelope(impact, [], { affectedCount: impact.affectedCount });
   },
 });

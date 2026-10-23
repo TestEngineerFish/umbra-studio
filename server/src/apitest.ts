@@ -1964,6 +1964,84 @@ console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
   }
 }
 
+/* ── ㉖ 「谁引用了它」有两件能力，而「引用」在它们嘴里是两种关系（M16-8 ⑤，2026-10-24）──
+   `get_delete_impact` 认 **`<dc-import name=…>`**（按组件名），
+   `list_file_refs` 认 **`href` / `src` / `url()`**（按路径）。实测对同一份组件稿：
+   前者 `affectedCount: 4`，后者 `referencedBy: []`。
+   > **两件都叫「谁引用了它」，而并成一件的后果是具体的**：删一份组件稿之前问一句，
+   > 回「没人引用」，而实际上有 4 处会断 —— **一个更弱的答案冒用了一个更强的名字。**
+
+   ⚠️ 这一节钉的是**那条拒**：非 `.dc.html` 既不许回 `affectedCount: 0`（那读起来是
+   「查过了，没人引用」），也不许抛「找不到稿」（文件在、只是这件能力不管它）。
+   ⚠️ 判准认**真值**：要出现 `.dc.html` 这个条件本身，而且要**指向另一件能力** ——
+   一条「只说你错了、不说该去问谁」的拒，用户只能卡在那儿。 */
+console.log("\n㉖ `get_delete_impact` 只答 `<dc-import>` 那种引用（M16-8 ⑤）");
+/* ⚠️⚠️ **这一节自己建一个临时项目，不用公共夹具。**
+   第一版用公共夹具，诊断行一句话打脸：`· 夹具盘上: 大小写.txt · 子` ——
+   **`样例.dc.html` 和我刚写进去的两份样本都不在了**，前面某一节把它们清掉了。
+   > 我一直在问「图里为什么没有这份稿」，而真相是**盘上压根没有它**。
+   > **「样本造好了」和「样本还在」是两件事**（§101.8 ③「我的判据把别的判据要用的夹具删了」的反面：
+   > 这次是**别人的收尾**删掉了我要用的东西）。
+   ⚠️ 更要紧的是：那一版的前三条**在一个不存在的文件上通过了** ——
+   那条拒只看扩展名、不关心文件在不在，于是「只对 `.dc.html` 成立」和「文件不存在」分不开。
+   **自己建项目之后，三条拒都落在真存在的文件上。** */
+{
+  const { mkdtemp: mkdt6, writeFile: wf6, rm: rm6 } = await import("node:fs/promises");
+  const { join: j6 } = await import("node:path");
+  const { tmpdir: td6 } = await import("node:os");
+  /* ⚠️ `realpathSync`：macOS 的 `/var` 是软链，不解的话 `abs.slice(p.dir.length + 1)`
+     会把相对路径切歪（本仓库记过的那个坑）。 */
+  const T6 = await mkdt6(j6(realpathSync(osTmpdir()), "umbrastudio-refs-"));
+  await wf6(j6(T6, "project.json"), JSON.stringify({ name: "refstest", title: "引用面回归" }), "utf8");
+  /* 三份真文件：被引用的组件 · 引用它的稿 · 一份 `.md`（那条拒的样本） */
+  await wf6(j6(T6, "组件.dc.html"), "<!doctype html>\n<html><body><x-dc><div>组件</div></x-dc></body></html>\n", "utf8");
+  await wf6(j6(T6, "用它的页.dc.html"),
+    "<!doctype html>\n<html><body><x-dc><dc-import name=\"组件\"></dc-import></x-dc></body></html>\n", "utf8");
+  await wf6(j6(T6, "一份笔记.md"), "# 只是一份 md\n", "utf8");
+  const p6 = await buildProject(T6);
+  const s6 = await serveStart(p6);
+  type Env2 = { ok: boolean; data?: { affectedCount?: number }; errors?: Array<{ code?: string; message?: string; fix?: string }> };
+  const ask = async (path: string): Promise<Env2> =>
+    await (await fetch(`${s6.url}__ud/delete_impact?path=${encodeURIComponent(path)}&token=${encodeURIComponent(s6.token)}`)).json() as Env2;
+  try {
+    const md = await ask("一份笔记.md");
+    ok(md.ok === false && md.errors?.[0]?.code === "E_BAD_INPUT",
+       "**非 `.dc.html` 被拒**（而且这份 `.md` 真在盘上 —— 不是回 `affectedCount: 0`，那读起来是「查过了，没人引用」）",
+       `${md.errors?.[0]?.code ?? "没有 code"} · affectedCount=${String(md.data?.affectedCount)}`);
+    ok(/\.dc\.html/.test(md.errors?.[0]?.message ?? ""),
+       "**拒因说出那个条件本身**（「只对 `.dc.html` 成立」），不是一句「参数不对」",
+       (md.errors?.[0]?.message ?? "").slice(0, 70));
+    ok(/list_file_refs/.test(md.errors?.[0]?.fix ?? ""),
+       "**而且指向另一件能力**（按路径的引用问 `list_file_refs`）—— 一条不说「该去问谁」的拒，用户只能卡在那儿",
+       (md.errors?.[0]?.fix ?? "").slice(0, 70));
+
+    /* ⚠️ **对照一：真有人引用它时数得对。** 少了这一条，把条件写反（少一个 `!`）
+       上面三条照样全绿；而只断言 `ok === true` 也不够 —— 要**真值**。 */
+    const used = await ask("组件.dc.html");
+    ok(used.ok === true && used.data?.affectedCount === 1,
+       "**（对照）`<dc-import name=\"组件\">` 数得出来**（真值 1，不是「有个数就算过」）",
+       `ok=${used.ok} · affectedCount=${String(used.data?.affectedCount)}`);
+    /* ⚠️ **对照二：没人引用时说得出「没人引用」。** 这一条是上一条的反面 ——
+       一件只会在「有人引用」时答得出的能力，在「可以安全删」这个最常见的问法上是哑的。 */
+    const lonely = await ask("用它的页.dc.html");
+    ok(lonely.ok === true && lonely.data?.affectedCount === 0,
+       "**（对照）没人引用时回 0，而不是拒**（「可以安全删」才是最常见的那个问法）",
+       `ok=${lonely.ok} · affectedCount=${String(lonely.data?.affectedCount)}`);
+    /* ⚠️ 第三种：**是 `.dc.html`、但盘上没有**。它该走「找不到稿」那条拒，
+       而不是被新的 `E_BAD_INPUT` 吃掉 —— 两种拒说的是两件不同的事。 */
+    const gone = await ask("压根不存在.dc.html");
+    ok(gone.ok === false && gone.errors?.[0]?.code !== "E_BAD_INPUT",
+       "**是 `.dc.html` 但盘上没有 → 另一种拒**（「这份稿我没看见」≠「这种文件我不管」）",
+       `${gone.errors?.[0]?.code ?? "没有 code"}：${(gone.errors?.[0]?.message ?? "").slice(0, 40)}`);
+  } finally {
+    /* 自己建的自己清（纪律⑥）—— 连服务一起停，不然这一套每跑一轮多攒一个 LISTEN。 */
+    /* ⚠️ `serveStop(dir)` —— 服务表按**目录**去重（issue #20），所以停它要给目录。
+       不停的话这一套每跑一轮多攒一个 LISTEN（§166 实测攒到 33 个）。 */
+    try { const { serveStop } = await import("./serve.js"); serveStop(T6); } catch { /* 停不掉就算了 */ }
+    await rm6(T6, { recursive: true, force: true });
+  }
+}
+
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 
@@ -1973,7 +2051,10 @@ console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
    就说明有一节静默跳过了（而那一轮会全绿）。 */
 /* 213 = 改口径那一轮的实跑 · +2 = 那一轮自己打印过的「没登录」两条（它们原来**不在分母里**，
    那就是改口径要修的那件事）· **+3 = 门面补 `safeParse` 这一批**（㉕ 的「说得出是哪个字段」
-   1 条 + 「换一件无关的能力也拦得住」那一组 2 条）。合计 **218**。 */
+   1 条 + 「换一件无关的能力也拦得住」那一组 2 条）· **+4 = ㉖**（`get_delete_impact`
+   只答 `<dc-import>` 那种引用：三条拒 + 两条对照 + 一条「盘上没有是另一种拒」）。合计 **222**。
+   ⚠️ 我先算成 221 —— 漏数了 ㉖ 自己那一节里新增的第六条（两条对照我当成一条算了）。
+   实跑 222 把它顶出来了：**总数本身也是一条判据**，而它这次抓的是我的算术。 */
 const EXPECT_AT_LEAST = 218;
 const miss = NOT_RUN.length;
 const total = pass + fail + miss;
