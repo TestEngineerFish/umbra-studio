@@ -73,6 +73,62 @@ const ok = (c, s, d = "") => {
 
 const b = await chromium.launch({ channel: "chrome" }).catch(() => chromium.launch());
 const pg = await (await b.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+
+/* ⚠️ **下面这两个 helper 必须留在这里，不能挪到用它们的地方附近。**
+   第一个调用点在「常驻目录列」那一节（约第 120 行），而 `const` 有暂时性死区 ——
+   定义排在调用之后的话，`node --check` **照样说语法 OK**，要等真跑到那一行才
+   `ReferenceError: Cannot access 'clickRow' before initialization`（2026-10-23 实测踩到）。
+   更阴的是 `clearGuard`：它只在「第一下点不着」那条路上被调用，
+   所以定义放错位置会变成**只在出错时才炸**的定时炸弹。 */
+const clearGuard = async () => {
+  if (await pg.locator('[role="alertdialog"]').count()) {
+    await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click().catch(() => {});
+    await pg.waitForTimeout(300);
+  }
+};
+
+/** 点树里的一行，进那一节。**13 处原来各自裸 `click()`，这是它们唯一的入口。**
+ *
+ *  ⚠️ **这一下预期可能被拦下**，而原来的写法要求它必须成功。
+ *  当前文件脏着时，点另一个文件会弹「这些改动不要了吗」，那张卡（连它的遮罩）
+ *  正好压在要点的那一行上 —— 下面 `.lock` 那一节的注释自己写着
+ *  「被卡片拦下的那一次点击不会生效，收掉之后再点一次」。
+ *  **既然预期它不生效，它就不该用「必须成功」的调用方式。**
+ *  裸 `click()` 被遮住时不会立刻失败：它等元素变可操作，等满 30 秒才抛，
+ *  而那一抛**带走整个脚本**（实测 `uitest13`：
+ *  `locator resolved to <div role="treeitem" title="json回归.json">` 之后超时 ——
+ *  **元素在树里，是点不动**）。
+ *
+ *  三态，缺一个就会把一种失败说成另一种：
+ *  ① 点着了 · ② 第一下被卡拦下 → 收卡再点 · ③ 两下都点不动 → **说出挡在它上面的是谁**。
+ *  ⚠️ 不能让 ③ 掉进各节现成的那句「样本建好了但树里没刷出来」——
+ *  **树里明明有**，那句话会把一次「被模态框挡住」报成一次「树没刷新」，
+ *  而这两件事的修法完全不同（§143.6 那一族：上一节留下的东西，症状出现在下一节）。 */
+const rowStuck = new Set();
+const clickRow = async (row, label) => {
+  const once = (ms) => row.click({ timeout: ms }).then(() => true).catch(() => false);
+  if (await once(6000)) return true;
+  await clearGuard();                 // 卡是刚才那一下点出来的，所以清在点之后
+  if (await once(12000)) return true;
+  if (rowStuck.has(label)) return false;   // 同一行的第二次调用不再重复报
+  rowStuck.add(label);
+  const why = await row.evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const name = (e) => e ? e.tagName.toLowerCase() + (e.id ? "#" + e.id : "")
+      + (e.getAttribute("role") ? `[role=${e.getAttribute("role")}]` : "") : "(命中测试没返回元素)";
+    return { box: `${Math.round(r.width)}×${Math.round(r.height)}`, top: name(t),
+             same: t ? (t === n || n.contains(t)) : false,
+             dialog: document.querySelectorAll('[role="alertdialog"],[role="dialog"]').length };
+  }).catch(() => null);
+  ok(false, `${label}：**这一行在树里，但两下都点不动**（不是「树里没刷出来」——` +
+    `那是另一回事，修法也不同）`,
+    why ? `尺寸 ${why.box} · 中心点上是 ${why.top}${why.same ? "（就是它自己，那多半是在动）" : "（被它挡着）"} · 当时开着 ${why.dialog} 个模态框`
+        : "（连它的几何都量不到了）");
+  return false;
+};
+
+
 const errs = [];
 pg.on("console", (m) => { const t = m.text(); if (m.type() === "error" && !NOISE.some((r) => r.test(t))) errs.push(t.slice(0, 120)); });
 /* ⚠️ **把 4xx 的 URL 也记下来**（2026-10-06 加）：
@@ -105,7 +161,7 @@ const n0 = await rowsNow();
 ok(n0 > 0, "树里有节点", `${n0} 行`);
 
 const firstFile = pg.locator('[role="treeitem"]').filter({ hasText: ".dc.html" }).first();
-await firstFile.click();
+await clickRow(firstFile, "树里第一份设计稿");
 await pg.waitForTimeout(1200);
 /* 这条是这一轮的要害：以前点开文件，目录会被整个换掉 */
 ok(await tree.count() > 0, "打开文件后目录列仍然在");
@@ -114,7 +170,7 @@ ok(await pg.locator('[role="treeitem"][aria-selected="true"]').count() > 0, "当
 const dirRow = pg.locator('[role="treeitem"][aria-expanded="false"]').first();
 let nExpanded = n0;
 if (await dirRow.count()) {
-  await dirRow.click(); await pg.waitForTimeout(1200);
+  await clickRow(dirRow, "进目录"); await pg.waitForTimeout(1200);
   nExpanded = await rowsNow();
   ok(nExpanded > n0, "展开子目录后上一层还在", `${n0} → ${nExpanded} 行`);
 } else ok(false, "没找到可展开的目录");
@@ -555,18 +611,12 @@ const settleTree = async (name, ms = 15000) => {
   return false;
 };
 
-const clearGuard = async () => {
-  if (await pg.locator('[role="alertdialog"]').count()) {
-    await pg.locator('[role="alertdialog"] button:has-text("回去接着改")').click().catch(() => {});
-    await pg.waitForTimeout(300);
-  }
-};
-
 const openByName = async (suffix) => {
   await clearGuard();
   const row = pg.locator('[role="treeitem"]').filter({ hasText: suffix }).first();
   if (!(await row.count())) return false;
-  await row.click(); await pg.waitForTimeout(1200);
+  if (!(await clickRow(row, `打开 ${suffix}`))) return false;
+  await pg.waitForTimeout(1200);
   return true;
 };
 
@@ -848,7 +898,7 @@ if (await ctxDirRow.count()) {
     } else ok(false, "右键菜单里找不到「新建稿件」—— 这一条没验到");
     /* 把展开状态还回去 */
     const nowExpanded = await ctxDirRow.getAttribute("aria-expanded").catch(() => null);
-    if (nowExpanded === "true" && wasExpanded !== "true") { await ctxDirRow.click(); await pg.waitForTimeout(500); }
+    if (nowExpanded === "true" && wasExpanded !== "true") { await clickRow(ctxDirRow, "右键菜单那一行"); await pg.waitForTimeout(500); }
     const rowsAfter = await pg.locator('[role="treeitem"]').count();
     ok(rowsAfter === rowsBefore, "**（收尾）树的展开状态还回去了**（不还的话后面几节会挑到另一份稿）",
        `${rowsBefore} → ${rowsAfter} 行`);
@@ -2569,7 +2619,7 @@ console.log("\n插件 UI 的边界（M11-4）");
           await settleTree(TS);   // 轮询等树刷出来，不是定时等
           const tsRow = pg.locator('[role="treeitem"]').filter({ hasText: TS }).first();
           if (await tsRow.count()) {
-            await tsRow.click(); await pg.waitForTimeout(3000);
+            await clickRow(tsRow, "`.ts` 回归"); await pg.waitForTimeout(3000);
             const codeFrame = pg.frameLocator('iframe[data-role="body"]');
             /* 判据读**真实渲染出来的东西**，不是「没报错」——
                CM 在沙箱里跑不起来的话这几个数全是 0，而页面照样不报错。 */
@@ -2799,10 +2849,10 @@ console.log("\n插件 UI 的边界（M11-4）");
                    点之前清没有用 —— 那时还没有卡。
                    第一版把 `clearGuard()` 放在点之前，遮罩照样挡住后面所有点击。 */
                 const lf = pg.frameLocator('iframe[data-role="body"]');
-                await lockRow.click(); await pg.waitForTimeout(800);
+                await clickRow(lockRow, "`.lock` 回归"); await pg.waitForTimeout(800);
                 await clearGuard();                     // 收掉「要切走吗」
                 /* 被卡片拦下的那一次点击不会生效 —— 收掉之后再点一次 */
-                if (await lf.locator("#ro").count().catch(() => 0) === 0) { await lockRow.click(); }
+                if (await lf.locator("#ro").count().catch(() => 0) === 0) { await clickRow(lockRow, "`.lock` 回归"); }
                 await pg.waitForTimeout(2800);
                 const roTxt = (await lf.locator("#ro:not([hidden])").innerText().catch(() => "")).replace(/\s+/g, " ");
                 ok(/只读/.test(roTxt) && /锁文件/.test(roTxt), "**`.lock` 自动进只读，并说出原因**", roTxt.slice(0, 40) || "（没有只读条）");
@@ -2919,9 +2969,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(C);   // 轮询等树刷出来，不是定时等
                 const cRow = pg.locator('[role="treeitem"]').filter({ hasText: C }).first();
                 if (await cRow.count()) {
-                  await cRow.click(); await pg.waitForTimeout(3000);
+                  await clickRow(cRow, "csv 回归"); await pg.waitForTimeout(3000);
                   await clearGuard();
-                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cgrid").count().catch(() => 0) === 0) { await cRow.click(); await pg.waitForTimeout(2800); }
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cgrid").count().catch(() => 0) === 0) { await clickRow(cRow, "csv 回归"); await pg.waitForTimeout(2800); }
                   const cf = pg.frameLocator('iframe[data-role="body"]');
 
                   ok(await cf.locator("#table").isHidden() === false,
@@ -3075,7 +3125,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(BIG);   // 轮询等树刷出来，不是定时等
                 const bRow = pg.locator('[role="treeitem"]').filter({ hasText: BIG }).first();
                 if (await bRow.count()) {
-                  await bRow.click();
+                  await clickRow(bRow, "坏样本");
                   const bf = pg.frameLocator('iframe[data-role="body"]');
                   /* 等它画出来 —— 别抢（§113 那条「抢跑的判据会把慢误报成坏」）。
                      ⚠️ **而「画出来了」要认是哪个文件的表**（2026-10-06 实测栽过）：
@@ -3198,7 +3248,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(CP);
                 const pRow = pg.locator('[role="treeitem"]').filter({ hasText: CP }).first();
                 if (await pRow.count()) {
-                  await pRow.click();
+                  await clickRow(pRow, "大表 / 对比");
                   const pf = pg.frameLocator('iframe[data-role="body"]');
                   for (let q = 0; q < 40; q++) { if (await pf.locator(".cm-content").count().catch(() => 0)) break; await pg.waitForTimeout(300); }
                   /* 先开编辑栏（上面注释那条） */
@@ -3424,9 +3474,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(J);   // 轮询等树刷出来，不是定时等
                 const jRow = pg.locator('[role="treeitem"]').filter({ hasText: J }).first();
                 if (await jRow.count()) {
-                  await jRow.click(); await pg.waitForTimeout(3000);
+                  await clickRow(jRow, "json 回归"); await pg.waitForTimeout(3000);
                   await clearGuard();
-                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await jRow.click(); await pg.waitForTimeout(2800); }
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await clickRow(jRow, "json 回归"); await pg.waitForTimeout(2800); }
                   const jf = pg.frameLocator('iframe[data-role="body"]');
 
                   /* ⚠️ `.json` 归插件了 —— 它要真的走到代码插件，而不是掉回通用文件卡 */
@@ -3441,10 +3491,22 @@ console.log("\n插件 UI 的边界（M11-4）");
                      **「找得到」和「用得了」是两件事。** */
                   await openEdit();
                   const treeBtn = pg.locator('[data-ud="file-toolbar"] button:has-text("树")').last();
-                  ok(await treeBtn.count() === 1, "编辑栏上有「源码 / 树」切档");
-                  ok(await treeBtn.evaluate((n) => n.getBoundingClientRect().height > 8),
+                  /* ⚠️ **前提要写进断言本身**（§163.4）。上面那条 `count() === 1` 一旦为假，
+                     下一条 `evaluate` 就是在碰一个**已知不存在**的元素 —— 而 Playwright
+                     的自动等待会把这件事从一个干净的「不在」变成**等满 30 秒再抛**，
+                     那一抛带走后面一千多行判据（2026-10-23 实测：`locator.evaluate:
+                     Timeout 30000ms exceeded … button:has-text("树")`）。
+                     > **判据问的是「现在是什么样」，而「等它出现」是自动化脚本要的，不是判据要的。**
+                     所以这一组改成：前提不成立就说一句「这一组没验到」，**不往下碰**。 */
+                  const hasTreeBtn = await treeBtn.count() === 1;
+                  ok(hasTreeBtn, "编辑栏上有「源码 / 树」切档");
+                  if (!hasTreeBtn) {
+                    ok(false, "**「源码 / 树」这一组整组没验到** —— 工具条上没有那颗钮（上面那条已经说了）。" +
+                      "不是这些功能坏了，是**没量到**：这两件在读数里长得一样，所以要分开说");
+                  } else {
+                  ok(await treeBtn.evaluate((n) => n.getBoundingClientRect().height > 8).catch(() => false),
                      "**而且它真的点得到**（编辑栏收起时高度是 0，只用 count 测不出来）");
-                  await treeBtn.click(); await pg.waitForTimeout(1000);
+                  await treeBtn.click({ timeout: 8000 }).catch(() => {}); await pg.waitForTimeout(1000);
                   ok(await jf.locator("#tree").isHidden() === false && await jf.locator(".jrow").count() > 5,
                      "**切得到树档**", `${await jf.locator(".jrow").count()} 行`);
                   const first = (await jf.locator(".jrow").first().innerText()).replace(/\s+/g, " ").trim();
@@ -3467,6 +3529,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                   const sel = await jf.locator(".cm-content").evaluate(() => String(window.getSelection() ?? ""));
                   ok(/"a"/.test(sel) && /"b"/.test(sel),
                      "**跳过去之后那一块是选中的**（不是只滚过去）", sel.replace(/\s+/g, " ").slice(0, 50));
+                  }   /* ← 「有那颗树钮」那一支到此为止 */
                 } else ok(false, "json 样本建好了但树里没刷出来");
 
                 /* ── 解析不了（S19 演示态 5）──
@@ -3484,26 +3547,51 @@ console.log("\n插件 UI 的边界（M11-4）");
                     await pg.waitForTimeout(1100);
                     const bRow = pg.locator('[role="treeitem"]').filter({ hasText: BAD }).first();
                     if (await bRow.count()) {
-                      await bRow.click(); await pg.waitForTimeout(2800);
+                      await clickRow(bRow, "坏样本"); await pg.waitForTimeout(2800);
                       await clearGuard();
-                      if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await bRow.click(); await pg.waitForTimeout(2600); }
+                      if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await clickRow(bRow, "坏样本"); await pg.waitForTimeout(2600); }
                       await openEdit();
                       const bf = pg.frameLocator('iframe[data-role="body"]');
                       const marked = bf.locator(".cm-line.ud-diff-changed");
-                      ok(await marked.count() === 1, "**出错那一行标出来了**", `标了 ${await marked.count()} 行`);
+                      /* 同 §163.4：**前提写进断言本身**。`count() === 1` 为假的时候，
+                         下面那两条就是在碰一个已知不存在的元素 —— 而 `getAttribute`
+                         也会等满 30 秒再抛（2026-10-23 实测，这是同一个模式的第三处：
+                         先是 `click`、再是 `evaluate`、这次是 `getAttribute`）。
+                         > **三次都是「上一条判据刚说这元素不在，下一条还去碰它」。** */
+                      const nMarked = await marked.count();
+                      ok(nMarked === 1, "**出错那一行标出来了**", `标了 ${nMarked} 行`);
+                      if (nMarked !== 1) {
+                        ok(false, "**「标在哪一行 + 那句原因」这一组没验到** —— 压根没有标记行（上面那条已经说了）。" +
+                          "⚠️ 这和「标错了行」是两件事，而在读数里长得一样");
+                      } else {
                       ok(/"b": 2/.test((await marked.first().innerText().catch(() => "")).trim()),
                          "标的是**真正出错那一行**（不是回退到第 1 行）", (await marked.first().innerText().catch(() => "")).trim());
-                      const why = await marked.first().getAttribute("data-diff");
+                      const why = await marked.first().getAttribute("data-diff").catch(() => null);
                       ok(/少了逗号/.test(why ?? ""),
                          "**下面那句原因说的是人话**（说不出才给 V8 的英文，不编）", why);
+                      }
                       const jbar = pg.locator('[data-ud="file-toolbar"]');
                       ok(/解析不了 L3:3/.test((await jbar.innerText().catch(() => "")).replace(/\s+/g, " ")),
                          "工具条上出「解析不了 L3:3」", (await jbar.innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 60));
                       const tb2 = pg.locator('[data-ud="file-toolbar"] button:has-text("树")').last();
-                      ok(await tb2.isDisabled(), "**树钮灰掉**（不是藏起来 —— 藏了用户不知道这种文件本来有树）");
-                      ok(/先改好 L3/.test(await tb2.getAttribute("title") ?? ""), "而且说得出为什么灰", await tb2.getAttribute("title"));
+                      /* 前提：这颗钮在不在。不在的话下面四条全是在碰一个不存在的东西 ——
+                         **这是同一个模式的第五处**（`click` → `evaluate` → `getAttribute` → `isDisabled`）。
+                         ⚠️ **catch 的返回值要让这条判据红，不是让它绿** —— 注意下面
+                         「灰掉」用 `() => false`，而「活过来」用 `() => true`（`!true` = false）：
+                         同一个方法在肯定式和否定式断言里**方向相反**。
+                         §165 栽过：`.catch(() => true)` 把 strict-mode 的「匹配到多个」吃成了「可见」。
+                         > **判据里的 catch 最容易把真相吃掉。** */
+                      const hasTb2 = await tb2.count() > 0;
+                      if (!hasTb2) {
+                        ok(false, "**「树钮灰掉 / 说得出为什么 / 点它跳过去 / 跟着活过来」这四条没验到** —— " +
+                          "工具条上压根没有那颗钮（上面那条已经说了）。**没量到 ≠ 坏了**");
+                      }
+                      ok(hasTb2 && await tb2.isDisabled().catch(() => false), "**树钮灰掉**（不是藏起来 —— 藏了用户不知道这种文件本来有树）");
+                      ok(hasTb2 && /先改好 L3/.test((await tb2.getAttribute("title").catch(() => null)) ?? ""),
+                         "而且说得出为什么灰", hasTb2 ? await tb2.getAttribute("title").catch(() => "（取不到）") : "（没有那颗钮）");
                       /* 点那颗跳过去 */
-                      await pg.locator('[data-ud="file-toolbar"] button:has-text("解析不了")').first().click();
+                      await pg.locator('[data-ud="file-toolbar"] button:has-text("解析不了")').first()
+                        .click({ timeout: 8000 }).catch(() => {});
                       await pg.waitForTimeout(700);
                       const at = await bf.locator(".cm-content").evaluate(() => {
                         const s = window.getSelection();
@@ -3519,7 +3607,7 @@ console.log("\n插件 UI 的边界（M11-4）");
                       ok(await marked.count() === 0,
                          "**补好之后红线自己消失**（不消失的话用户会以为自己没改对，回头再改一遍）",
                          `还剩 ${await marked.count()} 行`);
-                      ok(!(await tb2.isDisabled()), "树钮跟着活过来");
+                      ok(hasTb2 && !(await tb2.isDisabled().catch(() => true)), "树钮跟着活过来");
                       ok(!/解析不了/.test((await jbar.innerText().catch(() => "")).replace(/\s+/g, " ")), "工具条上那颗也收掉了");
                       /* ⚠️ **自己弄脏的自己清。**（2026-09-30 栽过）
                          上面为了测「改好之后红线消失」打了一个逗号 —— 那是**未落盘**状态。
@@ -3562,9 +3650,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                     await settleTree(BIG);   // 轮询等树刷出来，不是定时等
                     const gRow = pg.locator('[role="treeitem"]').filter({ hasText: BIG }).first();
                     if (await gRow.count()) {
-                      await gRow.click(); await pg.waitForTimeout(4500);
+                      await clickRow(gRow, "大 json 回归"); await pg.waitForTimeout(4500);
                       await clearGuard();
-                      if (await pg.frameLocator('iframe[data-role="body"]').locator(".jrow").count().catch(() => 0) === 0) { await gRow.click(); await pg.waitForTimeout(4000); }
+                      if (await pg.frameLocator('iframe[data-role="body"]').locator(".jrow").count().catch(() => 0) === 0) { await clickRow(gRow, "大 json 回归"); await pg.waitForTimeout(4000); }
                       const gf = pg.frameLocator('iframe[data-role="body"]');
                       ok(await gf.locator("#tree").isHidden() === false,
                          "**大文件默认就给树**（几万行的源码里找一个键不如按结构点进去）");
@@ -3632,9 +3720,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(D);   // 轮询等树刷出来，不是定时等
                 const dRow = pg.locator('[role="treeitem"]').filter({ hasText: D }).first();
                 if (await dRow.count()) {
-                  await dRow.click(); await pg.waitForTimeout(3000);
+                  await clickRow(dRow, "草稿回归"); await pg.waitForTimeout(3000);
                   await clearGuard();
-                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await dRow.click(); await pg.waitForTimeout(2800); }
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await clickRow(dRow, "草稿回归"); await pg.waitForTimeout(2800); }
                   const cf = pg.frameLocator('iframe[data-role="body"]');
 
                   const bar = (await cf.locator("#draft").innerText().catch(() => "")).replace(/\s+/g, " ");
@@ -3730,7 +3818,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                   /* ⚠️ **800ms 之内**就切走 —— 这是这条 bug 的全部条件 */
                   await pg.waitForTimeout(120);
                   await settleTree(B);
-                  await pg.locator('[role="treeitem"]').filter({ hasText: B }).first().click();
+                  /* ⚠️ **这一下是整个文件里最该允许失败的一次点击** —— 下面那段注释
+                     自己写着它会弹出那张卡，而卡的遮罩就压在要点的那一行上。 */
+                  await clickRow(pg.locator('[role="treeitem"]').filter({ hasText: B }).first(), "切到乙（会弹确认卡）");
                   /* ⚠️ 甲有**未落盘的改动** → 切走时工作台会弹那张「这些改动不要了吗」的卡。
                      不处理的话它**挡住后面每一次点击** —— 而症状出现在**下一节**
                      （版本历史那一节的 `vRow.click()` 等 30 秒超时），
@@ -3801,9 +3891,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(V);   // 轮询等树刷出来，不是定时等
                 const vRow = pg.locator('[role="treeitem"]').filter({ hasText: V }).first();
                 if (await vRow.count()) {
-                  await vRow.click(); await pg.waitForTimeout(2800);
+                  await clickRow(vRow, "版本历史回归"); await pg.waitForTimeout(2800);
                   await clearGuard();
-                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await vRow.click(); await pg.waitForTimeout(2500); }
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator(".cm-content").count().catch(() => 0) === 0) { await clickRow(vRow, "版本历史回归"); await pg.waitForTimeout(2500); }
 
                   const pill = pg.locator('[data-ud="version-pill"]');
                   ok(await pill.count() === 1, "**代码文件有版本历史药丸**（M10-2b）", (await pill.innerText().catch(() => "")).trim());
@@ -3932,9 +4022,9 @@ console.log("\n插件 UI 的边界（M11-4）");
                 await settleTree(H);   // 轮询等树刷出来，不是定时等
                 const hRow = pg.locator('[role="treeitem"]').filter({ hasText: H }).first();
                 if (await hRow.count()) {
-                  await hRow.click(); await pg.waitForTimeout(800);
+                  await clickRow(hRow, "`.html` 回归"); await pg.waitForTimeout(800);
                   await clearGuard();
-                  if (await pg.frameLocator('iframe[data-role="body"]').locator("#page").count().catch(() => 0) === 0) { await hRow.click(); }
+                  if (await pg.frameLocator('iframe[data-role="body"]').locator("#page").count().catch(() => 0) === 0) { await clickRow(hRow, "`.html` 回归"); }
                   await pg.waitForTimeout(3000);
                   const plug = pg.frameLocator('iframe[data-role="body"]');
                   /* 预览页是**第三层** —— 插件的 iframe 里那个 #page */
