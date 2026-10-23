@@ -351,8 +351,18 @@ export interface CreateProjectResult {
 }
 
 /** 第一份空白稿的骨架。
- *  最小可渲染 .dc.html：doctype + helmet + 空 x-dc + support.js 引导。 */
-function blankDraft(title: string): string {
+ *  最小可渲染 .dc.html：doctype + helmet + 空 x-dc + support.js 引导。
+ *
+ *  ⚠️⚠️ **2026-10-24 导出，给判据造夹具稿用**（M16-8 ⑥ 之后的唯一一条路）。
+ *  那一天量到一件事，它正好印证了 ⑥ 的理由：
+ *  一份只有 `<x-dc>` 而不引 `support.js` 的 `.dc.html`，**写入口按契约拒绝落盘**
+ *  （`E_RUNTIME_NOT_LOADED`：「有 `<x-dc>` 却没有引 support.js」）。
+ *  而 `support.js` 与那两个 React UMD 在 C3 已经删了、也不再往稿旁边拷。
+ *  > **也就是说这个仓库今天已经没有能力生成一份能通过自己校验的 `.dc.html` 了** ——
+ *  > `create_draft` 的「空白骨架」那一档不是「可以退场」，是**已经名存实亡**。
+ *  这个函数留着的唯一理由是 `createProject` 还要建首稿；判据借它造夹具，
+ *  而不是各自手写一份骨架（手写的那天就会撞上上面那条拒）。 */
+export function blankDraft(title: string): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -510,184 +520,22 @@ export async function createProject(
 // ──────────────────────── M1-3: create_draft ───────────────────────
 
 /** 新建稿的四种来源 */
-export type DraftSource =
-  | { kind: "blank"; title?: string }
-  | { kind: "copy"; sourceFile: string }
-  | { kind: "component"; componentName: string; title?: string }
-  | { kind: "template"; templatePath: string };
+/* ⚠️⚠️ **`createDraft` 与它的四档来源 2026-10-24 退场**（M16-8 ⑥，geek-99 定）。
+   删掉的是：`DraftSource`（blank / copy / component / template 四档）·
+   `CreateDraftResult` · `createDraft` 本体 · 只服务它的 `blankDraftContent` 与模板那一摊。
+   理由：四档里三档都是**在造设计稿**（`<x-dc>` 骨架 · `<dc-import>` 包装 · `.dc.html` 模板），
+   而 C3 定的是「设计稿那一整套删掉」；第四档「复制现有稿」交给 `duplicateDraft`
+   （两件能力回答同一个问题，留一件）。界面那个入口换成「新建文件…」走 `write_file`。
 
-export interface CreateDraftResult {
-  /** 副本从源稿带过来的 error 级诊断条数（issue #92）。
-   *  ⚠️ **不说的话用户以为复制出来是干净的** —— 而它带着原稿的毛病。 */
-  carriedErrors?: number;
-  path: string;
-  source: string;
-  elements: number;
-}
+   ⚠️ **`blankDraft` 和 `newDraftToDisk` 没跟着删** —— 它们还有别的调用方：
+   `createProject` 要建新项目的第一份稿、`duplicateDraft` 要走写入口。
+   > **删一件能力时，它用到的东西不一定只有它在用** ——
+   > 而这件事 grep 一眼看不出来（`blankDraft` 的两个调用方长得一样）。
 
-/** 空白稿模板。和 createProject 用的类似但更精简。 */
-function blankDraftContent(title: string): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="./support.js"></script>
-</head>
-<body>
-<x-dc>
-<!-- ${title} —— 新建稿 -->
-<div style="padding:80px 20px;text-align:center;color:var(--ink,#888);font-family:system-ui">
-  <div style="font-size:16px;font-weight:600;margin-bottom:8px">${title}</div>
-  <div style="font-size:13px">选中这个元素，改它的字号 / 颜色 / 文案</div>
-</div>
-</x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:375,&quot;height&quot;:667}}">
-class Component extends DCLogic {
-  renderVals() { return {}; }
-}
-</script>
-</body>
-</html>
-`;
-}
-
-/** 组件包装稿：只含一个 dc-import。
- *  这样新稿就是一个页稿，引用了指定的组件，可以直接预览。 */
-function componentWrapperDraft(componentName: string, title: string): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="./support.js"></script>
-</head>
-<body>
-<x-dc>
-<!-- ${title} —— ${componentName} 的包装稿 -->
-<dc-import name="${componentName}"></dc-import>
-</x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:375,&quot;height&quot;:667}}">
-class Component extends DCLogic {
-  renderVals() { return {}; }
-}
-</script>
-</body>
-</html>
-`;
-}
-
-/** 新建一份稿。
- *
- * 四种来源：
- *   blank       —— 空白骨架
- *   copy        —— 复制现有稿（不复制快照，新稿从 v1 起）
- *   component   —— 把组件包一层，创建只含 dc-import 的页稿
- *   template    —— 从模板文件复制
- *
- * path 相对项目根，必须以 .dc.html 结尾。
- * 如果文件已存在会抛出。
- */
-export async function createDraft(
-  p: Project,
-  path: string,
-  source: DraftSource,
-): Promise<CreateDraftResult> {
-  const abs = resolve(p.dir, path);
-  if (!isInsideReal(p.dir, abs)) {           // issue #19 + #140（链接）
-    throw new Error("稿的路径跨出了项目目录");
-  }
-  if (existsSync(abs)) {
-    throw new Error(`文件 "${path}" 已经存在`);
-  }
-  if (!path.endsWith(".dc.html")) {
-    throw new Error("稿的路径必须以 .dc.html 结尾");
-  }
-
-  let content: string;
-  let sourceDesc: string;
-
-  switch (source.kind) {
-    case "blank": {
-      const title = source.title ?? basename(path).replace(/\.dc\.html$/, "");
-      content = blankDraftContent(title);
-      sourceDesc = "空白骨架";
-      break;
-    }
-    case "copy": {
-      /* ⚠️ **来源也要守**（issue #69，p0，2026-10-05）。
-         原来是裸的 `resolve(p.dir, sourceFile)` + `readFile` ——
-         只有**目标** `path` 过了 `isInside`（#19 修的那一处），来源一点守卫都没有。
-         于是 `create_draft({ source: { kind:"copy", sourceFile:"../../../../.umbrastudio/ai_config.json" } })`
-         把**三条通道的明文 apiKey 读进一份新稿** —— 而那份稿接着就进了 AI 上下文。
-
-         `draftPath()` 自带 `isInside` + 存在性检查（现成的，#63 给
-         `saveAsTemplate` 用的也是它）。
-         ⚠️ 顺带要求 `.dc.html`：复制一份稿就是复制稿，不是读任意文件。 */
-      if (!/\.dc\.html$/i.test(source.sourceFile)) {
-        throw new ToolError(err(X.BAD_INPUT, source.sourceFile, { kind: "path", name: source.sourceFile },
-          "只能复制设计稿", { fix: "sourceFile 要指向一份 .dc.html" }));
-      }
-      const srcAbs = draftPath(p, source.sourceFile);
-      content = await readFile(srcAbs, "utf8");
-      sourceDesc = "复制自 " + source.sourceFile;
-      break;
-    }
-    case "component": {
-      const title = source.title ?? basename(path).replace(/\.dc\.html$/, "");
-      content = componentWrapperDraft(source.componentName, title);
-      sourceDesc = "组件 " + source.componentName + " 的包装稿";
-      break;
-    }
-    case "template": {
-      /* ⚠️ **模板路径必须在这个项目的模板目录里**（issue #69）。
-         原来是 `readFile(source.templatePath)` —— schema 的描述就是「模板绝对路径」，
-         于是**任意绝对路径**都读得到（`ai_config.json`、`~/.ssh/config`…）。
-         而 `cap/drafts.ts` 的 `tplPath` 用 `join(..., name + ".dc.html")`，
-         `join` 又折叠 `..` —— 两条路都通。
-
-         这里设两道（和 #57 / #63 同一套）：结果必须在模板目录里 + 必须是 `.dc.html`。
-         ⚠️ 用 `resolveInside(模板目录, …)` 而不是 `isInside(项目, …)` ——
-         **闸的粒度要配需求的粒度**：套模板只需要读模板目录，
-         给它整个项目的读权限是多给的（M10-3 那条 `frame-src` 同一条道理）。 */
-      const tplDir = assetDir(p.dir, "templates");
-      let tplAbs: string;
-      try { tplAbs = resolveInside(tplDir, relative(tplDir, resolve(source.templatePath))); }
-      catch {
-        throw new ToolError(err(X.BAD_INPUT, source.templatePath, { kind: "path", name: source.templatePath },
-          "模板只能来自这个项目的模板目录",
-          { fix: "用 list_templates 看现有的模板，传它给出的那个路径。" }));
-      }
-      if (!/\.dc\.html$/i.test(tplAbs) || !existsSync(tplAbs)) {
-        throw new ToolError(err(X.BAD_INPUT, source.templatePath, { kind: "path", name: source.templatePath },
-          `找不到模板 "${basename(source.templatePath)}"`, { fix: "用 list_templates 看现有的模板。" }));
-      }
-      content = await readFile(tplAbs, "utf8");
-      sourceDesc = "模板 " + basename(tplAbs);
-      break;
-    }
-    default: {
-      const _exhaustive: never = source;
-      throw new Error("未知的稿来源类型");
-    }
-  }
-
-  /* ⚠️ `copy` 和 `template` 都算 `"copy"` 这一档（issue #92）——
-     判准是**内容是不是我们自己生成的**，而模板是用户用 `save_as_template`
-     从自己的稿存下来的，所以它和 copy 同类。只有 `blank` 是我们生成的。 */
-  const { errorDiags } = await newDraftToDisk(
-    p, relative(p.dir, abs).split(sep).join("/"), content,
-    source.kind === "blank" ? "blank" : "copy");
-
-  return {
-    path,
-    source: sourceDesc,
-    ...(errorDiags ? { carriedErrors: errorDiags } : {}),
-    elements: 0,  // 由调用方校验后填入
-  };
-}
-
-// ──────────────────────── M1-5: duplicate_draft ───────────────────────
+   ⚠️ 这里原来还留着一段 2026-10-05 的实测表（`create_draft` 三条路四样都没有），
+   它解释「为什么这条路必须走写入口」—— 那段话跟着 `createDraft` 一起走，
+   因为**它解释的那条路不存在了**。而它教的那件事（新建也要走写入口）
+   在 `createProject` / `duplicateDraft` 上仍然成立，`lifecycletest` 钉着。 */
 
 export interface DuplicateDraftResult {
   /** 副本从源稿带过来的 error 级诊断条数（issue #92） */

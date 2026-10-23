@@ -14,7 +14,7 @@ import { z } from "zod";
 import { envelope, toContent, ToolError, err, type Envelope } from "./envelope.js";
 import { X } from "./codes.js";
 import {
-  TOOL_ROOT, buildProject, createProject, createDraft, duplicateDraft, createFolder,
+  TOOL_ROOT, buildProject, createProject, duplicateDraft, createFolder,
   updateProject, archiveProject, deleteProject,
   draftPath, listDrafts, listProjectDirs, loadProject, projectsRoot,
   type Project,
@@ -41,7 +41,6 @@ import { touchProject, listRecentProjects, removeRecentProject, clearRecentProje
 import { buildRefGraph, listReferences, renameDraft, moveDraft, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
 import { globalSearch } from "./search.js";
 import { setTokenValue } from "./token_edit.js";
-import { listTemplates, saveAsTemplate, deleteTemplate } from "./templates.js";
 import { exportProject, importProject } from "./export.js";
 
 import { capsFor, type CapCtx } from "./cap/index.js";
@@ -195,50 +194,21 @@ server.registerTool("inspect_dir", {
 
 // ─────────────────────── 设计系统编辑 ─────────────────────
 
-// ─────────────────────── 稿件模板 ─────────────────────
+/* ⚠️⚠️ **稿件模板那三件（`list_templates` / `save_as_template` / `delete_template`）
+   2026-10-24 退场**（M16-8 ⑥，geek-99 定）。
+   模板是 `.dc.html` 模板，而它们的**唯一消费者是 `create_draft` 的 `template` 档** ——
+   那一件同一批退场（四档里三档都是在造设计稿，C3 定的是「设计稿那一整套删掉」）。
+   留着的话模板就是又一个「只被写、从不被读」的东西。
 
-server.registerTool("list_templates", {
-  title: "列出稿件模板",
-  description: "列出项目内所有已保存的稿件模板。新建稿时可以用 source=template + templateName 来基于模板创建。",
-  inputSchema: { project: z.string() },
-}, async ({ project }) => run(async () => {
-  const p = await loadProject(project);
-  const templates = await listTemplates(p);
-  return envelope({ templates }, [], { total: templates.length });
-}));
+   ⚠️⚠️ **用户项目里已经存在的 `.umbrastudio/templates/` 文件不动、也不迁移**
+   （geek-99 明确；纪律⑥：允许我们不管它，不是要我们删它）。
+   盘上那些文件从此没有读者 —— 这件事写在这里，而不是让下一个人去推断。
 
-server.registerTool("save_as_template", {
-  title: "保存稿为模板",
-  description: [
-    "把项目中的一份稿保存为模板，之后新建稿时可以基于此模板创建。",
-    "模板存在项目的 .umbrastudio/templates/ 目录下。",
-  ].join("\n"),
-  inputSchema: {
-    project: z.string(),
-    draftPath: z.string().describe("相对项目根的稿路径"),
-    name: z.string().describe("模板名称"),
-  },
-}, async ({ project, draftPath, name }) => run(async () => {
-  const p = await loadProject(project);
-  const r = await saveAsTemplate(p, draftPath, name);
-  return envelope(r, [], {});
-}));
-
-server.registerTool("delete_template", {
-  title: "删除稿件模板",
-  description: "删除一个已保存的稿件模板。",
-  inputSchema: {
-    project: z.string(),
-    name: z.string().describe("模板名称"),
-  },
-}, async ({ project, name }) => run(async () => {
-  const p = await loadProject(project);
-  const r = await deleteTemplate(p, name);
-  const diags = r.deleted ? [] : [
-    err(X.DRAFT_NOT_FOUND, p.rel, { kind: "key", name: "template" }, `模板 ${name} 不存在`),
-  ];
-  return envelope(r, diags, {});
-}));
+   ⚠️ 顺带：`chat_run.ts` 和这个文件各有一行**只 import、从不使用**的死 import
+   （`createDraft` · 三件模板函数）。TypeScript 对未使用的 import 不报错，所以
+   「删掉让编译错误带路」在这条路上**带不到** —— MCP 面是**按名字注册**的，
+   删 `cap/` 里那一件不会让这里报错。
+   > **「让漏掉变成编译错误」只在调用方和被删的东西在同一条类型链上时成立。** */
 
 // ─────────────────────── 项目导出/导入 ─────────────────────
 

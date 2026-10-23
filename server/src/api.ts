@@ -49,7 +49,7 @@ import { z } from "zod";
 import { isToolPage } from "./files.js";
 import { countTypes, listFiles, listSnapshotMeta, moveFile, readAnyFile, referencesOf, revertFile, trashFile, writeAnyFile } from "./files.js";
 import { runChatSend } from "./chat_run.js";
-import { updateProject, archiveProject, deleteProject, listProjectDirs, buildProject, createProject, createDraft } from "./project.js";
+import { updateProject, archiveProject, deleteProject, listProjectDirs, buildProject, createProject } from "./project.js";
 import { listRecentProjects, touchProject } from "./workspace.js";
 import { listTrash, restoreDraft, purgeTrash, emptyTrash, deleteDraft } from "./refs.js";
 import { listChats, loadChat, createChat } from "./chat.js";
@@ -227,23 +227,10 @@ export async function handleApi(
     /* AI 会话（M2-12：应用前端的会话面板走本地 API，和 MCP 的 chat_send 同一份逻辑） */
     /* ── 钉在节点上的评论（M6-2） ── */
 
-    if (route === "templates" && req.method === "GET") {
-      /* 新建稿件那一屏的「起始模板」（M8-24）。模板在**每个项目自己的**
-         `.umbrastudio/templates/`，不是 design-system 目录 —— 设计侧猜错了，回执里纠正过。 */
-      const { listTemplates } = await import("./templates.js");
-      const list = await listTemplates(p);
-      json(reply, 200, { ok: true, data: { templates: list.map((t) => ({ id: t.name, name: t.name, sub: t.elementCount ? `${t.elementCount} 元素` : undefined })) } });
-      return true;
-    }
-    if (route === "save_template" && req.method === "POST") {
-      /* 「存为模板…」（M8-28）。MCP 侧早有 `saveAsTemplate`，本地 API 没开过 ——
-         界面上一直没有入口，所以没人发现缺。第九轮给了入口。 */
-      const b = await readBody(req) as { path?: string; name?: string };
-      const { saveAsTemplate } = await import("./templates.js");
-      const r = await saveAsTemplate(p, str(b.path, "path"), str(b.name, "name"));
-      json(reply, 200, { ok: true, data: r });
-      return true;
-    }
+    /* ⚠️ **模板那两条手写路由（`templates` / `save_template`）2026-10-24 退场** ——
+       和 MCP 面那三件、以及 `create_draft` 的 `template` 档同一批（M16-8 ⑥）。
+       全文在 `index.ts` 删那三件的地方。**存量 `.umbrastudio/templates/` 文件不动。** */
+
     if (route === "chat_send" && req.method === "POST") {
       if (!originOk(req, ctx.port)) {
         json(reply, 403, { ok: false, errors: [{ code: "E_API_ORIGIN", message: "Origin 不是本服务" }] });

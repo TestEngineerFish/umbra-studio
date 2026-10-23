@@ -390,14 +390,18 @@ ok(!headText.includes("/Users/"), "项目路径不在顶栏上了", headText.rep
 await header.locator("button[aria-haspopup=\"menu\"]").click(); await pg.waitForTimeout(400);
 const menuText = await pg.locator('[role="menu"]').innerText();
 ok(menuText.includes("/Users/"), "完整路径在项目菜单里（要复制路径时截断的没用）");
-/* 第八轮精简过：**「新建稿件」去了目录右键**，「复制路径」并进了路径那一栏（整块可点） */
+/* 第八轮精简过：**那一项去了目录右键**，「复制路径」并进了路径那一栏（整块可点）。
+   ⚠️ 2026-10-24 它从「新建稿件…」改名成「新建文件…」（M16-8 ⑥：`create_draft` 退场，
+   入口改走 `write_file`）。下面几条判据跟着改的是**文案**，钉的性质一个字没放松。
+   > **一条按文案找元素的判据，在改名那天会红 —— 而那是判据过期，不是产品坏了。** */
 /* ⚠️ 「重建索引」2026-10-23（M16-7c / C3）从这张单里删了 —— 它调的 `build_index`
    往项目里部署的是设计稿预览壳，而那一整套没了。
    ⚠️ 下面那条**反面判据**是这次补的：只删正面清单里的一项，
    「菜单里还留着一颗点了报 404 的『重建索引』」照样全绿。 */
 ok(["在访达中显示", "项目设置…", "关闭项目"].every((x) => menuText.includes(x)), "项目菜单只剩对整个项目的动作", menuText.split("\n").filter(Boolean).slice(2).join(" / "));
 ok(!menuText.includes("重建索引"), "**「重建索引」不在菜单里了**（它那条路整条删了，留着就是点了报 404）");
-ok(!menuText.includes("新建稿件"), "项目菜单里**没有**新建稿件了（它去了目录右键）");
+ok(!menuText.includes("新建文件") && !menuText.includes("新建稿件"),
+   "项目菜单里**没有**新建文件了（它去了目录右键）—— 旧文案也一并查，改名没留残迹", menuText.slice(0, 60));
 ok(/点击复制/.test(menuText), "路径那一栏整块可点即复制");
 await pg.keyboard.press("Escape"); await pg.mouse.click(700, 400); await pg.waitForTimeout(300);
 /* 目录列头的两颗导航钮 */
@@ -1142,13 +1146,13 @@ const ctxDirRow = pg.locator('[role="treeitem"][aria-expanded]').first();
 if (await ctxDirRow.count()) {
   await ctxDirRow.click({ button: "right" }); await pg.waitForTimeout(400);
   const t = await ctxText();
-  ok(/新建稿件/.test(t) && /新建目录/.test(t), "右键目录：有「新建稿件 / 新建目录」", t.slice(0, 70));
+  ok(/新建文件/.test(t) && /新建目录/.test(t), "右键目录：有「新建文件 / 新建目录」", t.slice(0, 70));
   ok(/在详情区打开/.test(t), "右键目录：有「在详情区打开」（接走了原列头的 ⤢）");
   ok(/移到回收站/.test(t) && !/删除/.test(t), "右键目录：写的是「移到回收站」不是「删除」");
   ok(!/重建索引/.test(t), "右键目录：**没有**重建索引（它作用于整个项目，只在空白处出）");
   await closeCtx();
 
-  /* ── 新建稿件那一屏：键盘走到「取消」按回车**不该建稿**（issue #124，2026-10-06）──
+  /* ── 新建文件那一屏：键盘走到「取消」按回车**不该建文件**（issue #124，2026-10-06）──
      Enter 原来是在**容器**上统一拦的、不看焦点落在哪里：
        · Tab 到「取消」按 Enter → `preventDefault()` 吃掉按钮自己的激活 → **提交**；
        · Tab 到「组件稿」按 Enter 想选它 → 直接提交，类型还是原来的「页稿」；
@@ -1175,7 +1179,7 @@ if (await ctxDirRow.count()) {
        **看着像菜单里真的没有这一项**。上面第 532 行的判据用的就是正确的那个选择器，
        我**抄的时候换了一个**。 */
     const mkItem = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
-      .filter({ hasText: /新建稿件/ }).first();
+      .filter({ hasText: /新建文件/ }).first();
     if (await mkItem.count()) {
       await mkItem.click(); await pg.waitForTimeout(700);
       const sheet = pg.locator('[role="dialog"], [data-ud="sheet"]').first();
@@ -1190,7 +1194,7 @@ if (await ctxDirRow.count()) {
       /* Tab 走到「取消」那颗钮上再按回车 */
       const cancel = pg.locator("button").filter({ hasText: /^取消/ }).first();
       const hasCancel = await cancel.count();
-      ok(hasCancel === 1, "（前提）新建稿件那一屏上有「取消」", `${hasCancel} 颗`);
+      ok(hasCancel === 1, "（前提）新建文件那一屏上有「取消」", `${hasCancel} 颗`);
       if (hasCancel) {
         await cancel.focus();
         await pg.keyboard.press("Enter");
@@ -1236,7 +1240,7 @@ if (await ctxDirRow.count()) {
       }
       await pg.keyboard.press("Escape"); await pg.waitForTimeout(400);
       await closeCtx();
-    } else ok(false, "右键菜单里找不到「新建稿件」—— 这一条没验到");
+    } else ok(false, "右键菜单里找不到「新建文件」—— 这一条没验到");
     /* 把展开状态还回去 */
     const nowExpanded = await ctxDirRow.getAttribute("aria-expanded").catch(() => null);
     if (nowExpanded === "true" && wasExpanded !== "true") { await clickRow(ctxDirRow, "右键菜单那一行"); await pg.waitForTimeout(500); }
@@ -1251,7 +1255,7 @@ if (await fileRow.count()) {
   await fileRow.click({ button: "right" }); await pg.waitForTimeout(400);
   const t = await ctxText();
   ok(/重命名/.test(t) && /移到回收站/.test(t), "右键文件：有重命名和移到回收站", t.slice(0, 70));
-  ok(!/新建稿件/.test(t) && !/新建目录/.test(t), "右键文件：**没有**新建（在文件上说不清建在哪）");
+  ok(!/新建文件/.test(t) && !/新建目录/.test(t), "右键文件：**没有**新建（在文件上说不清建在哪）");
   await closeCtx();
 } else ok(false, "树里没有文件行");
 

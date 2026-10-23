@@ -151,22 +151,28 @@ console.log("\n③ 【验收点】改动落在正确的项目上（去盘上数�
   await pg.waitForTimeout(1500);
   /* `.md` 由内置插件在 iframe 里画，直接打字不稳；用插件面的保存那条路不如
      走一条**一定经过「当前项目的 core」**的界面动作：文件卡 / 编辑器都要等插件。
-     所以这里改用「新建稿件」那条 —— 它也走当前项目的 core，而且结果**在盘上看得见**。 */
+     所以这里改用「新建文件」那条 —— 它也走当前项目的 core，而且结果**在盘上看得见**。
+     ⚠️ 2026-10-24 这一项从「新建稿件…」改名成「新建文件…」（M16-8 ⑥），判据跟着改文案。 */
   await slot.locator('[data-ud="tree-more"]').first().click();
   await pg.waitForTimeout(400);
-  const mkItem = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]').filter({ hasText: /新建稿件/ }).first();
-  ok(await mkItem.count() > 0, "（前提）当前那个工作台的菜单里有「新建稿件…」");
+  const mkItem = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]').filter({ hasText: /新建文件/ }).first();
+  ok(await mkItem.count() > 0, "（前提）当前那个工作台的菜单里有「新建文件…」");
   await mkItem.click();
   await pg.waitForTimeout(600);
   const nameInput = pg.locator('input[placeholder^="例如"]').first();
   ok(await nameInput.count() > 0, "（前提）文件名表单出来了（这两个项目都接管过，不该再问接管）");
-  await nameInput.fill("并存测试稿");
+  /* ⚠️ **名字自己带扩展名**（2026-10-24）：这一屏从「新建稿件」改成「新建文件」之后
+     **不再自动补 `.dc.html`** —— 入口变通用了，补一个后缀就是替用户猜。
+     第一版这里填「并存测试稿」而下面查 `并存测试稿.dc.html`，读数是
+     `甲里没有 · 乙里没有`，看着像「压根没建成」而其实是**名字对不上**。
+     > **「文件不在」和「文件在别的名字下」在 `existsSync` 上长得一样。** */
+  await nameInput.fill("并存测试稿.md");
   await pg.locator('button:has-text("新建")').last().click();
   await pg.waitForTimeout(3000);
 
   /* ⚠️⚠️ **就是这两行**：当前显示的是乙，所以它必须落在乙，而甲一个字节都不许多。 */
-  const inB = existsSync(join(B, "并存测试稿.dc.html"));
-  const inA = existsSync(join(A, "并存测试稿.dc.html"));
+  const inB = existsSync(join(B, "并存测试稿.md"));
+  const inA = existsSync(join(A, "并存测试稿.md"));
   ok(inB, "**新建的稿落在当前那个项目（乙）里**", inB ? "在" : "✗ 不在");
   ok(!inA, "**而另一个项目（甲）一个字节都没多** —— 这是整件事的验收点",
      inA ? "✗ 它落到甲里去了（拿错项目）" : "甲里没有");
@@ -218,14 +224,14 @@ console.log("\n⑤ 当前这个工作台打的是它自己那台服务");
   const slot2 = pg.locator('[data-ud="workbench-slot"][data-active]');
   await slot2.locator('[data-ud="tree-more"]').first().click();
   await pg.waitForTimeout(400);
-  const mk2 = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]').filter({ hasText: /新建稿件/ }).first();
+  const mk2 = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]').filter({ hasText: /新建文件/ }).first();
   await mk2.click();
   await pg.waitForTimeout(600);
-  await pg.locator('input[placeholder^="例如"]').first().fill("甲这边的稿");
+  await pg.locator('input[placeholder^="例如"]').first().fill("甲这边的稿.md");
   await pg.locator('button:has-text("新建")').last().click();
   await pg.waitForTimeout(3000);
-  const inA2 = existsSync(join(A, "甲这边的稿.dc.html"));
-  const inB2 = existsSync(join(B, "甲这边的稿.dc.html"));
+  const inA2 = existsSync(join(A, "甲这边的稿.md"));
+  const inB2 = existsSync(join(B, "甲这边的稿.md"));
   ok(activeDir2 === A && inA2 && !inB2,
      "**切到甲之后新建落在甲**（core 跟着换了 —— 没换的话它会落到乙）",
      `当前 ${activeDir2 === A ? "甲" : "?"} · 甲里${inA2 ? "有" : "没有"} · 乙里${inB2 ? "✗ 有（拿错项目）" : "没有"}`);

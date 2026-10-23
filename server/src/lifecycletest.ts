@@ -10,7 +10,13 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { createProject, createDraft, loadProject, listDrafts, buildProject, updateProject, archiveProject } from "./project.js";
+import { createProject, loadProject, listDrafts, buildProject, updateProject, archiveProject, blankDraft } from "./project.js";
+/* ⚠️ `createDraft` 2026-10-24 退场（M16-8 ⑥）。这一套原来用它造夹具稿，现在走
+   **`writeDraft`（dc 的那条写入口）** —— 它才是「新建一份稿真的走了写入口」这件事
+   今天的主体（`createProject` 的首稿也走它下面那一层）。
+   > **一件能力退场之后，钉它的判据要么换主体、要么拿掉 —— 而换主体之前要先确认
+   > 「它钉的那件事」在新主体上仍然成立。** 这里成立：节点地址与 v1 快照都是写入口给的。 */
+import { writeDraft } from "./write.js";
 import { buildRefGraph, renameDraft, moveDraft, deleteDraft, restoreDraft, listTrash, deleteDraftImpact } from "./refs.js";
 import { validateDraft } from "./validate.js";
 import { touchProject, listRecentProjects } from "./workspace.js";
@@ -160,11 +166,15 @@ async function step2_createDrafts() {
   bar("步骤 2：创建稿件");
 
   // 2a. 创建组件稿
-  await createDraft(p, "PC 按钮.dc.html", { kind: "blank" });
+  /* ⚠️ 骨架走 `blankDraft`，**不手写** —— 手写一份只有 `<x-dc>` 的会被写入口按契约拒
+     （`E_RUNTIME_NOT_LOADED`：有 `<x-dc>` 却没引 support.js）。第一版就是这么红的，
+     读数是 `ENOENT: … 登录页.dc.html`（文件压根没落盘，而那句话说不出为什么）。
+     > **「它没建出来」说不出「它被拒了」** —— 拒因在回执里，而判据只看了盘上。 */
+  await writeDraft(p, "PC 按钮.dc.html", blankDraft("PC 按钮"), "component", "夹具：组件稿");
   ok("组件稿创建：PC 按钮.dc.html");
 
   // 2b. 创建页面稿（空白）
-  await createDraft(p, "登录页.dc.html", { kind: "blank" });
+  await writeDraft(p, "登录页.dc.html", blankDraft("登录页"), "page", "夹具：页面稿");
   ok("页面稿创建：登录页.dc.html");
 
   // 2c. 手动修改页面稿，让它引用组件稿
@@ -221,7 +231,7 @@ async function step2_createDrafts() {
     /* ⚠️ **建到新子目录**仍然单独验，而钉的东西反过来了：
        原来钉「那个目录也有运行时」（三件套按目录分发，根目录有不代表子目录有），
        现在钉「**那个目录也没有**」—— 同一个「按目录」的性质，两个方向。 */
-    await createDraft(p, "新子目录/深一层.dc.html", { kind: "blank" });
+    await writeDraft(p, "新子目录/深一层.dc.html", blankDraft("深一层"), "page", "夹具：子目录里的稿");
     const b = check("新子目录/深一层.dc.html");
     expect(!b.rt, `**新子目录里也没有运行时**（同一个「按目录」的性质，反过来钉）：${!b.rt}`);
     /* ⚠️ 子目录那一份原来钉的是「也有 `__resources`」。换成**直接量那两件事**，
@@ -235,16 +245,18 @@ async function step2_createDrafts() {
     const outside = join(p.dir, "..", `_lct-项目外-${Date.now()}.dc.html`);
     await writeFile(outside, readFileSyncLocal(join(p.dir, "登录页.dc.html"), "utf8"), "utf8");
     const before = (await listDrafts(p)).length;
-    const evilSources: Array<[string, { kind: "copy"; sourceFile: string } | { kind: "template"; templatePath: string }]> = [
-      ["copy 项目外的 .dc.html", { kind: "copy", sourceFile: `../${outside.split(sep).pop()}` }],
-      ["copy 项目外的绝对路径", { kind: "copy", sourceFile: outside }],
-      ["template 绝对路径", { kind: "template", templatePath: outside }],
-    ];
-    for (const [what, src] of evilSources) {
-      let threw = false;
-      try { await createDraft(p, `偷来的-${Math.random().toString(36).slice(2, 6)}.dc.html`, src); } catch { threw = true; }
-      expect(threw, `**拒绝：${what}**（issue #69，p0 —— 原来能把 ai_config.json 读进一份新稿）`);
-    }
+    /* ⚠️⚠️ **issue #69 那三条（`create_draft` 的 copy / template 来源不受限）2026-10-24 拿掉了，
+       因为它们钉的那个攻击面随 `create_draft` 一起消失了。**
+       #69 是 p0：`create_draft({ source: { kind:"copy", sourceFile:"../../.umbrastudio/ai_config.json" } })`
+       能把**明文 key** 读进一份新稿，而这件能力在 MCP 面上。
+       今天没有任何能力接受「任意来源路径」去建稿：
+       · `create_draft` 退场（M16-8 ⑥）；
+       · `duplicateDraft` 的 `path` 走 `draftPath` → `isInsideReal`（实测守着），
+         `newName` 走 `plainNameProblem`（下面那一组判据钉着）。
+       > **一条判据的攻击面消失之后，留着它会让人以为那道闸还在守什么** ——
+       > 而它其实在守一个没有入口的洞。拿掉它属于「三种不跑」里的第二种。
+       ⚠️ 而**下面那一组（副本名）照旧留着并且更要紧了** ——
+       `duplicateDraft` 现在是唯一一条「照着一份稿建新稿」的路。 */
     /* ⚠️ **判据要钉住它自己说的那道闸** —— 2026-10-05 反向验证实测：
        把 `plainNameProblem` 撤掉之后这四条里**三条照样绿**，
        因为它们各自被别的机制挡住了（`../逃出去` 和 `..` 撞在写入口的

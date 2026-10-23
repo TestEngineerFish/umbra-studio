@@ -2,7 +2,7 @@ import { z } from "zod";
 import { join } from "node:path";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
-import { createDraft, createFolder, duplicateDraft, isDesignProject } from "../project.js";
+import { createFolder, duplicateDraft, isDesignProject } from "../project.js";
 import { resolveDraft } from "../locate.js";
 import {
   deleteDraft, deleteDraftImpact, emptyTrash, listTrash, moveDraft, purgeTrash, renameDraft, restoreDraft,
@@ -23,7 +23,6 @@ import { assetDir } from "../statedirs.js";
 const p = (c: CapCtx) => c.project!;
 
 /** 模板名 → 绝对路径。模板存在项目自己的 `.umbrastudio/templates/` 下 */
-const tplPath = (dir: string, name: string) => join(assetDir(dir, "templates"), `${name}.dc.html`);
 
 /* ⚠️⚠️ **`requireAdopted`（「这个目录还没接管为设计项目，不建稿」）2026-10-23
  *  （M16-7c-2a / C3）删了，而它是「从源头删、下游理由自动倒下」的一个样本。**
@@ -41,48 +40,22 @@ const tplPath = (dir: string, name: string) => join(assetDir(dir, "templates"), 
  *  > （接管那条路同一批删了）—— 那比它防的那件事更糟。 */
 
 
-defineCap({
-  name: "create_draft", title: "新建一份设计稿", scope: "project",
-  summary: [
-    "按四种来源之一建稿：空白骨架 / 复制现有稿 / 包装一个组件 / 套模板。",
-    "走的是唯一写入口（归一化 → @ds 展开 → __resources 注入 → 快照），所以断网也能打开。",
-  ].join("\n"),
-  input: {
-    path: z.string().describe("相对项目根的路径，必须以 .dc.html 结尾"),
-    source: z.enum(["blank", "copy", "component", "template"]).describe("稿的来源"),
-    title: z.string().optional().describe("空白稿或组件包装稿的标题，不给时用文件名"),
-    sourceFile: z.string().optional().describe("source=copy 时的源稿路径（相对项目根）"),
-    componentName: z.string().optional().describe("source=component 时的组件名（dc-import name）"),
-    templatePath: z.string().optional().describe("source=template 时的模板绝对路径"),
-    templateName: z.string().optional().describe("source=template 时的模板名（list_templates 可查）"),
-  },
-  http: { method: "POST" },
-  run: async ({ path, source, title, sourceFile, componentName, templatePath, templateName }, c) => {
-    const proj = p(c);
-    let src;
-    switch (source) {
-      case "copy":
-        if (!sourceFile) throw new Error("source=copy 时必须传 sourceFile");
-        src = { kind: "copy" as const, sourceFile };
-        break;
-      case "component":
-        if (!componentName) throw new Error("source=component 时必须传 componentName");
-        src = { kind: "component" as const, componentName, title };
-        break;
-      case "template": {
-        /* ⚠️ **这一档 HTTP 侧原来没有**（见文件头）。两个门面合成一份之后，
-           两边都有了 —— 这正是搬过来的意义。 */
-        const t = templatePath ?? (templateName ? tplPath(proj.dir, templateName) : undefined);
-        if (!t) throw new Error("source=template 时必须传 templatePath 或 templateName");
-        src = { kind: "template" as const, templatePath: t };
-        break;
-      }
-      default:
-        src = { kind: "blank" as const, title };
-    }
-    return envelope(await createDraft(proj, path, src));
-  },
-});
+/* ⚠️⚠️ **`create_draft` 2026-10-24 退场**（M16-8 ⑥，geek-99 定）。
+   它有四档来源，而其中三档都是**在造设计稿**：空白骨架（`<x-dc>` + 运行时那一套）·
+   包装一个组件（`<dc-import>`）· 套模板（`.dc.html` 模板）。
+   C3 定的是「`.dc.html` 只留预览，设计稿那一整套删掉」，所以这三档跟着走。
+   第四档「复制现有稿」交给 **② `duplicate_draft`**（2026-10-24 已通用化：后缀跟着源走 +
+   二进制逐字节复制）—— 两件能力回答同一个问题，留一件。
+   ⚠️ 它的 summary 里还写着「`__resources` 注入」，而那一套 2026-10-24 已经删了 ——
+   **一句假话随它一起去掉**（而不是改对它：改对一句没人该再读的话没有意义）。
+
+   ⚠️ **界面那个入口没有跟着消失，而是换了**：原来「新建稿件…」调这件；
+   现在「新建文件…」调 `write_file`（第二条写入口，本来就是通用的）。
+   理由是量出来的：删之前**界面上唯一能新建文件的入口就是它**，
+   而 `dir/View.tsx` 的空态文案已经在让用户「用项目菜单里的「新建文件」」——
+   **指向一个不存在的入口**。
+   > **退场一件 dc 能力，不该顺手把「能新建文件」一起退掉** ——
+   > 而这两件事在这个入口上是同一颗按钮。 */
 
 defineCap({
   name: "rename_draft", title: "给稿改名", scope: "project",

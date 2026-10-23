@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { envelope, toContent, ToolError, err, type Envelope } from "./envelope.js";
 import { X } from "./codes.js";
 import {
-  TOOL_ROOT, buildProject, createProject, createDraft, duplicateDraft, createFolder,
+  TOOL_ROOT, buildProject, createProject, duplicateDraft, createFolder,
   updateProject, archiveProject, deleteProject,
   draftPath, listDrafts, listProjectDirs, loadProject, projectsRoot,
   type Project,
@@ -34,7 +34,6 @@ import { touchProject, listRecentProjects, removeRecentProject, clearRecentProje
 import { buildRefGraph, listReferences, renameDraft, moveDraft, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
 import { globalSearch } from "./search.js";
 import { setTokenValue } from "./token_edit.js";
-import { listTemplates, saveAsTemplate, deleteTemplate } from "./templates.js";
 import { exportProject, importProject } from "./export.js";
 import { invokeVerb, isVerb, listVerbs, verbToolDef } from "./plugin/verbs.js";
 import { allCaps } from "./cap/registry.js";   // 只取表，不在这里装配（装配在 index.ts / api.ts，免得和 cap/chat.ts 绕成环）

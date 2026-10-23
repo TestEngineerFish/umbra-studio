@@ -50,7 +50,10 @@ export function itemsFor(t: CtxTarget, a: CtxActions): CtxItem[] {
   }
   if (t.kind === "blank") {
     return [
-      { label: "新建稿件…", run: () => a.newDraft("") },
+      /* ⚠️ 2026-10-24 从「新建稿件…」改成「新建文件…」（M16-8 ⑥）：它现在走 `write_file`，
+         对任何扩展名成立。改文案而不是删这一项 —— 删掉的话**界面上再没有新建文件的入口**，
+         而 `dir/View.tsx` 的空态文案一直在指向「新建文件」。 */
+      { label: "新建文件…", run: () => a.newDraft("") },
       { label: "新建目录", run: () => a.newFolder("") },
       SEP,
       { label: "全部折叠", run: a.collapseAll },
@@ -60,7 +63,7 @@ export function itemsFor(t: CtxTarget, a: CtxActions): CtxItem[] {
   }
   if (t.kind === "dir") {
     return [
-      { label: "新建稿件…", run: () => a.newDraft(t.path) },
+      { label: "新建文件…", run: () => a.newDraft(t.path) },
       { label: "新建目录", run: () => a.newFolder(t.path) },
       SEP,
       { label: "在详情区打开", run: () => a.openInDetail(t.path) },

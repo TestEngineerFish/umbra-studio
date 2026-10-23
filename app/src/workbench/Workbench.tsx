@@ -992,7 +992,7 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
             spans: ["nav", "detail", "chat"],
           } : undefined}
         />
-      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} current={file} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={(f) => open(f)} />}
+      {sheet?.kind === "newDraft" && <NewDraftSheet core={core} dir={sheet.dir} onClose={() => setSheet(null)} onCreated={(f) => open(f)} />}
       {drop && (
         <DropAsk paths={drop.paths} kind="tree" destLabel={drop.destDir || "项目根"} host={host}
           onClose={() => setDrop(null)}

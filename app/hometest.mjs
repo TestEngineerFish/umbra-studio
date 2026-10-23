@@ -242,7 +242,12 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
        after1.filter((x) => !before.includes(x)).join(" · ") || "一个都没多");
   }
 
-  /* ── 「新建稿件」在普通目录里直接给表单（C3 / M16-7c-2a 改写）──
+  /* ── 「新建文件」在普通目录里直接给表单（C3 改写；2026-10-24 这一项改名）──
+     ⚠️ **这一项 2026-10-24 从「新建稿件…」改成「新建文件…」**（M16-8 ⑥）：
+     `create_draft` 退场，入口改走 `write_file`。判据跟着改的是**文案**，
+     而它钉的那件事（「有这个入口」+「直接给表单」）一个字没放松。
+     > **一条判据因为文案改名而红，是判据过期，不是产品坏了** ——
+     > 两种红在日志里长得一样，所以改名的时候要把按文案找的判据一起改。
      ⚠️⚠️ **这一节原来测的是「先问一句要不要接管」，而那一问 2026-10-23 删了。**
      它当初存在的理由：建一份稿会**静默写 5 个文件 · 227 KB**（稿 1 KB + 运行时副本 4 份），
      而写完还是半残的（预览壳不在 → 编辑档 iframe 404）。
@@ -257,14 +262,14 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
     await pg.locator(WB + '[data-ud="tree-more"]').first().click();
     await pg.waitForTimeout(400);
     const mk = pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
-      .filter({ hasText: /新建稿件/ }).first();
-    ok(await mk.count() > 0, "（前提）普通目录里**有**「新建稿件…」这一项（不是把入口藏掉）");
+      .filter({ hasText: /新建文件/ }).first();
+    ok(await mk.count() > 0, "（前提）普通目录里**有**「新建文件…」这一项（不是把入口藏掉）");
     await mk.click();
     await pg.waitForTimeout(600);
     /* ⚠️ **直接是表单，不再有「先接管」那一问** —— 这一条是反面的：
        留着那一问的话它会挡在前面，而文件名框就不会出现。 */
     ok(await pg.locator('input[placeholder^="例如"]').count() > 0,
-       "**点「新建稿件」直接给文件名表单**（不再先问一句要不要接管）");
+       "**点「新建文件」直接给文件名表单**（不再先问一句要不要接管）");
     const dlg = pg.locator('[role="dialog"]').first();
     const txt = await dlg.innerText().catch(() => "");
     ok(!/接管/.test(txt), "弹窗里**一个「接管」字都没有**（那条线整条删了）", txt.replace(/\n/g, " ").slice(0, 40));
@@ -283,10 +288,14 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
     await pg.locator(WB + '[data-ud="tree-more"]').first().click();
     await pg.waitForTimeout(400);
     await pg.locator('[data-ud="ctxmenu"] button, [data-ud="ctxmenu"] [role="menuitem"]')
-      .filter({ hasText: /新建稿件/ }).first().click();
+      .filter({ hasText: /新建文件/ }).first().click();
     await pg.waitForTimeout(600);
     const nameBox = pg.locator('input[placeholder^="例如"]').first();
-    await nameBox.fill("_hometest新稿");
+    /* ⚠️ **名字自己带扩展名**（2026-10-24）：这一屏改成「新建文件」之后不再自动补
+       `.dc.html` —— 入口通用了，补一个后缀就是替用户猜。
+       第一版这里填不带后缀的名字而下面查 `.dc.html`，读数是 `"_hometest新稿"` ——
+       **文件建出来了，只是叫别的名字**，而那条判据的话（「只多那一份稿」）说不出这件事。 */
+    await nameBox.fill("_hometest新文件.md");
     await pg.waitForTimeout(300);
     await nameBox.press("Enter");
     /* 轮询等它落盘 —— 定时等会在机器一忙时把慢误报成坏（§113 那一族），上限 40 次 */
@@ -300,8 +309,8 @@ console.log("\n⑥ 普通目录：零写入 + 接管那条出路");
        made.join(" · ") || "一个都没多");
     /* ⚠️⚠️ **这一条是 C3 的新承诺，而它原来不成立**：`ensureRuntimeBeside` 删掉之前
        同一个动作会静默多写 225 KB（`support.js` + 两个 React UMD）。 */
-    ok(made.length === 1 && made[0] === "_hometest新稿.dc.html",
-       "**建一份稿只多那一份稿**（不再顺手拷 225 KB 运行时副本）", made.join(" · "));
+    ok(made.length === 1 && made[0] === "_hometest新文件.md",
+       "**建一个文件只多那一个文件**（不再顺手拷 225 KB 运行时副本）", made.join(" · "));
   }
 
 

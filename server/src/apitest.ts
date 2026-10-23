@@ -453,79 +453,19 @@ console.log("\n⑥ 会话 ID 不许带路径（issue #57，p0）");
   await deleteChat(p.dir, sess.id).catch(() => {});
 }
 
-/* ── 模板名不许带路径（issue #63，p1）──
-   两个函数对同一个名字的处理**不对称**：存的时候 `a/b` → `a_b.dc.html`，
-   删的时候 `a/b` → 子目录 `a/b.dc.html` —— **删不到自己存的那份**。
-   而那只是不对称的代价，它掩护了更严重的一半：`deleteTemplate` 连分隔符都不管，
-   `join` 又折叠 `..` → `delete_template({name:"../../index"})`
-   **永久删掉项目根的 `index.dc.html`**（不经写入口、没快照、没回收站）。
-   `saveAsTemplate` 那边则能把**项目外任意可读文件**拷进模板目录。
-
-   ⚠️ **调用方是 AI** —— 模型把名字拼错一次、或被稿里的文字诱导一次就够了。 */
-console.log("\n⑦ 模板名不许带路径（issue #63，p1）");
-{
-  const { saveAsTemplate, deleteTemplate, listTemplates } = await import("./templates.js");
-  const { existsSync, writeFileSync, rmSync, mkdirSync } = await import("node:fs");
-  const { join } = await import("node:path");
-
-  /* ⚠️ **先造一个「受害者」并确认它真在** —— 不然「它还在」可能只是因为它本来就不存在。
-     这是「夹具自己先成立」那一条（§140 的 #40 判据同款）。 */
-  const victim = join(p.dir, "_apitest-模板受害者.dc.html");
-  writeFileSync(victim, "<!doctype html><title>别删我</title>", "utf8");
-  ok(existsSync(victim), "**夹具自己先成立：受害文件真的在**（不然「它还在」说明不了什么）");
-
-  /* 删除侧：带 `..` 必须被拒，而且**盘上那份要还在** */
-  /* ⚠️ **层数要够。**（2026-10-05 反向验证时自己撞到）
-     第一版写的是 `"../_apitest-模板受害者"` —— 而模板目录是
-     `.umbrastudio/templates`（**两层深**），上升一层只到 `.umbrastudio/`，
-     **根本没打到项目根**。于是撤掉闸之后「盘上那份还在」照样绿。
-     **反向验证没报红时，先问「我的攻击样本真的打到了吗」。** */
-  let threw = false;
-  try { await deleteTemplate(p, "../../_apitest-模板受害者"); } catch { threw = true; }
-  ok(threw, "`delete_template` 带 `..` 被拒（`../../` —— 模板目录两层深，一层打不到项目根）");
-  ok(existsSync(victim), "**而且盘上那份还在**（报错不等于没删 —— 这两件要分开验）",
-     existsSync(victim) ? "还在" : "✗ 被删了，而它没有快照也没有回收站");
-
-  /* 保存侧：源稿路径带 `..` 必须被拒，而且**不许在模板目录里留下东西** */
-  mkdirSync(join(p.dir, ".umbrastudio", "templates"), { recursive: true });
-  const before = (await listTemplates(p)).length;
-  /* ⚠️ **源稿样本要指向一个确定存在的项目外文件**，而且是 `.dc.html`
-     —— 否则「被拒」有三种可能都分不清：闸拦了 / 文件不存在 / 后缀不对。
-     第一版用 `"../../../../etc/hosts"`，从项目目录上升四层落到
-     `SourceTree/etc/hosts`（**不存在**），`readFile` 抛错，
-     判据把「没这个文件」当成了「闸拦住了」。
-     自己造一份：放在项目的**父目录**里，不依赖机器上有什么。 */
-  const outsider = join(p.dir, "..", "_apitest-项目外的稿.dc.html");
-  writeFileSync(outsider, "<!doctype html><title>我在项目外</title>", "utf8");
-  ok(existsSync(outsider), "**夹具自己先成立：项目外那份稿真的在**（不然「被拒」说明不了什么）");
-  let threw2 = false;
-  try { await saveAsTemplate(p, "../_apitest-项目外的稿.dc.html", "偷来的"); } catch { threw2 = true; }
-  ok(threw2, "`save_as_template` 的源稿路径带 `..` 被拒（指向一份**真实存在**的项目外稿）");
-  const after = (await listTemplates(p)).length;
-  ok(after === before, "**而且模板目录里没多出东西**", `${before} → ${after}`);
-  /* 非 .dc.html 也该拒 —— 模板就是稿，不是任意文件 */
-  let threw3 = false;
-  try { await saveAsTemplate(p, "project.json", "不是稿"); } catch { threw3 = true; }
-  ok(threw3, "源稿不是 `.dc.html` 也被拒（模板就是稿，不是任意文件）");
-
-  /* ⚠️ **正面那一条不能少**：闸不该把功能也挡掉。
-     而且要验「存了能删掉」—— 那正是原来**不对称**导致做不到的事。 */
-  const saved = await saveAsTemplate(p, "_apitest-模板受害者.dc.html", "判据模板").catch(() => null);
-  ok(!!saved?.saved, "**正常的模板存得进去**（闸不该把功能也挡掉）", saved?.path?.split("/").pop() ?? "没存上");
-  const del = await deleteTemplate(p, "判据模板").catch(() => null);
-  ok(del?.deleted === true, "**而且删得掉自己存的那份**（原来 `a/b` 存成 `a_b` 却去删 `a/b`，删不到）");
-
-  /* ⚠️ **收尾要清掉「闸没拦住时会留下的那几份」**（2026-10-05）。
-     反向验证撤掉闸跑了两轮，`偷来的.dc.html` 和 `不是稿.dc.html`
-     **真的存进了用户项目的模板目录** —— 判据自己造的垃圾，判据自己清。
-     ⚠️ 正常情况下这两份压根不会出现，所以这几行是**为反向验证准备的** ——
-     而反向验证是纪律④ 要求的例行动作，不是意外。 */
-  for (const n of ["偷来的", "不是稿", "判据模板"]) {
-    rmSync(join(p.dir, ".umbrastudio", "templates", `${n}.dc.html`), { force: true });
-  }
-  rmSync(victim, { force: true });
-  rmSync(outsider, { force: true });
-}
+/* ⚠️⚠️ **⑦「模板名不许带路径」（issue #63，p1）2026-10-24 整节拿掉了**，
+   因为它钉的那个攻击面**随模板那三件能力一起消失了**（M16-8 ⑥）。
+   #63 是 p1：`delete_template({ name: "../../index" })` 能**永久删掉项目根的
+   `index.dc.html`**（不经写入口、没快照、没回收站），而 `saveAsTemplate` 那边
+   能把**项目外任意可读文件**拷进模板目录 —— 而**调用方是 AI**。
+   今天 `list_templates` / `save_as_template` / `delete_template` 三件都退场了
+   （`captest` 的 `RETIRED` 里逐条登记了为什么），`server/src/templates.ts` 整个删掉，
+   于是没有任何入口能走到那两个函数。
+   > **一条判据的攻击面消失之后，留着它会让人以为那道闸还在守什么** ——
+   > 而它其实在守一个没有入口的洞（`lifecycletest` 里 #69 那一组同一天同一个形状）。
+   ⚠️ **用户项目里已经存在的 `.umbrastudio/templates/` 文件不动、也不迁移**
+   （geek-99 明确；纪律⑥）。实测盘上还有 5 处这样的目录，它们从此没有读者 ——
+   这件事写在这里，而不是让下一个人去推断。
 
 /* ── token 路径不许碰原型链（issue #64）──
    `setTokenValue` 按点号路径逐段 `obj = obj[part]`，而唯一的检查是
@@ -1148,22 +1088,31 @@ console.log("\n⑯ 打开普通目录不写一个字节（M14-4 B3 · C3 之后�
      > **一个「被拒了」的读数，先问是哪道闸拒的** —— 两道闸守着同一件事时，
      > 判据撞上哪一道都会红，而只有读数说得出是哪一道。 */
   {
-    const locked = await (await ppost("create_draft", { path: "锁着就不该成.dc.html", source: "blank", title: "x" })).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
+/* ⚠️⚠️ **主体 2026-10-24 从 `create_draft` 换成 `file_write`**（M16-8 ⑥ 退场了前者）。
+       这一节钉的是 **M14-7 的只读闸**，而那道闸装在**两条写入口各一道** ——
+       所以换主体之后它钉的还是同一件事，而且比原来更对：
+       `file_write` 是今天「在这个目录里建一个文件」的那条路（界面那颗「新建文件…」就走它）。
+       > **换主体之前要先确认「它钉的那件事」在新主体上仍然成立** —— 这里成立，
+       > 因为那道闸从一开始就不是装在 `create_draft` 上的。 */
+    const locked = await (await ppost("file_write", { path: "锁着就不该成.md", content: "x", expectSha256: "0" })).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
     ok(locked.ok === false && /只读/.test(locked.errors?.[0]?.message ?? ""),
-       "**还没解锁时建稿被拒，而且说得出为什么**（M14-7 那道闸，B3 之外的第二道）",
+       "**还没解锁时建文件被拒，而且说得出为什么**（M14-7 那道闸，B3 之外的第二道）",
        locked.errors?.[0]?.message ?? String(locked.ok));
     const unlock = await (await ppost("start_editing", {})).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
     ok(unlock.ok === true, "（前提）「开始编辑」解锁成了", String(unlock.ok) + " " + (unlock.errors?.[0]?.message ?? ""));
-    const cd = await (await ppost("create_draft", { path: "新稿.dc.html", source: "blank", title: "新稿" })).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
-    ok(cd.ok === true, "**对照组**：解锁之后真建一份稿是成的 —— 「什么都没写」不是因为「什么都写不了」",
+    const cd = await (await ppost("file_write", { path: "新文件.md", content: "新建\n", expectSha256: "0" })).json() as { ok?: boolean; errors?: Array<{ message?: string }> };
+    ok(cd.ok === true, "**对照组**：解锁之后真建一个文件是成的 —— 「什么都没写」不是因为「什么都写不了」",
        String(cd.ok) + " " + (cd.errors?.[0]?.message ?? ""));
-    ok((await rd3(plain)).includes("新稿.dc.html"), "而且稿真的落盘了");
-    /* ⚠️⚠️ **这一条是 C3 的新承诺，而它原来不成立**：建一份稿只多**那一份稿**。
-       `ensureRuntimeBeside` 删掉之前，同一个请求会静默多写 **225 KB** 的运行时副本
-       （`support.js` + 两个 React UMD），而那正是「新建稿件先问接管」那道闸存在的理由。 */
+    ok((await rd3(plain)).includes("新文件.md"), "而且文件真的落盘了");
+    /* ⚠️⚠️ **这一条是 C3 的新承诺，而它原来不成立**：建一个文件只多**那一个文件**。
+       `ensureRuntimeBeside` 删掉之前，同一个 `create_draft` 请求会静默多写 **225 KB**
+       的运行时副本（`support.js` + 两个 React UMD），而那正是「新建稿件先问接管」那道闸存在的理由。
+       ⚠️ 2026-10-24 主体换成 `file_write`（`create_draft` 退场，M16-8 ⑥）——
+       **这条承诺在新主体上更强**：第二条写入口从来没有「顺手拷运行时」这回事，
+       所以它现在钉的是「以后也别加」。 */
     const made = (await walk3()).filter((x) => !before.includes(x));
-    ok(made.length === 1 && made[0] === "新稿.dc.html",
-       "**建一份稿只多那一份稿**（不再顺手拷 225 KB 运行时副本，也没有被拒那一次的半成品）", made.join(" · ") || "(一个都没多)");
+    ok(made.length === 1 && made[0] === "新文件.md",
+       "**建一个文件只多那一个文件**（不再顺手拷 225 KB 运行时副本，也没有被拒那一次的半成品）", made.join(" · ") || "(一个都没多)");
   }
 
   await rm3(plain, { recursive: true, force: true });
@@ -2052,10 +2001,15 @@ console.log("\n㉖ `get_delete_impact` 只答 `<dc-import>` 那种引用（M16-8
 /* 213 = 改口径那一轮的实跑 · +2 = 那一轮自己打印过的「没登录」两条（它们原来**不在分母里**，
    那就是改口径要修的那件事）· **+3 = 门面补 `safeParse` 这一批**（㉕ 的「说得出是哪个字段」
    1 条 + 「换一件无关的能力也拦得住」那一组 2 条）· **+4 = ㉖**（`get_delete_impact`
-   只答 `<dc-import>` 那种引用：三条拒 + 两条对照 + 一条「盘上没有是另一种拒」）。合计 **222**。
+   只答 `<dc-import>` 那种引用：三条拒 + 两条对照 + 一条「盘上没有是另一种拒」）· **−9 = ⑦ 整节拿掉**（模板名那一组：它钉的攻击面随
+   `list_templates` / `save_as_template` / `delete_template` 三件退场一起消失，M16-8 ⑥）。
+   合计 **215**。
+   ⚠️ **这一次是那道闸逼我把数字改对的**：删掉一整节却没动基线，它立刻报
+   `213/218` 并说「少跑了」—— 而**「有意删掉」和「静默跳过」在读数上必须分得开**，
+   所以删判据时改这个数不是收尾工作，是那个动作的一部分。
    ⚠️ 我先算成 221 —— 漏数了 ㉖ 自己那一节里新增的第六条（两条对照我当成一条算了）。
    实跑 222 把它顶出来了：**总数本身也是一条判据**，而它这次抓的是我的算术。 */
-const EXPECT_AT_LEAST = 218;
+const EXPECT_AT_LEAST = 215;
 const miss = NOT_RUN.length;
 const total = pass + fail + miss;
 let silent = 0;

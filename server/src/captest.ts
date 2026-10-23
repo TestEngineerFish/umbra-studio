@@ -62,43 +62,14 @@ for (const n of wasHttpOnly) {
   ok(!!c && (c.faces ?? ["mcp", "http"]).includes("mcp"), `${n}：原来只有 HTTP 侧有，现在 MCP 面也有了`);
 }
 
-/* ── 搬过来当场修掉的那个真缺陷，钉住它（M11-7）──
-   HTTP 侧的 `create_draft` 原来**不认 `source: "template"`**，掉进 blank 分支，
-   于是「选了模板，建出来是空白稿」，而界面只说「已新建」。
-   MCP 侧一直是对的 —— 两个门面各写一遍，只有一边补了模板这一档。
-   ⚠️ 判据钉在**能力的入参**上，不钉在某一侧的实现上：合成一份之后，
-   两个门面用的就是同一份声明，一边有一边没有这种事从机制上不会再发生。 */
-{
-  const { mkdir, mkdtemp, rm, writeFile } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { buildProject } = await import("./project.js");
-  const cap = allCaps().find((c) => c.name === "create_draft")!;
-  ok(!!cap, "create_draft 搬进 cap/ 了");
-  ok(Object.keys(cap.input).includes("templateName"), "**create_draft 认得 template 这一档**（HTTP 侧原来没有）");
-
-  const dir = await mkdtemp(join(tmpdir(), "umbrastudio-captest-"));
-  await writeFile(join(dir, "project.json"), JSON.stringify({ name: "captest", title: "能力回归" }));
-  /* ⚠️ 模板的落点**从 `assetDir` 取，不写死** —— M14-4 B1 把它搬进了
-     `records/<ID>/templates/`，写死路径的夹具会让这一条红在「找不到模板」上，
-     而它要测的是「选模板建出来的不是空白稿」。
-     **夹具跟着实现走是对的**：这里测的不是「模板放在哪」。 */
-  const { assetDir } = await import("./statedirs.js");
-  const tplDir = assetDir(dir, "templates");
-  await mkdir(tplDir, { recursive: true });
-  await writeFile(join(tplDir, "样板.dc.html"),
-    '<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><div data-tpl-mark="来自模板">标记</div></x-dc></body></html>\n');
-  const proj = await buildProject(dir);
-  /* **两个门面各跑一次**：同一份声明，via 不同，结果必须一样 —— 
-     以前这两条是两份实现，正是分叉的来源。 */
-  for (const via of ["mcp", "http"] as const) {
-    const out = await cap.run({ path: `套模板-${via}.dc.html`, source: "template", templateName: "样板" } as never,
-      { project: proj, via });
-    const src = (out.data as { source?: string } | null)?.source ?? "";
-    ok(out.ok && src !== "空白骨架", `${via} 面：选模板建出来的**不是空白稿**`, `source=${src}`);
-  }
-  await rm(dir, { recursive: true, force: true });
-}
+/* ⚠️⚠️ **原来这里有一节钉「`create_draft` 认得 template 这一档」（M11-7 搬迁时修的真缺陷）**，
+   2026-10-24 整节删了：**`create_draft` 和模板那一摊同一批退场**（M16-8 ⑥）。
+   它当年钉的是「HTTP 侧不认 `source: "template"`，于是选了模板建出来是空白稿，
+   而界面只说『已新建』」—— 那个缺陷的**两个当事人都不在了**。
+   > **一条判据钉的那件坏事和它的修法一起退场时，判据跟着走** ——
+   > 留着它会红在「找不到这件能力」上，而那句读数说不出「它是被有意删掉的」。
+   而它教的那件事（**两个门面各写一遍就是分叉的来源**）仍然成立，
+   并且今天由更上游的东西保证：能力一处声明、两面各自遍历生成（本文件开头那几节钉着）。 */
 
 /* ══════════ 搬迁不能丢件（M11-7 第五批差点栽）══════════
    搬能力的动作是「在 `cap/` 里写一份 → 删掉两侧手写的」。
@@ -123,6 +94,11 @@ for (const n of wasHttpOnly) {
     render_check: "C3：真实渲染体检，验收对象是 .dc.html 设计稿（render.ts 整个删了）",
     check_browser: "C3：它只回答「render_check 会用哪个浏览器」，随 render_check 走。⚠️ findBrowser 这个函数没删，搬去了 browser.ts —— app/actxtest 还要它",
     check_runtime: "C3：报告「哪个放稿的目录缺 support.js 与两个 React UMD」，而那三个文件连往哪拷都没有了（ensureRuntimeBeside 一起删）",
+    /* ── M16-8 ⑥（2026-10-24）：`create_draft` 与模板那一摊 ── */
+    create_draft: "M16-8 ⑥：四档来源里三档在造设计稿（<x-dc> 骨架 · <dc-import> 包装 · .dc.html 模板），C3 定的是设计稿那一整套删掉；第四档「复制现有稿」交给 duplicate_draft。界面入口改成「新建文件…」走 write_file —— 删之前量过：那是界面上唯一能新建文件的入口",
+    list_templates: "M16-8 ⑥：模板是 .dc.html 模板，唯一消费者是 create_draft 的 template 档，随它退场。⚠️ 用户项目里已存在的 .umbrastudio/templates/ 文件不动、不迁移",
+    save_as_template: "M16-8 ⑥：同上（模板那一摊整体退场）",
+    delete_template: "M16-8 ⑥：同上（模板那一摊整体退场）",
   };
   let base = "";
   try {

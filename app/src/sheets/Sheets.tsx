@@ -54,179 +54,101 @@ const inputCls = "h-8 px-3 rounded border border-border bg-bg outline-none focus
    （同一个做法：弹窗外壳的三段必填 props。） */
 
 
-/** 新建稿件：走 create_draft（唯一写入口），建完自动选中 */
-interface TemplateRow { id: string; name: string; sub?: string }
-
-/** 新建稿件（M8-24 重画，形制按设计侧第八轮 §三）。
+/** 新建文件（M16-8 ⑥，2026-10-24 从「新建稿件」改过来）。
  *
- *  用户原话：「新建稿件的样式也不对，**太过拥挤**」。
- *  设计侧的诊断：拥挤是因为**四样东西排在同一个密度里**，没有层次。
- *  所以改成四组、组间 18px、每组一个小标题、控件高 34。
+ *  ### ⚠️⚠️ 为什么是「改」而不是「删」
+ *  `create_draft` 退场（四档里三档在造设计稿，C3 定的是设计稿那一整套删掉）。
+ *  而**删之前量出来**：界面上**唯一**能新建文件的入口就是这一颗，
+ *  而 `dir/View.tsx` 的空态文案已经在让用户「用项目菜单里的「新建文件」」——
+ *  **指向一个不存在的入口**。
+ *  > **退场一件 dc 能力，不该顺手把「能新建文件」一起退掉** ——
+ *  > 而这两件事在这个入口上是同一颗按钮。
+ *  所以 geek-99 定：入口改成「新建文件…」走 **`write_file`**（第二条写入口，本来就是通用的），
+ *  而那句空态文案**就此变成真的**。
  *
- *  最要紧的一条是**文件名下面实时写出完整路径** ——
- *  「点『新建』之前就能知道结果」。重名或非法字符当场变红说原因，钮变灰。
+ *  ### 这一屏减掉了什么
+ *  · **类型（页稿 / 组件稿）** —— dc 的概念（`kind` 只给 `.dc.html` 用）；
+ *  · **起始模板那一组** —— 模板是 `.dc.html` 模板，整摊同一批退场；
+ *  · **「从现有稿复制…」** —— 交给右键的「复制一份」（`duplicate_draft`，同一天通用化了：
+ *    后缀跟着源走 + 二进制逐字节复制）。**两个入口做同一件事时，留在它该在的地方。**
+ *  剩下的就是 geek-99 定的两项：**名字**和**所在目录**。
+ *
+ *  ### ⚠️ 名字带 `.dc.html` 也只建空文件
+ *  geek-99 明确：**不塞骨架**。原来「空白」那一档会写 `<x-dc>` + 运行时那一套，
+ *  而那正是要退场的东西。于是 `.dc.html` 在这里和别的扩展名一视同仁。
+ *  ⚠️ 也**不再自动补扩展名** —— 原来不带后缀就补 `.dc.html`，而现在我们不知道用户想建什么。
+ *  > **一个只对一种格式成立的默认值，在这个入口变成通用之后就是在替用户猜。**
+ *
+ *  最要紧的那条形制留着：**文件名下面实时写出完整路径**（「点『新建』之前就能知道结果」），
+ *  重名或非法字符当场变红说原因、钮变灰。
  */
-export function NewDraftSheet({ core, current, dir, onClose, onCreated }: {
-  core: Core; current: string | null; dir: string; onClose: () => void; onCreated: (file: string) => void;
-  /* ⚠️ `projectDir` / `designProject` / `onAdopted` 三个 props C3 之后没了 ——
-     它们全为「先接管这个目录？」那一问服务（见下面那段）。 */
+export function NewDraftSheet({ core, dir, onClose, onCreated }: {
+  core: Core; dir: string; onClose: () => void; onCreated: (file: string) => void;
+  /* ⚠️ `current` 这个 prop 没了 —— 它只为「从现有稿复制…」那条文字链服务。 */
 }) {
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<"page" | "component">("page");
-  const [tpl, setTpl] = useState("blank");
-  const [templates, setTemplates] = useState<TemplateRow[]>([]);
   const [existing, setExisting] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   /* ⚠️⚠️ **重名检查原来调 `drafts`（`list_drafts`），而那件能力 2026-10-23（M16-7c）删了。**
      不改的话它会**静默 404** —— `.catch(() => {})` 把失败吞掉，`existing` 停在空数组，
-     于是「这个目录里已经有同名的稿了」这句提示**永远不出现**，而界面看不出任何异常。
+     于是「这个目录里已经有同名的了」这句提示**永远不出现**，而界面看不出任何异常。
      > **一个被 catch 吞掉的查询失效之后，长得和「查过了，没有重名」一模一样。**
-
-     换成列**这一个目录**（`list_files`）。顺带它比原来对 ——
-     `list_drafts` 是**全项目递归**列所有 `.dc.html`，而重名只发生在同一个目录里：
-     原来那份名单里绝大多数条目和这一问无关，只是靠 `full` 带上目录前缀才没误判。 */
+     换成列**这一个目录**（`list_files`），而它比原来对：重名只发生在同一个目录里。 */
   useEffect(() => {
-    void core.get<{ templates?: TemplateRow[] }>("templates").then((r) => setTemplates(r.data?.templates ?? [])).catch(() => {});
     void core.get<{ entries?: Array<{ name: string }> }>(`files?dir=${encodeURIComponent(dir)}`)
       .then((r) => setExisting((r.data?.entries ?? []).map((e) => e.name))).catch(() => {});
   }, [core, dir]);
 
   const n = name.trim();
-  const fileName = n ? (n.endsWith(".dc.html") ? n : n + ".dc.html") : "";
+  const fileName = n;   // ⚠️ 不补扩展名，见上
   const full = fileName ? (dir ? `${dir}/${fileName}` : fileName) : "";
   const illegal = !!n && /[\\/:*?"<>|]/.test(n);
   const dup = !!fileName && existing.includes(fileName);
-  const why = illegal ? '名字里不能有 \\ / : * ? " < > |' : dup ? "这个目录里已经有同名的稿了" : "";
+  const why = illegal ? '名字里不能有 \\ / : * ? " < > |' : dup ? "这个目录里已经有同名的了" : "";
   const blocked = !fileName || !!why || busy;
-
-  /* ⚠️⚠️ **「先接管这个目录？」那一问 2026-10-23（M16-7c-2a / C3）整块删了。**
-   *  它挡在表单前面问「要不要先接管」，因为**建一份稿会静默写 5 个文件 · 227 KB**
-   *  （稿 1 KB + 运行时副本 4 份 226 KB），而写完还是半残的（预览壳不在 → 编辑档 iframe 404）。
-   *
-   *  C3 之后那两个理由都没了：`ensureRuntimeBeside` 删掉（运行时副本是 dc 的），
-   *  于是**建一份稿只多那一份稿**（`apitest` ⑯ 真数盘上的文件钉住了这一条）；
-   *  而「预览壳不在」在没有预览的世界里不是一个问题。
-   *  服务端那道闸（`requireAdopted`）和 `adopt_project` 这件能力同一批删了。
-   *
-   *  ⚠️ **抓到这一处的是 `captest` 当天新加的那条判据**（「前端用到的路由一条都没少」）——
-   *  读数直接打出 `adopt_project（Sheets.tsx）`。不然它会在用户点「新建稿件」时
-   *  静默 404，而界面只会卡在「正在接管…」。
-   *  > 这条判据加的理由就是 7b 那两条 404，**而它在同一天第二次兑现了**。
-   *
-   *  ⚠️ 普通目录里建稿**还有一道闸**：M14-7 的只读（出路是「开始编辑」横条）。
-   *  那道闸守的是「我们默认不动你的文件」，和设计稿无关，所以留着。
-   *
-   *  ⚠️ **删这一块时我按注释块往上找边界，连 `submit()` 一起吃掉了**（这一轮第二次）。
-   *  > 按注释块找删除起点，会在**那个注释块不属于紧邻的那段代码**时吃掉中间的东西。
-   *  两次都是编译器立刻报出来的（`onCreated is declared but never read`）——
-   *  而如果被吃掉的是一段没有类型牵连的代码（一段 `.mjs` 判据、一个只靠副作用的调用），
-   *  **它会静默消失**。 */
 
   const submit = async () => {
     if (blocked) return;
     setBusy(true);
-    const body: Record<string, unknown> = { path: full, kind };
-    if (tpl === "blank") body.source = "blank";
-    else if (tpl.startsWith("copy:")) { body.source = "copy"; body.sourceFile = tpl.slice(5); }
-    else { body.source = "template"; body.templateName = tpl; }
-    const r = await core.post("create_draft", body);
+    /* ⚠️ `expectSha256: "0"` = **这个文件必须还不存在**（写前校验那条路的约定）——
+       上面的重名检查是给人看的，这一条是给盘上那份文件把关的。
+       > **界面上问过一次，和落盘那一刻再问一次，防的是两件事**：
+       > 前者防用户看错，后者防「我问完到我写完之间别人建了同名的」。 */
+    const r = await core.post("file_write", { path: full, content: "", expectSha256: "0" });
     if (r.ok) { toast(`已新建 ${fileName}`, dir || "项目根", "ok"); onCreated(full); onClose(); }
-    else { toast("新建稿件失败", r.errors?.[0]?.message, "error"); setBusy(false); }
+    else { toast("新建文件失败", r.errors?.[0]?.message, "error"); setBusy(false); }
   };
 
   return <Sheet onClose={onClose}
-    head={<h2 className="text-base font-semibold">新建稿件</h2>}
+    head={<h2 className="text-base font-semibold">新建文件</h2>}
     foot={<>
-      {/* 「从现有稿复制…」**不能跟着模板那一组一起消失**，所以它在底部成一个文字链 */}
-      {current && (
-        <button className={`text-[11px] underline underline-offset-2 ${tpl.startsWith("copy:") ? "text-accent" : "text-muted hover:text-text"}`}
-          onClick={() => setTpl(tpl.startsWith("copy:") ? "blank" : `copy:${current}`)}
-          title={tpl.startsWith("copy:") ? "点一下取消" : `复制 ${current}`}>
-          {tpl.startsWith("copy:") ? `✓ 从 ${current.split("/").pop()} 复制` : "从现有稿复制…"}
-        </button>
-      )}
-      <span className="flex-1" />
-      <button className="btn" onClick={onClose}>取消 Esc</button>
-      <button className="btn primary" disabled={blocked} onClick={() => void submit()}>{busy ? "正在建…" : "新建 ⏎"}</button>
+      <button className="btn sm" onClick={onClose}>取消</button>
+      <button className="btn sm primary" disabled={blocked} onClick={() => void submit()}>新建</button>
     </>}
     body={<>
-    {/* ⚠️ **Enter 只在文件名输入框里当提交**（issue #124，2026-10-06）。
-        原来是在**容器**上统一拦的、不看焦点落在哪里，于是：
-          · Tab 到「取消」按 Enter → `preventDefault()` 吃掉按钮自己的激活 → **提交** ——
-            **按「取消」却新建了一份稿**；
-          · Tab 到「组件稿」按 Enter 想选它 → 直接提交，类型还是原来的「页稿」；
-          · 走到「从现有稿复制…」按 Enter → 没切到复制，用当前模板直接建了。
-        只要文件名已经合法（`blocked === false`）以上都会**真落盘**。
-        **一个「全局快捷键」挂在容器上，就会把容器里每个控件的回车都吃掉。** */}
-    {/* ⚠️ 2026-10-21 三颗按钮**挪进了 `foot`**（弹窗外壳改成三段必填 props 那一下），
-        于是它们干脆不在这个 `onKeyDown` 的子树里了 —— #124 那道闸**更紧了一格**，
-        不是放松：原来靠「看焦点是不是 INPUT」拦，现在连事件都到不了这里。
-        ⚠️ 宽度从写死的 `w-[460px]` 改成跟着内容区走：原来 460 在 520 的壳里
-        **右边空 59px**，而那正是「没有内边距」的另一种长相。 */}
     <div className="grid gap-[18px]" onKeyDown={(e) => {
+      /* ⚠️ Enter 挂在**容器**上（issue #124）：挂在输入框上的话，焦点在别处时按 Enter 没反应。
+         ⚠️ 只在焦点真在 `INPUT` 里时才算 —— 不然点开弹窗按一下 Enter 就建了。 */
       if (e.key !== "Enter" || blocked) return;
-      /* 焦点在别的控件上时让它走原生行为（按钮激活、单选切换…） */
       const t = e.target as HTMLElement | null;
       if (!t || t.tagName !== "INPUT") return;
-      e.preventDefault();
-      void submit();
+      e.preventDefault(); void submit();
     }}>
       <div className="grid gap-1.5">
         <label className="text-[11px] text-muted">文件名</label>
-        <div className="flex items-center gap-0 h-[34px] rounded border bg-bg overflow-hidden" style={{ borderColor: why ? "var(--tool-err)" : "var(--tool-border)" }}>
-          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：设置 · 账号与凭据"
-            className="flex-1 min-w-0 h-full px-3 bg-transparent outline-none text-xs" />
-          {/* 扩展名**固定显示在右边**，用户不用自己打 */}
-          <span className="px-2.5 h-full grid place-items-center font-mono text-[11px] text-muted border-l border-border bg-panel2 shrink-0">.dc.html</span>
-        </div>
-        {/* 实时写出完整路径 —— 点「新建」之前就知道结果 */}
-        <div className={`text-[11px] font-mono leading-relaxed break-all ${why ? "text-err" : "text-muted"}`}>
-          {why || (full ? `将创建 ${full}` : "会自动补 .dc.html")}
+        <input className="w-full h-[34px] px-2.5 rounded border border-border bg-panel2 text-xs" autoFocus
+          placeholder="例如 说明.md" value={name} onChange={(e) => setName(e.target.value)} data-ud="newfile-name" />
+        {/* 实时写出完整路径 —— 「点『新建』之前就能知道结果」 */}
+        <div className="text-[11px] leading-relaxed" style={{ color: why ? "var(--tool-err)" : "var(--muted)" }} data-ud="newfile-path">
+          {why || (full ? `会建在 ${full}` : "在这个目录里建一个新文件")}
         </div>
       </div>
 
       <div className="grid gap-1.5">
-        <label className="text-[11px] text-muted">位置</label>
-        <div className="h-[34px] px-3 flex items-center gap-2 rounded border border-border bg-panel2">
-          <span className="flex-1 min-w-0 truncate font-mono text-[11px]">{dir || "项目根"}</span>
-          <span className="text-[11px] text-muted shrink-0">右键哪个目录就建在哪</span>
-        </div>
+        <label className="text-[11px] text-muted">所在目录</label>
+        <div className="text-xs px-2.5 py-2 rounded border border-border bg-panel2 truncate" data-ud="newfile-dir">{dir || "项目根"}</div>
       </div>
-
-      <div className="grid gap-1.5">
-        <label className="text-[11px] text-muted">类型</label>
-        <div className="grid grid-cols-2 gap-2">
-          {([["page", "页稿", "一整屏，能演示、能当原型点"], ["component", "组件稿", "可被别的稿 import 的一块"]] as const).map(([k, label, sub]) => (
-            <button key={k} onClick={() => setKind(k)} aria-pressed={kind === k}
-              className={`text-left p-2.5 rounded border transition-colors ${kind === k ? "border-accent bg-accentSoft" : "border-border hover:bg-hover"}`}>
-              <div className={`text-xs font-semibold ${kind === k ? "text-accent" : ""}`}>{label}</div>
-              <div className="text-[11px] text-muted leading-relaxed mt-0.5">{sub}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* ═══ 起始模板（第九轮 §十.2）═══
-          **项目里一个模板都没有时整组不出** —— 那时它只剩「空白」和「复制现有稿」两项，
-          是个空架子。「用户永远不知道有模板」这件事，解法放在**模板从哪来**的地方：
-          `.dc.html` 的 `⋯` 里加了「存为模板…」，存过一次这一组就出现了。 */}
-      {templates.length > 0 && (
-        <div className="grid gap-1.5">
-          <label className="text-[11px] text-muted">起始模板 · 可选</label>
-          <div className="max-h-[132px] overflow-auto rounded border border-border divide-y divide-border">
-            {[{ id: "blank", name: "空白", sub: "只有骨架和运行时" }, ...templates].map((t) => (
-              <button key={t.id} onClick={() => setTpl(t.id)} aria-pressed={tpl === t.id}
-                className={`w-full text-left px-2.5 py-2 flex items-center gap-2 hover:bg-hover ${tpl === t.id ? "bg-accentSoft" : ""}`}>
-                <span className={`w-3 shrink-0 text-accent ${tpl === t.id ? "" : "opacity-0"}`}>✓</span>
-                <span className="text-xs shrink-0">{t.name}</span>
-                {t.sub && <span className="text-[11px] text-muted truncate">{t.sub}</span>}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
     </div>
     </>} />;
 }
