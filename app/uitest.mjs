@@ -508,7 +508,7 @@ const sweepSamples = async () => await pg.evaluate(async (pats) => {
  *
  *  没有「删快照」这件能力，也不该为判据加一个后门 ——
  *  uitest 跑在 node 里，直接用 fs 删。**只删名字对得上样本清单的那些目录。** */
-/** 这个项目的资产目录**在哪**（快照 / 草稿暂存）。回 `[[label, 绝对路径], ...]`。
+/** 这个项目的资产目录**在哪**（快照 / 草稿暂存 / **会话**）。回 `[[label, 绝对路径], ...]`。
  *
  *  ⚠️⚠️ **一处定义，三个地方用**（`sweepSnapshots` 顺手清 · `snapBaseline` 取基线 ·
  *  收尾那条「多出来的一律删」）。原来三处各自拼 `join(dir, ".umbrastudio", sub)` ——
@@ -519,24 +519,69 @@ const sweepSamples = async () => await pg.evaluate(async (pats) => {
  *  后者找不到会**新建一条记录**，而判据不该往用户的记录索引里写东西。
  *  为空 = 这个项目还没有 record，也就没有资产可清。
  *  ⚠️ 旧位置**照旧扫**：存量不迁不删（Q72），里面可能还躺着以前几轮的东西。 */
+/* ⚠️⚠️ **`chats` 是 2026-10-24 补进来的第三样**，而它本该一开始就在里面。
+   `statedirs.ts` 的 `ASSET_KINDS` 里会话和快照、草稿暂存是并列的六样之一 ——
+   收尾这边却只认两样，于是**判据造出来的会话没有任何一条收尾判据看得见**。
+   实测当场抓到一条：`records/<ID>/chats/` 里躺着一条 10 条消息的会话，
+   第一句是 `照这 2 条评论改（…_uitest暂存.dc.html…）`——
+   它是「评论暂存区」那一节造的，而那一节 **7c-3 已经整节删掉了**，
+   于是**造它的代码不在了，清它的代码从来没有过，它就一直躺在用户的会话列表里**。
+   > **一样会落盘的东西，加进产品那张清单的时候，也要加进收尾那张清单** ——
+   > 两张清单各自都「完整」，而它们完整的范围不一样。 */
+const ASSET_SUBS = ["snapshots", "staged", "chats"];
+
 const assetRootsOf = async (dir) => {
   const { join } = await import("node:path");
   const out = [];
   try {
     const { existingRecordIdFor, recordsRoot } = await import("../server/dist/records.js");
     const id = existingRecordIdFor(dir);
-    if (id) for (const sub of ["snapshots", "staged"]) out.push([`records/${sub}`, join(recordsRoot(), id, sub)]);
+    if (id) for (const sub of ASSET_SUBS) out.push([`records/${sub}`, join(recordsRoot(), id, sub)]);
   } catch { /* 没编译 / 版本对不上：旧位置照扫，别让收尾整个失效 */ }
-  for (const sub of ["snapshots", "staged"]) out.push([sub, join(dir, ".umbrastudio", sub)]);
+  for (const sub of ASSET_SUBS) out.push([sub, join(dir, ".umbrastudio", sub)]);
   return out;
 };
+
+/** 会话落在哪（`chat.ts` 的 `chatsDir` → `assetDir(dir, "chats")`）。没有 record 回 `null`。
+ *
+ *  ⚠️⚠️ **刻意从 `assetRootsOf` 里取，不自己拼一遍** —— 判据写路径和收尾扫路径
+ *  必须是同一处定义，否则就是下面这件事的第二次。
+ *
+ *  ### 它修的那个缺陷（2026-10-24 定位）
+ *  #117 / #118 两节一直写着 `${dir}/.umbrastudio/chats`，而 M14-4 B1 把会话搬去了
+ *  `STATE_ROOT/.umbrastudio/records/<ID>/chats/`，**服务端没有回退到项目目录**。后果两层：
+ *  ① 造出来的两条会话 `listChats` 一条都看不到（读数「甲 0 · 乙 0」），两节整节测不到；
+ *  ② 它**往用户真实的项目目录里写文件再删掉**，而收尾那条「一个目录都没多」
+ *     数的是 `STATE_ROOT`，**看不见项目里的动静**（实测那个目录的 mtime 正是上一轮的时间）。
+ *  > **一次迁移之后，「写在旧位置」不会报错 —— 它只会让读的人什么都看不到，
+ *  > 同时在旧位置静默堆东西。** 而「什么都看不到」会被读成「这个功能坏了」。 */
+const chatsDirOf = async (dir) =>
+  (await assetRootsOf(dir)).find(([label]) => label === "records/chats")?.[1] ?? null;
+
+/** 项目里那个**旧**会话目录的指纹（文件名 + 字节数 + 目录自己的 mtime）。
+ *  ⚠️ 为什么不能只比名字：判据是「写进去 → 用完删掉」，**名字前后一样**，
+ *  而目录的 mtime 会变 —— 当初就是靠这个 mtime 才看出判据碰过用户的目录。
+ *  ⚠️ 这个目录里躺着用户 B1 之前的真会话（实测两条，52 KB / 349 KB）。
+ *  存量不迁不删（Q72），所以这里**只比指纹、一个字节都不动**。 */
+const legacyChatsFp = async (dir) => {
+  if (!dir) return "（没有项目目录）";
+  const { statSync, readdirSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = join(dir, ".umbrastudio", "chats");
+  if (!existsSync(root)) return "（旧位置不存在）";
+  const names = readdirSync(root).sort();
+  const parts = names.map((n) => { try { return `${n}:${statSync(join(root, n)).size}`; } catch { return `${n}:?`; } });
+  return `mtime=${statSync(root).mtimeMs} · ${names.length} 份 · ${parts.join(",")}`;
+};
+let CHATS_FP = "（没取）";
 
 const sweepSnapshots = async (dir) => {
   if (!dir) return [];
   const { readdirSync, rmSync, existsSync } = await import("node:fs");
   const { join } = await import("node:path");
   const gone = [];
-  /* ⚠️ **两个目录都要扫。** `staged/` 是 M10-2c 新增的一类残留 ——
+  /* ⚠️ **三个目录都要扫**（`chats/` 是 2026-10-24 补的，见 `ASSET_SUBS` 头上那段）。
+     `staged/` 是 M10-2c 新增的一类残留 ——
      判据一改文件就会留一份草稿，而 `file_trash` + `trash_purge` 不带走它。
      加一种会落盘的东西就要问一句：**收尾扫不扫得到它**。
 
@@ -626,6 +671,8 @@ process.on("uncaughtException", async (e) => {
   /* ⚠️ 基线在**清完之后**取 —— 清掉的那些不该算进「跑之前就有的」，
      否则这一轮又留下同名的东西就看不出来了。 */
   BASELINE = await snapBaseline(pre.dir);
+  /* 旧会话位置的指纹：收尾要证明**项目里那个目录一个字节都没被碰**（见 `legacyChatsFp`） */
+  CHATS_FP = await legacyChatsFp(pre.dir);
   if (pre.files.length || pre.trash.length || snaps.length) {
     console.log(`  · 开跑前扫掉了上一轮的残留：项目根 ${pre.files.length} 份 · 回收站 ${pre.trash.length} 条 · 快照 ${snaps.length} 份`);
   }
@@ -1908,9 +1955,15 @@ console.log("\n一轮在跑的时候切会话（issue #117 · 打桩通道）");
 
     /* ── ② 跑的中途切到另一条会话 ── */
     const dir = await pg.evaluate(() => window.__UD_APP.dir);
-    const cdir = `${dir}/.umbrastudio/chats`;
+    /* ⚠️ **会话目录走 `chatsDirOf`** —— 写死 `${dir}/.umbrastudio/chats` 的后果写在它头上：
+       这一节在 B1 之后一直在**往用户的项目目录里**造会话，而产品从新位置读，一条都看不到。
+       算不出来（这个项目还没有 record）就**整节不跑，也不退回旧位置写** ——
+       退回去等于把那个缺陷又做一遍，而那一次没有任何读数会变红。 */
+    const cdir = await chatsDirOf(dir);
+    ok(cdir !== null, "（前提）会话目录按**记录目录**算出来了（B1 之后它在 `STATE_ROOT/…/records/<ID>/chats/`）",
+       cdir ?? "这个项目还没有 record —— 下面这一路整节没验到");
     const OTHER = "chat-1791000000117-ut117b", MARK_B = "乙会话uitest117";
-    try {
+    if (cdir) try {
       mkdirSync(cdir, { recursive: true });
       writeFileSync(`${cdir}/${OTHER}.json`, JSON.stringify({
         id: OTHER, projectId: dir.split("/").pop(), channel: "a", model: "uitest",
@@ -1992,7 +2045,13 @@ console.log("\n一轮在跑的时候切会话（issue #117 · 打桩通道）");
 console.log("\n删掉当前会话后点「新建会话」（issue #118）");
 {
   const dir = await pg.evaluate(() => window.__UD_APP.dir);
-  const cdir = `${dir}/.umbrastudio/chats`;
+  /* ⚠️ **会话目录走 `chatsDirOf`** —— 写死 `${dir}/.umbrastudio/chats` 的后果写在它头上：
+     这一节在 B1 之后一直在**往用户的项目目录里**造会话，而产品从新位置读，一条都看不到。
+     算不出来（这个项目还没有 record）就**整节不跑，也不退回旧位置写** ——
+     退回去等于把那个缺陷又做一遍，而那一次没有任何读数会变红。 */
+  const cdir = await chatsDirOf(dir);
+  ok(cdir !== null, "（前提）会话目录按**记录目录**算出来了（同上 —— 这一节也造两条会话）",
+     cdir ?? "这个项目还没有 record —— 这一节整节没验到");
   /* ⚠️ **会话 ID 的形状是有闸的**：`/^chat-\d{1,20}-[a-z0-9]{1,12}$/`（`chat.ts`）。
      第一版我起名 `chat-uitest118-a` —— **列表照样把它列出来了**（`listChats` 只读文件），
      而点它时 `chat_get` 回 `E_BAD_INPUT`、`openSession` 弹一句 toast 就结束。
@@ -2007,7 +2066,7 @@ console.log("\n删掉当前会话后点「新建会话」（issue #118）");
     createdAt: when, updatedAt: when, status: "active",
     messages: [{ role: "user", content: text, timestamp: when }],
   }, null, 2);
-  try {
+  if (cdir) try {
     mkdirSync(cdir, { recursive: true });
     writeFileSync(`${cdir}/${A}.json`, mk(A, "甲", "2026-10-07T10:00:00.000Z", "甲会话的那句话uitest118"), "utf8");
     writeFileSync(`${cdir}/${B}.json`, mk(B, "乙", "2026-10-07T09:00:00.000Z", MARK_B), "utf8");
@@ -4980,6 +5039,19 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
        "**没往用户的 git 仓库塞提交**（起服务要带 `UMBRASTUDIO_NO_GIT=1`）",
        mine ? `有 ${mine} 个提交是回归样本的，请自己 git 收拾（判据不替你撤别人的提交）` : "干净");
   }
+
+  /* ⚠️⚠️ **项目里那个旧会话目录，一个字节都不许被碰**（2026-10-24 加）。
+     上面那条「一个目录都没多」数的是 `assetRootsOf` 给的位置并且**只比名字**，
+     而 #117 / #118 当时的病是「写进去 → 用完删掉」：
+     名字前后一模一样，`records/` 那边更是压根没动过 ——
+     **两条兜底判据加起来都看不见它**，看见它的是那个目录的 mtime。
+     > **「写了又删」在一张只记名字的清单上是不可见的。**
+     这里比的是指纹（名字 + 字节数 + 目录 mtime），而且**只读不写**：
+     那里躺着用户 B1 之前的真会话，存量不迁不删（Q72）。 */
+  const fpNow = await legacyChatsFp(left.dir);
+  ok(fpNow === CHATS_FP,
+     "**项目里的 `.umbrastudio/chats/` 一个字节都没被碰**（B1 之后产品不往那儿写，判据更不该）",
+     fpNow === CHATS_FP ? CHATS_FP.slice(0, 60) : `跑前 ${CHATS_FP}\n       跑后 ${fpNow}`);
 }
 
 /* ── 总数本身也是一条判据（2026-10-07）──
@@ -5048,26 +5120,30 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > 但一个该留在分母里催人去查，另一个该从分母里拿掉。**
    > 要算「删了多少」只有一个来源：**实跑数的前后对比**，不是期望减实际。
 
-   **现在这个 456 的来历**（`sync-plugins` + `data-kit-*` 改写之后重算）：
-   · `sync-plugins` 装上 code 1.3.1 / kit 1.2.0 之后，**草稿 stale 那一组 17 条全跑起来了**
-     （实跑 422 → **435**，读数 406 → 423）—— 那 13 条欠账**清掉了**，不再留在缺口里。
-   · 这一轮又补了 **2 条**（草稿横条的 `delta` · 未落盘横条的 `dirtyNote`，见各自那段注释）
-     → 该跑 **437**。
-   · 加上**本来就该跑而今天前提没成立的 19 条**（见下）= **456**。
-   缺口 **456 − 437 = 19 条，全部留在分母里**，⏳ 都在「单独查」清单上：
-   · **约 16 条 = 会话甲乙那一路**（逐节表里「删掉当前会话后点新建会话」只剩 **1 条**，
-     而红里写着「（样本有效性）两条会话都在列表里 — 甲 0 · 乙 0」——
-     **样本没建成，后面十几条全跳过**）。
-   · **2 条 = ◨ 开合**（image 没声明 `panels`，宿主不画那颗钮）。
-     ⚠️ 它和上面那一类**性质不同**：这 2 条在图片样本下**永远不跑**，
-     而 ◨ 另有两处在测（md 插件的大纲 · 插件自己那张网页）。
-     留在分母里是**刻意的** —— 下次谁把这一节的样本换回一个有 `panels` 的格式时，
-     读数会自己对上；而拿掉它就等于把「这一组今天没人在这里测」这件事抹掉。
-   · **1 条** = 「点在稿上也收起浮层」那一族里随样本浮动的余量。
+   **现在这个 447 的来历**（2026-10-24 会话位置修好之后**实测**重算）：
+   · 实跑 **445**（上一轮 437 → 这一轮 445，逐节差集只有三节变：
+     `#117` 7 → **9** · `#118` 1 → **6** · 收尾 5 → **6**，其余每一节一条不差）。
+   · 其中 **3 条是这一轮新加的**（两节各一条「会话目录按记录目录算出来了」+
+     收尾那条「项目里的 `.umbrastudio/chats/` 一个字节都没被碰」），
+     **5 条是原来因为会话写在旧位置而跳过的**。
+   · 加上**本来就该跑、而今天前提没成立的 2 条** = **447**。
+     那 2 条是 ◨ 开合（image 没声明 `panels`，宿主不画那颗钮）——
+     它是这一轮**唯一一节自己打印了「没验到」**的，所以它是唯一一个有证据的缺口。
+     留在分母里是**刻意的**：下次谁把这一节的样本换回一个有 `panels` 的格式，读数会自己对上。
+
+   ⚠️⚠️ **而上一版那个 456 是错的，错在我又一次用估计代替读数。**
+   上一版写的是「约 16 条 = 会话甲乙那一路」—— 依据是逐节表里 `#118` 只剩 1 条，
+   我据此**猜**那一节本该有多少。实测恢复的是 **7 条**（9−7 加 6−1），不是 16。
+   还顺手写了「1 条 = 浮层那一族随样本浮动的余量」，而连跑四轮的逐节表里**它一条都没浮动过** ——
+   那个数字从头到尾没有证据。
+   > **我三天前刚写下「要算这个只有一个来源：实跑数的前后对比」，然后又估了一次。**
+   > 「这一节本该有多少条」和「这一节今天跑了多少条」，只有后者量得到；
+   > 前者只有**改好之后再跑一轮**才知道 —— 也就是说，**这个数只能在修完之后填，不能在修之前估**。
+
    > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
    > 把第三种算成第二种，就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 456;
+const EXPECT_AT_LEAST = 447;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
