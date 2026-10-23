@@ -23,6 +23,17 @@ export interface SegItem {
 }
 
 export function Seg({ label, items }: { label: string; items: SegItem[] }) {
+  /* ⚠️⚠️ **空组不画**（2026-10-23，7c-3 的判据抓出来的）。
+     C3 删掉「全部 / 只看稿件」两个档位之后，目录的工具栏上留着
+     `<Seg label="范围" items={[]} />` —— 而这里原来照画容器：
+     用户看到的是一个 **6px 宽的空边框小方块**，点不了、也不说明自己是什么。
+     > **「这个开关的理由没了」和「这个组件该从工具栏拿掉」是两步**，
+     > 而只做了第一步的症状，是一个谁都解释不了的空壳。
+     ⚠️ 闸装在这里**而不只是删掉那一行调用**：`items` 也可能来自**插件**
+     （`plugin/ChromeUI.tsx` 走同一个 `Seg`），插件完全可以报一个
+     「这一档今天一个都不满足」的空组 —— 那时候同样不该画。
+     > 一个会被别人以数据驱动的组件，防线要装在它自己身上。 */
+  if (!items.length) return null;
   return (
     <div role="group" aria-label={label} className="flex items-center gap-0.5 p-0.5 bg-panel2 border border-border rounded shrink-0">
       {items.map((it) => (

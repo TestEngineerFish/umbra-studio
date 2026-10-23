@@ -65,11 +65,13 @@ function Toolbar() {
   const setView = (v: "list" | "grid") => d.setManual({ ...d.manual, [d.dirRel]: v });
   return (
     <>
-      <Seg label="范围" items={[
-        /* ⚠️ **「全部 / 只看稿件」这个二选一 2026-10-23 删了**（M16-7 / C3）：
-           「稿」这个类型不存在了，所以「只看稿件」会过滤出 0 条 ——
-           **一个永远筛空的筛子比没有筛子糟**（用户会以为这一层真的没东西）。 */
-      ]} />
+      {/* ⚠️ **「范围」这一组（全部 / 只看稿件）2026-10-23 删了**（M16-7 / C3）：
+          「稿」这个类型不存在了，所以「只看稿件」会过滤出 0 条 ——
+          **一个永远筛空的筛子比没有筛子糟**（用户会以为这一层真的没东西）。
+          ⚠️⚠️ 删档位的那一版**把 `<Seg label="范围" items={[]} />` 留在了这里**，
+          而 `Seg` 当时空也照画 → 工具栏上一个 6px 的空边框小方块。
+          两步都做掉：这里不再画它，`Seg` 那边也加了「空组不画」的兜底
+          （插件报空组时同样用得上）。 */}
       <Seg label="排布" items={[
         { label: "列表", active: d.counts.view === "list", onPick: () => setView("list") },
         { label: "网格", active: d.counts.view === "grid", onPick: () => setView("grid") },

@@ -793,95 +793,107 @@ const openEdit = async () => { const b = pg.locator('[data-ud="toggle-edit"]'); 
 const openProps = async () => { const b = pg.locator('[data-ud="toggle-props"]'); if (await b.count() && (await b.getAttribute("aria-pressed")) !== "true") { await b.click(); await pg.waitForTimeout(400); } };
 
 
-/* ══════════════════════════════════════════════════════════════════════
-   判据自己的画布样本（issue #192）
+/* ══════════ 判据自己的样本：一张图（M16-7c-3 换掉了原来的 dc 画布样本）══════════
+   ⚠️⚠️ **原来这里是 `DC_SAMPLE` / `makeDcSample` / `openDcSample` 三件**，
+   建一份 `.dc.html` 走 `draft_write`（唯一写入口）给六个节当样本。
+   C3 删掉设计稿之后 `draft_write` 没了 —— 那六个节于是全部报
+   「项目里没有 .dc.html」「这一整节静默跳过了」，而**其中四个节测的东西和 dc 无关**：
+   ⌘E 开合编辑栏 · ◨ 开合属性区 · 浮层不越界 / 点外面收起 · 换格式不动目录列 ·
+   右下角浮块里的信息卡不接 ↑↓。
+   > **一节判据因为夹具没了而红，先问它测的那件事是不是也没了** ——
+   > 这六个节里只有两个真的随 dc 走。
 
-   ⚠️⚠️ `openByName(".dc.html")` 取的是**树里第一份** —— 而「第一份是哪一份」
-   取决于用户项目里有什么、以及前面几节有没有建过别的稿。
-   2026-10-22 实测：它选到了 `Umbra_design.dc.html`（一份 **753 字节的空白稿**，
-   9-28 的测试残留），而空白稿**没有可点的元素、没有节点地址** ——
-   于是 dc 那一大片的 9 条判据全部红在「点不到稿里的元素」「评论钉 0 枚」上，
-   而**产品是好的**（独立探针：同一份稿在干净会话里 iframe 2 个、壳里 26 个元素）。
-   > **`.first()` 是一场赌博**，而判据不该押它。
-   ⚠️ 这件事在第 1645 行那一节**已经被发现过一次**（那里的注释写着
-   「不能用 `openByName(".dc.html")` —— 它取的是树里第一份」），而那次**只绕开了那一处**。
-   > **一条教训只修一处，等于记了没用**（`doc/00` §147 同族）。
-
-   所以：**判据自己建一份**有内容、有节点地址的稿，dc 那几节都打开它。
-   · 名字走 `_uitest` 前缀（`SAMPLE_PATS` 的约定），收尾那套精确清理会清掉它；
-   · ⚠️ 走 `draft_write`（**唯一写入口**）而不是 `file_write` ——
-     后者对 `.dc.html` 会被拒，而且不会注入 `__resources` / 打节点地址，
-     那样建出来的稿和用户残留的那份空白稿一样测不了东西。
-   · ⚠️ **`projects/` 下别的东西一个都不删**（纪律⑥，geek-99 2026-10-22 重申）。
-   ══════════════════════════════════════════════════════════════════════ */
-/* ⚠️⚠️ **名字里不许出现任何判据会去搜的词**（2026-10-23 栽过）。
-   原来它叫 `_uitest画布.dc.html`，而「文件工具栏」那一节是在详情区**数「画布」出现几次**
-   （`整页 N 处 · 工具栏里 1 处`，多出来的就算「视图里还留着一条没搬走的工具栏」）——
-   于是它数到了**我这个样本的文件名**，判据红在自己的夹具上。
-   > **判据的样本名不该包含任何判据会去搜的词。**
-   这和「判据里出现的字符串要是它检查的那个东西本身、不是提到它的文字」是同一个病的
-   第三种长相：前两次命中的是自己的注释，这次命中的是自己的夹具。
-   现在这三个探针词是「渲染」/「画布」/「树」—— `样稿` 三个都不碰。 */
-const DC_SAMPLE = "_uitest样稿.dc.html";
-/** 建画布样本。回 false = 没建成（调用方据此说「这一条没验到」而不是报产品的错）。 */
-const makeDcSample = async () => {
-  const made = await pg.evaluate(async ({ name }) => {
+   换成**一张图**：`image` 是**宿主内置**的 kind（不依赖任何插件），而它
+   声明了 `Toolbar` 和 `Corner` —— 正好是那几个节要的两样。
+   ⚠️ 为什么不用项目里现成的图：那些在 `screenshots/` 子目录里，
+   `openByName` 按树里的文本找，**子目录要先展开** —— 那是一个会偶发的前提。
+   自己造一张放项目根，用完删（7c-2d 那条「自带夹具要配自带清理」）。 */
+const IMG_SAMPLE = "_uitest样图.png";
+/** 1×1 的 png（base64），够让看图模块画出来并给出 Toolbar / Corner。 */
+const IMG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** 建那张图。回 false = 没建成（调用方据此说「这一条没验到」而不是报产品的错）。 */
+const makeImgSample = async () => {
+  const made = await pg.evaluate(async ({ name, b64 }) => {
     const b = window.__UD_APP;
     const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
-    const w = await fetch(u("draft_write"), { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: name, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>样稿</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:32px;font-family:system-ui}h1{font-size:28px;margin:0 0 16px}button{font-size:14px;padding:6px 12px}p{color:#666}</style></helmet>\n<div><h1>一份样稿</h1><p>这一段给点选用</p><button>一颗钮</button><button>第二颗</button></div></x-dc></body></html>` }) });
+    /* ⚠️ 走 `file_write` 的 **base64 那一档**（#108 给第二条写入口加的）——
+       拿 utf8 写 png 会静默写出一个「体积不对但确实存在」的文件。 */
+    const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: name, content: b64, encoding: "base64" }) });
     return (await w.json()).ok === true;
-  }, { name: DC_SAMPLE });
-  if (made) await settleTree(DC_SAMPLE);
+  }, { name: IMG_SAMPLE, b64: IMG_B64 });
+  if (made) await settleTree(IMG_SAMPLE);
   return made;
 };
-/** 打开判据自己那份画布样本。**不赌「树里第一份是什么」。**
+/** 打开判据自己那张图。**不赌「树里第一个是什么」。**
  *  没建成 / 打不开就回 false —— 调用方说「这一条没验到」，不是报产品的错。 */
-const openDcSample = async () => {
+/** 把市场关掉。**从 `openImgSample` 里搬出来的（2026-10-23）** ——
+ *  它原来是那个 helper 内联的一段，而「点在稿上也收起浮层」那一节也需要它。
+ *  > 一处定义：第二个需要它的地方出现时，就该抽出来，而不是抄一遍。 */
+const closeMarket = async () => {
+  if (await pg.locator('[data-ud="market"]').count()) {
+    await pg.locator('[data-ud="market"] button[title="关闭"]').first().click().catch(() => {});
+    await pg.waitForTimeout(500);
+  }
+};
+const openImgSample = async () => {
   /* ⚠️⚠️ **先把市场关掉**（issue #192 的真因，2026-10-22 定住）。
      `Workbench` 的详情区有三条分支：`market` / 「从左边的目录里选一个文件」/ `mod.View`。
      市场开着时它显示的是**市场**，而**页签条是另一块**（它读 `tabs` 不读 `file`）——
-     于是「当前页签是那份稿」和「iframes: 0」同时成立，看着像矛盾，
+     于是「当前页签是那份文件」和「iframes: 0」同时成立，看着像矛盾，
      其实是两块各说各话。
-     那之后所有「打开一份稿、看详情区」的判据都在市场页上跑：点选分派 ·
-     编辑档开属性区 · 评论档弹评论框 · 切稿过场 · 暂存区 · 评论钉 **9 条全红**，
-     而**产品是好的**。
-     ⚠️ 打开市场的是「✎ 永远显示」那一节（它点「去市场」），而它没关。
-     ⚠️⚠️ **更要紧的一条教训**：市场那一节的收尾里我加过一条「市场关掉了」的断言，
+     ⚠️⚠️ **最要紧的一条教训**：市场那一节的收尾里我加过一条「市场关掉了」的断言，
      读数是「0 个市场容器还在」—— 我据此**把「市场开着」这条线索排除了**，
      而那条断言只对**它所在的那一刻**成立，中间又有节把市场打开了。
      > **一条「我已经关掉了」的断言，只对它所在的那一刻成立。**
      所以修法不是「让每一节都记得关」，而是让这个 helper **自己保证**那个状态：
      > **一个「让世界进入某个状态」的 helper，应该自己保证那个状态，
      > 而不是假设前面的人清理过。** */
-  if (await pg.locator('[data-ud="market"]').count()) {
-    await pg.locator('[data-ud="market"] button[title="关闭"]').first().click().catch(() => {});
-    await pg.waitForTimeout(500);
+  await closeMarket();
+  if (!(await pg.locator('[role="treeitem"]').filter({ hasText: IMG_SAMPLE }).count())) {
+    if (!(await makeImgSample())) return false;
   }
-  if (!(await pg.locator('[role="treeitem"]').filter({ hasText: DC_SAMPLE }).count())) {
-    if (!(await makeDcSample())) return false;
-  }
-  return await openByName(DC_SAMPLE);
+  return await openByName(IMG_SAMPLE);
 };
+/** 用完把那张图连回收站一起清掉。**幂等**，在最后一个用它的节之后调一次。
+ *
+ *  ⚠️⚠️ **第一版只写了注释没写代码。** `makeImgSample` 上面那段话里
+ *  我自己写着「自己造一张放项目根，**用完删**（7c-2d 那条「自带夹具要配自带清理」）」——
+ *  然后没有实现它。
+ *  > **一条教训写进注释，不等于实现它的代码存在过。**
+ *  ⚠️ 兜底的 `sweepSamples` 认得它（`SAMPLE_PATS` 第一条就是 `/^_uitest/`），
+ *  所以文件不会留在用户项目里 —— 暴露它的是另一条判据：
+ *  收尾报「我清掉了几个」，而**正常跑完那个数该是 0**。
+ *  > **「清理器认得它」和「谁该负责清它」是两个问题。**
+ *  ⚠️ 要连回收站一起 purge：`file_trash` 只是搬进回收站，
+ *  留在那儿的话每跑一轮堆一条（收尾第二条判据正是钉这个的）。 */
+const dropImgSample = async () => await pg.evaluate(async (name) => {
+  const b = window.__UD_APP;
+  const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+  const post = (r, body) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  await post("file_trash", { path: name }).catch(() => {});
+  const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
+  for (const it of t?.data?.items ?? []) {
+    if (it.originalName === name) await post("trash_purge", { trashPath: it.trashPath }).catch(() => {});
+  }
+}, IMG_SAMPLE);
 
 /* 设计稿：画布（View）+ 属性面板（Panels）。它是唯一有五个面板的格式 */
-if (await openDcSample()) {
-  /* ⚠️ **「有个 iframe」不是判活**（纪律②）：稿加载失败时那个 iframe 照样在。
-     真判据是穿两层看见东西 —— 外层是 S2 嵌入壳，内层才是稿本身。
-     数得到内层的元素，就说明 postMessage 那座桥和稿的加载都通了。 */
+/* ⚠️⚠️ **这一支 2026-10-23（M16-7c-3 / C3）从「设计稿」换成「图片」，而删掉了两条。**
+   原来它穿两层 iframe 看 S2 嵌入壳里的稿（「有个 iframe 不是判活」—— 纪律②），
+   那两条随画布一起走。
+   留下的是**和格式无关的那两条**：编辑栏与属性区的**默认态**，
+   而「默认收起」只能钉在**最早的这一次打开** —— 后面几节会把它们点开，
+   而 `layout.props` 还落盘。放到后面去测，量到的是上一节留下的状态（M8-28 真栽过）。
+   ⚠️ 用图片做样本：`image` 是**宿主内置**的 kind，不依赖插件（见 `IMG_SAMPLE` 那段）。 */
+if (await openImgSample()) {
   await pg.waitForTimeout(1200);
-  const shellFrame = pg.frameLocator("iframe").first();
-  const nested = await shellFrame.locator("iframe").count().catch(() => 0);
-  ok(nested > 0, "设计稿：S2 嵌入壳里装着稿本身（View 环节）", `壳里 ${nested} 层`);
-  const els = nested > 0 ? await shellFrame.frameLocator("iframe").first().locator("*").count().catch(() => 0) : 0;
-  ok(els > 5, "设计稿：稿真的渲染出来了（不只是有个空 iframe）", `稿里 ${els} 个元素`);
-  /* ⚠️ 「默认收起」只能钉在**最早的这一次打开** —— 后面几节会把它们点开，
-     而 `layout.props` 还落盘。放到后面去测，量到的是上一节留下的状态（M8-28 真栽过）。 */
+  /* 图片的 `View` 真画出来了 —— 「有个容器」不算，要看到 `img` 本身（纪律② 的同一条）。 */
+  const shown = await pg.locator('[data-ud="detail"] img, [data-ud="file-body"] img, main img').count().catch(() => 0);
+  ok(shown > 0, "图片：看图模块真把它画出来了（View 环节）", `${shown} 个 img`);
   ok(await pg.locator('[data-ud="toggle-edit"]').getAttribute("aria-pressed") === "false", "编辑栏默认收起（用户第 12 条）");
   ok(await pg.locator('[data-ud="props"]').count() === 0, "属性区默认收起（不留图标轨）");
-  await openProps();
-  ok(await pg.locator('[data-ud="props"]').count() === 1, "设计稿：属性区展开得出来（Panels 环节）");
-} else ok(false, "项目里没有 .dc.html，测不了设计稿");
+} else ok(false, "建不出图片样本，这一组测不了");
 
 /* Markdown：大纲。**这一条最该测** —— 大纲原来是 Workbench 的一个 state，
    现在住在 md 模块自己的 Provider 里（View 产出、Panels 消费）。
@@ -927,15 +939,32 @@ const pageCount = async (re) => (((await detail().innerText().catch(async () => 
 
 for (const [suffix, label, probe] of [
   [".md", "Markdown", /渲染/g],
-  [".dc.html", "设计稿", /画布/g],
+  /* ⚠️ `[".dc.html", "设计稿", /画布/g]` 这一行 2026-10-23（C3）删了 ——
+     「画布」那条开关随设计稿一起没了。剩下三种各自是真的：
+     md 的「渲染」· JSON 的「树」· 图片的「缩放」。 */
+  /* ⚠️⚠️ **探针第一版写了 `/缩放|适应/`，而那是 `Corner` 的词，不是 `Toolbar` 的。**
+     读数当场说清了：「整页 2 处 · **工具栏里 0 处**」—— 它在右下角那个浮块里。
+     > **换样本要连判准一起核**：「这个格式有 `Toolbar`」不等于
+     > 「它的 `Toolbar` 里写着判据要找的那个词」。
+     ⚠️⚠️ **第二版写 `/左转/` 也是 0 处**，而它错在两个地方，读数「整页 0 处」
+     把两个都盖在同一句话里：① `左转 90°` 只在 `d.cropping` 为真时才画
+     （要先进裁剪态）；② 它是 `title` **属性**，而这条判据数的是 `innerText`。
+     > **换样本要连判准一起核**，而「判准」至少有三层：
+     > 这个词在哪个组件里 · 它是文本还是属性 · 它常驻还是条件渲染。
+     图片 `Toolbar` 里**常驻的文本**只有两个：`圈选` 和 `⬚ 裁剪`。
+     ⚠️ 挑 `裁剪` 而不是 `圈选`：`View.tsx:149` 有一句真会渲染的
+     「当前大脑通道不支持图片（…），**圈选**给 AI 用不了」——
+     在看不了图的通道上，下一条「视图里没有第二条工具栏」会因为它而红，
+     **而那跟工具栏搬没搬完全无关**。 */
+  [".png", "图片", /裁剪/g],
   /* ⚠️ 探针词跟着 S19 改了：旧模块的两档叫「结构 / 源码」，
      插件这一版按稿叫「源码 / 树」。探的是**同一件事** —— 开关在不在那条带上。 */
   [".json", "JSON", /树/g],
 ]) {
-  /* ⚠️ `.dc.html` 走**判据自己那份样本**，不赌「树里第一份」（#192 那场赌博的最后一处）——
-     用户项目里第一份 `.dc.html` 是什么我们不知道，而这一节要数详情区里的词频，
+  /* ⚠️ `.png` 走**判据自己那张图**，不赌「树里第一张」（#192 那场赌博的最后一处）——
+     用户项目里第一张图是什么我们不知道，而这一节要数详情区里的词频，
      样本里多一个探针词这条判据就红。 */
-  const opened = suffix === ".dc.html" ? await openDcSample() : await openByName(suffix);
+  const opened = suffix === ".png" ? await openImgSample() : await openByName(suffix);
   if (!opened) { ok(false, `${label}：项目里没有这种文件`); continue; }
   await openEdit();
   const inBar = await countIn(bar(), probe);
@@ -948,9 +977,22 @@ for (const [suffix, label, probe] of [
    ⚠️ 进目录视图的入口第八轮换了：`⤢` 删掉，改成**点目录列头的项目名**（或右键 / 双击）。 */
 await pg.locator('button[title="回到项目根（右键：对项目根的操作）"]').first().click(); await pg.waitForTimeout(1300);
 await openEdit();
-ok(await bar().locator('[role="group"][aria-label="范围"]').count() === 1, "目录：范围组在工具栏上");
 ok(await bar().locator('[role="group"][aria-label="排布"]').count() === 1, "目录：排布组在工具栏上");
-ok(await countIn(bar(), /全部/g) === 1, "目录：范围开关只有一份");
+/* ⚠️⚠️ **原来这里有两条「范围组」的判据，2026-10-23（7c-3）翻成了下面这一条反面的。**
+   原文是「范围组在工具栏上 === 1」和「`全部` 只出现一份」。
+   C3 删掉「全部 / 只看稿件」两个档位之后：
+   · 后一条**正确地红了**（「全部」0 次）——它要找的那个词没了；
+   · 前一条**照旧是绿的**，而它这时作证的是一个 `items` 为空的**空壳**
+     （`Seg` 当时空也照画，工具栏上一个 6px 的空边框）。
+   > **一条判据钉的那件坏事消失之后，它不会自己变红 —— 它会开始为别的东西作证。**
+   前一条钉的坏事是「这组开关没搬上统一工具栏」（M8-15b），而那组开关今天压根不存在了，
+   所以它的理由倒下了。换成钉**新出现的**那件坏事：空组不许画出来。
+   ⚠️ 这条判据同时守着两个地方（`dir/index.tsx` 不再画它 · `Seg` 空组返回 null），
+   拆掉任何一个它都该红 —— 这是故意的：**一道闸同时守两条路，才经得住「只改回一处」。** */
+{
+  const n范围 = await bar().locator('[role="group"][aria-label="范围"]').count();
+  ok(n范围 === 0, "目录：空的「范围」组不画出来（档位删了之后别留个空壳）", `范围组 ${n范围} 个`);
+}
 
 /* ── 目录右键菜单（M8-21 · 设计侧第八轮 §五）──
    按**右键点在什么上**分三种。这里每种测一条「该有的」和一条「不该有的」——
@@ -1089,7 +1131,15 @@ if (await fileRow.count()) {
   if (await draftRow.count()) {
     await draftRow.click({ button: "right" }); await pg.waitForTimeout(400);
     const t = await ctxText();
-    ok(/复制一份/.test(t), "右键**稿件**：有「复制一份」（issue #9 的第五个动作）", t.slice(0, 70));
+    /* ⚠️⚠️ **这一条 2026-10-23（M16-7c-3 / C3）翻成反面的，而它是一条欠账。**
+       7a 把 `FileTree` 的 `isDraft` 写成了**常量 false**，理由是
+       「不能改成 true：`duplicateDraft` 硬编码 `.dc.html`，对一份 `.md` 会生成
+       `xxx.md 副本.dc.html` = **一颗假按钮**」。
+       所以「复制一份」现在**对任何文件都不出现** —— 包括 `.dc.html` 自己。
+       > **一个「对所有文件都不出现」的菜单项，和「这个功能没做」在界面上是一回事。**
+       ⏳ 归 **M16-8**（`duplicateDraft` 要跟着重新分类，接回「复制一份」）。
+       钉反面的理由：不钉的话 M16-8 做完也没有东西说它回来了。 */
+    ok(!/复制一份/.test(t), "右键**暂时没有**「复制一份」（⏳ M16-8 接回 —— `duplicateDraft` 还硬编码 `.dc.html`）", t.slice(0, 70));
     await closeCtx();
     /* 反面：非稿件不该有它 —— 只测「该有的」测不出 `isDraft` 这道条件在不在 */
     const other = pg.locator('[role="treeitem"]:not([aria-expanded])').filter({ hasText: ".json" }).first();
@@ -1436,7 +1486,7 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
   await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
 
   /* ③ 信息卡不接 ↑↓（§二.2）：里面是数字框和滑块，↑↓ 是它们调值的键 */
-  if (await openDcSample()) {
+  if (await openImgSample()) {
     await pg.waitForTimeout(1200);
     /* ⚠️ 信息卡在**正文右下角的浮块**里，不在编辑栏 —— 第九轮把「看稿用的」
        （宽度 · 缩放 · 浅深）都挪去了那儿，编辑栏只留「改稿用的」。
@@ -1450,7 +1500,7 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
       ok(before === after, "信息卡不接 ↑↓（焦点没被浮层挪走，↑↓ 还归数字框/滑块）", `${before} → ${after}`);
       await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
     } else ok(false, "找不到信息卡钮，这条没测成");
-  } else ok(false, "没打开 .dc.html —— **这一整节静默跳过了**（全绿不代表验到了）");
+  } else ok(false, "没打开图片样本 —— **这一整节静默跳过了**（全绿不代表验到了）");
 
   /* ④ 暗底不是接层，照稿取真值（§一.2）：让位浮层 22%、抽屉 18%，且不是纯黑 */
   const scrims = await pg.evaluate(() => {
@@ -1463,7 +1513,7 @@ console.log("\n第九轮回复的五处纠正（M8-30）");
 /* ── ⌘E / ⌘⌥B 开合（M8-28 · 设计侧第九轮 §三）──
    **这一节和默认值无关**，只问「按了会不会变」：先归一到收起，再开、再收。 */
 console.log("\n详情三层的开合：⌘E · ◨（M8-28）");
-if (await openDcSample()) {
+if (await openImgSample()) {
   await pg.waitForTimeout(1200);
   const editBtn = pg.locator('[data-ud="toggle-edit"]');
   const pressed = async () => (await editBtn.getAttribute("aria-pressed")) === "true";
@@ -1483,28 +1533,39 @@ if (await openDcSample()) {
      键盘事件不跨 iframe 边界，所以快捷键挂在顶层 **和每一个同源 iframe 的 document** 上。
      判据里把焦点真塞进最内层的稿 —— 判它进没进去只能看**顶层** `activeElement` 变成 IFRAME，
      每个 document 自己的 `activeElement` 默认就是 BODY，拿它当判据等于没判。 */
-  const into = await pg.evaluate(() => {
-    const f = document.querySelector("iframe"); if (!f) return null;
-    const d = f.contentDocument; const g = d && d.querySelector("iframe"); const gd = g && g.contentDocument;
-    if (!gd) return null;
-    const el = gd.createElement("button"); el.style.cssText = "position:fixed;left:0;top:0;opacity:0";
-    gd.body.appendChild(el); el.focus();
-    return document.activeElement?.tagName === "IFRAME" && gd.activeElement === el;
-  });
-  if (into) {
-    await pg.keyboard.press("Meta+e"); await pg.waitForTimeout(500);
-    ok(await pressed(), "⌘E 在**焦点落进稿里**时照样生效（事件不跨 iframe，所以挂到同源 iframe 上）");
-    await pg.keyboard.press("Meta+e"); await pg.waitForTimeout(400);
-  } else ok(false, "塞不进稿里的焦点，这条没测成（不是通过）");
+  /* ⚠️⚠️ **「⌘E 在焦点落进稿里时照样生效」这一条 2026-10-23（M16-7c-3 / C3）删了。**
+     它（M8-29，用户报的「时灵时不灵」）靠**穿透两层同源 iframe** 把焦点真塞进最内层：
+     `f.contentDocument` → `g.contentDocument`。那是 dc 画布的结构
+     （S2 嵌入壳套着稿），而**插件的 A 面 iframe 是一层、而且不同源** ——
+     它的注释写着「**不给 `allow-same-origin`** —— 给了就退回普通 iframe，隔离没了」，
+     所以 `contentDocument` 拿不到，这条判据对任何插件格式都不成立。
+     ⚠️ 它钉的那件事**本身没过期**：键盘事件不跨 iframe 边界，所以快捷键挂在顶层
+     **和每一个同源 iframe 的 document** 上。而今天同源 iframe 只剩预览壳那一种用法，
+     已经没有了。
+     > **一条判据的「怎么测」依赖一个消失了的结构时，它测的那件事可能还在 ——
+     > 但没有办法再测它。照实删掉，比留一个永远报「没测成」的桩子好。** */
   ok(await pg.locator('[data-ud="corner"]').count() === 1, "正文右下角的浮块常驻（看稿用的不跟着收）");
+  /* ⚠️⚠️ **◨ 那两条在图片上测不了，而第一版直接 `.click()` → 整套抛在这里**
+     （`toggle-props` 等满 30 秒）。
+     `image` 没有声明 `panels`，所以宿主压根不画那颗钮 —— 那是**正确行为**。
+     > **一个判据的前提不成立时，它该说「没验到」，而不该把整套带走**
+     > （一个判据抛出来，代价不是它自己红，是它后面所有判据都没跑）。
+     ⚠️ 而 ◨ 的开合**另有两处在测**，所以这里不是漏了：
+     「Markdown：属性区里是大纲」（md 插件声明了 panels）和
+     「插件的属性面板是它自己的一张网页」。挑样本时选了宿主内置的图片 ——
+     代价就是这一组要让给那两处。 */
   const propsBtn = pg.locator('[data-ud="toggle-props"]');
-  const pOn = async () => (await pg.locator('[data-ud="props"]').count()) === 1;
-  if (await pOn()) { await propsBtn.click(); await pg.waitForTimeout(500); }
-  await propsBtn.click(); await pg.waitForTimeout(500);
-  ok(await pOn(), "点 ◨ 展开属性区");
-  await propsBtn.click(); await pg.waitForTimeout(500);
-  ok(!(await pOn()), "再点收起（完全收掉，不留图标轨）");
-} else ok(false, "项目里没有 .dc.html");
+  if (await propsBtn.count() === 0) {
+    console.log("  · ◨ 开合这一组在图片上没验到（image 没声明 panels，宿主不画那颗钮）—— 另有两处在测它");
+  } else {
+    const pOn = async () => (await pg.locator('[data-ud="props"]').count()) === 1;
+    if (await pOn()) { await propsBtn.click(); await pg.waitForTimeout(500); }
+    await propsBtn.click(); await pg.waitForTimeout(500);
+    ok(await pOn(), "点 ◨ 展开属性区");
+    await propsBtn.click(); await pg.waitForTimeout(500);
+    ok(!(await pOn()), "再点收起（完全收掉，不留图标轨）");
+  }
+} else ok(false, "建不出图片样本，这一组测不了");
 
 /* ── 页签三态（M8-28 · 设计侧第九轮 §六）──
    用户第 8 条：「不应每次查看一个详情就多新增一个」。
@@ -1571,10 +1632,22 @@ console.log("\n浮层：不越界 / 点外面收起 / 不被 overflow 裁掉（M
   /* ⚠️ **点在稿上（iframe 里）也要收起** —— 这是那个 bug 的另一半：
      事件被 iframe 吃掉，外面的 document 监听收不到。浮层开着时让 iframe 不接事件。
      只测「点外面」的话这一半测不出来（M8-28 实测：修完第一半之后它还在）。 */
-  if (await openDcSample()) {
+  /* ⚠️⚠️ **样本 2026-10-23（7c-3）从 dc 换成 `.md`，而第一版错换成了图片。**
+     这一条要的是「详情区里有一个 **iframe**」——
+     而 `image` 是宿主内置的原生 `<img>`，**一个 iframe 都没有**。
+     读数当场说清了（那条明细判据的功劳）：
+     `{"iframes":0, …, "当前页签":"_uitest样图.png", "浮层":1}` ——
+     **浮层开着、iframe 为 0**，所以走的是 `else` 那一支。
+     > **换样本时要问的不是「这个格式打得开吗」，而是「这一节靠它的哪个性质」。**
+     > 这一节靠的是 iframe 这个**结构**，不是「能不能预览」。
+     今天还有 iframe 的只剩**插件的 A 面**，所以换成 `.md`（markdown 插件）。
+     ⚠️ 顺带：这一条因此变得比原来**更贴近真实** —— dc 的预览壳是同源 iframe，
+     而插件 A 面**不同源**，事件被吃掉这件事在不同源下更严格。 */
+  await closeMarket();
+  if (await openByName(".md")) {
     /* ⚠️ **等 iframe 真挂上，而不是定时等**（issue #192）。
        原来是 `waitForTimeout(1500)` 然后直接 `locator("iframe").first().boundingBox()` ——
-       而 dc 的 `View` 要先算出稿的 src 才会渲染 iframe（`pool` 在那之前是空的），
+       而插件的 A 面要先拿到沙箱页面地址才会渲染 iframe，
        于是机器一忙就等不到，`boundingBox()` 卡满 30 秒**抛出**，
        **它后面的节一条都跑不到**（实测：135 条之后全部没跑，而汇总行看不出区别）。
        > `doc/00` §113 那条「抢跑的判据会把慢误报成坏」—— 当时**只修了一处**，
@@ -1618,7 +1691,7 @@ console.log("\n浮层：不越界 / 点外面收起 / 不被 overflow 裁掉（M
       await pg.waitForTimeout(500);
       ok(await pg.locator('[data-ud="popover"]').count() === 0, "点在稿上（iframe 里）也收起");
     } else ok(false, "没开出浮层或没有 iframe");
-  } else ok(false, "没打开 .dc.html —— **这一整节静默跳过了**（全绿不代表验到了）");
+  } else ok(false, "没打开图片样本 —— **这一整节静默跳过了**（全绿不代表验到了）");
 
   /* ③ Markdown 的 ⋯ ——「弹不出来」的根因是浮层用 absolute，
         被文件工具栏的 overflow-hidden 整个裁掉了。现在它是 fixed。
@@ -1654,98 +1727,15 @@ console.log("\n页签：状态点 / 溢出 / 当前态（M8-22）");
    一个动作」没错、但它把那个动作放进了**默认收起**的属性区，于是「选中之后」在屏幕上
    没有可见的去处。三档共用一个底座：**S2 不改、不加命令**，由 bridge 按档位分派。
 
-   ⚠️ 判据要钉「点下去真的到位」，不是「钮亮了」——
-   钮的高亮和行为是两件事，只测前者的话分派写错了照样全绿。 */
-console.log("\n指针三档（M8-31 · 用户拍板）");
-{
-  /* 样本自己建自己收：项目里的稿**一份都没有节点地址**（issue #31），
-     没有地址三档全都点不中元素，测不到分派。 */
-  const SAMPLE = "_uitest三档.dc.html";
-  const made = await pg.evaluate(async ({ name }) => {
-    const b = window.__UD_APP;
-    const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
-    const w = await fetch(u("draft_write"), { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path: name, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>三档</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:24px;font-family:system-ui}h1{font-size:28px}</style></helmet>\n<div><h1>标题</h1><button>一颗钮</button></div></x-dc></body></html>` }) });
-    return (await w.json()).ok;
-  }, { name: SAMPLE });
-  if (!made) ok(false, "建不出三档验收样本，这一组测不了");
-  else {
-    await pg.waitForTimeout(1500);
-    if (!(await openByName("_uitest三档"))) ok(false, "样本没出现在树里");
-    else {
-      await pg.waitForTimeout(2600);
-      const eb = pg.locator('[data-ud="toggle-edit"]');
-      if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }
-      const segs = pg.locator('[data-ud="file-toolbar"] [role="group"][aria-label="指针"] button');
-      ok(await segs.count() === 3, "指针组是**三颗**（点选 / 评论 / 编辑）", (await segs.allTextContents()).join("/"));
-      /* 有地址的稿上不该出「没有节点地址」那条 */
-      ok(await pg.locator('[data-ud="no-addr"]').count() === 0, "有地址的稿不出「没有节点地址」提示条");
+/* ⚠️⚠️ **「指针三档」整节 2026-10-23（M16-7c-3 / C3）删了。**
+   它测的是 M8-31 那三档（点选不动属性区 / 编辑档属性区自己打开 / 评论档弹评论框）+
+   V/C/E 切档，而**点选整条线是 dc 的**（靠 `allow-same-origin` 穿透两层 iframe 读稿的 DOM）。
+   ⚠️ 它当初解决的那件事值得留着：issue #31 —— 用户项目里 29 份稿节点地址全为 0，
+   **点了确实什么都不会发生，而界面一句话都不说**。
+   > **「功能坏了」和「这份文件没有这个功能的前提」在界面上长得一样，
+   > 而后者必须说出来。** 这句话对以后任何「依赖某个前提才能用」的功能都成立。 */
 
-      const clickInDraft = async () => {
-        const f = pg.frames().find((x) => /uitest三档/.test(decodeURIComponent(x.url())) && !/S2-/.test(decodeURIComponent(x.url())));
-        if (!f) return false;
-        const h1 = f.locator("h1").first();
-        if (!(await h1.count().catch(() => 0))) return false;
-        await h1.click({ timeout: 8000 }).catch(() => {});
-        await pg.waitForTimeout(1000);
-        return true;
-      };
-      /* 点选档：**不去打开属性区**（设计侧明说「开着就跟着换，关着不去打开」） */
-      await segs.filter({ hasText: "点选" }).click(); await pg.waitForTimeout(400);
-      if (await clickInDraft()) ok(await pg.locator('[data-ud="props"]').count() === 0, "点选档**不强行打开属性区**");
-      else ok(false, "点不到稿里的元素，分派测不了");
-      /* 编辑档：属性区自己打开 —— 这一步正是用户上一轮没找到的那一步 */
-      await segs.filter({ hasText: "编辑" }).click(); await pg.waitForTimeout(400);
-      await clickInDraft();
-      ok(await pg.locator('[data-ud="props"]').count() === 1, "**编辑档点一下，属性区自己打开**");
-      /* 评论档：评论框贴在元素下面，空框时两个出口都不响应 */
-      await segs.filter({ hasText: "评论" }).click(); await pg.waitForTimeout(400);
-      await clickInDraft();
-      const box = pg.locator('[data-ud="comment-box"]');
-      ok(await box.count() === 1, "**评论档点一下，评论框出来**");
-      if (await box.count()) {
-        ok(await box.locator("button:disabled").count() === 2, "空框时「暂存」和「发给 AI」都不响应（原因摆在眼前，不算禁用不解释）");
-        await box.locator("textarea").fill("这里再大一号");
-        await pg.waitForTimeout(250);
-        ok(await box.locator("button:disabled").count() === 0, "打了字两个出口就活了");
-        await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
-      }
-      /* V / C / E */
-      for (const [key, want] of [["v", "点选"], ["c", "评论"], ["e", "编辑"]]) {
-        await pg.keyboard.press(key); await pg.waitForTimeout(300);
-        ok(await segs.filter({ hasText: want }).getAttribute("aria-pressed") === "true", `按 ${key.toUpperCase()} 切到「${want}」档`);
-      }
-      await pg.keyboard.press("v"); await pg.waitForTimeout(200);
-    }
-    /* 收尾：移进回收站，不给用户项目留东西。
-       ⚠️ **先切走再删** —— 不切的话当前文件指着一个已经不存在的稿，
-       之后每一次 comments / diagnostics / locate 请求都 400，
-       而「零 error」那条判据会把它算到自己头上（实测踩到，一次跑出两条假红）。 */
-    await openByName(".md");
-    await pg.waitForTimeout(600);
-    await pg.evaluate(async ({ name }) => {
-      const b = window.__UD_APP;
-      await fetch(`${b.url.replace(/\/$/, "")}/__ud/delete_draft?token=${encodeURIComponent(b.token)}`,
-        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: name }) });
-      /* ⚠️ **`delete_draft` 只是扔进回收站，不算清干净**（§九十七 / 2026-09-29）：
-         回收站是用户的东西，每跑一轮堆一条，二十轮之后他打开回收站看到二十份。
-         所以扔完再彻底清掉那一条。 */
-      const t = await fetch(`${b.url.replace(/\/$/, "")}/__ud/trash?token=${encodeURIComponent(b.token)}`).then((x) => x.json()).catch(() => null);
-      for (const it of t?.data?.items ?? []) {
-        if (it.originalName === name) {
-          await fetch(`${b.url.replace(/\/$/, "")}/__ud/trash_purge?token=${encodeURIComponent(b.token)}`,
-            { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
-        }
-      }
-    }, { name: SAMPLE });
-    await pg.waitForTimeout(800);
-  }
-}
 
-/* ── 页签溢出 + `⋯` 读数（M8-33 · 设计侧第十一轮 §一）──
-   第八轮的解法是「放不下就收进 +N ▾，不横向滚动」；第十一轮改回**横向滚动**，
-   但把当初那个毛病单独治掉：滚动条藏起来，被裁的那端 16px 渐隐。
-   固定的页签单独一组贴最左、**不跟着滚**（固定就是为了永远看得见）。 */
 console.log("\n页签溢出与 ⋯ 读数（M8-33）");
 {
   /* 开一批文件把页签条挤满 */
@@ -1801,354 +1791,18 @@ console.log("\n页签溢出与 ⋯ 读数（M8-33）");
    「两层同时半透明时，中间会透出画布的底色，用户说的『闪』就是这一下」。
    所以是**旧的留到新的画好为止、新的在上面淡入、旧的不淡出** —— 没有一帧是空白的。
 
-   ⚠️ 判据不能等「过场正在发生」再去量：它可能只有几十毫秒（稿被缓存过时尤其快），
-   轮询会整段错过，而**「量不到」不等于「没发生」**。改成事后读变化历史。 */
-console.log("\n预览切换的过场（M8-34）");
-{
-  const dc = pg.locator('[role="treeitem"]').filter({ hasText: ".dc.html" });
-  if (await dc.count() < 2) ok(false, "项目里不足两份 .dc.html，这一组测不了");
-  else {
-    await dc.nth(0).click(); await pg.waitForTimeout(3200);
-    await pg.evaluate(() => {
-      window.__fadeHist = [];
-      let sample = () => {
-        const b = document.querySelector('[data-ud="canvas"]');
-        const cur = b?.querySelector('iframe[data-pool="cur"]');
-        const prev = b?.querySelector('iframe[data-pool="prev"]');
-        window.__fadeHist.push({ fading: b?.getAttribute("data-fading") ?? null, cur: cur ? getComputedStyle(cur).opacity : null, prev: prev ? getComputedStyle(prev).opacity : null });
-      };
-      /* ⚠️ **也要听 `childList`。**（2026-10-01 加）
-         `attributeFilter` 只报告「属性变了」，而**新插入节点的初始属性不算变化** ——
-         canvas 若是新建的而不是复用的，它带着 `data-fading="1"` 出生，
-         observer 一声不响。加上 `childList` 就能在它插进来的那一刻采一次。 */
-      /* ⚠️ **不能靠「采样撞上那一帧」。**（2026-10-02 实测：16ms 采样、采了 373 次，
-         照样没撞上 —— 过场窗口比一帧还短。）
-         真正可靠的是 `attributeOldValue`：**属性从 "1" 变成别的**那一刻，
-         observer 会把旧值交给我们 —— 那就证明「它曾经是 1」，
-         而且**不依赖我们在那一瞬间恰好在看**。
-         记进 `__sawFading`，判据改问它。 */
-      window.__sawFading = null;
-      /* ⚠️ **只在「进入」那一刻记，不是「离开」。**（2026-10-02 第一版写错了）
-         第一版写的是 `now === "1" || m.oldValue === "1"` —— 两头都记。
-         而「离开过场」那一刻 prev **已经淡出了**，于是记到 `prev=0`，
-         判据红在「上一份完整可见」上 —— **而产品是对的**。
-         要问的是「过场**开始**时 prev 还是满的吗」，那只有进入那一刻算。 */
-      const snapEnter = () => {
-        if (window.__sawFading) return;                 // 只记第一次进入
-        const b = document.querySelector('[data-ud="canvas"]');
-        if (b?.getAttribute("data-fading") !== "1") return;
-        const cur = b.querySelector('iframe[data-pool="cur"]');
-        const prev = b.querySelector('iframe[data-pool="prev"]');
-        window.__sawFading = { enteredWith: { cur: cur ? getComputedStyle(cur).opacity : null, prev: prev ? getComputedStyle(prev).opacity : null } };
-      };
-      new MutationObserver((muts) => {
-        for (const m of muts) {
-          /* 属性变成 "1" —— 复用 canvas 时走这一支 */
-          if (m.type === "attributes" && m.attributeName === "data-fading") snapEnter();
-          /* ⚠️ **新插入的节点带着 `fading="1"` 出生时属性不算变化**，
-             所以 childList 这一支也要看一眼 —— canvas 新建而不是复用时走这里。 */
-          if (m.type === "childList" && m.addedNodes.length) snapEnter();
-        }
-        sample();
-      }).observe(document.body,
-        { attributes: true, attributeOldValue: true, childList: true, subtree: true, attributeFilter: ["data-fading"] });
-      /* 轮询也顺手试一次 —— 三条路（属性变化 / 新节点 / 轮询）任一抓到就够。
-         ⚠️ 轮询单独靠不住（实测 16ms、373 次都没撞上），但它是**免费的第三条路**。 */
-      const origSample = sample;
-      sample = () => { origSample(); snapEnter(); };
-      /* ⚠️ **属性变化采不到渐变**：opacity 从 1 到 0 是一条 CSS 过渡，
-         中间没有任何属性变。所以再加一条轮询，专门采那一半。
-         两个采样器写进同一个 `__fadeHist`，判据一起看。
-         ⚠️ 间隔 **16ms（约一帧）而不是 40ms**：2026-10-01 实测有一轮
-         `fading=1` 的窗口短于 40ms，轮询整个跳过去了，于是下面两条判据
-         **静默少跑**（读数从 349 变 348 而一条红都没有）。 */
-      window.__fadeTimer = setInterval(sample, 16);
-    });
-    /* ⚠️ **判据自己把池挤空，别指望「最后一份多半不在池里」**（2026-09-29 修）。
-       原来挑第 4 份并注释「最后一个最稳」—— 而池里有什么，取决于**这一节之前
-       所有判据打开过哪些文件**。我这轮在后面加了 `.ts` / `-lock.yaml` 两节，
-       池的内容跟着变，这条就红了：采样里 `data-fading` 全是 `null`，
-       因为目标命中了缓存、**根本没走过场那条路**——而缓存命中不走过场是对的行为。
+/* ⚠️⚠️ **「预览切换的过场」（M8-34）整节 2026-10-23（M16-7c-3 / C3）删了。**
+   它测的是**画布 iframe 池**：切稿时旧的留到新的画好、新的淡入、旧的不淡出，
+   以及「切回上一份是瞬时的（它的 iframe 还在池里，缓存命中要自己补 ready）」。
+   那个池是 dc 画布的（S2 嵌入壳 + 稿两层 iframe），随 C3 一起没了 ——
+   `.dc.html` 现在走 `html` kind，由插件画，没有池这回事。
 
-       **判据依赖的前提，判据自己要建立。** 池最多留两份，
-       所以先点两份别的就能保证目标一定被挤出去。 */
-    const n = await dc.count();
-    await dc.nth(1).click(); await pg.waitForTimeout(1600);
-    await dc.nth(2).click(); await pg.waitForTimeout(1600);
-    /* ⚠️ **还要把「加载慢到看得见」这个前提也建立起来。**（2026-10-02 查实际数据才明白）
-       前面四轮我一直在改采样频率和抓法，而实测把采到的序列打出来之后真相是：
-       `fading` **始终是 null**、`cur` **始终是 1** —— 过场**压根没发生**。
-       稿是本地文件，加载快到 `readyState === "complete"` 在第一个 effect 里就成立，
-       于是 `setReady(false)` 和 `setReady(true)` 落在**同一批 React 更新**里，
-       DOM 上从没出现过「新的透明、旧的留着」那一刻。
-       （采到的 `prev: 1 → 0.69 → 0.34 → 0` 是**上一份的退场动画**，不是过场。）
+   ⚠️ 它当初定过一条关于判据自己的，值得留着：那一节有两条判据，
+   「采到 N 次」那条**七轮里一直稳定绿**，而另一条在机器一忙时偶发红 ——
+   > **两条判据测同一件事时，稳定的那条才是真正在守它的**，
+   > 偶发红的那条多半在测「这台机器今天快不快」。 */
 
-       这一节的注释里早就写着「**判据依赖的前提，判据自己要建立**」——
-       它建立了「目标不在池里」，却漏了「加载足够慢」。
-       用 `route` 给**画布 iframe 那个请求**加 500ms 延迟，**制造**那个条件，而不是等运气。
 
-       ⚠️ **glob 要容得下查询串。**（2026-10-02 实测：第一版那个 glob 按扩展名结尾写，
-       一次都没匹配上 —— 画布 iframe 的 src 实际是
-       `…/S2-单稿预览壳.dc.html?file=…&embed=1`，`.dc.html` **后面还有东西**。
-       那一轮「抓到了」纯属时序凑巧，连跑两轮第二轮就红。）
-       改成按 `embed=1` 认 —— 那是「这是画布里那个 iframe」的标志，
-       比按扩展名认准：扩展名会被查询串挡住，而这个标志是产品自己加的。
-       ⚠️ 用完必须 `unroute`，否则后面每一节都慢 500ms。 */
-    const slow = async (route) => { await new Promise((r) => setTimeout(r, 500)); await route.continue(); };
-    await pg.route((u) => /\.dc\.html\?/.test(u.href) && u.searchParams.get("embed") === "1", slow);
-    try {
-      await dc.nth(Math.min(3, n - 1)).click();
-      await pg.waitForTimeout(3200);
-    } finally { await pg.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {}); }
-    const probe = await pg.evaluate(() => { clearInterval(window.__fadeTimer); return { hist: window.__fadeHist ?? [], saw: window.__sawFading ?? null }; });
-    const hist = probe.hist;
-    /* ⚠️ **不要等 `data-fading="1"` —— 它可能压根没提交到 DOM。**
-       （2026-10-02 查产品代码才明白，前面三轮都在改「怎么采得更快」，方向全错）
-
-       `app/src/kinds/dc/View.tsx:108` 写的是
-       `data-fading={!ready ? "1" : undefined}`，而第 89 行是
-       `if (fr?.contentDocument?.readyState === "complete") setReady(true)` ——
-       **缓存命中时立刻就 complete**，于是 `setReady(false)` 和 `setReady(true)`
-       可能落在同一批 React 更新里，**那个属性从没出现在 DOM 上**。
-       我在等一个可能不存在的东西，所以采 373 次也采不到。
-
-       它要钉的性质其实在 opacity 里（同一个文件第 124 行）：
-       | iframe | 过场中 | 过场后 |
-       | --- | --- | --- |
-       | `cur`（新的） | `ready ? 1 : 0` → **0** | 1 |
-       | `prev`（旧的） | `ready \|\| blank ? 0 : 1` → **1** | 0 |
-
-       所以「过场中」= **存在某一帧 `prev=1` 且 `cur=0`**。
-       这个组合在整个过场期间都成立（opacity 有 CSS 过渡，退场是渐变的），
-       比一个瞬时属性可靠得多 —— **判据要量产品真正表达那个状态的东西。** */
-    /* ⚠️ **opacity 是连续量，别拿字符串比 `"1"`。**（2026-10-02 实测偶发报红）
-       它有 CSS 过渡 —— 上一次退场的动画没走完时 prev 可能是 `"0.97"`，
-       于是 `=== "1"` 不成立，判据**时好时坏**。
-       要钉的性质是「上一份**几乎完全**可见、新的**几乎完全**透明」，那是阈值不是等号。 */
-    const near1 = (v) => v != null && Number(v) > 0.9;
-    const near0 = (v) => v != null && Number(v) < 0.1;
-    const during = hist.find((h) => near1(h.prev) && near0(h.cur))
-      ?? (probe.saw && near1(probe.saw.enteredWith.prev) ? probe.saw.enteredWith : null)
-      ?? hist.find((h) => h.fading === "1");
-    /* ⚠️ 判据认**两样中的任意一样**，因为过场的实质有两个可观察面：
-       `data-fading="1"`（工作台知道自己在过场）或 **`prev` 的 opacity 真的在渐变**
-       （那是用户看得见的那一半）。
-       只认属性的话，MutationObserver 有个盲区：**它不报告新插入节点的初始属性** ——
-       canvas 若是新建的而不是复用的，`data-fading="1"` 就是「初始值」不是「变化」。 */
-    const faded = hist.some((h) => h.prev != null && Number(h.prev) > 0.02 && Number(h.prev) < 0.98);
-    ok(!!during || faded, "切稿时真的走了过场（属性或 prev 的淡出，两者认其一）",
-       `采到 ${hist.length} 次${during ? " · 有 fading=1" : ""}${faded ? " · prev 在渐变" : ""}`);
-    /* ⚠️ **采不到那一帧也要说话，不能静默跳过。**（2026-10-01 实测抓到）
-       原来这里是裸的 `if (during) { …两条… }` —— 采样没撞上 `fading=1` 的那一轮，
-       两条判据**凭空消失**，而读数只是从 349 变成 348、**一条红都没有**。
-       「判据没跑」和「判据通过」在读数上长得一模一样，
-       而总数是人工记在 `doc/00` 里的，没人会去核。
-
-       所以：采不到就报红，并说清**红在仪器不在产品** ——
-       一条时有时无的判据等于没有判据，报红才会逼着把它做稳。 */
-    /* ⚠️ **这条视觉性质我没能做出稳定的判据 —— 如实记在这里，不留一条时好时坏的。**
-       （2026-10-05，第七轮之后放弃）
-
-       想钉的是 M8-34 的承诺：「旧的留到新的画好、新的淡入、旧的不淡出」。
-       七轮里试过的办法，每一个都栽在不同的地方：
-
-       | 第几轮 | 做法 | 为什么不行 |
-       | --- | --- | --- |
-       | 1–2 | 轮询 40 → 16ms · observer 加 `childList` | 过场窗口比一帧还短 |
-       | 3 | `attributeOldValue` 拿旧值 | 那个属性**可能压根没提交到 DOM**（React 批处理） |
-       | 4 | 精确值换阈值 | 同上，不是精度问题 |
-       | 5 | `route` 加 500ms 延迟制造条件 | **缓存命中时 `route` 不触发** |
-       | 6 | 改成「整段都成立的不变量」 | 交叉淡入中途挡住 79%，我拿不准算不算「闪」 |
-       | 7 | alpha 合成 + 阈值 0.5 + 算上纯色板 | 采样窗口把**切换文件那一瞬间**也算进来了（挡住 0%），而那不在「过场」范围内 |
-
-       第 7 轮那个问题是根上的：**我界定不清「过场」在采样序列里的起止**，
-       而不界定清楚，任何「整段都成立」的判据都会把别的时刻算进来。
-
-       所以这里只留两样：
-       ① 上面那条「切稿时真的走了过场」—— 认 prev 在渐变，七轮里**一直稳定绿**；
-       ② 下面那条「顺带」—— 抓到就报，抓不到只打印一行，**不计入成败**。
-       「旧的不淡出」这个视觉细节交给 `rendertest` 的截图和人眼。
-
-       > **一条会随机报红的判据，比没有判据更糟** —— 它会让人开始忽略红色。
-       > 承认测不稳，比留着它假装有覆盖诚实。 */
-    /* 抓到「过场中」那一帧时**顺带**报一条 —— **抓不到只打印一行，不计入成败**
-       （理由见上面那段⚠️：这个窗口抓不稳，七轮都没做出可靠的抓法）。
-       ⚠️ 它是「有就报」而不是「必须有」，所以**不要指望它守住什么** ——
-       真正一直有效的是上面那条「切稿时真的走了过场」。 */
-    if (during && near0(during.cur) && near1(during.prev)) {
-      ok(true, "**（顺带）这一轮抓到了过场中那一帧：新的先透明、旧的完整可见**",
-         `cur=${during.cur} · prev=${during.prev}`);
-    } else {
-      console.log("  · 这一轮没抓到「过场中」那一帧（多半缓存命中、没走过场）——"
-        + "**不计入成败**，见那一段⚠️ 记的七轮经过");
-    }
-    /* 切回上一份该是瞬时的：iframe 留在池里
-       ⚠️ 这里有一条实测过的坑 —— 缓存命中的 iframe **不会再发 load**，
-       第一版因此卡在过场里 8 秒（靠兜底超时才出来）。 */
-    const t0 = Date.now();
-    await dc.nth(0).click();
-    await pg.waitForFunction(() => document.querySelector('[data-ud="canvas"]')?.getAttribute("data-fading") === null, null, { timeout: 6000 }).catch(() => {});
-    const back = Date.now() - t0;
-    ok(back < 1500, "**切回上一份是瞬时的**（它的 iframe 还在池里，缓存命中要自己补 ready）", `${back}ms`);
-    ok(await pg.locator('[data-ud="canvas"] iframe').count() <= 2, "池最多留两份（实测每份约 5–10MB）", `${await pg.locator('[data-ud="canvas"] iframe').count()} 份`);
-  }
-}
-
-/* ── 评论的暂存区 · 画布钉 · 全部发给 AI（M8-32 · 设计侧第十一轮 §二.5）──
-   暂存区放在**聊天输入框上方**（不在属性区）：暂存的东西最后都要交给 AI，
-   放在发送键旁边用户一直看得见「还有 N 条没发」。放进抽屉就又变成上一轮那个病。
-
-   ⚠️ 判据要钉「发过之后三处一起变」：`sentAt` 写上 · 暂存区清空 · **钉子变灰**。
-   只测其中一处的话，另两处坏了照样全绿。 */
-console.log("\n评论暂存区与画布钉（M8-32）");
-{
-  const SAMPLE = "_uitest暂存.dc.html";
-  const call = (route, body) => pg.evaluate(async ({ route, body }) => {
-    const b = window.__UD_APP;
-    const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/${route}?token=${encodeURIComponent(b.token)}`,
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    return await r.json();
-  }, { route, body });
-  const made = (await call("draft_write", { path: SAMPLE, content: `<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>暂存</title><script src="./support.js"></script></head>\n<body><x-dc><helmet><style>html,body{margin:0;padding:24px;font-family:system-ui}h1{font-size:28px}button{margin-top:12px}</style></helmet>\n<div><h1>标题</h1><button>一颗钮</button></div></x-dc></body></html>` })).ok;
-  if (!made) ok(false, "建不出暂存验收样本");
-  else {
-    await pg.waitForTimeout(1500);
-    if (!(await openByName("_uitest暂存"))) ok(false, "样本没进树");
-    else {
-      await pg.waitForTimeout(2800);
-      const eb = pg.locator('[data-ud="toggle-edit"]');
-      if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }
-      await pg.locator('[role="group"][aria-label="指针"] button').filter({ hasText: "评论" }).click();
-      await pg.waitForTimeout(400);
-      /* 写两条 */
-      for (const [sel, text] of [["h1", "标题再大一号"], ["button", "这颗钮改成 danger"]]) {
-        const f = pg.frames().find((x) => /uitest暂存/.test(decodeURIComponent(x.url())) && !/S2-/.test(decodeURIComponent(x.url())));
-        if (!f) break;
-        await f.locator(sel).first().click({ timeout: 8000 }).catch(() => {});
-        await pg.waitForTimeout(900);
-        const box = pg.locator('[data-ud="comment-box"]');
-        if (!(await box.count())) break;
-        await box.locator("textarea").fill(text);
-        await box.locator("button", { hasText: "暂存" }).click();
-        await pg.waitForTimeout(1100);
-      }
-      const rows = pg.locator('[data-ud="stash-row"]');
-      ok(await pg.locator('[data-ud="stash"]').count() === 1 && await rows.count() === 2, "**暂存区在聊天输入框上方**，两条都在", `${await rows.count()} 行`);
-      const pins = pg.locator('[data-ud="pin"]');
-      ok(await pins.count() === 2, "画布上两枚评论钉", `${await pins.count()} 枚`);
-      ok((await pins.allTextContents()).join(",") === "1,2", "钉上的编号和暂存区对得上", (await pins.allTextContents()).join(","));
-      /* 「全部发给 AI」—— 会真开一轮 AI，所以点完立刻中断；判据看的是**标记那一刻**的三处变化 */
-      await pg.locator('[data-ud="stash-send"]').click();
-      await pg.waitForTimeout(2800);
-      ok(await rows.count() === 0, "**发出去之后暂存区立刻清空**（标记挂在「作业起成功」那一刻，不等 AI 跑完）");
-      ok(await pg.locator('[data-ud="pin"][data-sent="1"]').count() === 2, "**发过的钉变灰并留在画布上**（留着才知道「这一处我提过」）");
-      await pg.locator("button", { hasText: "中断" }).click().catch(() => {});
-      await pg.waitForTimeout(600);
-    }
-    /* 收尾：⚠️ 稿和评论要**分别**清 —— 稿进回收站，评论不跟着走（它挂在文件路径上）。
-       只删稿的话下一次跑会看到上一轮的评论，判据全乱（实测栽过）。 */
-    await openByName(".md");
-    await pg.waitForTimeout(500);
-    await call("delete_draft", { file: SAMPLE });
-    /* 同上：扔进回收站不算清干净 */
-    await pg.evaluate(async ({ name }) => {
-      const b = window.__UD_APP;
-      const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
-      const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
-      for (const it of t?.data?.items ?? []) {
-        if (it.originalName === name) {
-          await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: it.trashPath }) });
-        }
-      }
-    }, { name: SAMPLE });
-    const left = await pg.evaluate(async () => {
-      const b = window.__UD_APP;
-      const r = await fetch(`${b.url.replace(/\/$/, "")}/__ud/comments?token=${encodeURIComponent(b.token)}`);
-      return ((await r.json()).data?.comments ?? []).map((c) => ({ id: c.id, file: c.file }));
-    });
-    for (const c of left.filter((x) => x.file === SAMPLE)) await call("comment_delete", { id: c.id });
-    await pg.waitForTimeout(500);
-  }
-}
-
-/* ── 没有节点地址时要说话（issue #31 · 设计侧第十一轮 §三）──
-   用户项目里能打开的 29 份稿**节点地址全为 0**，所以「点选」对他从来没有可用过，
-   而界面一句话都不说。判据钉三条：提示条出、**三颗钮不禁用**、点画布有回应。
-   ⚠️ 不许把钮禁掉 —— 禁用态不解释原因，和现在的静默是同一个病。 */
-console.log("\n没有节点地址时要说话（issue #31）");
-{
-  /* ⚠️ **不能用 `openByName(".dc.html")`** —— 它取的是树里第一份，而上一组建的
-     `_uitest三档.dc.html` 下划线开头、排在最前，那一份是**有地址**的，
-     于是这一组会量到「提示条不出」并报一条假红（实测踩到）。
-     这里显式挑一份不以 `_` 开头的用户稿。 */
-  /* ⚠️ **用自己的样本，不赌用户项目里的稿**（2026-10-06 改）。
-     原来挑「树里第一份不以 `_` 开头的 `.dc.html`」，而那是**用户的内容** ——
-     今天实测 `IconGlyph.dc.html` 有 5 个 `data-ud-node`（别的 0 个），
-     于是这一条读到「这份稿有地址」而红，连带「零 error」也红（那份稿的资源 404）。
-     而它红不红取决于**树里第一份是哪一个**，也就是取决于上一轮留了什么 ——
-     **一条判据的成败不该由用户项目里的内容决定。**
-     ⚠️ 样本**绕过写入口**用 fs 直写 —— 写入口会给每个节点打地址，
-     而我们要的恰恰是「一份没有地址的稿」。**样本不是产品行为，它是仪器**（GBK 那条同一句）。 */
-  const NOADDR = "_uitest无地址.dc.html";
-  {
-    const dir = await pg.evaluate(() => window.__UD_APP.dir);
-    writeFileSync(`${dir}/${NOADDR}`,
-      "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<script src=\"./support.js\"></script>\n</head>\n<body>\n<x-dc>\n<div>没有地址的稿</div>\n</x-dc>\n<script type=\"text/x-dc\" data-dc-script data-props=\"{}\">\nclass Component extends DCLogic { renderVals() { return {}; } }\n</script>\n</body>\n</html>\n", "utf8");
-  }
-  await settleTree(NOADDR);
-  const openUser = await openByName(NOADDR);
-  if (openUser) {
-    await pg.waitForTimeout(2600);
-    const eb = pg.locator('[data-ud="toggle-edit"]');
-    if ((await eb.getAttribute("aria-pressed")) !== "true") { await eb.click(); await pg.waitForTimeout(500); }
-    const bar = pg.locator('[data-ud="no-addr"]');
-    const n = await bar.count();
-    if (!n) ok(false, "这份稿有地址，测不到「没有地址」那一态（项目里的稿被加过地址了？）");
-    else {
-      ok((await bar.innerText()).includes("没有节点地址"), "**提示条说出了原因**，不是静默");
-      ok(await bar.locator("button", { hasText: "加上地址" }).count() === 1, "给了出路：「加上地址…」");
-      ok(await bar.locator("button", { hasText: "改用 AI" }).count() === 1, "给了第二条出路：「改用 AI」");
-      ok(await pg.locator('[role="group"][aria-label="指针"] button:not(:disabled)').count() === 3, "三颗钮**照样能按**（禁用态不解释原因）");
-      /* 点画布要有回应：`data-nudge` 是判据钩子，动画时序量不准 */
-      const before = await bar.getAttribute("data-nudge");
-      const f = pg.frames().find((x) => /\.dc\.html/.test(x.url()) && !/S2-/.test(decodeURIComponent(x.url())) && !/__app/.test(x.url()));
-      if (f) await f.locator("body").click({ position: { x: 40, y: 40 }, force: true }).catch(() => {});
-      await pg.waitForTimeout(400);
-      ok((await bar.getAttribute("data-nudge")) !== before, "点了画布提示条抖一下（「你点了，这就是为什么没反应」）", `nudge ${before} → ${await bar.getAttribute("data-nudge")}`);
-    }
-  } else ok(false, "造出来的无地址样本没打开，这一组测不了");
-  /* 收尾：这份样本是绕过写入口直写的，所以也直接删（纪律⑥）。
-     ⚠️ 名字带 `_uitest` 前缀，收尾那三条判据也认得它 —— 两道都留着。 */
-  {
-    /* ⚠️ **删之前先切走**：这份稿还开着的时候删掉它，应用会继续轮询
-       `comments?file=…` / `validate?file=…`，而那两条对不存在的稿回 **400**
-       （`E_DRAFT_NOT_FOUND`），于是「零 error」那条判据红在**我的清理**上。
-       **清理也会制造噪声** —— 而那种噪声和产品缺陷在判据里长得一样。 */
-    /* ⚠️ **切 `.md` 不是 `.dc.html`** —— `openByName` 挑的是树里**第一份**，
-       而这份样本名字以 `_` 开头正好排第一：拿 `.dc.html` 切等于**切回它自己**，
-       400 一条不少。「切走」要切到一个**确定不是它**的东西上。 */
-    await openByName(".md").catch(() => {});
-    await pg.waitForTimeout(600);
-    const dir = await pg.evaluate(() => window.__UD_APP.dir);
-    rmSync(`${dir}/${NOADDR}`, { force: true });
-    await pg.waitForTimeout(400);
-  }
-}
-
-/* ── 一轮在跑的时候切会话（issue #117 · Q49 的打桩通道第一次派上用场）──
-   #117 的时序是「**一轮正在跑的时候**切会话」：轮询循环每 1.2 秒无条件把 `sid` 那条会话的
-   正文写回消息区，于是用户切走之后下一次轮询又把旧会话的消息盖回来 ——
-   **界面看着还在 A 里，而下一句话发进了另一条会话**。
-
-   ⚠️ 这一条 2026-10-07 修的时候**没有判据**（`doc/00` §163.4 照实记了这个缺口）：
-   要造这个时序得有一轮真的在跑，而当时仓库里没有打桩通道。
-   Q49 做完之后它才测得出来 —— **一句以 `#stub` 开头的话走打桩，不联网、不花钱**，
-   而走的是**真的输入框、真的 `send()`、真的轮询循环**（`chat_stub.ts` 文件头写了为什么不做成第四条通道）。
-
-   两条路都要测，它们的后果不一样：
-   ① 点「新建会话」→ `sessionId` 变 `null`，旧会话的消息被盖回来之后用户看着 A 说话，
-      而服务端**新开一条空会话**，AI 看不到屏幕上那段上下文；
-   ② 切到另一条 B → 下一句**进了 B**。 */
 console.log("\n一轮在跑的时候切会话（issue #117 · 打桩通道）");
 {
   const MARK = "打桩通道";
@@ -2473,7 +2127,7 @@ console.log("\n就地改名要带着页签走（issue #105）");
    所以判据改成**盖标记**：切格式后标记还在 = 这些节点没被换过。 */
 console.log("\n换格式不动目录列（用户 tmp.txt 第 1 条）");
 {
-  if (await openDcSample()) {
+  if (await openImgSample()) {
     await pg.waitForTimeout(600);
     const stamped = await pg.evaluate(() => {
       const rows = [...document.querySelectorAll('[role="treeitem"]')];
@@ -2494,8 +2148,12 @@ console.log("\n换格式不动目录列（用户 tmp.txt 第 1 条）");
       ok(r.total > 0 && r.kept === r.total, "**dc → md 之后目录列每一行都还是原来那个节点**（原来整列跟着重挂）", `${r.kept}/${r.total} 行`);
       ok(r.anc === 6, "目录列的祖先容器也没被换掉（Provider 只罩详情区）", `${r.anc}/6`);
     } else ok(false, "项目里缺 .dc.html 或 .md，这一组测不了");
-  } else ok(false, "项目里没有 .dc.html，这一组测不了");
+  } else ok(false, "建不出图片样本，这一组测不了");
 }
+/* ⚠️ **这里是图片夹具的最后一个用点** —— 清掉它（`dropImgSample` 那段写了为什么）。
+   放在这儿而不是收尾：收尾那条判据数的就是「兜底还清掉了几个」，
+   让兜底来清等于把它判红。 */
+await dropImgSample();
 
 /* ── 引擎是会话的属性（M8-16，用户实测第 7 条）──
    撞到的场景：会话在火山方舟上 → 选成 Claude → 新建一条 → 再切回来，**又变回火山方舟**。
@@ -5278,7 +4936,29 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
   await pg.keyboard.press("Escape");
 }
 
-const EXPECT_AT_LEAST = 457;
+/* ── 总数那道闸的基线（2026-10-23 · 7c-3 重算：457 → 454）──
+   ⚠️⚠️ **第一版把它算成了 435，而那个算法本身是错的** —— 错法比数字值得记：
+   我拿「`457 − 实跑 422 = 35`」去倒推「7c-3 删了多少判据」。
+   **那两个量没有关系。** 删掉的那些判据**本来就不跑**（它们依赖 dc 样本，
+   而 dc 在 7c-1 / 7c-2 就没了，那几节早已整段跳过或只走一条 `ok(false)`）——
+   所以删它们几乎不改变实跑数：**7c-3 之前实跑 423，之后 422，全程只掉 1 条。**
+   > **我把「有多少没验到」当成了「我删了多少」。两个量都叫「差」，
+   > 但一个该留在分母里催人去查，另一个该从分母里拿掉。**
+   > 要算「删了多少」只有一个来源：**实跑数的前后对比**，不是期望减实际。
+   所以 **454 = 457 − 1（7c-3 真正的净删）− 2（◨ 那一组，见下）**。
+   现在的缺口 **454 − 422 = 32 条，两类，都该留在分母里**：
+   · **13 条 = 草稿 stale 那一组**（`#draftOverwrite` / `#draftDiff` 在 kit v1.2 零命中，
+     plugins 已在 1.2.0 补回）→ ⏳ 等 `sync-plugins`，然后换成 `data-kit-*`。
+   · **约 19 条 = 会话甲乙那一路**（逐节表里「删掉当前会话后点新建会话」只剩 **1 条**，
+     而红里写着「（样本有效性）两条会话都在列表里 — 甲 0 · 乙 0」——
+     **样本没建成，后面十几条全跳过**）+ 市场那一条 + 浮层那一条。⏳ 单独查。
+   **唯一从分母里拿掉的是 ◨ 开合那 2 条**：image 没声明 `panels`，宿主不画那颗钮，
+   在这个样本下**永远不跑**，而 ◨ 另有两处在测（md 插件的大纲 · 插件自己那张网页）。
+   > **「这条判据现在不跑」有两种：等某件事做完，和它已经不该存在。
+   > 前者留在分母里，后者从分母里拿掉 —— 混在一起，这道闸就说不出话了。**
+   > 而**第三种最危险**：它该跑、也还存在，只是今天前提没成立 ——
+   > 那正是上面那 19 条，而把它们算成「删掉的」就等于亲手把缺口抹平。 */
+const EXPECT_AT_LEAST = 454;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {
