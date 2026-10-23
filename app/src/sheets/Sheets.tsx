@@ -1,7 +1,7 @@
 import { platformName, studioName } from "@shared/brand";
 import { useCallback, useEffect, useState } from "react";
 import type { Core } from "../api/client";
-import { baseName, type CliStatus, type DirInfo } from "../api/types";
+import { baseName, timeAgo, type CliStatus, type DirInfo } from "../api/types";
 import type { HostAdapter } from "../host";
 import type { LayoutState } from "../layout/layout";
 import { currentChannel, pickChannel, type ChannelId } from "../chat/channel";
@@ -1007,9 +1007,263 @@ function PluginLimitsPanel({ core }: { core: Core }) {
   );
 }
 
-export function SettingsSheet({ core, host, projectUrl, projectCore, layout, setLayout, onClose }: { core: Core | null; host: HostAdapter | null; projectUrl: string | null; projectCore: Core | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void }) {
-  const s8 = projectUrl ? `${projectUrl}${encodeURIComponent("S8-项目设置.dc.html")}?embed=1` : null;
-  return <Sheet onClose={onClose} wide={!!s8}
+/** `get_project`（HTTP 路由 `project_settings`）回的那一份，**只列这一屏用得到的**。
+ *
+ *  ⚠️ 它还回 `designSystem` / `limits` / `drafts` 三样，这里**刻意不写进类型** ——
+ *  那两块的 UI 在 M16-6 里没有实现（它们在 M16-7 之后没有对象，`doc/12` M16-6）。
+ *  ⚠️ `trash` **只在 `via === "http"` 时才给**（`cap/projects.ts` 那一行三元）——
+ *  也就是说这一屏能直接从这一个请求里拿到回收站，不用再调 `list_trash`。 */
+type ProjInfo = {
+  name: string;
+  title: string | null;
+  dir: string;
+  draftCount: number;
+  /** ⚠️ `listTrash` 真实返回的就是这四个字段 —— **没有 `size`**。
+      原稿里有 `{{ item.size }}`，那是演示态的字段，画它只会显示 `undefined`。 */
+  trash?: Array<{ trashPath: string; originalPath: string; originalName: string; deletedAt: string }>;
+};
+
+/* ══════════ 项目设置的三块（M16-6，2026-10-23）══════════
+ *
+ *  ⚠️ **这三块原来是一份 `.dc.html` 嵌在这个弹窗里**（`S8-项目设置.dc.html?embed=1`）。
+ *  M16-7 要把设计稿那一整套删掉，而**这一屏是真功能**，所以它得先搬成原生
+ *  （`doc/12` M16-6；顺序不能换 —— 反过来做中间会有一个版本的设置页是空的）。
+ *
+ *  ⚠️ **稿里是五块，这里只有三块**，而那不是漏了：
+ *  · **设计系统**（`@ds` / tokens / icons）—— `@ds` 只在 dc 稿里展开，C3 之后没有对象；
+ *  · **元素数限额** —— 实测唯一读它的是 `validate.ts` 的 `validate_draft`，甲组 12 件之一，M16-7 要删。
+ *  geek-99 2026-10-23 定甲：这两块的入口直接去掉。中间这一版它们还能走 MCP
+ *  `update_project` 设，功能没丢。
+ *
+ *  ⚠️ **三处文案跟着改了**（原稿的说法在 M16-7 之后就不成立）：
+ *  「标题用于**索引页**显示」→ 索引页是 `build_index` 生成的，一起删；
+ *  「被删的**稿**」/「恢复后**引用关系**也会恢复」→ 回收站对任何文件成立，而引用关系是 dc 的概念。 */
+
+/** 回收站那个 `deletedAt` 转成能解析的 ISO。
+ *
+ *  ⚠️⚠️ **它不是 ISO，而它长得像**：`listTrash`（`refs.ts`）给的是
+ *  **回收站里那个时间戳目录的名字**，而建目录时 `files.ts:937` 做过
+ *  `new Date().toISOString().replace(/[:.]/g, "-")` —— 文件名不能有冒号。
+ *  所以它是 `2026-10-23T10-45-00-123Z` 这种形状，`new Date()` **解析不了**，
+ *  直接喂给 `timeAgo` 界面上会写「删于 **Invalid Date**」（实测踩到）。
+ *  ⚠️ 原稿没有这个问题，因为它是 `{{ item.deletedAt }}` **原样显示**那个串；
+ *  是我搬成原生时改用了 `timeAgo`，而**假设了那个字段是 ISO**。
+ *  > 一个字段叫 `deletedAt`、长得像时间戳、而实际是目录名 ——
+ *  > **我按名字信了它，没去看它怎么产生的。**
+ *  ⚠️ 认不出来就**原样返回**（而不是返回空或 `Invalid Date`）：
+ *  一串看不懂的时间戳也比「Invalid Date」有用，至少它是真数据。
+ *  ⏳ 更干净的做法是服务端另给一个真 ISO 字段 —— 那要改 `listTrash` 的返回形状，
+ *  而它今天还有第二个消费者（那份稿），M16-7 删了稿之后可以做。 */
+function trashTimeIso(stamp: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/.exec(stamp);
+  return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z` : stamp;
+}
+
+/** 基本信息：现在只剩标题（`update_project` 的另外六个字段都属于那两块要删的）。 */
+function ProjectBasicPanel({ core, info, reload }: { core: Core; info: ProjInfo | null; reload: () => void }) {
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  /* ⚠️ 外部数据到了再填一次 —— 不这么做的话首帧是空的，用户会以为标题被清了 */
+  useEffect(() => { setTitle(info?.title ?? ""); }, [info?.title]);
+  if (!info) return null;
+  const dirty = title.trim() !== (info.title ?? "");
+  const save = async () => {
+    setBusy(true);
+    const r = await core.post("project_update", { title: title.trim() }).catch(() => null);
+    setBusy(false);
+    if (!r?.ok) { toast("没存上", r?.errors?.[0]?.message ?? "", "error"); return; }
+    toast("标题存好了", title.trim() || "（清空了）", "ok");
+    reload();
+  };
+  return (
+    <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5" data-ud="proj-basic">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-[12.5px] font-semibold">基本信息</h3>
+        {/* ⚠️ 目录路径是只读的 —— 「移动项目」后端没有这个操作（见危险操作那一块） */}
+        <span className="text-[11px] text-muted truncate" title={info.dir}>{info.dir}</span>
+      </div>
+      <Field label="项目名" note="目录名决定它，这里改不了">
+        <input className="inp" value={info.name} readOnly disabled />
+      </Field>
+      {/* ⚠️ 原稿这里写的是「项目名称和标题，用于**索引页**显示」——
+          索引页（`build_index` 生成的那份 `index.dc.html`）M16-7 要一起删，所以换了说法。 */}
+      <Field label="标题" note="首页的项目卡上显示它；留空就显示项目名">
+        <input className="inp" value={title} onChange={(e) => setTitle(e.target.value)}
+               placeholder={info.name} maxLength={120} data-ud="proj-title" />
+      </Field>
+      <div className="flex gap-2 items-center">
+        <button className="btn primary" disabled={busy || !dirty} onClick={() => void save()} data-ud="proj-title-save">
+          {busy ? "存着…" : "保存标题"}
+        </button>
+        {dirty && <span className="text-[11px] text-muted">有未保存的改动</span>}
+      </div>
+    </section>
+  );
+}
+
+/** 回收站：列、恢复、永久删一项、清空。 */
+function TrashPanel({ core, info, reload }: { core: Core; info: ProjInfo | null; reload: () => void }) {
+  const [busy, setBusy] = useState("");
+  const items = info?.trash ?? [];
+  const act = async (route: string, body: Record<string, unknown>, key: string, okWhat: string) => {
+    setBusy(key);
+    const r = await core.post(route, body).catch(() => null);
+    setBusy("");
+    if (!r?.ok) { toast("没做成", r?.errors?.[0]?.message ?? "", "error"); return; }
+    toast(okWhat, "", "ok");
+    reload();
+  };
+  return (
+    <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5" data-ud="proj-trash">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="text-[12.5px] font-semibold">回收站</h3>
+        <span className="text-[11px] text-muted">{items.length ? `${items.length} 项` : "空的"}</span>
+      </div>
+      {/* ⚠️ 原稿写的是「被删的**稿**在这里，恢复后**引用关系**也会恢复」——
+          两处都要改：回收站对**任何文件**都成立（`trash_file` 不只收稿），
+          而「引用关系」是 `<dc-import>` 的概念，M16-7 之后没有对象。 */}
+      {!items.length ? (
+        <p className="text-[11.5px] text-muted">删掉的文件会先到这里，不会立刻消失 —— 可以从这里恢复，也可以永久删掉。</p>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-1.5 max-h-[220px] overflow-auto" data-ud="trash-list">
+            {items.map((it) => (
+              <li key={it.trashPath} className="flex items-center gap-2 rounded border border-border px-2 py-1.5">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] truncate" title={it.originalPath}>{it.originalName}</div>
+                  {/* ⚠️ **不显示大小** —— 原稿有 `{{ item.size }}`，而 `listTrash` 真实返回的
+                      四个字段里没有 size。画一个取不到的字段只会显示 `undefined`。 */}
+                  <div className="text-[11px] text-muted truncate">{it.originalPath} · 删于 {timeAgo(trashTimeIso(it.deletedAt))}</div>
+                </div>
+                <button className="btn" disabled={!!busy}
+                        onClick={() => void act("trash_restore", { trashPath: it.trashPath }, it.trashPath, `恢复了 ${it.originalName}`)}>
+                  恢复
+                </button>
+                <button className="btn" disabled={!!busy} title="永久删掉这一项，恢复不了"
+                        onClick={() => void act("trash_purge", { trashPath: it.trashPath }, it.trashPath, `永久删掉了 ${it.originalName}`)}>
+                  永久删
+                </button>
+              </li>
+            ))}
+          </ul>
+          {/* 「恢复到原位置」这句话做得到：`restore_trashed` 的 summary 写着
+             「原位置已被占用时会换个名字，不会覆盖」—— 所以说出来是实话。 */}
+          <p className="text-[11px] text-muted">恢复会放回原来的位置；那儿已经有同名文件的话会换个名字，不覆盖。</p>
+          <div>
+            <button className="btn danger" disabled={!!busy} data-ud="trash-empty"
+                    onClick={() => void act("trash_empty", {}, "all", "回收站清空了")}>
+              清空回收站（{items.length} 项）
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** 危险操作四项。⚠️ 其中两项后端**没有**，而它们照旧列出来并说出路 ——
+ *  这是原稿做对的一件事（`unsupported: true`）：
+ *  **「看起来能用但其实是假的」比「明说还没做」糟得多**（`doc/00` §100）。 */
+function DangerPanel({ core, info, onProjectGone }: { core: Core; info: ProjInfo | null; onProjectGone: () => void }) {
+  const [arm, setArm] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (!info) return null;
+
+  const DANGERS = [
+    { key: "rename", title: "重命名项目", btn: "重命名", unsupported: true,
+      body: "改目录名和 project.json 里的 name。后端还没有这个操作 —— 标题在上面「基本信息」里改，目录名请用系统的文件管理器改，再从首页重新打开。" },
+    { key: "move", title: "移动项目", btn: "移动", unsupported: true,
+      body: "把项目目录移到别的位置。后端还没有这个操作 —— 用系统的文件管理器移，再从首页重新打开（「最近打开」里那一条会显示成已失效，可以移除）。" },
+    { key: "archive", title: "归档项目", btn: "归档", route: "project_archive", tone: "warn" as const,
+      confirm: "归档只是把目录搬到工具目录下的 .archived/，随时能搬回来 —— 所以这一步不用敲项目名。归档后这个项目会从应用里关闭。",
+      confirmLabel: "确认归档" },
+    /* ⚠️ **「删除」其实也是归档，而这件事必须说出来。**
+       `delete_project` 的 summary 自己写着「实际上也是移到 `.archived/`
+       —— 我们不真删用户的目录」。按钮文案照原稿用「确认移走」而不是「确认删除」：
+       **一个说「删除」而其实没删的按钮，会让人以为自己已经清理掉了。** */
+    { key: "delete", title: "删除项目", btn: "删除", route: "project_delete", tone: "err" as const, needsType: true,
+      body: "现在的「删除」= 归档到 .archived/（历史版本随目录一起搬走，不销毁）。要彻底删除，归档之后手动删那个目录。",
+      confirm: "目录会被移走、应用里关闭；历史版本随目录一起搬走。要继续，把项目名敲一遍。",
+      confirmLabel: "确认移走" },
+  ];
+
+  const run = async (d: typeof DANGERS[number]) => {
+    if (!d.route) return;
+    setBusy(true);
+    const r = await core.post(d.route, d.needsType ? { confirm: true, typed: typed.trim() } : {}).catch(() => null);
+    setBusy(false);
+    if (!r?.ok) { toast(`${d.title}没成`, r?.errors?.[0]?.message ?? "", "error"); return; }
+    toast(`${d.title}完成`, "这个项目已经从应用里关闭", "ok");
+    setArm(null); setTyped("");
+    /* ⚠️⚠️ **这里原来接的是 `onClose`（关设置弹窗），而那不是承诺的那件事。**
+       稿里写的是「归档后这个项目会**从应用里关闭**」—— 而我把「关弹窗」当成了「关项目」。
+       后果实测到了：归档之后目录没了，而工作台还开着它、继续请求 `drafts` → **400**。
+       > 一个回调叫 `onClosed`，而「关什么」有两个可能的答案 ——
+       > **我接了手边那个，没问它该是哪个。**
+       所以改名 `onProjectGone`（说准它是什么），由 `App` 接成「把这个项目摘掉」。 */
+    onProjectGone();
+  };
+
+  return (
+    <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5" data-ud="proj-danger">
+      <h3 className="text-[12.5px] font-semibold" style={{ color: "var(--tool-danger, #d33)" }}>危险操作</h3>
+      <p className="text-[11.5px] text-muted">这些操作会动你磁盘上的目录。⚠️ 归档和删除**都不销毁文件** —— 它们把目录搬到 <code>.archived/</code>。</p>
+      {DANGERS.map((d) => (
+        <div key={d.key} className="rounded border border-border px-2.5 py-2 flex flex-col gap-1.5" data-ud={`danger-${d.key}`}>
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] font-semibold flex-1">{d.title}</span>
+            {d.unsupported
+              /* ⚠️ **灰掉而不是藏起来** —— 藏了用户不知道这件事存在，只会去别处找。
+                 §100 那条：不画假按钮，但也别让人以为「这个功能不该有」。 */
+              ? <button className="btn" disabled title="后端还没有这个操作，下面写了怎么绕">{d.btn}</button>
+              : <button className={d.tone === "err" ? "btn danger" : "btn"} disabled={busy}
+                        onClick={() => { setArm(arm === d.key ? null : d.key); setTyped(""); }}>
+                  {arm === d.key ? "取消" : d.btn}
+                </button>}
+          </div>
+          {d.body && <p className="text-[11px] text-muted leading-relaxed">{d.body}</p>}
+          {arm === d.key && (
+            <div role="alertdialog" className="rounded px-2.5 py-2 flex flex-col gap-2"
+                 style={{ background: "var(--danger-soft, rgba(180,35,24,.1))" }}>
+              <p className="text-[11.5px] leading-relaxed">{d.confirm}</p>
+              {d.needsType && (
+                <input className="inp" value={typed} onChange={(e) => setTyped(e.target.value)}
+                       placeholder={info.name} aria-label="把项目名敲一遍" data-ud="danger-typed" />
+              )}
+              <div className="flex gap-2">
+                <button className={d.tone === "err" ? "btn danger" : "btn primary"}
+                        disabled={busy || (!!d.needsType && typed.trim() !== info.name)}
+                        onClick={() => void run(d)} data-ud={`danger-go-${d.key}`}>
+                  {busy ? "执行中…" : d.confirmLabel}
+                </button>
+                <button className="btn" disabled={busy} onClick={() => { setArm(null); setTyped(""); }}>算了</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+
+export function SettingsSheet({ core, host, projectCore, layout, setLayout, onClose, onProjectGone }: { core: Core | null; host: HostAdapter | null; projectCore: Core | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void;
+  /** 归档 / 删除之后**这个项目已经不在盘上了** —— 由 `App` 把它从打开的项目里摘掉。
+   *  ⚠️ **不走 `closeProject`**：那条路会先问「有没有未落盘的 / 有没有一轮在跑」，
+   *  而目录都没了，那两个检查只会把「关掉它」变成做不到的事（而未落盘的也救不回来）。 */
+  onProjectGone: () => void }) {
+  /* ⚠️ **这里原来是一个 iframe**：`S8-项目设置.dc.html?embed=1`（M16-6 改的，`doc/12`）。
+     M16-7 要把设计稿那一整套删掉，而这一屏是真功能 —— 所以它得先搬成原生。
+     ⚠️ `projectUrl` 这个 prop 随之不再需要（它只用来拼那个 iframe 的地址）。 */
+  const [info, setInfo] = useState<ProjInfo | null>(null);
+  const load = useCallback(async () => {
+    if (!projectCore) { setInfo(null); return; }
+    const r = await projectCore.get<ProjInfo>("project_settings").catch(() => null);
+    setInfo(r?.ok && r.data ? r.data : null);
+  }, [projectCore]);
+  useEffect(() => { void load(); }, [load]);
+  return <Sheet onClose={onClose} wide={!!projectCore}
     head={<h2 className="text-base font-semibold">设置</h2>}
     foot={<button className="btn primary" onClick={onClose}>完成</button>}
     body={<>
@@ -1024,8 +1278,13 @@ export function SettingsSheet({ core, host, projectUrl, projectCore, layout, set
       {core && <FileTreePanel core={core} />}
       {core && <PluginLimitsPanel core={core} />}
       {core && <StoragePanel core={core} projectCore={projectCore} />}
-      {/* iframe 的高度给固定值，别用 vh —— 它在会滚的内容区里，用 vh 会和外层的滚动打架 */}
-      {s8 ? <iframe src={s8} title="项目设置" className="w-full border border-border rounded bg-panel shrink-0" style={{ height: 560 }} />
-        : <p className="text-muted">打开一个项目后，这里还有设计系统、限额、回收站与危险操作。</p>}
+      {/* 项目那三块（M16-6）。⚠️ 没开项目时这句话也要跟着改 ——
+          原来写的是「还有设计系统、限额、回收站与危险操作」，而前两块已经没有入口了
+          （`doc/12` M16-6：它们在 M16-7 之后没有对象，geek-99 2026-10-23 定甲去掉入口）。 */}
+      {projectCore ? <>
+        <ProjectBasicPanel core={projectCore} info={info} reload={() => void load()} />
+        <TrashPanel core={projectCore} info={info} reload={() => void load()} />
+        <DangerPanel core={projectCore} info={info} onProjectGone={onProjectGone} />
+      </> : <p className="text-muted">打开一个项目后，这里还有它的标题、回收站与危险操作。</p>}
     </>} />;
 }

@@ -934,6 +934,32 @@ export async function updateProject(
   const configPath = join(p.dir, "project.json");
   await writeAtomic(configPath, JSON.stringify(config, null, 2) + "\n");
 
+  /* ⚠️⚠️ **写完盘还要把新值回写进内存里这个 `Project` 对象**（2026-10-23，M16-6 实测抓到）。
+   *
+   *  `api.ts:158` 的 `const p = ctx.project` 是**服务启动时建的一份快照**，
+   *  而这个函数原来只写盘、不动它。于是：
+   *  · 写入 ✅ 真的到盘上了；
+   *  · 紧接着 `get_project` ❌ 读的是那份旧快照。
+   *  症状是**假成功**：界面 toast 说「标题存好了」（那是真的 —— 写入确实成功了），
+   *  而读回来还是旧标题。在原来那份稿的时代这个缺陷也在，只是长相不同 ——
+   *  「改完标题，关掉设置再打开，又变回去了」，而**盘上其实是新的**。
+   *  那比「改不了」更难查：用户会以为自己没点保存。
+   *  > **一个写入口改了盘，而读入口读的是内存里的快照 ——
+   *  > 两边都「成功」，而它们说的不是同一件事。**
+   *
+   *  ⚠️ 回写**全部派生字段**，不只 `title`：`buildProject` 从 config 算出
+   *  `dsDir` / `dsAlias` / `tokensPath` / `iconsPath` / `limits`，
+   *  只回写一个的话下一个人改设计系统时会再踩一遍同一个坑。
+   *  ⚠️ 回写的是**同一个对象**（不是换一个新的）—— 服务表、会话、插件沙箱都持有它的引用，
+   *  换一个新对象只会让「有的地方看到新值、有的地方看到旧值」。 */
+  p.config = config;
+  p.title = config.title || p.name;
+  p.dsDir = config.designSystem?.dir ?? null;
+  p.dsAlias = config.designSystem?.alias ?? "@ds";
+  p.tokensPath = config.tokens ?? null;
+  p.iconsPath = config.icons ?? null;
+  p.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}) };
+
   return {
     name: config.name || p.name,
     title: config.title || p.title,

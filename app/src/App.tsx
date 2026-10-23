@@ -377,7 +377,17 @@ export default function App() {
           }} />
       )}
       {sheet?.kind === "newProject" && <NewProjectSheet hub={hub} host={host} initialDir={sheet.dir} onClose={() => setSheet(null)} onOpen={(d) => void open(d)} />}
-      {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectUrl={page === "work" && project ? project.url : null} projectCore={page === "work" ? projectCore : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)} />}
+      {sheet?.kind === "settings" && <SettingsSheet core={hub} host={host} projectCore={page === "work" ? projectCore : null} layout={layout} setLayout={setLayout} onClose={() => setSheet(null)}
+        /* 归档 / 删除之后这个项目已经不在盘上了：关掉弹窗 + 把它摘掉。
+           ⚠️ **不走 `closeProject`** —— 那条路先问「有没有未落盘的 / 有没有一轮在跑」，
+           而目录都没了，那两个检查只会把「关掉它」变成做不到的事。 */
+        onProjectGone={() => {
+          setSheet(null);
+          const dir = project?.dir;
+          if (!dir) { setPage("home"); return; }
+          setEntries((xs) => xs.filter((e) => e.handle.dir !== dir));
+          setActiveDir((cur) => (cur === dir ? (entries.find((e) => e.handle.dir !== dir)?.handle.dir ?? null) : cur));
+        }} />}
       <Toasts />
     </>
   );
