@@ -53,7 +53,7 @@ ok("图片尺寸从文件头读（png 1×1 · svg 48×24）",
    所以**另一份是悄悄坏的**。两处已经抽成 `bumpTypeCount` 一处，这一条钉住另一头。
    > **两份相同的判断，就是两个会一起过期、而只有一个会被发现的地方。** */
 ok("**`listFiles` 的类型统计也对**（矢量图算进「图」那一档，不落 other）",
-  l.types.dc === 1 && l.types.md === 1 && l.types.image === 2 && l.types.other === 2, l.types);
+  l.types.dc === 0 && l.types.md === 1 && l.types.image === 2 && l.types.other === 3, l.types);
 ok("md 摘录跳过 frontmatter", l.entries.find((e) => e.name === "需求.md")?.excerpt === "# 日志页需求");
 
 const r1 = await readAnyFile(p, "需求.md");
@@ -64,8 +64,25 @@ ok("读文本：正文 + sha256 + 行数", !!r1.content?.includes("日志页需�
 const rimg = await readAnyFile(p, "图.png");
 ok("读二进制：不给正文，但说清为什么", rimg.content === null && !!rimg.why && rimg.width === 1);
 
-try { await writeAnyFile(p, "稿.dc.html", "x"); ok("write_file 必须拒绝 .dc.html", false); }
-catch (e) { ok("write_file 拒绝 .dc.html 并指向 write_draft", /write_draft/.test(fixOf(e))); }
+/* ⚠️⚠️ **这一条 2026-10-23（M16-7 / C3）整个反过来了。**
+   原来是「`write_file` **必须拒绝** `.dc.html`，并指向 `write_draft`」。
+   而 C3 删掉 `dc` kind 条目之后，那道拒（`files.ts` 的
+   `if (kindOf(clean) === "dc")`）**自动进不去** —— `kindOf` 现在回 `html`。
+   > **删掉 kind 条目就等于撤了那道拒：它们不是两件事，是同一个改动的两面。**
+   所以这里钉的是新事实：`.dc.html` 走第二条写入口**写得动，而且照样留快照**
+   （历史那一层对任何文件都成立，不随 dc 走）。 */
+{
+  const before = (await listSnapshots(p, "稿.dc.html")).length;
+  /* ⚠️ **先读再写** —— 第一版我传 `expectSha256: "0"`（期望新建）而那份稿**已经存在**，
+     于是撞上写前校验抛出来。而「先读拿 sha、再带着它写」才是真实用法，
+     顺带验了这条路上 `read` 给得出 sha256。 */
+  const rdc = await readAnyFile(p, "稿.dc.html");
+  ok("**`.dc.html` 读得到正文和 sha256**（C3 之后它就是一份文本 HTML）", !!rdc.content && !!rdc.sha256);
+  const w = await writeAnyFile(p, "稿.dc.html", "<!doctype html><p>改过了</p>\n", { expectSha256: rdc.sha256 });
+  ok("**`.dc.html` 走 `write_file` 写得动了**（原来这条路拒它并指向 `write_draft`）", !!w);
+  ok("**而且照样留了一版快照**（历史那一层对任何文件都成立，不随 dc 走）",
+     (await listSnapshots(p, "稿.dc.html")).length > before);
+}
 
 const w1 = await writeAnyFile(p, "需求.md", r1.content!.replace("正文。", "正文改过了。"), { expectSha256: r1.sha256 });
 ok("写前校验通过 → 旧版存 s1 → 新版 s2", w1.snapshot === "s2" && w1.previous === "s1");
@@ -117,16 +134,44 @@ ok("快照元数据：version / src / at 齐", meta.length === 3 && meta[0]!.ver
   await rm(O, { recursive: true, force: true });
 }
 
-ok("referencesOf 找到引用的文件与行号", (await referencesOf(p, "图.png")).some((r) => r.file === "稿.dc.html" && r.line > 0));
+/* ⚠️⚠️ **这一条 C3 之后没有对象了，照实改。**
+   `referencesOf` 用 `listDrafts(p)` 扫**稿**，而 C3 删掉 `dc` kind 之后
+   `listDrafts` 返回空 → 它永远回空数组。
+   ⚠️ **而这连带着一件要处理的事**：M13-3 做的 `list_file_refs` 对外叫
+   「通用的文件引用」，而它的实现只扫稿 —— **C3 之后它永远回空，而名字还在**。
+   > **一件能力的名字还在、而它回答的那个问题已经不存在，比删掉它更坏。**
+   归 M16-7c（和甲组那 12 件一起处理：删掉，或者改成真的扫所有文本文件）。
+   这里先钉住「它现在回空」—— 让这件事在读数里看得见，而不是静静变成一条永远绿的判据。 */
+ok("**`referencesOf` 现在回空**（它扫的是「稿」，而 C3 之后没有稿了 —— `list_file_refs` 要跟着处理，见 M16-7c）",
+   (await referencesOf(p, "图.png")).length === 0);
 const t = await countTypes(p);
-ok("countTypes 全项目分布", t.dc === 1 && t.md === 2 && t.image === 2 && t.other === 2, t);
+/* ⚠️ **`dc` 那一档现在恒为 0**（C3：没有「设计稿」这种 kind 了），而 `.dc.html`
+   按 `html` 落进 `other` —— 因为那四档是粗分类，`html` 本来就不在里面
+   （`bumpTypeCount` 的注释写着最后那个 `else` 是个黑洞）。
+   ⏳ 这四档的语义在 C3 之后要重新想（`dc` 那一档没有对象了），归 M16-7c。 */
+ok("countTypes 全项目分布（`dc` 档恒 0，`.dc.html` 按 html 落 other）", t.dc === 0 && t.md === 2 && t.image === 2 && t.other === 3, t);
 
 const mv = await moveFile(p, "图.png", "assets/图.png");
-ok("move_file 挪文件并改写稿里的引用",
-  mv.rewrote.length === 1 && /src="assets\/图\.png"/.test(await readFile(join(DIR, "稿.dc.html"), "utf8")));
-ok("被改写的稿留下语义快照（走的是 write_draft）", (await listVersions(p, "稿.dc.html")).length >= 1);
-try { await moveFile(p, "稿.dc.html", "x.dc.html"); ok("move_file 必须拒绝 .dc.html", false); }
-catch (e) { ok("move_file 拒绝 .dc.html 并指向 move_draft", /move_draft/.test(fixOf(e))); }
+ok("move_file 挪得动文件", mv.to === "assets/图.png" || !!mv);
+/* ⚠️⚠️ **引用改写这一层 C3（M16-7）之后没有对象了，照实记。**
+   原来这两条钉的是「挪文件时**改写稿里的引用**」和「被改写的稿留下语义快照（走 `write_draft`）」。
+   而改写引用走 `mapDraftRefs`，它扫的是 `listDrafts(p)` ——
+   C3 删掉 `dc` kind 之后 `listDrafts` 返回空，所以**一处都不改写了**。
+   ⚠️ 这不是「坏了」，是「那件事的对象不存在了」：`<dc-import>` 和 `@ds` 都是 dc 的概念。
+   ⏳ `mapDraftRefs` / `referencesOf` / `list_file_refs` 要一起处理 —— 归 **M16-7c**：
+   要么删掉，要么改成真的扫所有文本文件（那是另一件事，别顺手做）。
+   这里钉住「它现在不改写了」，让这件事在读数里看得见。 */
+ok("**而引用改写这一层现在是零处**（它扫的是「稿」，C3 之后没有稿了 —— 归 M16-7c）", mv.rewrote.length === 0);
+/* ⚠️ 同 `write_file` 那一道：`moveFile` 对 `.dc.html` 的拒
+   （`files.ts:965`，指向 `rename_draft` / `move_draft`）**也自动进不去了**
+   —— 它的条件同样是 `kindOf(...) === "dc"`。
+   > **两道拒是同一个改动的两面：删掉 kind 条目就等于两道一起撤。**
+   geek-99 要的「先撤 `write_file` 那道拒」因此自动满足，而且是两道都满足。 */
+{
+  const mvd = await moveFile(p, "稿.dc.html", "挪过的稿.dc.html");
+  ok("**`.dc.html` 现在挪得动了**（原来这条路拒它并指向 `move_draft`）", !!mvd);
+  await moveFile(p, "挪过的稿.dc.html", "稿.dc.html");   // 挪回去，后面的判据还要用它
+}
 
 /* ── 改写引用不许改坏别的引用、也不许静默漏改（issue #76，2026-10-05）──
    原来是对整篇稿做**子串**替换，于是两个方向都错。

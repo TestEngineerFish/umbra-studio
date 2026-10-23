@@ -253,7 +253,15 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
             ev.preventDefault(); ev.stopPropagation();
             setCtx({ x: ev.clientX, y: ev.clientY, target: e.isDir
               ? { kind: "dir", path: e.path, name: e.name }
-              : { kind: "file", path: e.path, name: e.name, isDraft: e.kind === "dc" } });
+              /* ⚠️ `isDraft` 原来是 `e.kind === "dc"`，而 C3（M16-7）之后那个条件**永远为假** ——
+                 右键菜单里的「复制一份」会因此消失。
+                 ⚠️ **而不能改成 `true`**：`duplicateDraft` 硬编码了 `.dc.html`
+                 （`project.ts:797`：`if (!newBase.endsWith(".dc.html")) newBase += ".dc.html"`），
+                 对一份 `.md` 调它会生成 `xxx.md 副本.dc.html` —— **那是个假按钮**。
+                 ⏳ 所以这一项**先照实消失**，等 M16-8 把乙组并进 `file_*`（有了通用的
+                 「复制一份」）再接回来。那时这个字段该改名成「能不能复制」。
+                 > **一个永远为假的条件是下一个人的陷阱**，所以写成常量并把理由留在这里。 */
+              : { kind: "file", path: e.path, name: e.name, isDraft: false } });
           }}
           /* ── 拖进来落在这一行（场景 ③）──
              ⚠️ **落在文件行上算「放进它所在的目录」**，不是「放到这个文件上」：
@@ -278,7 +286,9 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           {/* 三角占位：文件也占同样宽度，图标才对得齐 */}
           <span className="w-4 shrink-0 text-[10px] text-muted grid place-items-center transition-transform"
             style={{ transform: e.isDir && open ? "rotate(90deg)" : "none" }}>{e.isDir ? "▶" : ""}</span>
-          <span className={`w-[14px] shrink-0 text-center text-[13px] ${isCur ? "text-accent" : e.kind === "dc" ? "text-accent" : "text-muted"}`}>
+          {/* ⚠️ 原来稿也用强调色（和「当前文件」同一个颜色）—— C3 之后没有「稿」这一类，
+              所以只有当前文件是强调色。 */}
+          <span className={`w-[14px] shrink-0 text-center text-[13px] ${isCur ? "text-accent" : "text-muted"}`}>
             {kindDef(e.isDir ? "dir" : e.kind).icon}
           </span>
           <span className="truncate flex-1 text-xs leading-none">{e.name}</span>

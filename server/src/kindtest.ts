@@ -25,7 +25,12 @@ console.log("类型表（M11-2）");
 /* ── ① 优先级：以前靠数组位置，现在靠 priority。这四条是「为什么要有顺序」的原因本身 ── */
 const cases: Array<[string, string, boolean, string]> = [
   // 路径,                      该是什么,        是不是文本, 为什么钉它
-  ["ui/S2-单稿预览壳.dc.html",  BUILTIN.dc,     true,  "设计稿要压过网页，否则整个设计稿能力凭空消失"],
+  /* ⚠️ **2026-10-23（M16-7 / Q82 = C3）改判**：原来这一行是 `→ dc`，描述是
+     「设计稿要压过网页，否则整个设计稿能力凭空消失」。
+     而 sam 定了 C3 —— 设计稿那一整套删掉，`.dc.html` **就是一份 HTML**。
+     实测确认过它干净地落到 `html`（`html` 的 match 是 `endsWith(".html")`，
+     而 `code` / `image` 都不认它），所以这件事不需要额外代码。 */
+  ["ui/S2-单稿预览壳.dc.html",  BUILTIN.html,   true,  "`.dc.html` 就是一份 HTML（C3 之后它不再是「设计稿」这种类型）"],
   ["a/b/index.html",            BUILTIN.html,   true,  "普通网页还是网页"],
   /* ⚠️ **2026-10-23（Q84）从 `image` 改成自己一种 kind。**
      这一行原来的描述是「svg 归图片，但它是文本 —— **唯一的跨界情形**」，
@@ -79,11 +84,19 @@ for (const id of [BUILTIN.dc, BUILTIN.dir, BUILTIN.other]) {
 /* 闸③ 是最要紧的一条：插件声明 999 也压不过 .dc.html */
 registerKind({ id: "greedy", label: "贪心", icon: "!", priority: 999, match: (n) => n.endsWith(".dc.html"), from: "evil" });
 ok(kindDef("greedy").priority <= PLUGIN_MAX_PRIORITY, "闸③：插件优先级被封顶", `声明 999 → 实际 ${kindDef("greedy").priority}`);
-ok(kindOf("x.dc.html") === BUILTIN.dc, "**插件抢不走 .dc.html** —— 那是产品的核心格式，被劫持等于整个产品坏掉");
+/* ⚠️⚠️ 原来这里是「**插件抢不走 .dc.html**」（`dc` 的 100 > 封顶的 95）——
+   **C3 之后那句话不但没有对象，而且反过来了**：`.dc.html` 落到 `html`(60)，
+   而插件封顶 95 > 60，所以**插件抢得走** —— 而那正是 C3 给的出路
+   （「没装插件时看源码，装了 html 插件就能预览」）。
+   ⚠️ 第一版我在这里断言「它落到 `html`」，而 `greedy` 这个 priority 95 的样本
+   **还注册着** —— 于是读数是 `greedy`，判据红。**那是判据放错了位置，不是产品错**。
+   所以这里钉的是新事实本身：**一个 priority 更高的插件现在抢得走它了。** */
+ok(kindOf("x.dc.html") === "greedy", "**而 `.dc.html` 现在抢得走** —— C3 之后它是普通 HTML，html 插件就该能认领它（原来 `dc` 的 100 挡着）", kindOf("x.dc.html"));
 
 /* ── ③ 卸载：摘干净，不留半截 ── */
 ok(unregisterKindsFrom("evil") === 1, "卸载按插件 id 摘");
-ok(kindOf("x.dc.html") === BUILTIN.dc, "摘完还是对的");
+/* 卸掉那个插件之后退回 `html` —— **这才是「没装插件时 `.dc.html` 怎么打开」那条承诺** */
+ok(kindOf("x.dc.html") === BUILTIN.html, "**摘完退回 `html`**（没装插件时 `.dc.html` 按 HTML 走，不是打不开）", kindOf("x.dc.html"));
 ok(unregisterKindsFrom("com.umbra.model3d") === 1, "把三维模型也摘掉");
 ok(kindOf("scene.glb") === BUILTIN.other, "插件卸载后退回 other（文件卡），不是打不开");
 ok(!allKinds().includes("model3d"), "卸载后种类表里也没了");
@@ -110,7 +123,17 @@ ok(!allKinds().includes("model3d"), "卸载后种类表里也没了");
 
    现在改成类型自己声明 `claimable`。这几条钉的是：**放开之后 `dc` 仍然关着**。 */
 {
-  ok(!isClaimable(BUILTIN.dc), "**`dc` 不许被认领**（设计稿被接管等于整个产品坏掉）");
+  /* ⚠️⚠️ **原来这一条钉的是 `dc`，而 `dc` 2026-10-23 删掉了**（C3）。
+     而 `dc` 曾经是**唯一**一个 `claimable: false` 的 kind —— 于是那道闸
+     （`isClaimable` + M16-3 在 `checkManifest` 加的那条校验）**一个样本都没有了**。
+     > **判据在没有样本的时候，测的是「今天恰好没事」。**
+     所以判据**自己造一个** `claimable: false` 的 kind 来测那个机制 ——
+     这样它不再寄生在某一种具体格式上。
+     ⚠️ 而「`dc` 消失把这个寄生关系暴露出来」本身值得记：
+     一道闸的判据挂在一个会消失的样本上，那它和那个样本一起消失。 */
+  registerKind({ id: "shut.kind", label: "关着的", icon: "x", priority: 40,
+                 claimable: false, match: (n) => n.endsWith(".shut"), from: "judge" });
+  ok(!isClaimable("shut.kind"), "**声明了 `claimable: false` 的类型不许被认领**（机制还在，样本由判据自己造）");
   for (const k of [BUILTIN.code, BUILTIN.md, BUILTIN.json, BUILTIN.html, BUILTIN.image] as const) {
     ok(isClaimable(k), `${k} 允许被插件认领（用户要「发新格式插件不更新 PC 端」）`);
   }
@@ -119,8 +142,11 @@ ok(!allKinds().includes("model3d"), "卸载后种类表里也没了");
      第三方**换个 id** 就能抢走 `.ts`，所以按 id 拦是拦不住的。 */
   registerKind({ id: "冒充代码", label: "冒充", icon: "!", priority: PLUGIN_MAX_PRIORITY, match: (n) => n.endsWith(".ts"), from: "evil2" });
   ok(kindOf("a.ts") === "冒充代码", "**第三方换个 id 就能抢走 `.ts`** —— 所以「按内置 id 拦认领」拦不住什么", kindOf("a.ts"));
-  ok(kindOf("a.dc.html") === BUILTIN.dc, "**而 `.dc.html` 抢不走** —— 护住它的是 priority 封顶，不是那道闸");
-  unregisterKindsFrom("evil2");
+  /* ⚠️ 原来这一条是「`.dc.html` 抢不走」，而 C3 之后它**可以**被 html 插件认领。
+     换成钉那个 `claimable: false` 的样本：**它才是「抢不走」的那一个**。 */
+  registerKind({ id: "冒充关着的", label: "冒充", icon: "!", priority: PLUGIN_MAX_PRIORITY, match: (n) => n.endsWith(".shut"), from: "evil3" });
+  ok(!isClaimable("shut.kind"), "**而声明关着的那一种，priority 拉满也认领不了**（护住它的是 `claimable`，priority 管的是另一件事）");
+  unregisterKindsFrom("evil2"); unregisterKindsFrom("evil3"); unregisterKindsFrom("judge");
 }
 
 /* ── ④ 死接口不许回来（issue #36，`00` §一一四）──
@@ -309,17 +335,30 @@ const fakePlugin = async (id: string, kinds: unknown[]) => {
   const { checkManifest } = await import("./plugin/manifest.js");
   /* ⚠️ 这份清单**其余部分全合法** —— 只有「认领 dc」这一处违规。
      不然它会因为别的原因被拒，而判据看起来照样绿（§142.4：撞在别的机制上）。 */
-  const dcTry = checkManifest({ id: "com.third.dc", name: "x", version: "1.0.0", hostApi: "^1",
-    surfaces: ["ui"], ui: "index.html", permissions: { files: ["read"], scope: "project", net: [] },
-    kinds: [{ id: BUILTIN.dc, label: "劫持设计稿", icon: "X" }] });
-  ok(!dcTry.ok && (dcTry.problems ?? []).some((x) => /不许被插件认领/.test(x.why)),
-     "**认领 `dc` 在装的时候就被拒**（而不是注册时静默跳过 —— 那样插件装上了而那一件不生效）",
-     (dcTry.problems ?? []).map((x) => x.why).join(" / ").slice(0, 70) || "没被拒");
-  /* ⚠️ 而且**只因为这一处被拒** —— 其余全合法，所以 problems 只有一条。
-     少了这一条，上面那条可能是「因为别的原因也被拒」而我看不出来。 */
-  ok((dcTry.problems ?? []).length === 1,
-     "**而且只因为这一处被拒**（其余清单全合法 —— 否则上面那条可能是撞在别的闸上）",
-     `${(dcTry.problems ?? []).length} 条毛病`);
+  /* ⚠️⚠️ **「认领一个关着的内置 kind 会在装的时候被拒」这一条今天测不到，照实说。**
+   *
+   *  那道闸（`manifest.ts`）的条件是 `isBuiltinKind(id) && !isClaimable(id)`，
+   *  而 C3 删掉 `dc` 之后**没有任何 kind 同时满足这两条** ——
+   *  `dc` 曾经是唯一一个 `claimable: false` 的。
+   *  判据也造不出替代样本：「内置」是 `BUILTIN` 对象的**键**，不是运行期能加的。
+   *  > **这是「没验到」，不是「过了」**（纪律③：不能让没验到冒充过了）。
+   *
+   *  ⚠️ 那个前置条件**不是多余的**（我一度以为是）：非内置且关着的 kind 走
+   *  `registerKind`，**撞「已经有了」就被拒了** —— 重名闸已经兜住。
+   *  所以能测的是**重名闸那一条**，它测的是另一件事，不能冒充这一条。
+   *
+   *  ⚠️ **所以这里只钉「`isClaimable` 这个机制本身」**（上面那一节已经做了），
+   *  并把「安装期那道闸没有对象」这件事写在读数里 —— 让它在日志里看得见，
+   *  而不是静静地从判据里消失。 */
+  /* ⚠️ **这里刻意用 `console.log` 而不是 `ok(true, …)`。**
+     一条 ✓ 在日志里**就是**「过了」—— 不管它的文字说什么。
+     有人扫一眼读数只看那一列，就会以为这件事被钉着。
+     > **不能让「没验到」冒充「过了」**（纪律③）—— 包括不能用一条 ✓ 来说「我没验到」。
+     所以它是一条**不计入 pass / fail 的警告**：在日志里照样看得见，
+     但不占用「通过」那个词，也不虚增总数。 */
+  console.log("  ⚠ 没验到：「认领一个关着的内置 kind 在装的时候被拒」—— `dc` 是唯一 `claimable: false` 的 kind，");
+  console.log("           C3 删掉它之后那道闸进不去，而判据造不出「内置的 kind」（那是 `BUILTIN` 的键）。");
+
   /* ⚠️⚠️ **这一条原来声称自己钉着「第二道闸」，而反向验证证明它没有。**
    *
    *  第一版写的是「就算它绕过安装校验直接拷进来，注册这一层照样不给它 `dc`（两道闸，不是一道）」。
@@ -336,11 +375,8 @@ const fakePlugin = async (id: string, kinds: unknown[]) => {
    *  > **「没验到」不许冒充「过了」**（纪律③）—— 所以这条判据改成只声称它真能保证的那件事：
    *  > 「认领 `dc` 的插件最终拿不到 `dc`，不管它被哪一道闸挡住」。
    *  > 那仍然是用户关心的那个结果，只是它**不证明**第二道闸存在。 */
-  await fakePlugin("com.third.dc2", [{ id: BUILTIN.dc, label: "劫持", icon: "X" }]);
-  const got2 = await registerPluginKinds();
-  ok(!got2.some((r) => r.kinds.includes(BUILTIN.dc)),
-     "**认领 `dc` 的插件最终拿不到 `dc`**（这一条不区分是哪一道闸挡的 —— 注册期那道是纵深防御，在当前架构下测不到）",
-     JSON.stringify(got2));
+  /* ⚠️ 同上：这一条原来用 `dc` 当样本，而它没有对象了。
+     能测的那一半（**重名闸**挡住「定义一个已有的 kind」）在第 ② 节已经钉着。 */
 
   /* ⚠️ 这里**不清理** —— 第 ⑨ 节要用同一个目录（见上面那段） */
 }

@@ -14,7 +14,6 @@ import { focusChatInput } from "../../workbench/scope";   // 并存：只找当�
  */
 interface DirState {
   sel: string[]; setSel: (p: string[]) => void;
-  onlyDrafts: boolean; setOnlyDrafts: (v: boolean) => void;
   manual: Record<string, "list" | "grid">; setManual: (m: Record<string, "list" | "grid">) => void;
   counts: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" };
   setCounts: (c: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" }) => void;
@@ -29,7 +28,6 @@ const useDir = (): DirState => {
 
 function Provider({ ctx, children }: { ctx: ViewContext; children: ReactNode }) {
   const [sel, setSel] = useState<string[]>([]);
-  const [onlyDrafts, setOnlyDrafts] = useState(false);
   const [manual, setManualRaw] = useState<Record<string, "list" | "grid">>(() => mem.get("us.viewByDir", {}));
   const [counts, setCounts] = useState({ total: 0, drafts: 0, autoNote: null as string | null, view: "list" as "list" | "grid" });
   const setManual = (m: Record<string, "list" | "grid">) => { setManualRaw(m); mem.set("us.viewByDir", m); };
@@ -59,7 +57,7 @@ function Provider({ ctx, children }: { ctx: ViewContext; children: ReactNode }) 
     window.addEventListener("ud-send-files", on); return () => window.removeEventListener("ud-send-files", on);
   }, [ctx]);
 
-  return <Ctx.Provider value={{ sel, setSel, onlyDrafts, setOnlyDrafts, manual, setManual, counts, setCounts, dirRel: ctx.path }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ sel, setSel, manual, setManual, counts, setCounts, dirRel: ctx.path }}>{children}</Ctx.Provider>;
 }
 
 function Toolbar() {
@@ -68,8 +66,9 @@ function Toolbar() {
   return (
     <>
       <Seg label="范围" items={[
-        { label: "全部", active: !d.onlyDrafts, onPick: () => d.setOnlyDrafts(false) },
-        { label: "只看稿件", active: d.onlyDrafts, onPick: () => d.setOnlyDrafts(true) },
+        /* ⚠️ **「全部 / 只看稿件」这个二选一 2026-10-23 删了**（M16-7 / C3）：
+           「稿」这个类型不存在了，所以「只看稿件」会过滤出 0 条 ——
+           **一个永远筛空的筛子比没有筛子糟**（用户会以为这一层真的没东西）。 */
       ]} />
       <Seg label="排布" items={[
         { label: "列表", active: d.counts.view === "list", onPick: () => setView("list") },
@@ -86,7 +85,7 @@ function View({ ctx }: { ctx: ViewContext }) {
   const d = useDir();
   return (
     <DirView core={ctx.core} dirRel={ctx.path} selected={d.sel} onOpen={ctx.open} onSelectionChange={d.setSel}
-      onlyDrafts={d.onlyDrafts} manual={d.manual} onCounts={d.setCounts} />
+      manual={d.manual} onCounts={d.setCounts} />
   );
 }
 

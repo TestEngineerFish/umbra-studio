@@ -1832,16 +1832,26 @@ console.log("\n㉒ 本地 CLI 的 directWrite + 转换那两条（#166 / #173 / 
   ok(gem?.directWrite === "open" && /只有/.test(gem?.note ?? ""),
      "gemini 那条说清了「**只有**自带写工具可用」（它这一支不注入我们的 MCP）");
 
-  /* ── #173：转换不许造出一份没走 write_draft 的设计稿 ── */
+  /* ── #173：转换不许造出一份没走 write_draft 的设计稿 ──
+   *
+   *  ⚠️⚠️ **这一节 C3（M16-7）之后没有对象了。**
+   *  它钉的是「`file.convert` 在成品名是 `.dc.html` 时拒掉」，理由是
+   *  「设计稿只能从 `write_draft` 那条路生成」。而 C3 删掉 `dc` kind 之后：
+   *  · `kindOf("首页.dc.html")` 回 `html`，不是 `dc`；
+   *  · 所以 `convert.ts` 里那道 `kindOf(predicted) === "dc"` 的拒**永远进不去**；
+   *  · 而「设计稿」这个概念本身不存在了，那条理由也不存在了。
+   *  ⚠️ **那道拒要跟着删**（`server/src/cap/convert.ts`），归 **M16-7c**
+   *  —— 和甲组那 12 件、`validate.ts` / `render.ts` 那一层一起。
+   *  在这里先把「它现在是一道进不去的闸」写进读数，而不是留一条
+   *  **恒真因此永远绿**的源码正则判据。
+   *  > **一道进不去的闸，和一道守住了的闸，在「源码里有这一行」这种判据里长得一样。** */
   const { kindOf: k22 } = await import("./shared/kinds.js");
-  ok(k22("首页.dc.html") === "dc", "（前提）`首页.dc.html` 确实被认成设计稿 —— 这是缺陷成立的原因");
+  ok(k22("首页.dc.html") === "html",
+     "**`.dc.html` 现在就是 html**（C3）—— 所以 `convert.ts` 里那道「不许转出设计稿」的拒已经进不去了，要跟着删（M16-7c）",
+     k22("首页.dc.html"));
   const { readFileSync: rf22 } = await import("node:fs");
   const { join: j22 } = await import("node:path");
   const { TOOL_ROOT: TR22 } = await import("./project.js");
-  const convSrc = rf22(j22(TR22, "server", "src", "cap", "convert.ts"), "utf8");
-  ok(/kindOf\(predicted\) === "dc"/.test(convSrc),
-     "**`file.convert` 在成品名是 `.dc.html` 时拒掉**（源文件叫 `首页.dc.txt` 转 html 就会撞上）");
-  ok(/write_draft/.test(convSrc), "而且拒因里说清了「设计稿只能从 `write_draft` 那条路生成」");
 
   /* ── #174：LibreOffice 的配置目录按进程分 ── */
   const idxSrc22 = rf22(j22(TR22, "server", "src", "convert", "index.ts"), "utf8");

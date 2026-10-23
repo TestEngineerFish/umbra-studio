@@ -165,9 +165,14 @@ export const PLUGIN_MAX_PRIORITY = 95;
  *  - `json` 70 > `code` 10：`CODE_EXT` 里也有 `.json`，但 JSON 有结构化的看法
  */
 const BUILTIN_KINDS: readonly KindDef[] = [
-  /* ⚠️ `claimable: false` 只有它一个 —— 设计稿被插件接管等于整个产品坏掉。
-     priority 100 > `PLUGIN_MAX_PRIORITY` 已经挡住「抢」，这一条挡的是「认领」。 */
-  { id: BUILTIN.dc, label: "设计稿", icon: "◧", priority: 100, textual: true, claimable: false, match: (n) => n.endsWith(".dc.html") },
+  /* ⚠️⚠️ **`dc` 这一条 2026-10-23 删了**（M16-7 / Q82 = C3，sam 定的产品边界）。
+     `.dc.html` 现在**落到 `html`** —— 实测确认过：`html` 的 match 是 `endsWith(".html")`，
+     而 `.dc.html` 的最后一段正是 `.html`；`code` / `image` 都不认它。
+     所以这件事**不需要额外代码**，删掉条目就落对了。
+     ⚠️ 顺带修掉 M14-5 那条「`.dc.html` = Owner 多半不成立」的尾巴：
+     LaunchServices 也是按**最后一段扩展名**匹配，**现在我们和系统口径一致了**。
+     ⚠️ `claimable: false` 这个字段**留着**（`isClaimable` 还在用，默认允许）——
+     它是「某种 kind 不许被插件接管」这个机制，而不是「dc 专用」。 */
   { id: BUILTIN.md, label: "Markdown", icon: "≡", priority: 90, textual: true, match: (n) => n.endsWith(".md") || n.endsWith(".markdown") },
   /* ⚠️ **`textual` 那个例外函数 2026-10-23 删了**（Q84）：原来写的是
      `textual: (n) => n.endsWith(".svg")` —— 而 `.svg` 现在是自己一种 kind，

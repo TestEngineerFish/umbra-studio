@@ -15,10 +15,9 @@ const AUTO_MIN = 6, AUTO_SHARE = 0.6;
 
 /** ⚠️ 视图开关（范围 / 排布）**不住在这里** —— 它们在 `index.tsx` 的 Provider 里，
  *  因为第七轮把工具栏定成了统一的一条横带，工具栏和视图是两个渲染位置（M8-15b）。 */
-export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onlyDrafts, manual, onCounts }: {
+export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, manual, onCounts }: {
   core: Core; dirRel: string; onOpen: (path: string, isDir: boolean) => void;
   onSelectionChange: (paths: string[]) => void; selected: string[];
-  onlyDrafts: boolean;
   manual: Record<string, "list" | "grid">;
   /** 把读数交给工具栏与状态行：总项数、**几份稿**（`⋯` 浮层头要它，M8-33）、自动网格的理由 */
   onCounts: (c: { total: number; drafts: number; autoNote: string | null; view: "list" | "grid" }) => void;
@@ -38,7 +37,9 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
   }, [data, autoNote, view]);
 
 
-  const rows = (data?.entries ?? []).filter((e) => !onlyDrafts || e.isDir || e.kind === "dc");
+  /* ⚠️ 原来这里按 `onlyDrafts` 过滤出「只看稿件」—— M16-7（C3）删掉了那个开关，
+     因为「稿」这个类型没了，那个筛子会永远筛空。 */
+  const rows = data?.entries ?? [];
   const toggle = (path: string) => onSelectionChange(selected.includes(path) ? selected.filter((x) => x !== path) : [...selected, path]);
   const crumbs = dirRel ? dirRel.split("/") : [];
   const move = async () => {
@@ -81,7 +82,7 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, onl
       </nav>
       <div className="flex-1 min-h-0 overflow-auto p-4">
         {!data ? <div className="text-muted text-xs text-center py-10">正在读目录…</div>
-          : rows.length === 0 ? <div className="text-muted text-xs text-center py-10 leading-relaxed">{onlyDrafts ? "这一层没有设计稿" : <>这个目录是空的<br />用项目菜单里的「新建稿件」，或者把文件放进来</>}</div>
+          : rows.length === 0 ? <div className="text-muted text-xs text-center py-10 leading-relaxed"><>这个目录是空的<br />把文件放进来，或者用项目菜单里的「新建文件」</></div>
           : view === "grid" ? <Grid core={core} rows={rows} dirRel={dirRel} selected={selected} onToggle={toggle} onOpen={onOpen} />
           : <Table rows={rows} selected={selected} onToggle={toggle} onOpen={onOpen} />}
       </div>
@@ -108,7 +109,8 @@ function Table({ rows, selected, onToggle, onOpen }: { rows: FileEntry[]; select
         <div key={e.path} className={`grid grid-cols-[32px_minmax(0,1fr)_84px_96px_104px_132px] gap-x-3 items-center min-h-[44px] px-3 border-b border-border last:border-0 cursor-pointer hover:bg-hover ${selected.includes(e.path) ? "bg-accentSoft" : ""}`} onClick={() => onOpen(e.path, e.isDir)}>
           <input type="checkbox" checked={selected.includes(e.path)} onClick={(ev) => ev.stopPropagation()} onChange={() => onToggle(e.path)} className={`w-3.5 h-3.5 accent-[var(--tool-accent)] ${any ? "" : "opacity-55"}`} />
           <div className="min-w-0 pr-3 flex items-center gap-2">
-            <span className={`shrink-0 ${e.kind === "dc" ? "text-accent" : "text-muted"}`}>{e.isDir ? kindDef("dir").icon : kindDef(e.kind).icon}</span>
+            {/* ⚠️ 原来稿用强调色、别的用灰色 —— C3 之后没有「稿」这一类，所以一律按类型图标的默认色 */}
+            <span className="shrink-0 text-muted">{e.isDir ? kindDef("dir").icon : kindDef(e.kind).icon}</span>
             <div className="min-w-0"><div className="font-semibold truncate">{e.name}</div>{e.excerpt && <div className="text-[11px] text-muted truncate font-mono">{e.excerpt}</div>}</div>
           </div>
           <span className="text-muted">{kindDef(e.kind).label}</span>
@@ -131,7 +133,6 @@ function Grid({ core, rows, dirRel, selected, onToggle, onOpen }: { core: Core; 
           <div className="h-28 bg-canvas grid place-items-center overflow-hidden">
             {e.kind === "image" ? <img src={`${core.url}${e.path.split("/").map(encodeURIComponent).join("/")}`} alt="" className="max-h-full max-w-full object-contain" style={{ background: "repeating-conic-gradient(var(--tool-panel-2) 0 25%, transparent 0 50%) 50% / 16px 16px" }} />
               : e.kind === "md" ? <div className="p-3 text-[11px] text-muted leading-relaxed line-clamp-5 w-full">{e.excerpt || "（空）"}</div>
-              : e.kind === "dc" ? <div className="w-full h-full" style={{ background: "repeating-linear-gradient(135deg, var(--tool-panel-2) 0 8px, var(--tool-panel) 8px 16px)" }} />
               : <div className="flex flex-col items-center gap-1 text-muted"><span className="text-2xl">{e.isDir ? kindDef("dir").icon : kindDef(e.kind).icon}</span><span className="text-[11px] font-mono uppercase">{e.isDir ? `${e.count ?? 0} 项` : (e.name.split(".").pop() ?? "")}</span></div>}
           </div>
           <div className="px-2.5 py-2"><div className="text-xs font-semibold truncate">{e.name}</div><div className="text-[11px] text-muted truncate font-mono">{e.isDir ? `${e.count ?? 0} 项` : reading(e) || fmtSize(e.size)}</div></div>

@@ -12,7 +12,8 @@
     "build:shared": "vite build --config vite.shared.config.ts",
     "multiprojtest": "node multiprojtest.mjs",
     "svgplugintest": "node svgplugintest.mjs",
-    "projsettingstest": "node projsettingstest.mjs"
+    "projsettingstest": "node projsettingstest.mjs",
+    "dcgonetest": "node dcgonetest.mjs"
   },
   "dependencies": {
     "@codemirror/legacy-modes": "6.5.4",

@@ -88,8 +88,21 @@ export function useProject(core: Core, dir: string, designProject?: boolean) {
   const select = useCallback((file: string | null) => {
     setSelectedRaw(file); sel.current = file;
     setDiags([]); setComments([]); setChanges(null); setSource(null);
-    if (file && /\.dc\.html$/.test(file)) { void fetchDiagnostics(file); void fetchComments(file); void fetchChanges(file); }
-  }, [fetchDiagnostics, fetchComments, fetchChanges]);
+    /* ⚠️⚠️ **这里原来按文件名后缀触发三个 dc 专属请求**：
+       `if (file && /\.dc\.html$/.test(file)) { fetchDiagnostics; fetchComments; fetchChanges }`。
+       C3（M16-7）之后三件事（诊断 / 评论 / 变更清单）**都没有对象了** ——
+       诊断是 `validate_draft` 的读数、评论挂在节点地址上、变更清单是稿的语义版本，
+       所以每打开一份 `.dc.html` 就发三个**必定空**的请求，纯浪费。
+       > **一个按文件名后缀的判断，和一个按 kind 的判断，
+       > 在 kind 表变了的那一天会分道扬镳** —— 这一行就是那种后缀判断。
+       ⚠️ **照实更正一句**：我一度以为这三个请求在 C3 之后会回 **400**，
+       而实测**不会** —— 当时读数里那三条 400 的真正原因是「**那个文件被判据挪走了**」
+       （`select` 按「上次打开的文件」请求一个已经不在的路径）。
+       > **读数里的因果，不会因为它出现在我改完之后就属于我的改动。**
+       ⏳ `fetchDiagnostics` / `fetchComments` / `fetchChanges` 这三个函数、
+       以及 `panels/` 里那几个面板，现在**没有调用方了** —— 归 M16-7b 清理
+       （这一步只改「用户看到什么」，不做纯删除）。 */
+  }, []);
 
   /** 体检：POST check → 轮询 check_status；完了重建索引再拉列表（健康读数是索引算的） */
   const runCheck = useCallback(async (file: string) => {
@@ -137,9 +150,10 @@ export function useProject(core: Core, dir: string, designProject?: boolean) {
       const p = e.payload as { file?: string; changes?: string[] };
       const touched = [...(p.file ? [p.file] : []), ...(p.changes ?? [])];
       if (touched.length) setChangedAt((m) => { const n = { ...m }; const t = Date.now(); for (const f of touched) n[f] = t; return n; });
-      const f = sel.current;
-      // 诊断与变更只有设计稿有；对 .md / 图片调这两条路由是 400（resolveDraft 找不到稿）
-      if (f && /\.dc\.html$/.test(f) && touched.includes(f)) { void fetchDiagnostics(f); void fetchChanges(f); }
+      /* ⚠️ 同上（M16-7 / C3）：这里原来也按 `.dc.html` 后缀去拉诊断和变更，
+         而那两件在 C3 之后没有对象了，整个去掉。
+         （原注释说「对 .md / 图片调这两条路由是 400」—— 那条机制对**不存在的文件**
+         成立，对一份存在的非稿文件实测回的是空结果，见上面那段的更正。） */
     }
   }, setWsState), [core, fetchDrafts, fetchDiagnostics, fetchChanges]);
   /** 某个文件最后一次变化的时刻。视图把它放进 deps 就会跟着重载。 */

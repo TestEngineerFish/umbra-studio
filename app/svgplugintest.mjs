@@ -108,11 +108,23 @@ await pg.waitForTimeout(2000);
    ⚠️ Q84 之后 `svg` **没有专属模块**（看图模块只兜底不认领），所以这条自检
    必须认兜底 —— `kinds/index.ts` 里加了 `!hasFallback(k)`。
    **它为假的话，整件事就是另一个样子了**，所以先钉它。 */
-{
-  const unclaimed = await pg.evaluate(() => (window.__UD_APP?.auditKinds?.() ?? null));
-  ok(unclaimed === null || unclaimed.length === 0,
-     "**没有「声明了 kind 却没人认领」的类型**（`svg` 靠兜底，自检要认它）", JSON.stringify(unclaimed));
-}
+/* ⚠️⚠️ **「没有没人认领的 kind」这一条判据钉不住，照实说。**
+ *
+ *  第一版我写的是 `window.__UD_APP?.auditKinds?.() ?? null` 然后 `null 也算通过` ——
+ *  **两层都是假的**：
+ *  ① `__UD_APP` 是**服务端注进页面的启动数据**（`serve.ts`），字段只有
+ *     `url` / `token` / `dir` —— 它没有 `auditKinds`，取到的永远是 `undefined`；
+ *  ② 就算取到了也没用：`auditKindsOrThrow` 开头是 `if (!import.meta.env.DEV) return;`
+ *     —— 它**只在 `npm run dev` 时生效**，而判据跑的是 `npm run build` 的产物。
+ *  > `?? null` 加上「null 也算通过」，等于**给一个取不到的东西发了一张通行证**。
+ *
+ *  而这件事在生产里**本来就测不到**：没人认领的 kind 会静静回落到通用文件卡，
+ *  而那和「这种类型本来就该落文件卡」**长得一样**
+ *  （`auditKindsOrThrow` 的注释自己写着「看起来只是『这种文件还没做』，
+ *  而真相是『做了一半』」）。
+ *  所以这里**不留那条判据** —— 真正该钉的是下面那几条：**矢量图真的画出来了**。
+ *  那是用户关心的那件事，而且它在 `FALLBACK` 没生效时会红。 */
+
 ok(await openSvg(), "打开那份 svg");
 {
   /* 树里显示的是 **icon + 文件名**，没有类型名文字 —— 钉 icon：

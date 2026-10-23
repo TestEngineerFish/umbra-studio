@@ -1,6 +1,5 @@
 import { allKinds, type FileKind } from "@shared/kinds";
 import { hasFallback, register, registered, type KindModule } from "./registry";
-import { dc } from "./dc";
 import { dir } from "./dir";
 import { fallback } from "./fallback";
 import { image } from "./image";
@@ -32,7 +31,16 @@ import { media } from "./media";
 /* ⚠️ `media` 一个模块认领**两种** kind（`video` / `audio`，M14-11）——
    注册表支持一个模块多个 id（`ids: [...]`），而这两种除了用 `<video>` 还是 `<audio>`
    之外没有任何差别，拆成两个文件只会让同一段话写两遍。 */
-const ALL: readonly KindModule[] = [dc, image, media, dir, fallback];
+/* ⚠️⚠️ **`dc` 2026-10-23 从这里摘掉了**（M16-7 / Q82 = C3，sam 定的产品边界）。
+   `.dc.html` 现在落到 `html`（实测确认），没装插件时看源码、装了 `com.umbra.html` 就能预览。
+   ⏳ `app/src/kinds/dc/` 那 7 个文件**这一步先留着不删**，归 M16-7b（纯删除）。
+   ⚠️ **更正一句话**：我原来写「摘掉注册就已经让它不再生效」——**不准确**。
+   反向验证实测：把 `dc` 模块装回这个数组，**一条判据都不红** ——
+   因为 `dc` kind 条目已经删了，这个模块注册的是**一个没有 kind 条目的 id**，
+   `.dc.html` 的 kind 还是 `html`，照旧回落到通用文件卡。
+   > **真正的生效点是删掉 kind 条目（`shared/kinds.ts`），摘模块注册只是顺带清理** ——
+   > 它避免注册表里留一个永远取不到的条目，但它自己不改变任何行为。 */
+const ALL: readonly KindModule[] = [image, media, dir, fallback];
 for (const m of ALL) register(m);
 
 /** 开发期自检：种类表里声明的每一种都得有模块认领。

@@ -894,7 +894,13 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
 
                       ⚠️ **`.dc.html` 不显示**：它的历史是 `v<N>` 语义快照，
                       走 S2 的版本弹层和变更面板，和这里的 `s<N>` 是两套（`files.ts` 明说不混）。
-                      对它调 `file_versions` 会回空，药丸只会显示一个「—」。 */}
+                      对它调 `file_versions` 会回空，药丸只会显示一个「—」。
+                      ⚠️⚠️ **2026-10-23（M16-7 / C3）之后这个条件恒为真** ——
+                      没有 `dc` 这种 kind 了，所以 `.dc.html` 现在**也显示统一的版本药丸**。
+                      那正是 C3 要的：它是一份普通文件，走统一的版本历史那一套
+                      （`filetest` 已经证明那一层对任何文件都成立）。
+                      ⏳ 这个 `kind !== "dc"` 判断本身是**多余的**了，归 M16-7b 清掉 ——
+                      留到那时一起，是因为这一步只改「用户看到什么」，不做纯清理。 */}
                   {!dirMode && file && kind !== "dc" && (
                     viewing
                       ? <ViewingBar core={core} path={file} viewing={viewing}

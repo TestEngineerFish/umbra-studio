@@ -52,7 +52,10 @@ const k = good.manifest!.kinds![0]!;
 registerKind({ id: k.id, label: k.label, icon: k.icon, priority: k.priority!, textual: k.textual,
   match: (n) => k.ext.some((e) => n.endsWith(e)), from: good.manifest!.id });
 ok(kindOf("data/表.udemo") === "udemo", "插件加的类型立刻生效");
-ok(kindOf("x.dc.html") === BUILTIN.dc, "没动到内置类型");
+/* ⚠️ 原来这一条钉的是 `.dc.html → dc`，而 C3（M16-7）删掉了 `dc` 这种 kind。
+   它要钉的事（**插件加一种类型，不会把别的内置类型顶掉**）照旧成立，
+   换一个还在的内置 kind 当样本就行。 */
+ok(kindOf("a.md") === BUILTIN.md && kindOf("a.png") === BUILTIN.image, "没动到内置类型");
 
 /* ── ③ 沙箱：先证明它活着，再看它关不关得住 ── */
 /* 限额钉在原来写死的那一档（128 MB / 10 秒 → RPC 超时 15 秒）：下面 ⑧ / ⑨b 的阈值是照它定的，
