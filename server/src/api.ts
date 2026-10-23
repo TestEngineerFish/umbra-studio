@@ -560,8 +560,46 @@ export async function handleApi(
         if (def && isBooleanSchema(def) && (v === "true" || v === "false")) { input[k] = v === "true"; continue; }
         input[k] = def && z.number().safeParse(Number(v)).success && isNumberSchema(def) ? Number(v) : v;
       }
+      /* ═══ 入参校验：**这条路原来一次都不跑 zod**（2026-10-24 补）═══
+         原来这里直接 `cap.run(input as never, capCtx)` —— 上面那段 `cap.input` 只被用来
+         **猜类型做强转**，而 `as never` 把 TypeScript 这一侧也整个关掉了。
+         后果：**72 件能力的 zod 入参声明在 HTTP 这条路上是装饰**，只有 MCP 面真按它拒人
+         （那边 SDK 按 `inputSchema` 校验）。实测 `chat_channel` 收到 `tool: 123` 照样进 `run`。
+
+         抓到它的不是这段代码，是一条**反面判据**：我给 `.nullish()` 配了一条
+         「闸不许开太大」（`tool: 123` 仍该被拒），它红了。
+         > **一条判据钉的那件坏事消失之后，它不会自己变红 —— 它会开始为别的东西作证。**
+         > 而反面判据正相反：它钉的是「闸没开太大」，所以**闸压根不存在时它一定红**。
+
+         ⚠️ **强转那一步保留，在它之后校验** —— 顺序不能换：GET 的查询串全是字符串，
+         先校验的话 `limit=50` 会被 zod 拒成「期望 number 得到 string」。
+         ⚠️ **拿 `parsed.data` 去跑，不是 `input`** —— 这才叫「两面同一套判准」：
+         zod 会补 `.default()`、剥掉未声明的键，而 MCP 面拿到的就是 SDK 解析后的对象。
+         只校验不取解析结果的话，默认值这一半仍然两面不一致。
+         ⚠️ 错误码用**已有的 `E_BAD_INPUT`**，不另起一个 —— 手写路由那几处
+         （CLI 名字、沙箱限额、界面偏好）早就在用它，判据也钉着它。
+         > **同一类错误有两个码，就等于让调用方去猜哪个是哪个。** */
+      const parsed = z.object(cap.input as z.ZodRawShape).safeParse(input);
+      if (!parsed.success) {
+        /* ⚠️ **把路径和原因都说出来**。只回一句「入参不对」的话，调用方第一句话一定是
+           「哪个字段？」—— 和 §160 那条「一条说不出『是哪一个』的判据，红了也用不上」同一条。
+           `issues` 另给一份结构化的：人读 `message`，程序读 `issues`。 */
+        const issues = parsed.error.issues.map((i) => ({
+          path: i.path.map(String).join(".") || "(整个 body)",
+          why: i.message,
+          code: i.code,
+        }));
+        json(reply, 400, { ok: false, data: null, errors: [{
+          code: "E_BAD_INPUT",
+          level: "error",
+          message: `入参不对：${issues.map((i) => `${i.path} ${i.why}`).join("；")}`,
+          fix: `对照 ${route} 的入参声明改。这一层和 MCP 面是同一套判准（cap.input），所以在 MCP 里能过的在这里也能过。`,
+          issues,
+        }] });
+        return true;
+      }
       const capCtx: CapCtx = { project: cap.scope === "project" ? p : null, via: "http", port: ctx.port, token: ctx.token };
-      const out = await cap.run(input as never, capCtx);
+      const out = await cap.run(parsed.data as never, capCtx);
       json(reply, out.ok ? 200 : 400, out);
       return true;
     }

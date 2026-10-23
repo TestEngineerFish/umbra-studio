@@ -1865,46 +1865,28 @@ console.log("\n㉔ GET 的查询串里的 boolean（`?x=false` 不许变成 true
   ok(ci.ok && n(ci) === 2, "**（对照）`ignoreCase=true` 不区分**（两行都命中）", `${n(ci)} 条命中`);
 }
 
-/* ── ㉕ POST body 里的 `null`，以及**这条路上压根没有 zod**（2026-10-24 改写）──
-   ⚠️⚠️ **先把我自己的错结论更正掉，因为这一节原来整节是按它写的。**
+/* ── ㉕ POST body 里的 `null`，以及**门面现在真的跑 zod 了**（2026-10-24 两步写成的一节）──
+   ⚠️⚠️ **这一节的历史值得完整留着，因为它是「反面判据救了我一次」的实例。**
 
-   原来的说法是：前端换引擎传 `tool: null` → `.optional()` 拒 null → 400 →
-   引擎写不进会话文件。证据链是 `Sheets.tsx:317` 对同一个字段写着 `cb.cli ?? "claude"`。
+   **第一步**：我以为「换引擎回 400」是 `.optional()` 拒 `null` 造成的，证据是
+   `Sheets.tsx:317` 对同一个字段写着 `cb.cli ?? "claude"`（说明 `cli` 真会是 null）。
    那条证据**只证明了「`cli` 真会是 null」，没有证明「null 是被 zod 拒的」** ——
    而我把它当成整条链都证完了。
    > **一条证据能支持某个结论，不等于那个结论是对的；它可能只支持结论的前半句。**
 
-   抓到它的是这一节**最后那条反面判据**（「闸不许开太大」）：`tool: 123` 本该被 zod 拒，
-   实测回的也是 `E_API` 而不是 `E_BAD_INPUT`。顺着它查到 `api.ts` 那一段 ——
-   **HTTP 门面从头到尾没有一次 `safeParse`**：
+   抓到它的是我顺手配的**反面判据**（「闸不许开太大」）：`tool: 123` 本该被 zod 拒，
+   实测回 `E_API`。顺着它查到 `api.ts` 当时是 `cap.run(input as never, capCtx)` ——
+   **HTTP 门面从头到尾没有一次 `safeParse`**，72 件能力的 zod 入参在这条路上是装饰。
+   > **如果我只写了三条正面判据（null 不被拒），它们全绿 —— 因为这条路从来没人拒过 null ——
+   > 我会带着一个错的根因去改前端。**
 
-   ```ts
-   const out = await cap.run(input as never, capCtx);   // api.ts:565
-   ```
-
-   `cap.input` 在那儿只被用来**猜类型做强转**（`"true"` → true、数字串 → number），
-   `as never` 把 TypeScript 这一侧也整个关掉了。
-   > **72 件能力的 zod 入参声明，在 HTTP 这条路上是装饰** —— 它只在 MCP 面生效
-   > （那边 SDK 自己按 `inputSchema` 校验）。
-
-   ### 所以这一节现在钉的是什么
-   · `.optional()` → `.nullish()` 这个改动**对 HTTP 路径没有任何效果**，
-     它的价值在 **MCP 面**（判据在 `captest`，那才是校验真的发生的那一层）。
-   · 这里四条钉的是**门面的实际行为**：null / 字符串 / 不传 / **连 123 都**走到 `run`。
-     ⚠️ 其中「`tool: 123` 也放进去」是**照实记一个我们还没修的事实**，不是在夸它 ——
-     哪天有人在门面上补了 `safeParse`，这一条会红，而他会读到上面这段话。
-   · 最后一条钉「它真的走到了 `run`」—— 不然上面四条可能只是这条路整条坏了。
-
-   ⚠️ **而原来那三条正面判据（null 不被拒）在修之前就是绿的** ——
-   这条路上从来没有东西拒过 null。
-   > **如果我只写了那三条正面判据，它们全绿，我会带着一个错的根因去改前端。**
-   > 救命的是那条「闸不许开太大」的反面判据。
-
-   ⚠️ 真正那个 400 的根因**另有其事**，没在这一节里**：同一轮 `uitest` 的会话判据
-   写在 M14-4 B1 之前的旧位置（`<项目>/.umbrastudio/chats`），造出来的会话产品一条都看不到；
-   那一节收尾又会按「第一句以 `#stub` 开头」删掉会话 —— **当前会话被删掉之后再换引擎，
-   `setChatChannel` 就会说「没有这个会话」而回 400**。会话位置已在同一天修掉（`app/uitest.mjs`）。
-   ⚠️ 这一条照实留着：**不把一个还没定住的因写成已经定住的。**
+   **第二步**（geek-99 定的）：门面补上 `safeParse`，强转那一步保留、在它之后校验，
+   拿 `parsed.data` 去跑（这才叫两面同一套判准：默认值与剥未声明键也一致）。
+   于是这一节的四条**从「照实记一个我们还没修的事实」翻回「正面判据」**：
+   · `tool: null` 不被拒 —— 这一条**现在才真的在测 `.nullish()`**（修之前它是空的）；
+   · `tool: 123` 被拒 —— 正面（门面真的校验）兼反面（`.nullish()` 没把闸开成「什么都行」）；
+   · 400 要说出**是哪个字段、为什么**；
+   · 而且它真的走到了 `run`（不然上面几条可能只是这条路整条坏了）。
 
    ⚠️ 这一节刻意**不造真会话** —— 用一个**形状合法但不存在**的 ID 就够了，
    因为要钉的是「**拒在哪一层**」，而不是「这件能力能不能用」。
@@ -1926,7 +1908,7 @@ console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
   const omitted = await call({ session: GHOST, channel: "b" });
 
   ok(withNull.code !== "E_BAD_INPUT",
-     "**`tool: null` 不被当成入参错误**（⚠️ 这条路上本来就没人拒它 —— 见上，它不是 `.nullish()` 的功劳）",
+     "**`tool: null` 不被当成入参错误**（`.optional()` → `.nullish()`；门面补了校验之后这一条才真的在测它）",
      `HTTP ${withNull.st} · ${withNull.code || "没有 code"} · ${withNull.msg.slice(0, 40)}`);
   /* ⚠️ **对照组两条，各防一种误判**（㉔ 那一节的纪律）：
      ① 传字符串也走到同一处 —— 不然上一条可能只是「这条路整条坏了」；
@@ -1938,25 +1920,48 @@ console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
   ok(omitted.code === withNull.code,
      "**（对照）压根不传也拒在同一层** —— 这才叫「null 等于没给」",
      `不传 → ${omitted.code || "没有 code"}`);
-  /* ⚠️⚠️ **本来写的是反面判据（「闸不许开太大」），结果它揭穿了门面。**
-     预期是 `tool: 123` 被 zod 拒成 `E_BAD_INPUT`；实测回 `E_API`，
-     因为 **HTTP 门面不跑 zod**（全文在这一节头上）。
-     所以它现在钉的是**那个事实本身**：这条路把 123 也放进 `run`。
-     > **一条判据钉的那件坏事消失之后，它不会自己变红 —— 它会开始为别的东西作证。**
-     > 这一条正相反：它钉的那件好事（zod 在拒）**从来没存在过**，
-     > 于是它从「反面判据」变成了「门面行为的读数」。改口径而不是删掉它。
-     ⚠️ 哪天有人在 `api.ts` 补上 `safeParse`，这一条会红 —— **那正是它该做的事**：
-     把一个有意为之的改动顶到眼前，而不是让它静默生效。 */
+  /* ⚠️⚠️ **这一条两个身份：正面（门面真的校验了）兼反面（闸没开太大）。**
+     `.nullish()` 放的是 `null`，不是「什么都行」—— 少了它，把 `tool` 改成 `z.any()`
+     上面三条照样全绿。而它同时也是「门面跑 zod」的正面证据：
+     修之前它回 `E_API`（123 一路走进 `run`），修之后回 `E_BAD_INPUT`。
+     ⚠️ **它曾经被我改成「照实钉住门面不跑 zod」的读数** —— 那是对的处置（不假装 zod 在拒），
+     而门面补上校验之后它自己红了、指回注释，于是翻回正面。
+     > **一条判据在它钉的那件事被修掉的那一刻变红，是它在正常工作** ——
+     > 变红之后要做的是改口径，不是放宽它。 */
   const withNum = await call({ session: GHOST, channel: "b", tool: 123 });
-  ok(withNum.code !== "E_BAD_INPUT",
-     "**`tool: 123` 也进得去** —— 照实钉住「**HTTP 门面不跑 zod**」（`api.ts:565` `cap.run(input as never)`）",
-     `HTTP ${withNum.st} · ${withNum.code || "没有 code"}（要是哪天变成 E_BAD_INPUT，说明门面补了校验，读这条注释）`);
+  ok(withNum.code === "E_BAD_INPUT",
+     "**`tool: 123` 被门面拒了**（正面：这条路真的跑 zod 了；反面：`.nullish()` 放的是 null 不是「什么都行」）",
+     `HTTP ${withNum.st} · ${withNum.code || "没有 code"} · ${withNum.msg.slice(0, 60)}`);
+  /* ⚠️ **400 要说出是哪个字段、为什么。** 只回一句「入参不对」的话，调用方第一句话一定是
+     「哪个字段？」—— 和 §160 那条「一条说不出『是哪一个』的判据，红了也用不上」同一条。
+     判准认**真值**：拒因里要出现字段名 `tool`，不是「有个 400 就算过」。 */
+  ok(/\btool\b/.test(withNum.msg),
+     "**而且它说得出是哪个字段**（zod 的 issues 路径进了 message，不是一句「入参不对」）",
+     withNum.msg.slice(0, 80) || "（没有 message）");
   /* ⚠️ 顺带钉住**它确实走到了 run** —— 「不是 E_BAD_INPUT」还可能是别的原因
      （比如路由 404、或者被某道闸提前挡住），而那些在上面四条读数上长得一样。
      会话不存在这句话只有 `setChatChannel` 会说。 */
   ok(/没有这个会话/.test(withNull.msg),
      "**而且它真的走到了 `run`**（拒因是「没有这个会话」，只有 `setChatChannel` 会这么说）",
      withNull.msg.slice(0, 50));
+
+  /* ── 这道闸在**门面那一层**，不是 `chat_channel` 一件能力的事 ──
+     ⚠️ 上面五条全在同一件能力上，所以它们**合起来也证明不了「门面在校验」** ——
+     也可能只是那件能力自己拒的（它的 `run` 第一行就查会话）。
+     > **一条判据能证明某件事发生了，不等于它能证明是哪一层让它发生的。**
+     所以换一件**完全无关、而且不写盘**的能力再问一次：`who_handles` 的 `ext` 是必填，
+     不给它 —— 修之前会一路走进 `run`（`whoHandles(undefined)`），修之后门面就拦住了。
+     ⚠️ 顺带钉住**另一半判准**：给了合法的 `ext` 要照常能过（不然上一条可能只是这条路整条坏了）。 */
+  {
+    const noExt = await (await fetch(`${s.url}__ud/who_handles?token=${encodeURIComponent(s.token)}`)).json() as Env;
+    const okExt = await (await fetch(`${s.url}__ud/who_handles?ext=.zqab&token=${encodeURIComponent(s.token)}`)).json() as Env;
+    ok(noExt.errors?.[0]?.code === "E_BAD_INPUT" && /\bext\b/.test(noExt.errors?.[0]?.message ?? ""),
+       "**换一件无关的能力也拦得住**（`who_handles` 不给必填的 `ext` → `E_BAD_INPUT` 且说出字段名）",
+       `${noExt.errors?.[0]?.code ?? "没有 code"} · ${(noExt.errors?.[0]?.message ?? "").slice(0, 60)}`);
+    ok(okExt.ok === true,
+       "**（对照）给了合法的 `ext` 照常过**（不然上一条可能只是这条路整条坏了）",
+       JSON.stringify(okExt.ok));
+  }
 }
 
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
@@ -1966,9 +1971,10 @@ console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    它拦的是**没说出来的那种没跑**：`skip()` 报过的已经进分母了，减掉之后还少，
    就说明有一节静默跳过了（而那一轮会全绿）。 */
-/* 213 = 上一轮实跑（`213/213`）· +2 = 那一轮自己打印过的「没登录」两条 —— 它们
-   原来**不在分母里**，这就是这次改口径要修的那件事。合计 **215**。 */
-const EXPECT_AT_LEAST = 215;
+/* 213 = 改口径那一轮的实跑 · +2 = 那一轮自己打印过的「没登录」两条（它们原来**不在分母里**，
+   那就是改口径要修的那件事）· **+3 = 门面补 `safeParse` 这一批**（㉕ 的「说得出是哪个字段」
+   1 条 + 「换一件无关的能力也拦得住」那一组 2 条）。合计 **218**。 */
+const EXPECT_AT_LEAST = 218;
 const miss = NOT_RUN.length;
 const total = pass + fail + miss;
 let silent = 0;
