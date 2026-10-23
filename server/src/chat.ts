@@ -244,7 +244,10 @@ export async function addMessage(projectDir: string, sessionId: string, entry: O
  *
  *  和 `renameChat` 同一条口径：**不动 `updatedAt`** ——
  *  那一栏是「最后说话的时间」，换个引擎不该把会话顶到列表最前面。 */
-export async function setChatChannel(projectDir: string, sessionId: string, channel: "a" | "b" | "c", tool?: string): Promise<ChatSession> {
+/** ⚠️ `tool` 收 `null`（不只是 `undefined`）—— 调用方传得进来的就是它，
+ *  而下面 `if (tool)` 对两者都是 falsy，含义一致（见 `cap/chat.ts` 那段）。
+ *  **让类型说出它真的接受什么**，比在边界上把 null 挡掉再让人去查 400 好。 */
+export async function setChatChannel(projectDir: string, sessionId: string, channel: "a" | "b" | "c", tool?: string | null): Promise<ChatSession> {
   const s = await loadChat(projectDir, sessionId);
   if (!s) throw new Error(`没有这个会话：${sessionId}`);
   s.channel = channel;

@@ -787,5 +787,47 @@ console.log("\n⑯ 品牌名散不散（2026-10-22）");
      "（仪器自检）**`http://` 不会被当成注释剥掉**，而行尾真注释照剥", JSON.stringify(got));
 }
 
+/* ── ⑰ 入参声明在**会校验它的那一层**说得对（2026-10-24）──
+   ⚠️⚠️ **这一节在这里，而不在 `apitest` 里，本身就是这一轮的结论。**
+   `chat_channel` 的 `tool` 从 `.optional()` 改成了 `.nullish()`（调用方真的会传 null，
+   而 `null` 和「没给」在这件能力里含义完全一致）。我先去 `apitest` 写了三条
+   「传 null 不被拒」——**它们在改之前就是绿的**：`api.ts:565` 是
+   `cap.run(input as never, capCtx)`，**HTTP 门面从头到尾没有一次 `safeParse`**，
+   `cap.input` 在那儿只用来猜类型做强转。
+   > **一件能力的入参声明有两个消费者，而只有一个真的会照它拒人** ——
+   > 判据写在不校验的那一层，就是一条永远绿的判据。
+
+   `cap.input` 原样进 `server.registerTool(…, { inputSchema })`（`index.ts:441`），
+   MCP SDK 按它校验。所以这里用**同一个对象**建 `z.object` 自己跑一次 ——
+   跟 SDK 拿到的是同一份东西，不是抄一份形状。
+   ⚠️ 两个方向都要：接受 null（改动真的生效了）**而且**仍然拒数字
+   （`.nullish()` 放的是 null，不是「什么都行」—— 少了这一条，改成 `z.any()` 也全绿）。 */
+console.log("\n⑰ 入参声明在会校验它的那一层说得对（2026-10-24）");
+{
+  const { z: zz } = await import("zod");
+  type AnyZod = Parameters<typeof zz.object>[0][string];
+  /* ⚠️ **按路由找，不按能力名找。** 第一版写 `c.name === "chat_channel"` —— 不在，
+     那条样本有效性判据当场红（它存在的全部理由就是这个）：能力名是 `set_chat_channel`，
+     而 `chat_channel` 是**路由名**。§104 那条「前端用了能力名而 HTTP 认路由名」同一族。
+     这里认路由，因为出问题的那条调用（前端换引擎）走的就是路由。 */
+  const cc = caps.find((c) => c.http?.route === "chat_channel");
+  ok(!!cc, "按**路由名** `chat_channel` 找得到那件能力（样本有效性）",
+     cc ? `能力名是 ${cc.name}（和路由名不一样 —— 别按名字找）` : "不在 —— 下面三条没验到");
+  if (cc) {
+    /* ⚠️ **用 `cap.input` 本身**，不另外写一份形状 —— MCP 面拿到的就是这个对象。 */
+    const sch = zz.object(cc.input as Record<string, AnyZod>);
+    const base = { session: "chat-1700000000000-ghost9", channel: "b" as const };
+    ok(sch.safeParse({ ...base, tool: null }).success,
+       "**`tool: null` 过得去**（`.nullish()`；MCP 面是唯一真按这份声明拒人的那一层）",
+       JSON.stringify(sch.safeParse({ ...base, tool: null }).error?.issues?.[0]?.message ?? "通过"));
+    ok(sch.safeParse(base).success && sch.safeParse({ ...base, tool: "claude" }).success,
+       "（对照）不传、传字符串也都过得去 —— 不然上一条可能只是整个 schema 松了",
+       "两种都通过");
+    ok(!sch.safeParse({ ...base, tool: 123 }).success,
+       "**而 `tool: 123` 仍然被拒**（闸不许开太大 —— 这一条是上一条的反面）",
+       sch.safeParse({ ...base, tool: 123 }).error?.issues?.[0]?.code ?? "（居然过了）");
+  }
+}
+
 console.log(fail === 0 ? `\n✓ 能力注册表 ${pass}/${pass + fail}` : `\n✗ 能力注册表 ${pass}/${pass + fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -1845,6 +1845,100 @@ console.log("\n㉔ GET 的查询串里的 boolean（`?x=false` 不许变成 true
   ok(ci.ok && n(ci) === 2, "**（对照）`ignoreCase=true` 不区分**（两行都命中）", `${n(ci)} 条命中`);
 }
 
+/* ── ㉕ POST body 里的 `null`，以及**这条路上压根没有 zod**（2026-10-24 改写）──
+   ⚠️⚠️ **先把我自己的错结论更正掉，因为这一节原来整节是按它写的。**
+
+   原来的说法是：前端换引擎传 `tool: null` → `.optional()` 拒 null → 400 →
+   引擎写不进会话文件。证据链是 `Sheets.tsx:317` 对同一个字段写着 `cb.cli ?? "claude"`。
+   那条证据**只证明了「`cli` 真会是 null」，没有证明「null 是被 zod 拒的」** ——
+   而我把它当成整条链都证完了。
+   > **一条证据能支持某个结论，不等于那个结论是对的；它可能只支持结论的前半句。**
+
+   抓到它的是这一节**最后那条反面判据**（「闸不许开太大」）：`tool: 123` 本该被 zod 拒，
+   实测回的也是 `E_API` 而不是 `E_BAD_INPUT`。顺着它查到 `api.ts` 那一段 ——
+   **HTTP 门面从头到尾没有一次 `safeParse`**：
+
+   ```ts
+   const out = await cap.run(input as never, capCtx);   // api.ts:565
+   ```
+
+   `cap.input` 在那儿只被用来**猜类型做强转**（`"true"` → true、数字串 → number），
+   `as never` 把 TypeScript 这一侧也整个关掉了。
+   > **72 件能力的 zod 入参声明，在 HTTP 这条路上是装饰** —— 它只在 MCP 面生效
+   > （那边 SDK 自己按 `inputSchema` 校验）。
+
+   ### 所以这一节现在钉的是什么
+   · `.optional()` → `.nullish()` 这个改动**对 HTTP 路径没有任何效果**，
+     它的价值在 **MCP 面**（判据在 `captest`，那才是校验真的发生的那一层）。
+   · 这里四条钉的是**门面的实际行为**：null / 字符串 / 不传 / **连 123 都**走到 `run`。
+     ⚠️ 其中「`tool: 123` 也放进去」是**照实记一个我们还没修的事实**，不是在夸它 ——
+     哪天有人在门面上补了 `safeParse`，这一条会红，而他会读到上面这段话。
+   · 最后一条钉「它真的走到了 `run`」—— 不然上面四条可能只是这条路整条坏了。
+
+   ⚠️ **而原来那三条正面判据（null 不被拒）在修之前就是绿的** ——
+   这条路上从来没有东西拒过 null。
+   > **如果我只写了那三条正面判据，它们全绿，我会带着一个错的根因去改前端。**
+   > 救命的是那条「闸不许开太大」的反面判据。
+
+   ⚠️ 真正那个 400 的根因**另有其事**，没在这一节里**：同一轮 `uitest` 的会话判据
+   写在 M14-4 B1 之前的旧位置（`<项目>/.umbrastudio/chats`），造出来的会话产品一条都看不到；
+   那一节收尾又会按「第一句以 `#stub` 开头」删掉会话 —— **当前会话被删掉之后再换引擎，
+   `setChatChannel` 就会说「没有这个会话」而回 400**。会话位置已在同一天修掉（`app/uitest.mjs`）。
+   ⚠️ 这一条照实留着：**不把一个还没定住的因写成已经定住的。**
+
+   ⚠️ 这一节刻意**不造真会话** —— 用一个**形状合法但不存在**的 ID 就够了，
+   因为要钉的是「**拒在哪一层**」，而不是「这件能力能不能用」。
+
+   > **`undefined` 和 `null` 在 TypeScript 里几乎看不出差别，在 JSON 边界上是两件事：**
+   > `undefined` 被 `JSON.stringify` 整个去掉（字段不存在 → `.optional()` 通过），
+   > `null` 原样序列化（字段在而类型不对 → 到了会校验的那一层就是 400）。 */
+console.log("\n㉕ POST body 里的 `null`（`chat_channel` 的 `tool`）");
+{
+  type Env = { ok: boolean; errors?: Array<{ code?: string; message?: string }> };
+  const GHOST = "chat-1700000000000-ghost9";   // 形状合法（过 CHAT_ID_RE），但这个会话不存在
+  const call = async (body: unknown): Promise<{ st: number; code: string; msg: string }> => {
+    const r = await post("chat_channel", body);
+    const j = await r.json() as Env;
+    return { st: r.status, code: j.errors?.[0]?.code ?? "", msg: j.errors?.[0]?.message ?? "" };
+  };
+  const withNull = await call({ session: GHOST, channel: "b", tool: null });
+  const withStr = await call({ session: GHOST, channel: "b", tool: "claude" });
+  const omitted = await call({ session: GHOST, channel: "b" });
+
+  ok(withNull.code !== "E_BAD_INPUT",
+     "**`tool: null` 不被当成入参错误**（⚠️ 这条路上本来就没人拒它 —— 见上，它不是 `.nullish()` 的功劳）",
+     `HTTP ${withNull.st} · ${withNull.code || "没有 code"} · ${withNull.msg.slice(0, 40)}`);
+  /* ⚠️ **对照组两条，各防一种误判**（㉔ 那一节的纪律）：
+     ① 传字符串也走到同一处 —— 不然上一条可能只是「这条路整条坏了」；
+     ② 压根不传也走到同一处 —— 这才证明 `null` 真的和「没给」等价，
+        而不是「两种都坏了所以读数一样」。 */
+  ok(withStr.code === withNull.code,
+     "**（对照）传字符串和传 null 拒在同一层**（不然上一条可能只是这条路整条坏了）",
+     `字符串 → ${withStr.code || "没有 code"} · null → ${withNull.code || "没有 code"}`);
+  ok(omitted.code === withNull.code,
+     "**（对照）压根不传也拒在同一层** —— 这才叫「null 等于没给」",
+     `不传 → ${omitted.code || "没有 code"}`);
+  /* ⚠️⚠️ **本来写的是反面判据（「闸不许开太大」），结果它揭穿了门面。**
+     预期是 `tool: 123` 被 zod 拒成 `E_BAD_INPUT`；实测回 `E_API`，
+     因为 **HTTP 门面不跑 zod**（全文在这一节头上）。
+     所以它现在钉的是**那个事实本身**：这条路把 123 也放进 `run`。
+     > **一条判据钉的那件坏事消失之后，它不会自己变红 —— 它会开始为别的东西作证。**
+     > 这一条正相反：它钉的那件好事（zod 在拒）**从来没存在过**，
+     > 于是它从「反面判据」变成了「门面行为的读数」。改口径而不是删掉它。
+     ⚠️ 哪天有人在 `api.ts` 补上 `safeParse`，这一条会红 —— **那正是它该做的事**：
+     把一个有意为之的改动顶到眼前，而不是让它静默生效。 */
+  const withNum = await call({ session: GHOST, channel: "b", tool: 123 });
+  ok(withNum.code !== "E_BAD_INPUT",
+     "**`tool: 123` 也进得去** —— 照实钉住「**HTTP 门面不跑 zod**」（`api.ts:565` `cap.run(input as never)`）",
+     `HTTP ${withNum.st} · ${withNum.code || "没有 code"}（要是哪天变成 E_BAD_INPUT，说明门面补了校验，读这条注释）`);
+  /* ⚠️ 顺带钉住**它确实走到了 run** —— 「不是 E_BAD_INPUT」还可能是别的原因
+     （比如路由 404、或者被某道闸提前挡住），而那些在上面四条读数上长得一样。
+     会话不存在这句话只有 `setChatChannel` 会说。 */
+  ok(/没有这个会话/.test(withNull.msg),
+     "**而且它真的走到了 `run`**（拒因是「没有这个会话」，只有 `setChatChannel` 会这么说）",
+     withNull.msg.slice(0, 50));
+}
+
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 

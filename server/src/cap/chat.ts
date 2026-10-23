@@ -64,7 +64,24 @@ defineCap({
   input: {
     session: z.string(),
     channel: z.enum(["a", "b", "c"]),
-    tool: z.string().optional().describe("通道 B 时用哪个本地 CLI"),
+    /* ⚠️ **`.nullish()` 不是 `.optional()`**（2026-10-24）。
+       `.optional()` 接受 `undefined` 但**拒 `null`**，而这两个值在 JSON 边界上是两件事：
+       `undefined` 被 `JSON.stringify` **整个去掉**（字段不存在 → optional 通过），
+       `null` **原样序列化**（字段在而类型不对 → 到了会校验的那一层就被拒）。
+       而调用方真的会传 null：前端 `useChat.ts` 传 `caps[c]?.cli`，服务端的 `cli` 真会是 null
+       —— 证据是 `Sheets.tsx:317` 对同一个字段写着 `cb.cli ?? "claude"`，有人已经在那儿兜过了。
+       > **一个字段在同一个代码库里有两处读法（一处 `?? "claude"` 兜、一处直接传），
+       > 说明它的实际取值范围没人说得准。**
+       方向是**读宽容**：`null` 在这里和「没给」含义完全一致 —— 下面 `if (tool)` 对两者都是 falsy。
+
+       ⚠️⚠️ **而它改的不是 HTTP 那条路。** 我原来把它当成「换引擎回 400」的根因写在这儿，
+       是错的：`api.ts:565` 是 `cap.run(input as never, capCtx)` ——
+       **HTTP 门面从头到尾没有一次 `safeParse`**，这份声明在那条路上只被用来猜类型做强转。
+       所以这个改动的受益者是 **MCP 面**（SDK 按 `inputSchema` 真的校验），
+       判据因此在 `captest` ⑰ 而不在 `apitest`（写在不校验的那一层 = 一条永远绿的判据）。
+       那个 400 的真因另有其事：`uitest` 的会话判据写在 B1 之前的旧位置 +
+       收尾把当前会话删掉了 → `setChatChannel` 说「没有这个会话」。 */
+    tool: z.string().nullish().describe("通道 B 时用哪个本地 CLI；给 null 等于不给"),
   },
   http: { route: "chat_channel", method: "POST" },
   run: async ({ session, channel, tool }, c) => {
