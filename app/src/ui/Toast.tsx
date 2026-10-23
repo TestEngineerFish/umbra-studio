@@ -38,6 +38,9 @@ export interface MoveOut {
   rewrote?: Array<{ file: string; count?: number }>;
   refused?: Array<{ file: string; reason: string }>;
   unresolved?: Array<{ file: string; line: number; value: string }>;
+  /** 引用扫描到 5000 的上限就停了（`moveFile` 的 `truncated`）。
+   *  ⚠️ **到上限时不能说「引用都改好了」** —— 没扫到的那些还指着旧路径。 */
+  truncated?: boolean;
 }
 
 /** 有几处引用「该改而没改成」。 */
@@ -50,12 +53,22 @@ export function moveToast(d: MoveOut | undefined, okTitle: string): void {
   const stuck = stuckOf(d);
   if (!stuck) {
     const n = d?.rewrote?.length ?? 0;
-    toast(okTitle, n ? `顺带改了 ${n} 份稿里的引用` : undefined, "ok");
+    /* ⚠️⚠️ **2026-10-23（M16-7c-2d）两处改了，而第二处是一句不能说的话。**
+       ① 文案「N 份**稿**里的引用」→「N 个文件」：引用方现在是 md / html / css 六种格式。
+       ② **到上限时不走这条绿路** —— 扫描停在 5000 个文件上时，
+          「挪好了」这句话后面不能跟「引用都改好了」的暗示：没扫到的那些还指着旧路径。
+          > 一个有上限的操作，报成功时必须说出自己的上限。 */
+    if (d?.truncated) {
+      toast(okTitle, `${n ? `顺带改了 ${n} 个文件里的引用。` : ""}⚠️ 这个项目太大，只查了前 5000 个文件 —— 可能还有没改到的引用`, "warn");
+      return;
+    }
+    toast(okTitle, n ? `顺带改了 ${n} 个文件里的引用` : undefined, "ok");
     return;
   }
   /* ⚠️ **把文件名列出来** —— 只说「有 2 处没改成」的话用户不知道去哪看，
      而他下一步一定是去看那几份稿。 */
   const names = [...(d?.refused ?? []).map((x) => x.file), ...(d?.unresolved ?? []).map((x) => x.file)];
   toast(`${okTitle}，但有 ${stuck} 处引用没改成`,
-    `${[...new Set(names)].slice(0, 3).join("、")}${new Set(names).size > 3 ? " 等" : ""} —— 那几处现在是断的`, "warn");
+    `${[...new Set(names)].slice(0, 3).join("、")}${new Set(names).size > 3 ? " 等" : ""} —— 那几处现在是断的`
+    + (d?.truncated ? "。⚠️ 而且只查了前 5000 个文件" : ""), "warn");
 }

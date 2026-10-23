@@ -134,16 +134,44 @@ ok("快照元数据：version / src / at 齐", meta.length === 3 && meta[0]!.ver
   await rm(O, { recursive: true, force: true });
 }
 
-/* ⚠️⚠️ **这一条 C3 之后没有对象了，照实改。**
-   `referencesOf` 用 `listDrafts(p)` 扫**稿**，而 C3 删掉 `dc` kind 之后
-   `listDrafts` 返回空 → 它永远回空数组。
-   ⚠️ **而这连带着一件要处理的事**：M13-3 做的 `list_file_refs` 对外叫
-   「通用的文件引用」，而它的实现只扫稿 —— **C3 之后它永远回空，而名字还在**。
+/* ⚠️⚠️ **这一条 2026-10-23（M16-7c-2d）从「恒回空」改回「真的能找到」。**
+   它在 7a 之后有一段时间钉的是「`referencesOf` 现在回空」—— 因为数据源是 `listDrafts`，
+   而 C3 之后那个函数返回空。当时留着那条判据的理由是
+   「让这件事在读数里看得见，而不是静静变成一条永远绿的判据」。
    > **一件能力的名字还在、而它回答的那个问题已经不存在，比删掉它更坏。**
-   归 M16-7c（和甲组那 12 件一起处理：删掉，或者改成真的扫所有文本文件）。
-   这里先钉住「它现在回空」—— 让这件事在读数里看得见，而不是静静变成一条永远绿的判据。 */
-ok("**`referencesOf` 现在回空**（它扫的是「稿」，而 C3 之后没有稿了 —— `list_file_refs` 要跟着处理，见 M16-7c）",
-   (await referencesOf(p, "图.png")).length === 0);
+   geek-99 定了「改成真的」：扫 html / htm / css / svg / md / markdown 六种。 */
+{
+  /* ⚠️⚠️ **自带夹具，不复用项目里现成的那几份。**
+     第一版拿 `稿.dc.html`（开头建的那份，里面有 `<img src="图.png">`）当引用方，
+     读数是「扫到了 `稿.dc.html` 而找到 0」—— 因为**前面那几条判据
+     （`write_file` 写得动 / 写前校验 / 回到 s1）拿它当样本，把内容换掉了**。
+     > **判据之间会互相改掉对方要的前提** —— 而这句话我十分钟前刚写进另一节的注释里。
+     ⚠️ 顺带：抓到它的是那条诊断（detail 里打出「扫到：…」）。
+     > **一条红的 detail 该说出「我看到了什么」，而不只是「我期望什么」。** */
+  const RS = "_ref源.md", RT = "_ref目标.png";
+  await writeFile(join(DIR, RT), "png");
+  await writeFile(join(DIR, RS), `# 引用源\n\n![图](${RT})\n\n还有一个 <img src="${RT}"> 和一条外链 ![x](https://e.com/a.png)\n`);
+  const r0 = await referencesOf(p, RT);
+  ok("**`referencesOf` 真的找得到**（数据源从「稿」换成六种文本格式，md 的 `![](…)` 也认）",
+     r0.refs.some((x) => x.file === RS), { 找到: r0.refs.length, 来自: r0.refs.map((x) => x.file).join(" ") });
+  /* ⚠️ **外链不算引用**（geek-99 定的第三件）—— 那一行 `https://e.com/a.png` 不该被算进来。
+     这一条和上一条分开：合成一条的话「一个都没找到」也会让「外链没被算」成立。 */
+  ok("**外链不算引用**（`https://…` / `data:` / `#锚点` 一律不算）",
+     r0.refs.filter((x) => x.file === RS).length === 2,
+     `${RS} 里算到 ${r0.refs.filter((x) => x.file === RS).length} 处（应为 2：md 一处 + <img> 一处）`);
+  /* ⚠️ `truncated` 要能说出来 —— 这个夹具远不到 5000，所以它必须是 false。
+     > 「只查了前 N 个」和「没人引用」在一个空列表上长得一样，而这一条钉的是
+     > **它至少知道自己有没有查完**。 */
+  ok("而且它说得出自己查完了（`truncated: false`）", r0.truncated === false, String(r0.truncated));
+  /* ⚠️⚠️ **用完立刻删 —— 自带夹具要配自带清理。**
+     第一版留着这两个文件，于是下面那条 `countTypes` 当场红（md 2→3 · image 2→3）：
+     > **「自带夹具」解决的是「我依赖别人的样本」，不解决「别人依赖我没留下的东西」。**
+     这是这一轮第五次撞到「判据之间互相改掉对方要的前提」，而**这次是我为了修那个病
+     而加的夹具造成的**。改 `countTypes` 的期望数也能变绿 ——
+     但那会让下一个加夹具的人再撞一次。 */
+  await rm(join(DIR, RS), { force: true });
+  await rm(join(DIR, RT), { force: true });
+}
 const t = await countTypes(p);
 /* ⚠️ **`dc` 那一档 2026-10-23（M16-7c-2c）去掉了** —— 它恒为 0，而
    > **一个恒为 0 的读数比没有这个读数糟**：它看起来是「这个项目没有设计稿」，
@@ -235,7 +263,7 @@ class Component extends DCLogic {
     /src="\.\.\/assets\/img\.png"/.test(s3) && mv3.rewrote.some((r) => r.file === "pages/有图.dc.html"));
 
   // ④ referencesOf 和改写用同一个判定：按解出来的路径比，不按 basename
-  const refs = await referencesOf(p, "icons/logo.png");
+  const refs = (await referencesOf(p, "icons/logo.png")).refs;
   ok("**referencesOf 按路径比不按 basename**（根目录的 logo.png 不算 icons/logo.png 的引用）",
     refs.length === 1 && refs[0]!.file === "同名.dc.html");
 
@@ -1187,17 +1215,37 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      existsSync(join(D2, "坏稿副本.dc.html"))
      && /__resources|umbradesign:resources/.test(await readFile(join(D2, "坏稿副本.dc.html"), "utf8")));
 
-  // ② 移动它引用的图：引用改不成，回执必须说
-  const mv92 = await moveFile(proj92, "坏图.png", "图/坏图.png");
-  ok("**引用改不成的稿不进 `rewrote`**（原来：文件挪走了、引用没改，而回执说改好了）",
-     !mv92.rewrote.some((r) => r.file === "坏稿.dc.html"),
+  /* ── ② 引用改不成时回执必须说（issue #92）──
+     ⚠️⚠️ **2026-10-23（M16-7c-2d）换了拒因，而判据本身一个字没放松。**
+     原来的拒因是「稿里有 error 级诊断 → `writeDraft` 拒」，而 C3 之后引用改写走
+     **第二条写入口**（`writeAnyFile`），它不跑 dc 校验 —— 那个拒因**不存在了**。
+     > 一条判据的拒因消失时，**要么换一个真会被拒的样本，要么承认这件事不再被钉**。
+     > 而 geek-99 2026-10-23 明确要求钉「一个被拒的写入不会被算进 `rewrote`」，所以换样本。
+
+     新拒因：**引用方在一个只读目录里**（`chmod 0o555`）—— 写入口写 tmp 失败 → 抛。
+     这是一个真实场景（别人的只读挂载 / 权限收紧过的目录），
+     而且它**不依赖任何 dc 概念**，所以以后也不会随哪一期删掉。
+     ⚠️ 收尾要把权限改回来再删，否则 `rm` 自己也失败（那会让后面几节红在清理上）。 */
+  const ROD = join(D2, "只读目录");
+  await mkdir(ROD, { recursive: true });
+  await wf2(join(ROD, "引用方.md"), "# 引用方\n\n![图](../只读图.png)\n", "utf8");
+  await wf2(join(D2, "只读图.png"), "png", "utf8");
+  const { chmod } = await import("node:fs/promises");
+  await chmod(ROD, 0o555);
+  const mv92 = await moveFile(proj92, "只读图.png", "图/只读图.png");
+  await chmod(ROD, 0o755);                        // 先放开，后面才删得掉
+  ok("**引用改不成的那份不进 `rewrote`**（原来：文件挪走了、引用没改，而回执说改好了）",
+     !mv92.rewrote.some((r) => r.file === "只读目录/引用方.md"),
      mv92.rewrote.map((r) => r.file).join(" / ") || "(空)");
+  /* ⚠️ 拒因**不钉具体措辞**（那是 OS 给的 `EACCES`/`EPERM`，平台之间不一样）——
+     钉的是「它进了 `refused`」+「`steps` 里有一句人话」。
+     > 判据钉住它声称的那道闸，而不是那道闸今天恰好说的那句话（§161.5）。 */
   ok("**而是进 `refused` 并在 steps 里说出来**（假回执比没有回执糟）",
-     (mv92.refused ?? []).some((r) => r.file === "坏稿.dc.html" && /error/.test(r.reason))
+     (mv92.refused ?? []).some((r) => r.file === "只读目录/引用方.md" && !!r.reason)
      && mv92.steps.some((t) => t.includes("没改成")),
-     (mv92.refused ?? []).map((r) => r.file).join(" / ") || "(空)");
+     (mv92.refused ?? []).map((r) => `${r.file}：${r.reason.slice(0, 28)}`).join(" / ") || "(空)");
   ok("（对照）文件确实挪走了 —— 所以「没说」的后果是真的",
-     existsSync(join(D2, "图", "坏图.png")) && !existsSync(join(D2, "坏图.png")));
+     existsSync(join(D2, "图", "只读图.png")) && !existsSync(join(D2, "只读图.png")));
 
   /* ── 这件事**模型也得看得见**（issue #99，2026-10-06）──
      #92 在服务端加了 `refused`，#76 加了 `unresolved`（注释写着「**不静默**」），
@@ -1210,16 +1258,21 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
     /* ⚠️ **自带夹具**：上一节已经把 `坏图.png` 挪走了，照用的话这里会变成
        「文件不存在」→ 回执里自然没有 `refused`，而判据红在**夹具**上。
        §143.6 那条「样本之间互相毁夹具」的第 N 次 —— 这次是跨小节。 */
-    await wf2(join(D2, "坏稿二.dc.html"), 坏.replace("坏图.png", "坏图二.png"), "utf8");
-    await wf2(join(D2, "坏图二.png"), "png", "utf8");
+    /* ⚠️ 同上，拒因换成只读目录（dc 校验那条没了）。各自一套夹具，互不影响。 */
+    const ROD2 = join(D2, "只读二");
+    await mkdir(ROD2, { recursive: true });
+    await wf2(join(ROD2, "引用方二.md"), "# 二\n\n![图](../只读图二.png)\n", "utf8");
+    await wf2(join(D2, "只读图二.png"), "png", "utf8");
+    await chmod(ROD2, 0o555);
     /* ⚠️ `ToolCall` 是 **OpenAI 那个形状**（`function.arguments` 是 **JSON 串**），
        不是 `{ name, args }`。第一版照直觉写成后者，`executeToolCall` 里
        `tc.function.arguments` 当场 `TypeError` ——
        **判据照直觉拼的入参，和产品真实的入参不是一回事**（§65.6 同一族）。 */
     const out = await executeToolCall(proj92, {
       id: "t1", type: "function",
-      function: { name: "move_file", arguments: JSON.stringify({ from: "坏图二.png", to: "图二/坏图二.png" }) },
+      function: { name: "move_file", arguments: JSON.stringify({ from: "只读图二.png", to: "图二/只读图二.png" }) },
     });
+    await chmod(ROD2, 0o755);                     // 先放开，后面才删得掉
     const j = JSON.parse(out) as Record<string, unknown>;
     /* ⚠️ 这个文件的 `ok()` 是 `(label, cond)` —— 而 `plugintest` / `lifecycletest`
        那边是 `(cond, label)`。**同名函数在不同文件里参数顺序相反**，
@@ -1802,6 +1855,70 @@ console.log("\n⑮ 指向项目外的符号链接（issue #140）");
   /* ⚠️ 日期部分的 `-` 不许被动 —— 只还原 `T` 之后那三个。 */
   ok("日期部分的 `-` 没被当成分隔符动掉", (trashStampToIso("2026-10-23T10-45-00-123Z") ?? "").startsWith("2026-10-23T"),
      trashStampToIso("2026-10-23T10-45-00-123Z") ?? "null");
+}
+
+/* ── ⓤ 挪图之后 md 里的路径真被改写，而且能从快照回退（M16-7c-2d，geek-99 点名要的）──
+   ⚠️⚠️ **这一节钉的是「引用改写这件事从头到尾真的成立」**，而它在 7a–7c-2c 之间
+   有一段时间是**恒为零处**的（数据源是 `listDrafts`，C3 之后返回空）。
+   当时 `filetest` 里钉的是「它现在是零处」，并写明「归 M16-7c：要么删掉，
+   要么改成真的扫所有文本文件」。geek-99 2026-10-23 定了后者。
+
+   三条各答一个问题，而**第二条是这一节存在的理由**：
+   ① md 里的相对路径跟着改了（功能本身）
+   ② **改写走的是第二条写入口，所以留了快照、回退得回去**（geek-99 的硬要求）
+   ③ 改写方向对：往深一层挪，相对路径要多一段 `../` —— 不是把绝对路径塞进去 */
+{
+  const { mkdtemp: mkdU, writeFile: wfU, rm: rmU, mkdir: mdU, readFile: rfU } = await import("node:fs/promises");
+  const { tmpdir: tdU } = await import("node:os");
+  /* ⚠️ 这两个在 （顶部已 import），不在  —— 第一版照名字猜错了地方。 */
+  const DU = await mkdU(join(tmpdir(), "umbrastudio-ftref-"));
+  await wfU(join(DU, "project.json"), JSON.stringify({ name: "ftref", title: "ftref" }), "utf8");
+  await mdU(join(DU, "pics"), { recursive: true });
+  await wfU(join(DU, "图.png"), "png", "utf8");
+  /* 一份 md 在项目根，一份在子目录 —— **两份的相对写法不同**，改写要各算一次。
+     只放根目录那一份的话，「按每份文件自己的位置重算」这件事测不到。 */
+  await wfU(join(DU, "说明.md"), "# 说明\n\n![图](图.png)\n", "utf8");
+  await mdU(join(DU, "docs"), { recursive: true });
+  await wfU(join(DU, "docs", "深.md"), "# 深\n\n![图](../图.png)\n", "utf8");
+  const pu = await buildProject(DU);
+
+  const mvU = await moveFile(pu, "图.png", "pics/图.png");
+  const root = await rfU(join(DU, "说明.md"), "utf8");
+  const deep = await rfU(join(DU, "docs", "深.md"), "utf8");
+  ok("**挪图之后根目录那份 md 的路径被改写**（`图.png` → `pics/图.png`）",
+     root.includes("![图](pics/图.png)"), root.split("\n")[2] ?? root.slice(0, 40));
+  /* ⚠️ ③ 方向：子目录那份原来写 `../图.png`，图挪进 `pics/` 之后要变成 `../pics/图.png` */
+  ok("**子目录那份按它自己的位置重算**（`../图.png` → `../pics/图.png`，不是塞一个根相对路径）",
+     deep.includes("![图](../pics/图.png)"), deep.split("\n")[2] ?? deep.slice(0, 40));
+  ok("两份都进了 `rewrote`", mvU.rewrote.length === 2,
+     mvU.rewrote.map((r) => `${r.file}×${r.count}`).join(" / "));
+
+  /* ── ② 走第二条写入口 → 有快照 → 回退得回去 ── */
+  const snaps = await listSnapshots(pu, "说明.md");
+  ok("**改写引用留下了快照**（走第二条写入口的回报，不是直接 `writeAtomic`）",
+     snaps.length > 0, `${snaps.length} 版：${snaps.join(" ")}`);
+  /* ⚠️⚠️ **按内容找「改写之前那一版」，不按编号猜。**
+     第一版取 `snaps[snaps.length - 1]`（最后一版），读数是改写**之后**的路径 ——
+     因为这条写入口会把**两版都留下**：旧版存 s1、新版存 s2
+     （本文件开头那条判据写着「写前校验通过 → 旧版存 s1 → 新版 s2」）。
+     > **「最新的快照」不等于「改之前那一份」。**
+     按内容找既不依赖编号，也不依赖这个文件之前有没有历史。 */
+  let preVer = null, preBody = "";
+  for (const v of snaps) {
+    const body = await readSnapshotContent(pu, "说明.md", v);
+    if (body.includes("![图](图.png)")) { preVer = v; preBody = body; break; }
+  }
+  /* 这一条钉的是**快照里真有改写之前那一份** —— 不是「有个快照文件」。
+     > 「留了快照」和「那个快照能把东西拿回来」是两件事，而前者容易假。 */
+  ok("**快照里找得到改写之前那一版**（回退真的拿得回来）", !!preVer,
+     preVer ? `${preVer}：${preBody.split("\n")[2] ?? ""}` : `${snaps.length} 版里都没有旧路径`);
+  if (preVer) {
+    const rv = await revertFile(pu, "说明.md", preVer);
+    const back = await rfU(join(DU, "说明.md"), "utf8");
+    ok("**回退之后盘上真的是旧路径**（整条路跑通，不只是快照里有）",
+       back.includes("![图](图.png)") && !!rv, back.split("\n")[2] ?? back.slice(0, 40));
+  }
+  await rmU(DU, { recursive: true, force: true });
 }
 
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);

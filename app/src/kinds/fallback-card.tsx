@@ -12,15 +12,21 @@ import { askText } from "../ui/Ask";
 export function FileCard({ core, host, path, projectDir, onOpen }: { core: Core; host: HostAdapter; path: string; projectDir: string; onOpen: (p: string, isDir: boolean) => void }) {
   const [info, setInfo] = useState<ReadFileResult | null>(null);
   const [refs, setRefs] = useState<Array<{ file: string; line: number }> | null>(null);
+  /** 引用扫描到上限就停了（`list_file_refs` 的 `truncated`）。
+   *  ⚠️ **必须和「没人引用」分开说**：它们在一个空列表上长得一模一样，
+   *  而一个是「我没查完」，另一个是一个结论。 */
+  const [refsCut, setRefsCut] = useState(false);
+  const [refsLimit, setRefsLimit] = useState(0);
   const [confirm, setConfirm] = useState(false);
   /** 用户点过「用纯文本打开」—— 跳过嗅探再读一次（M14-11 / Q76）。
    *  ⚠️ 换文件时要**清掉**：不清的话下一份文件会继承上一份的「强制按文本」。 */
   const [forceText, setForceText] = useState(false);
   useEffect(() => { setForceText(false); }, [path]);
   useEffect(() => {
-    setInfo(null); setRefs(null); setConfirm(false);
+    setInfo(null); setRefs(null); setRefsCut(false); setConfirm(false);
     void core.get<ReadFileResult>(`file?path=${encodeURIComponent(path)}${forceText ? "&asText=true" : ""}`).then((r) => { if (r.ok && r.data) setInfo(r.data); });
-    void core.get<{ referencedBy: Array<{ file: string; line: number }> }>(`file_refs?path=${encodeURIComponent(path)}`).then((r) => setRefs(r.data?.referencedBy ?? []));
+    void core.get<{ referencedBy: Array<{ file: string; line: number }>; truncated?: boolean; scanLimit?: number }>(`file_refs?path=${encodeURIComponent(path)}`)
+      .then((r) => { setRefs(r.data?.referencedBy ?? []); setRefsCut(!!r.data?.truncated); setRefsLimit(r.data?.scanLimit ?? 0); });
   }, [core, path, forceText]);
   const cap = host.capabilities().revealInFinder;
   const name = path.split("/").pop() ?? path;
@@ -81,7 +87,19 @@ export function FileCard({ core, host, path, projectDir, onOpen }: { core: Core;
         )}
         <div className="p-4 border-b border-border">
           <div className="flex items-center gap-2 mb-1"><span className="text-muted">被引用</span><span className="font-mono">{refs?.length ?? "…"}</span></div>
-          {refs && refs.length === 0 && <p className="text-muted leading-relaxed">没有稿件引用它，改名、移动、删除都不影响任何稿。</p>}
+          {/* ⚠️⚠️ **这一块 2026-10-23（M16-7c-2d）之前有一段时间是「永远空」的**：
+              `list_file_refs` 的数据源原来是 `listDrafts`（只有设计稿），C3 之后它恒回空 ——
+              而界面照旧说「**没有稿件引用它**，改名、移动、删除都不影响任何稿」。
+              > **那是一句用户看得见的假话，而「没人引用」和「这个功能坏了」在界面上长得一样。**
+              现在它扫 html / htm / css / svg / md / markdown 六种，文案也不再说「稿」。 */}
+          {refs && refs.length === 0 && !refsCut &&
+            <p className="text-muted leading-relaxed">没有文件引用它，改名、移动、删除都不影响别的文件。</p>}
+          {/* ⚠️ **到上限了就照实说，而且不说「没有引用」** —— 那两句话不能同时出现
+              （geek-99 2026-10-23 定：「超出就照实告诉用户只查了前 N 个文件」）。 */}
+          {refs && refsCut &&
+            <p className="leading-relaxed" style={{ color: "var(--tool-warn)" }}>
+              这个项目太大，**只查了前 {refsLimit || 5000} 个文件**{refs.length === 0 ? " —— 没查到引用，但不等于没有" : "，可能还有没查到的"}。
+            </p>}
           {refs && refs.length > 0 && <>
             <ul className="flex flex-col gap-1 mb-2">{refs.map((r, i) => <li key={i}><button className="font-mono text-accent hover:underline" onClick={() => onOpen(r.file, false)}>{r.file}:{r.line}</button></li>)}</ul>
             <p className="leading-relaxed" style={{ color: "var(--tool-warn)" }}>改名或移动会一并改写这些引用；删除会让它们变成 404。</p>

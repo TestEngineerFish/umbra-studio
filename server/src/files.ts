@@ -1105,57 +1105,80 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
   await rm(absFrom);
   steps.push(`${from} → ${to}`);
 
-  /* 引用改写：稿里写的是相对它自己的路径，所以按每份稿的位置重算。
-     改完经 write_draft 落盘 —— 引用变了也要留快照，和别的改稿一视同仁。 */
-  const { writeDraft } = await import("./write.js");
-  const { parseDraft, draftKindOf } = await import("./draft.js");
+  /* 引用改写：每份文件里写的是相对它自己的路径，所以按它的位置重算。
+     ⚠️⚠️ **2026-10-23（M16-7c-2d）改走第二条写入口 `writeAnyFile`**（geek-99 定）。
+     原来走 `writeDraft` —— 那是**设计稿**那条写入口，它会做归一化 / `@ds` 展开 /
+     `__resources` 注入 / 节点地址。C3 之后引用方是 `.md` / `.html` / `.css`，
+     那一套加工对它们**全是错的**（它甚至会按 dc 的规矩校验这份文件）。
+     第二条写入口给的是同样要紧的那几样：**写前校验 · 快照 · 并发闸**。
+     > 「唯一写入口」从来是两条：稿走第一条，别的文件走第二条 ——
+     > 而这里的引用方已经全是「别的文件」了。 */
   const byFile = new Map<string, number>();
-  for (const r of refs) byFile.set(r.file, (byFile.get(r.file) ?? 0) + 1);
+  for (const r of refs.refs) byFile.set(r.file, (byFile.get(r.file) ?? 0) + 1);
   const rewrote: Array<{ file: string; count: number }> = [];
   /** 解不出来的那些（外链 / 根相对 / 指到项目外）—— **不静默**，列出来让人自己看一眼 */
   const unresolved: Array<{ file: string; line: number; value: string }> = [];
   /** 写入口拒了的那些（稿里有 error 级诊断）—— 引用**没改成**，必须说（issue #92） */
   const refused: Array<{ file: string; reason: string }> = [];
-  for (const [draftRel, count] of byFile) {
-    const abs = join(p.dir, draftRel.split("/").join(sep));
+  for (const [srcRel, count] of byFile) {
+    const abs = join(p.dir, srcRel.split("/").join(sep));
     let src: string;
     try { src = await readFile(abs, "utf8"); } catch { continue; }
-    const { out: next, changed } = mapDraftRefs(src, (value) =>
-      resolveRefTarget(draftRel, value) === from ? refValueFor(draftRel, to, value) : null);
+    const { out: next, changed } = mapFileRefs(src, srcRel, (value) =>
+      resolveRefTarget(srcRel, value) === from ? refValueFor(srcRel, to, value) : null);
     if (changed === 0 || next === src) continue;
     /* ⚠️ **看一眼写入口到底写没写**（issue #92，2026-10-06）。
-       原来不看 `outcome` 就 `rewrote.push` —— 而 `writeDraft` 对**改写后仍有
-       error 级诊断**的稿返回 `written:false`。文件已经挪走了（上面几行），
-       引用没改，而回执说「改写引用 N 处」。
-       **假回执比没有回执糟**（#35 那条同一句话）—— 用户按回执相信引用是好的。 */
-    const wr = await writeDraft(p, draftRel, next, draftKindOf(parseDraft(next, draftRel)),
-      `引用跟着 ${basename(from)} 的移动改了`, { origin: "人手改" });
-    if (!wr.outcome.written && !wr.outcome.unchanged) {
-      refused.push({ file: draftRel, reason: wr.outcome.refused ?? "写入口拒绝了" });
-      steps.push(`⚠️ ${draftRel} 的引用**没改成**：${wr.outcome.refused ?? "写入口拒绝了"}`);
+       原来不看返回就 `rewrote.push` —— 而写入口对校验不过的文件不写。
+       文件已经挪走了（上面几行），引用没改，而回执说「改写引用 N 处」。
+       **假回执比没有回执糟**（#35 那条同一句话）—— 用户按回执相信引用是好的。
+       ⚠️ 这一条在换成 `writeAnyFile` 之后**更要紧**：它会因为并发闸、
+       只读、`isToolArtifact` 等好几种理由拒，而每一种都该照实说出来。 */
+    let wrote = false, why = "";
+    try {
+      /* ⚠️ **带上我们刚读到的那一份的 sha** —— 并发闸照常生效（geek-99 定）：
+         在我们读完和写回之间别人改过这个文件，就该拒，而不是把他的改动盖掉。
+         > 一个「顺带帮你改一下」的动作，不该比用户自己改更有特权。 */
+      const r = await writeAnyFile(p, srcRel, next, {
+        expectSha256: sha256(Buffer.from(src, "utf8")),
+        origin: "人手改",
+        note: `引用跟着 ${basename(from)} 的移动改了`,
+      });
+      /* ⚠️ `writeAnyFile` **拒的时候是抛 `ToolError`**，不是回 `written: false`
+         （它唯一的 return 写着 `written: true`）—— 所以这里真正接住拒绝的是下面那个 catch。
+         这一句留着是**为了以后**：哪天它改成回 false，这里不会静默把「没写」算成「写了」。
+         > 一个只有一条成功返回路径的函数，判断「成不成」要看它抛不抛，
+         > 而**把两种都接住**比赌它是哪一种可靠。 */
+      wrote = r.written !== false;
+      if (!wrote) why = "写入口回了 written: false";
+    } catch (e) {
+      why = (e as Error)?.message ?? String(e);
+    }
+    if (!wrote) {
+      refused.push({ file: srcRel, reason: why });
+      steps.push(`⚠️ ${srcRel} 的引用**没改成**：${why}`);
       continue;
     }
-    rewrote.push({ file: draftRel, count: changed });
-    steps.push(`改写引用 ${draftRel}（${changed} 处）`);
+    rewrote.push({ file: srcRel, count: changed });
+    steps.push(`改写引用 ${srcRel}（${changed} 处）`);
     if (changed !== count) {
-      steps.push(`⚠️ ${draftRel} 里还有 ${count - changed} 处提到 ${basename(from)} 但解不出路径，没动`);
+      steps.push(`⚠️ ${srcRel} 里还有 ${count - changed} 处提到 ${basename(from)} 但解不出路径，没动`);
     }
   }
   /* 改完再扫一遍：名字对得上、但解不出路径的写法（`https://…/img.png`、`/img.png`），
      以及**正文里提到文件名**的地方。它们本来就不该被改 —— 但也不该一声不吭。 */
-  for (const abs of await listDrafts(p)) {
-    const draftRel = relative(p.dir, abs).split(sep).join("/");
-    if (isToolArtifact(draftRel)) continue;
+  for (const srcRel of (await listRefSources(p)).files) {
     let src: string;
-    try { src = await readFile(abs, "utf8"); } catch { continue; }
+    try { src = await readFile(join(p.dir, srcRel.split("/").join(sep)), "utf8"); } catch { continue; }
     if (!src.includes(basename(from))) continue;
-    mapDraftRefs(src, (value, line) => {
-      const t = resolveRefTarget(draftRel, value);
-      if (t === null && value.includes(basename(from))) unresolved.push({ file: draftRel, line, value });
+    mapFileRefs(src, srcRel, (value, line) => {
+      const t = resolveRefTarget(srcRel, value);
+      if (t === null && value.includes(basename(from))) unresolved.push({ file: srcRel, line, value });
       return null;
     });
   }
-  return { from, to, rewrote, steps, ...(unresolved.length ? { unresolved } : {}), ...(refused.length ? { refused } : {}) };
+  /* ⚠️ `truncated` 要跟着回出去：到了 5000 的上限时「没有别的引用」这句话说不了。 */
+  return { from, to, rewrote, steps, ...(refs.truncated ? { truncated: true } : {}),
+    ...(unresolved.length ? { unresolved } : {}), ...(refused.length ? { refused } : {}) };
 }
 
 /* ── 稿里的「引用」是**有结构的东西**，不是一段文字（issue #76，2026-10-05）──
@@ -1176,6 +1199,72 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
 /** href / src 的值，或 url(…) 里的值。七个捕获组，顺序别动（下面按下标取）。 */
 const REF_VALUE_RE = /(\b(?:href|src)\s*=\s*)(["'])([^"']*)\2|(\burl\(\s*)(["']?)([^"')]*)\5(\s*\))/gi;
 
+/** Markdown 的行内链接与图片：`![alt](path)` / `[text](path)`，可带 `"title"`。
+ *
+ *  ⚠️ **三个捕获组，第 2 组是值**（和 `REF_VALUE_RE` 的取法不同，所以两者各走一条分支）。
+ *  ⚠️ `<img src="…">` **不用这个正则** —— md 里写 HTML 是合法的，而那种写法
+ *  `REF_VALUE_RE` 本来就认得。所以 md 文件两个正则**都跑**。
+ *  ⚠️ 不认引用式链接（`[a][ref]` + 底部 `[ref]: path`）：那要两段关联，
+ *  而**认一半比不认更糟** —— 改写时会漏掉定义那一行，留下一个指向旧路径的 `[ref]:`。
+ *  > **一个只认得一半语法的改写器，比一个明说「这种写法我不碰」的更危险。**
+ *  解不出来的写法会进 `unresolved` 被列出来，所以用户看得见。 */
+const MD_REF_RE = /(!?\[[^\]]*\]\(\s*)(<?[^)\s>]+>?)((?:\s+"[^"]*")?\s*\))/g;
+
+/** 哪些文件里会有「引用」—— geek-99 2026-10-23 定的六种。
+ *
+ *  ⚠️⚠️ **这张清单取代了原来的 `listDrafts(p)`**，而那是这一整件事的全部病根：
+ *  `referencesOf` / `mapDraftRefs` 对外叫「谁引用了这个文件」/「改写引用」，
+ *  而数据源只有**设计稿**。C3 删掉 dc 之后它们**恒回空** ——
+ *  能力的名字还在、而它回答的那个问题已经不存在。
+ *  > **一件能力的名字还在、而它回答的那个问题已经不存在，比删掉它更坏。**
+ *
+ *  ⚠️ **为什么不是「所有文本文件」**：`.ts` 里的 `import "./x"`、`.json` 里的路径字符串
+ *  都不是这两个正则认得的形状，扫它们只会增加耗时而找不到东西 ——
+ *  而「扫了但找不到」和「没扫」在读数上长得一样。要加格式就连它的语法一起加。 */
+const REF_SOURCE_EXTS = new Set(["html", "htm", "css", "svg", "md", "markdown"]);
+
+/** 这份文件里的引用该用哪几个正则取。md 两个都跑（它可以内嵌 HTML）。 */
+function refRegexesFor(rel: string): RegExp[] {
+  const ext = (rel.split(".").pop() ?? "").toLowerCase();
+  if (ext === "md" || ext === "markdown") return [REF_VALUE_RE, MD_REF_RE];
+  return [REF_VALUE_RE];
+}
+
+/** 一处引用在源文件里的位置与值 —— 两个正则的捕获组形状不同，这里统一成一种。 */
+interface RefHit { value: string; offset: number; end: number }
+
+/** 把一份文件里的引用全取出来，**按出现顺序**（替换要按区间来，顺序错了偏移就乱）。 */
+function refHitsOf(src: string, rel: string): RefHit[] {
+  const hits: RefHit[] = [];
+  for (const re of refRegexesFor(rel)) {
+    for (const m of src.matchAll(re)) {
+      const at = m.index ?? 0;
+      if (re === MD_REF_RE) {
+        const raw = m[2];
+        if (raw === undefined) continue;
+        /* `<path>` 这种尖括号包法要把括号排除在值之外，否则改写会把它们一起换掉 */
+        const lt = raw.startsWith("<") ? 1 : 0;
+        const gt = raw.endsWith(">") ? 1 : 0;
+        const value = raw.slice(lt, raw.length - gt);
+        if (!value) continue;
+        const off = at + (m[1]?.length ?? 0) + lt;
+        hits.push({ value, offset: off, end: off + value.length });
+      } else {
+        const isAttr = m[3] !== undefined;
+        const value = isAttr ? m[3] : m[6];
+        if (value === undefined) continue;
+        const off = at + (isAttr ? (m[1]?.length ?? 0) + (m[2]?.length ?? 0)
+                                 : (m[4]?.length ?? 0) + (m[5]?.length ?? 0));
+        hits.push({ value, offset: off, end: off + value.length });
+      }
+    }
+  }
+  /* ⚠️ **两个正则各自扫一遍，命中是交错的** —— 必须按偏移排序，
+     否则下面按区间替换时 `last` 会往回走，产出一份乱掉的文件。
+     （md 里 `<img src>` 和 `![](…)` 同时存在时就会撞到这一条。） */
+  return hits.sort((a, b) => a.offset - b.offset);
+}
+
 /** 一处引用解成「相对项目根的路径」；解不出来（外链 / 根相对 / 锚点 / 指到项目外）回 null。 */
 function resolveRefTarget(draftRel: string, raw: string): string | null {
   const v = raw.trim();
@@ -1194,28 +1283,46 @@ function decodeRefPath(s: string): string {
   try { return decodeURIComponent(s); } catch { return s; }
 }
 
-/** 遍历一份稿里所有引用的**值**：回调回新值就替换，回 null 就不动。
- *  ⚠️ 按**匹配到的区间**替换，不是 `split/join` —— 同一个值在正文里出现也不碰。 */
-function mapDraftRefs(
+/** 遍历一份文件里所有引用的**值**：回调回新值就替换，回 null 就不动。
+ *  ⚠️ 按**匹配到的区间**替换，不是 `split/join` —— 同一个值在正文里出现也不碰
+ *  （上面那段 issue #76 的注释写了两个方向的错法）。
+ *
+ *  ⚠️ **2026-10-23（M16-7c-2d）改名 `mapDraftRefs` → `mapFileRefs`，而不只是改名**：
+ *  它原来只认 html 的 `href`/`src`/`url()`，现在按文件类型取（md 多一套语法），
+ *  命中统一从 `refHitsOf` 来。
+ *  > **一个叫 `*Draft*` 的函数在为所有文本文件服务时，名字会继续教下一个人错的事。** */
+function mapFileRefs(
   src: string,
+  rel: string,
   fn: (value: string, line: number) => string | null,
 ): { out: string; changed: number } {
   let out = "", last = 0, changed = 0, cursor = 0, line = 1;
-  for (const m of src.matchAll(REF_VALUE_RE)) {
-    const at = m.index ?? 0;
-    while (cursor < at) { if (src.charCodeAt(cursor) === 10) line++; cursor++; }
-    const isAttr = m[3] !== undefined;
-    const value = isAttr ? m[3] : m[6];
-    if (value === undefined) continue;
-    const vOff = at + (isAttr ? (m[1]?.length ?? 0) + (m[2]?.length ?? 0)
-                              : (m[4]?.length ?? 0) + (m[5]?.length ?? 0));
-    const next = fn(value, line);
-    if (next === null || next === value) continue;
-    out += src.slice(last, vOff) + next;
-    last = vOff + value.length;
+  for (const hit of refHitsOf(src, rel)) {
+    while (cursor < hit.offset) { if (src.charCodeAt(cursor) === 10) line++; cursor++; }
+    const next = fn(hit.value, line);
+    if (next === null || next === hit.value) continue;
+    out += src.slice(last, hit.offset) + next;
+    last = hit.end;
     changed++;
   }
   return { out: out + src.slice(last), changed };
+}
+
+/** 项目里**哪些文件可能含引用** —— 扫全项目、按扩展名筛（`REF_SOURCE_EXTS`）。
+ *
+ *  ⚠️ 上限复用 `WALK_MAX`（5000，geek-99 2026-10-23 定），而 **`truncated` 要一路带到界面**：
+ *  「只查了前 N 个文件」和「这个文件没人引用」是两件完全不同的事，
+ *  而它们在一个空列表上长得一模一样。
+ *  > **一个有上限的查询，必须能说出自己是不是到上限了。** */
+async function listRefSources(p: Project): Promise<{ files: string[]; truncated: boolean }> {
+  const all = await walkAll(p, WALK_MAX);
+  const files = all.entries
+    .map((e) => e.path)
+    .filter((rel) => REF_SOURCE_EXTS.has((rel.split(".").pop() ?? "").toLowerCase()))
+    /* 工具自己部署进项目的壳页面不算「引用方」—— 它们引 support.js 是当年
+       `build_index` 干的，跟用户的文件组织没关系（那些文件今天还躺在用户项目里） */
+    .filter((rel) => !isToolArtifact(rel));
+  return { files, truncated: all.truncated };
 }
 
 /** 稿里该怎么写这个文件的路径：相对稿自己的位置。
@@ -1227,27 +1334,33 @@ function refValueFor(draftRel: string, targetRel: string, oldValue: string): str
   return next + suffix;
 }
 
-/** 谁引用了这个文件（S15 的 referencedBy）：扫所有稿的 href / src / url()，返回 { file, line }。
+/** 谁引用了这个文件：扫 `REF_SOURCE_EXTS` 那几种文件的引用，返回 { file, line }。
+ *
  *  ⚠️ **按解出来的路径比，不按 basename**（issue #76）—— 原来 `icons/logo.png` 和
  *  根目录的 `logo.png` 是同一个 basename，于是「谁引用了我」把别人的引用也算进来，
- *  而改写那一步按真实路径算 → **找到的和改的对不上**。两处现在共用 `resolveRefTarget`。 */
-export async function referencesOf(p: Project, rel: string): Promise<Array<{ file: string; line: number }>> {
+ *  而改写那一步按真实路径算 → **找到的和改的对不上**。两处现在共用 `resolveRefTarget`。
+ *
+ *  ⚠️⚠️ **2026-10-23（M16-7c-2d）换了数据源**：原来是 `listDrafts(p)`（只有设计稿），
+ *  C3 之后它恒回空 —— 而这件能力对外叫「谁引用了这个文件」。
+ *  > **一件能力的名字还在、而它回答的那个问题已经不存在，比删掉它更坏**
+ *  > —— 因为「没人引用」和「这个功能坏了」在界面上长得一模一样。
+ *
+ *  ⚠️ `truncated` 跟着回出去：到了 5000 的上限就说出来，别让空列表冒充「没人引用」。 */
+export async function referencesOf(p: Project, rel: string): Promise<{ refs: Array<{ file: string; line: number }>; truncated: boolean }> {
   const target = basename(rel);
   const out: Array<{ file: string; line: number }> = [];
-  for (const abs of await listDrafts(p)) {
-    const draftRel = relative(p.dir, abs).split(sep).join("/");
-    // 工具自己部署进项目的壳页面（S2–S8、index）不算「引用方」——
-    // 它们引 support.js 是 build_index 干的，跟用户的文件组织没关系
-    if (isToolArtifact(draftRel)) continue;
+  const { files, truncated } = await listRefSources(p);
+  for (const srcRel of files) {
+    if (srcRel === rel) continue;                  // 自己引自己不算
     let src: string;
-    try { src = await readFile(abs, "utf8"); } catch { continue; }
-    if (!src.includes(target)) continue;          // 先粗筛，避免每份稿都逐行
-    mapDraftRefs(src, (value, line) => {
-      if (resolveRefTarget(draftRel, value) === rel) out.push({ file: draftRel, line });
+    try { src = await readFile(join(p.dir, srcRel.split("/").join(sep)), "utf8"); } catch { continue; }
+    if (!src.includes(target)) continue;           // 先粗筛，避免每份都逐行
+    mapFileRefs(src, srcRel, (value, line) => {
+      if (resolveRefTarget(srcRel, value) === rel) out.push({ file: srcRel, line });
       return null;                                 // 只看不改
     });
   }
-  return out;
+  return { refs: out, truncated };
 }
 
 // ──────────────────────── 内部 ────────────────────────

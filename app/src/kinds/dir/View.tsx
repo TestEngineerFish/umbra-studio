@@ -51,13 +51,14 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, man
     const to = await askText({ title: `把这 ${selected.length} 项移到哪个目录？`, hint: "相对项目根，留空 = 项目根", initial: dirRel, okLabel: "移过去" });
     if (to === null) return;
     const dest = to.replace(/^\/+|\/+$/g, "");
-    let moved = 0, rewrote = 0, stuck = 0;
+    let moved = 0, rewrote = 0, stuck = 0, cut = false;
     for (const path of selected) {
       const name = path.split("/").pop()!;
       const to = dest ? `${dest}/${name}` : name;
       const r = await core.post<MoveOut>("file_move", { from: path, to });
       if (r.ok) {
         moved++; rewrote += r.data?.rewrote?.length ?? 0; stuck += stuckOf(r.data);
+        if (r.data?.truncated) cut = true;
         /* ⚠️ **挪走的文件可能正开着页签**（issue #105 同族）：页签以路径为键，
            不报的话它还指着一个已经不在那儿的路径。工作台听这条事件迁。 */
         window.dispatchEvent(new CustomEvent("ud-renamed", { detail: { from: path, to } }));
@@ -66,8 +67,15 @@ export function DirView({ core, dirRel, onOpen, onSelectionChange, selected, man
     }
     /* ⚠️ **有没改成的引用就不是绿的**（issue #99）：原来只读 `rewrote`，
        于是「文件挪走了、某份稿的引用断了」这件事在界面上**一点痕迹都没有**。 */
+    /* ⚠️ 2026-10-23（M16-7c-2d）三处跟着引用改写变成真的而改了：
+       ① 「打开那几份**稿**看一眼」→「那几个文件」（引用方现在是 md / html / css 六种）·
+       ② **到 5000 上限时不报绿** —— 没扫到的那些还指着旧路径 ·
+       ③ `cut` 是**任一次** `file_move` 到上限就算（批量里一次到上限，整批的结论就不完整）。 */
     if (moved) {
-      if (stuck) toast(`挪了 ${moved} 项，但有 ${stuck} 处引用没改成`, "那几处引用现在是断的 —— 打开那几份稿看一眼", "warn");
+      if (stuck) toast(`挪了 ${moved} 项，但有 ${stuck} 处引用没改成`,
+        "那几处引用现在是断的 —— 打开那几个文件看一眼" + (cut ? "。⚠️ 而且只查了前 5000 个文件" : ""), "warn");
+      else if (cut) toast(`挪了 ${moved} 项到 ${dest || "项目根"}`,
+        `${rewrote ? `顺带改了 ${rewrote} 处引用。` : ""}⚠️ 这个项目太大，只查了前 5000 个文件 —— 可能还有没改到的引用`, "warn");
       else toast(`挪了 ${moved} 项到 ${dest || "项目根"}`, rewrote ? `顺带改了 ${rewrote} 处引用` : undefined, "ok");
     }
     onSelectionChange([]); setTick((t) => t + 1);

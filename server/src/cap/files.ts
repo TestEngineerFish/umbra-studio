@@ -2,7 +2,7 @@ import { z } from "zod";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
 import { getPluginLimits } from "../plugin/limits.js";
-import { countTypes, denyReason, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, normalizeRel, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { countTypes, denyReason, WALK_MAX, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, normalizeRel, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { writeDraft } from "../write.js";
 import { draftKindOf, parseDraft } from "../draft.js";
 import { isEditable, markEditable } from "../records.js";
@@ -563,10 +563,24 @@ defineCap({
 
 defineCap({
   name: "list_file_refs", title: "谁引用了这个文件", scope: "project",
-  summary: "找出哪些稿引用了它。删之前先看这个 —— 有人引用还删，那些稿会缺资源。",
+  summary: [
+    "找出哪些文件引用了它。删之前先看这个 —— 有人引用还删，那几处就断了。",
+    "扫 **html / htm / css / svg / md / markdown** 六种：前五种认 `href` / `src` / `url()`，"
+      + "md 另认 `![](…)` / `[](…)`（它内嵌的 `<img src>` 也认）。",
+    "⚠️ **外链不算引用**：`http(s)://`、`data:`、`//…`、`#锚点`、根相对 `/x.png`，以及指到项目外的 `../`。",
+    "⚠️ **最多扫 5000 个文件**；到上限会回 `truncated: true` —— 那时候「没人引用」这句话说不了，"
+      + "回执里要照实说「只查了前 N 个」。",
+    "⚠️ **不认 md 的引用式链接**（`[a][ref]` + 底部 `[ref]: path`）：那要两段关联，而认一半比不认更糟。",
+  ].join("\n"),
   input: { path: z.string() },
   http: { route: "file_refs", method: "GET" },
-  run: async ({ path }, c) => envelope({ path, referencedBy: await referencesOf(p(c), path) }),
+  /* ⚠️ `truncated` 一路带到界面 —— **「只查了前 N 个文件」和「这个文件没人引用」
+     在一个空列表上长得一模一样**，而前者是「我没查完」，后者是一个结论。 */
+  run: async ({ path }, c) => {
+    const r = await referencesOf(p(c), path);
+    return envelope({ path, referencedBy: r.refs, truncated: r.truncated, scanLimit: WALK_MAX },
+      [], { count: r.refs.length });
+  },
 });
 
 defineCap({
