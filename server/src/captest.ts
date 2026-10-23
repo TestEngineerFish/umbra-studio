@@ -481,11 +481,15 @@ console.log("\n⑯ 品牌名散不散（2026-10-22）");
   const ext = (bld.mac?.extendInfo ?? {}) as Record<string, string>;
 
   /* ── ⓐ 显示层：英文系统的 Finder / Dock 读 Info.plist 这两个键 ── */
-  ok(ext["CFBundleDisplayName"] === B.displayNameEn,
-     "`CFBundleDisplayName` 等于 `displayNameEn`（英文系统的 Finder / Dock 显示它）",
-     `${ext["CFBundleDisplayName"]} vs ${B.displayNameEn}`);
-  ok(ext["CFBundleName"] === B.displayNameEn,
-     "`CFBundleName` 等于 `displayNameEn`（菜单栏兜底，`setName` 失败时就靠它）",
+  /* ⚠️ 2026-10-23 跟着 `brand.ts` 改名：`displayNameEn` → `bundleDisplayName`。
+     **改的不只是名字，是语义** —— plist 里这两个键**只有一份、所有语言环境共用**
+     （没有 `.lproj` / `InfoPlist.strings`），所以「英文那一份」这个说法不成立。
+     ⏳ 真要分语言得加 `InfoPlist.strings`，那时英文那份读 `studioNameEn`。 */
+  ok(ext["CFBundleDisplayName"] === B.bundleDisplayName,
+     "`CFBundleDisplayName` 等于 `bundleDisplayName`（Finder / Dock 显示它，**不分语言**）",
+     `${ext["CFBundleDisplayName"]} vs ${B.bundleDisplayName}`);
+  ok(ext["CFBundleName"] === B.bundleDisplayName,
+     "`CFBundleName` 等于 `bundleDisplayName`（菜单栏兜底，`setName` 失败时就靠它）",
      `${ext["CFBundleName"]}`);
 
   /* ── ⓑ 「打开方式」右键菜单里那两行 + 包描述 ── */
@@ -531,21 +535,26 @@ console.log("\n⑯ 品牌名散不散（2026-10-22）");
   ok((bld.artifactName ?? "").startsWith(B.studioNameEn),
      "`artifactName` 以 `studioNameEn`（ASCII）开头", String(bld.artifactName));
 
-  /* ── ⓔ `productNameEn` 的露出面 ──
-     sam 2026-10-22：英文名定下来之前 `Changweique` **不对外露出**，英文环境也显示中文名。
-     所以它在仓库里**只许出现在两处**：`brand.ts` 自己，和上面那个 `artifactName`。
-     ⚠️ 这一条是**白名单不是黑名单**（§M14-3 同一条理由）——
-     黑名单的话「以后哪里又用了一次」不会有任何东西红。 */
-  const { execFileSync } = await import("node:child_process");
-  let hits: string[] = [];
-  try {
-    hits = execFileSync("git", ["grep", "-l", B.productNameEn, "--", "*.ts", "*.tsx", "*.mjs", "*.cjs", "*.json", "*.html", "*.css"],
-                        { cwd: R, encoding: "utf8" }).trim().split("\n").filter(Boolean);
-  } catch { /* git grep 一个都没找到时退非零 */ }
-  const allowEn = new Set(["server/src/shared/brand.ts", "shell/package.json", "server/src/captest.ts"]);
-  const leak = hits.filter((f) => !allowEn.has(f));
-  ok(leak.length === 0, `**\`${B.productNameEn}\` 没有露出到白名单以外**（英文名还没定，露出一次用户就会记住它）`,
-     leak.length ? leak.join(" · ") : `只在 ${hits.length} 处白名单文件里`);
+  /* ── ⓔ `productNameEn` 的**用处**（2026-10-23 改）──
+     ⚠️ **这一节换了钉法，而换的理由值得记。**
+     原来它钉的是「那个拼音占位 **不许**露出到白名单以外」，依据是
+     sam 2026-10-22 那条「英文名定下来之前不对外露出」。
+     **sam 2026-10-23 定了英文名 Quetail，那条规则的理由就消失了** ——
+     一条判据的依据没了，它就不该靠惯性留着（留着的话下一个人会以为
+     「英文名还是不许露出」，而那是假的）。
+     ⚠️ **换成什么不换成什么**：不钉 `"Quetail"` 这个新字面串（那只是把一个会过期的
+     字面串换成另一个），改成钉**它的消费链没断** —— 这才是这个常量存在的理由。
+     > **判据钉的是长期约束，不是一次性的迁移检查。**
+     「全仓旧占位 0 处」属于后者：它下次改名又要改一次，所以那一条
+     **改完当场 `git grep` 确认就够，不留长期判据**。 */
+  ok(B.studioNameEn.startsWith(B.productNameEn),
+     "**`studioNameEn` 真的由 `productNameEn` 派生**（不是另写一个字面串 —— 两处写着就会分叉）",
+     `${B.studioNameEn} ← ${B.productNameEn}`);
+  ok(/^[\x20-\x7E]+$/.test(B.studioNameEn),
+     "**`studioNameEn` 是纯 ASCII** —— 它进安装包文件名，而 win 的分发物是 `.zip`（`ziptest` 钉着中文文件名要靠 bit 11）",
+     B.studioNameEn);
+  ok(!/[\\/:*?"<>|]/.test(B.studioNameEn),
+     "而且不含文件名非法字符（它直接拼进 `artifactName`）", B.studioNameEn);
 
   /* ── ⓕ 中文间距规则（geek-99 2026-10-22，全端统一）──
      「长尾雀」挨着汉字或中文标点**不留空格**，挨着英文或数字留**一个**空格。

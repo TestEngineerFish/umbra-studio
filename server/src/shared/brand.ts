@@ -43,14 +43,17 @@
 /** 对外产品名（中文，已定）。 */
 export const productName = "长尾雀";
 
-/** 对外英文名。⚠️ **sam 还没定，这是占位**。
+/** 对外英文名（**sam 2026-10-23 定**，geek-99 转达）：**Quetail**，读作 "kwe-tail"。
  *
- *  ⚠️⚠️ **它不对外露出**（sam 2026-10-22 追加的规则）：英文名定下来之前，
- *  **英文环境也显示「长尾雀」**。所以这个常量**只用在「必须是 ASCII、写不了中文」的地方**，
- *  本仓库目前就**一处**：安装包文件名（`artifactName`，见 `studioNameEn`）。
- *  凡是**显示**给人看的英文场合一律读 `displayNameEn`，不读这一个。
- *  > **一个还没定的名字，露出去就等于定了** —— 用户看过一次就会记住并开始用它称呼产品。 */
-export const productNameEn = "Changweique";
+ *  ⚠️ **原来这里是一个拼音占位，连同「不对外露出」那条规则一起作废。**
+ *  那条规则的理由是「一个还没定的名字，露出去就等于定了」—— 名字定了，理由就没了。
+ *  `captest` ⓔ 原来钉的是「它不许露出到白名单以外」，现在改成钉**它的消费链没断**
+ *  （见那一节的注释）。
+ *
+ *  ⚠️ **它必须是纯 ASCII、不含空格以外的符号** —— 它要进安装包文件名
+ *  （`studioNameEn` → `artifactName`），而 win 的分发物是 `.zip`，
+ *  `ziptest` 钉着「中文文件名要靠 bit 11，不是所有解压器都认」。 */
+export const productNameEn = "Quetail";
 
 /** 昵称（sam 2026-10-22 跟着改名一起给的）。
  *  ⚠️ **这一轮只加在这里，别处一处都不用** —— 一个还没想好用在哪的名字，
@@ -74,15 +77,27 @@ export const studioName = `${productName} Studio`;
  *  安装包是一次性的分发物（不留在用户的 `/Applications` 里），所以改它不留孤儿。 */
 export const studioNameEn = `${productNameEn} Studio`;
 
-/** **英文环境下显示的产品名。** 现在刻意等于中文名（sam 2026-10-22）。
+/** **`Info.plist` 那两个键（`CFBundleDisplayName` / `CFBundleName`）显示的名字。**
  *
- *  英文名定下来之后**只改这一行**指向 `productNameEn` —— 这就是这个字段存在的全部理由：
- *  让「英文环境显示什么」成为**一处开关**，而不是散在英文文案、Info.plist、
- *  权限说明、邮件模板里的几十处判断。
- *  ⚠️ 本仓库界面是中文的，所以今天它的消费者是 **Info.plist**
- *  （`CFBundleDisplayName` / `CFBundleName` —— 英文系统的 Finder / Dock 读这两个）。
- *  它**不等于** `studioNameEn`：后者是文件名用的 ASCII 串，前者是给人看的。 */
-export const displayNameEn = `${productName} Studio`;
+ *  ⚠️⚠️ **2026-10-23 改名 + 改语义，而「改语义」才是重点。**
+ *  它原来叫 `displayNameEn`，注释写着「英文环境下显示的产品名」，
+ *  而 `shell/package.json` 里 `CFBundleDisplayName` **只有一份、所有语言环境共用**
+ *  —— 没有 `.lproj` / `InfoPlist.strings` 分语言。
+ *  所以那个名字说的是一件**不成立的事**：它不是「英文那一份」，它是「唯一那一份」。
+ *
+ *  geek-99 2026-10-23 的两条指示在这个事实下**互相矛盾**：
+ *  「`displayNameEn` 改为指向 `productNameEn`」+「只有一份就保持长尾雀」——
+ *  两条一起做会让 `captest` 那条 `CFBundleDisplayName === displayNameEn` 的对账判据必红，
+ *  而且会让这个常量**失去它唯一的消费者**（那正是本项目栽过的形状：
+ *  `buildIndex` 往项目里拷 `select-bridge.js`，而读它的人是零个）。
+ *  > **一个常量指向一个没人读的值，比没有这个常量更坏** —— 它让下一个人以为改它有用。
+ *
+ *  所以按 geek-99 那条**带条件的**指示执行（只有一份 → 保持中文名），
+ *  并把名字改对：**它是 bundle 的显示名，不分语言**。
+ *  ⏳ 真要分语言（中文系统「长尾雀 Studio」/ 英文系统「Quetail Studio」）得加
+ *  `.lproj` 下的 `InfoPlist.strings`，那是一件**要打包验**的新工作（`doc/12` 记一条）。
+ *  按「一个还没用上的名字先别加」，英文那一份**现在不加常量** —— 要用时读 `studioNameEn`。 */
+export const bundleDisplayName = studioName;
 
 /** **冻结的应用身份名** —— 它决定 `.app` 的文件名、`userData` 目录、TCC 授权与钥匙串归属。
  *
@@ -97,7 +112,7 @@ export const displayNameEn = `${productName} Studio`;
  *  而**没有任何东西会提醒**。
  *  > **把「这个值为什么不能改」写在它旁边，比把它写对一次更有用。**
  *
- *  显示给人看的名字一律走 `studioName` / `displayNameEn`，**不读这一个**。 */
+ *  显示给人看的名字一律走 `studioName` / `bundleDisplayName`，**不读这一个**。 */
 export const appIdentityName = "Umbra Studio";
 
 /** 账号与服务那一族的名字（账号中心 / PC / iOS / Android / 服务端 / Console / 官网）。

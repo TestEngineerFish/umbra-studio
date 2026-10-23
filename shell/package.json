@@ -23,7 +23,7 @@
   },
   "build": {
     "appId": "com.umbrastudio.app",
-    "_品牌说明": "productName 与 appId 冻结在改名之前的值 —— 它们决定 .app 文件名与应用身份（userData / TCC 授权 / 钥匙串），改了用户 /Applications 里会多一个孤儿、已装的数据也会失联。显示层走 CFBundleDisplayName / CFBundleName（读 brand.ts 的 displayNameEn）。分发物文件名用 ASCII 的 productNameEn（拼音占位），理由是 win 的分发物是 zip 而 ziptest 钉着中文文件名要靠 bit 11。",
+    "_品牌说明": "productName 与 appId 冻结在改名之前的值 —— 它们决定 .app 文件名与应用身份（userData / TCC 授权 / 钥匙串），改了用户 /Applications 里会多一个孤儿、已装的数据也会失联。显示层走 CFBundleDisplayName / CFBundleName（读 brand.ts 的 bundleDisplayName）。分发物文件名用 ASCII 的 productNameEn（2026-10-23 sam 定为 Quetail，在那之前是一个拼音占位），理由是 win 的分发物是 zip 而 ziptest 钉着中文文件名要靠 bit 11。⚠️ CFBundleDisplayName / CFBundleName 只有这一份、所有语言环境共用（没有 .lproj），所以它读的是 bundleDisplayName（中文全名）而不是英文名；真要分语言得加 InfoPlist.strings，那是一件要打包验的新工作。",
     "_electronFuses说明": "见下面 electronFuses 的三条；放在这里是因为 JSON 不能写注释，而这几个值的理由比值本身长。① enableNodeOptionsEnvironmentVariable=false：关掉 NODE_OPTIONS=--require 这条注入口。已核 sandbox.ts 的 env 是白名单、故意不透传 NODE_OPTIONS（issue #24），所以关掉不碰现有功能。② enableNodeCliInspectArguments=false：关掉 --inspect 挂调试器进主进程。已核 execArgv 里只有 --permission / --allow-fs-read / --require。③ runAsNode 刻意不关（issue #138 第二步要拍板）：插件 B 面的 runner 和通道 B 的 MCP 入口都靠 ELECTRON_RUN_AS_NODE=1 起，关了打包版两处都静默失效，而开发模式一定测不出来（fuses 只写进打包的二进制）。出路是改用 Electron 的 utilityProcess.fork，但 Node 的 --permission 在 utility process 里是否同样生效没有实测过 —— 那是这条路最大的未知，要先 spike。",
     "electronFuses": {
       "enableNodeOptionsEnvironmentVariable": false,
@@ -153,7 +153,7 @@
         "dir"
       ]
     },
-    "artifactName": "Changweique Studio-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Quetail Studio-${version}-${os}-${arch}.${ext}",
     "compression": "normal",
     "beforePack": "./beforePack.cjs",
     "afterPack": "./afterPack.cjs",
