@@ -35,9 +35,22 @@ const note = (s) => console.log(`  · ${s}`);
  *  接不上渲染进程、后面二十条一条没跑，而它打的是 `✓ 打包产物 24/24`、退出码 0。
  *  > **一个带「为什么停下」参数的收尾函数，自己就知道这一轮没跑完 —— 而它还是打了对勾。**
  *  （`selftest` 的汇总行 7c-2b 栽过同一个形状：那一类为空时「零 error」仍然成立。） */
+/** 起过的实例，**全记在这儿** —— `bye` 要靠它收尾（见下）。 */
+const spawned = [];
 const bye = (why) => {
+  /* ⚠️⚠️ **中止路也要清进程**（2026-10-24 实测踩到）。
+     七条 `bye(...)` 里原来只有一条走了 `shut()`，其余五条把实例留着 ——
+     而**走到中止路的时候一定有东西没收**，那恰恰是最需要清理的一类。
+     实测后果：三个打包产物的实例在后台监听着 `127.0.0.1` 的三组端口，
+     是我自己几轮 packtest 留下的。
+     > **「清理必须跑，判据可以不跑」这条纪律 `uitest` 做成了 `uncaughtException` 兜底，
+     > 而这里原来只在「正常路径」上清。**
+     修法不是在五处各加一行（**漏一处就静默复发**，§162 那条），是让 `bye` 自己清。
+     ⚠️ 同步 `kill`：`bye` 后面紧跟 `process.exit`，await 不到。 */
+  for (const pr of spawned) { try { pr.kill(); } catch { /* 已经退了 */ } }
   const okAll = fail === 0 && !why;
-  console.log(`\n${okAll ? "✓" : "✗"} 打包产物 ${pass}/${pass + fail}${why ? ` · **没跑完**：${why}` : ""}\n`);
+  console.log(`\n${okAll ? "✓" : "✗"} 打包产物 ${pass}/${pass + fail}${why ? ` · **没跑完**：${why}` : ""}`
+    + (spawned.length ? `（起过 ${spawned.length} 个实例，已收）` : "") + "\n");
   process.exit(okAll ? 0 : 1);
 };
 
@@ -305,6 +318,7 @@ const readLog = async (after = 0) => {
 const launch = async (extraArgs = []) => {
   const before = (await logLines()).length;   // 只认比这更新的那一行，见 `readLog`
   const proc = spawn(exeCopy, [`--user-data-dir=${userData}`, ...extraArgs], { env, cwd: sandbox, stdio: ["ignore", "pipe", "pipe"] });
+  spawned.push(proc);   // ⚠️ 登记给 `bye` 收尾 —— 中止路也要清，见那里的说明
   proc.stderr?.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => errLines.push(l)));
   proc.stdout?.on("data", (d) => String(d).split("\n").filter(Boolean).forEach((l) => errLines.push(l)));
   /* ⚠️ 进程提前退出要**当场说出来**：它退出之后下面那些等待只会等到超时，
@@ -562,6 +576,7 @@ console.log("\n四 · 打包版当 MCP server 起（秘书接入那条路）");
      那时这条判据红在一个错的理由上。 */
   ok(first.exited === null || first.exited === undefined, "（前提）第一个实例真的在跑着", `exited=${String(first.exited)}`);
   const second = spawn(exeCopy, [`--user-data-dir=${userData}`], { env, stdio: "ignore" });
+  spawned.push(second);
   const code = await new Promise((res) => { const t = setTimeout(() => { second.kill(); res("6 秒还没退"); }, 8000); second.on("exit", (c) => { clearTimeout(t); res(c); }); });
   ok(code === 0, "有实例在跑时，第二个立刻退出（单实例锁）", `退出码 ${code}`);
   await shut(first);
