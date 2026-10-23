@@ -19,8 +19,8 @@
     "_说明": "echo 'build 字段的两段说明在 shell/build-说明.md —— electron-builder 26.15.3 拒绝配置里的未知键，所以它们不能住在 build 对象里'"
   },
   "devDependencies": {
-    "electron": "^44.0.0",
-    "electron-builder": "^26.0.12"
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
   },
   "build": {
     "appId": "com.umbrastudio.app",
@@ -109,7 +109,7 @@
       "gatekeeperAssess": false,
       "extendInfo": {
         "CFBundleDisplayName": "长尾雀 Studio",
-        "CFBundleName": "长尾雀 Studio",
+        "CFBundleName": "Umbra Studio",
         "CFBundleDocumentTypes": [
           {
             "CFBundleTypeName": "Folder",

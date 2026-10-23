@@ -518,9 +518,17 @@ console.log("\n⑯ 品牌名散不散（2026-10-22）");
   ok(ext["CFBundleDisplayName"] === B.bundleDisplayName,
      "`CFBundleDisplayName` 等于 `bundleDisplayName`（它是**兜底值** —— 各语言那一份在 `.lproj`，`packtest` 验）",
      `${ext["CFBundleDisplayName"]} vs ${B.bundleDisplayName}`);
-  ok(ext["CFBundleName"] === B.bundleDisplayName,
-     "`CFBundleName` 等于 `bundleDisplayName`（菜单栏兜底，`setName` 失败时就靠它）",
-     `${ext["CFBundleName"]}`);
+  /* ⚠️⚠️⚠️ **这一条 2026-10-24 从「等于显示名」翻成「等于身份名」，而它钉的是一条真缺陷。**
+     Electron 按 `CFBundleName` 拼 helper 路径（`Contents/Frameworks/<它> Helper.app`），
+     而 helper 目录名跟着**冻结的 `productName`**。改名把 `CFBundleName` 换成中文之后，
+     **改名之后打的每一个包都起不来**（`FATAL … Unable to find helper app`，退出码 133），
+     而没人发现 —— `packtest` 第二关在那之后没人跑过。
+     > **一个键同时被当成「称呼」和「身份」，必然在其中一个上是错的。**
+     所以这条闸的判准是 `appIdentityName`（和 `appId` / `productName` 同一类：身份）。
+     ⚠️ 菜单栏显示名由 `app.setName()` 在运行期给，不靠这个键 —— 钉回身份名不会让用户看见代号。 */
+  ok(ext["CFBundleName"] === B.appIdentityName,
+     "**`CFBundleName` 等于 `appIdentityName`**（Electron 拿它找 helper —— 它是**身份**，不是称呼）",
+     `${ext["CFBundleName"]} vs ${B.appIdentityName}`);
 
 
   /* ── 分语言那张表自己的性质（M17-1）──

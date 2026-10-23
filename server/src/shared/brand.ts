@@ -77,8 +77,32 @@ export const studioName = `${productName} Studio`;
  *  安装包是一次性的分发物（不留在用户的 `/Applications` 里），所以改它不留孤儿。 */
 export const studioNameEn = `${productNameEn} Studio`;
 
-/** **`Info.plist` 那两个键（`CFBundleDisplayName` / `CFBundleName`）显示的名字。**
+/** **`Info.plist` 的 `CFBundleDisplayName` 显示的名字。**
  *
+ *  ⚠️⚠️⚠️ **`CFBundleName` 不读这个常量，它读 `appIdentityName`** —— 2026-10-24 查出来的，
+ *  而这是一条**改名那一批引入、而且让改名之后打的每一个包都起不来**的缺陷：
+ *
+ *  Electron 按 **`CFBundleName`** 拼 helper 的路径
+ *  （`Contents/Frameworks/<CFBundleName> Helper.app`），而 helper 的目录名跟着
+ *  **冻结的 `productName`**（`Umbra Studio`）。改名把 `CFBundleName` 换成「长尾雀 Studio」之后，
+ *  它去找 `长尾雀 Studio Helper.app` —— 不存在 →
+ *  `FATAL:electron_main_delegate_mac.mm:66 Unable to find helper app`，**退出码 133**。
+ *
+ *  实测对照（同一台机器）：`/Applications` 里 10-22 那份 `CFBundleName = Umbra Studio`，**跑得好好的**；
+ *  新打的 `CFBundleName = 长尾雀 Studio`，**崩**；把它改回去重签 → **退出码 0、FATAL 消失**。
+ *
+ *  > **这个文件开头那句「显示层走 `CFBundleDisplayName` / `CFBundleName`」是错的一半** ——
+ *  > `CFBundleName` 同时被两个人以两种身份读：系统拿它当**菜单栏显示名**，
+ *  > Electron 拿它当**找 helper 的键**。
+ *  > **一个键同时被当成「称呼」和「身份」，必然在其中一个上是错的**（Q77 那条谓词教训的同族，
+ *  > 只不过这次两个读者在两个仓库里，而其中一个不是我们写的）。
+ *
+ *  ⚠️ 所以 `CFBundleName` 和 `appId` / `productName` 是同一类：**身份，不许跟着改名动**。
+ *  `captest` 有一条闸钉着它等于 `appIdentityName`。
+ *  ⚠️ 菜单栏的显示名由 `app.setName()` 在运行期给（`shell/main.mjs`），不靠这个键 ——
+ *  所以把它钉回身份名**不会让用户看见英文代号**。
+ *
+ *  ### 下面是 2026-10-23 那一轮的记录（留档）
  *  ⚠️⚠️ **2026-10-23 改名 + 改语义，而「改语义」才是重点。**
  *  它原来叫 `displayNameEn`，注释写着「英文环境下显示的产品名」，
  *  而 `shell/package.json` 里 `CFBundleDisplayName` **只有一份、所有语言环境共用**

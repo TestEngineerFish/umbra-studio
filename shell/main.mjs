@@ -32,8 +32,20 @@ const IS_MCP = process.argv.includes("--mcp");
 const LEGACY_DATA_DIR = "Umbra Studio";
 
 /* 必须在 ready 之前、且在任何 getPath("userData") 之前 —— 同步、不依赖任何 import。
-   `appData`（`~/Library/Application Support`）本身不含应用名，所以不受 setName 影响。 */
-app.setPath("userData", join(app.getPath("appData"), LEGACY_DATA_DIR));
+   `appData`（`~/Library/Application Support`）本身不含应用名，所以不受 setName 影响。
+
+   ⚠️⚠️ **给 `--user-data-dir` 让路**（2026-10-24 查出来的）。Chromium 自己认这个参数，
+   而上面这一句会**静默盖掉它** —— 于是 `packtest` 传了它、以为自己跑在一个全新的状态目录里，
+   其实和用户那份共用同一个 `userData`，**也就共用同一把单实例锁**（见 `LEGACY_DATA_DIR` 的注释）。
+   后果是：用户的 Studio 正开着的时候，`packtest` 起的那个实例走到上面第 65 行
+   `requestSingleInstanceLock()` 拿不到锁 → `process.exit(0)`，
+   而 Playwright 把它报成 **`Process failed to launch!`** —— 一句和真因毫无关系的话。
+   > **一个被静默忽略的命令行参数，会让依赖它的隔离「看起来生效」。**
+   > 而它的症状出现在**另一个进程的另一句报错**里。
+   ⚠️ 不传这个参数时行为一个字不变（改名安全那条理由照旧） —— 只有显式传了才让路。 */
+if (!process.argv.some((a) => a === "--user-data-dir" || a.startsWith("--user-data-dir="))) {
+  app.setPath("userData", join(app.getPath("appData"), LEGACY_DATA_DIR));
+}
 
 /** 显示用的应用名。**只有这一处读 brand**，其余地方一律用 `app.getName()`。
  *  ⚠️ 为什么失败不兜一个字面量：兜了就是第二份品牌名。打包版里 `app.getName()`

@@ -12,7 +12,7 @@
  */
 import { _electron as electron } from "../server/node_modules/playwright-core/index.mjs";
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync, rmSync, cpSync, mkdtempSync, realpathSync, readdirSync } from "node:fs";
+import { existsSync, statSync, rmSync, cpSync, mkdtempSync, realpathSync, readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -130,6 +130,33 @@ if (IS_MAC) {
      "**每种语言的 `InfoPlist.strings` 都在，而且 `plutil` 解析出来等于 `brand.ts` 那张表**",
      miss.length || wrong.length ? `缺 ${miss.join("·") || "无"} · 对不上 ${wrong.join("·") || "无"}`
        : `${Object.keys(B.bundleDisplayNameByLocale).length} 种：${Object.entries(B.bundleDisplayNameByLocale).map(([k, v]) => `${k}=${v}`).join(" · ")}`);
+
+  /* ── ⚠️⚠️ **`CFBundleName` 必须等于冻结的身份名**（2026-10-24，一条真缺陷的闸）──
+     Electron 按它拼 helper 路径（`Contents/Frameworks/<它> Helper.app`），
+     而 helper 目录名跟着 `productName`。改名那一批把它换成中文 →
+     **改名之后打的每一个包都起不来**（`FATAL … Unable to find helper app`，退出码 133），
+     而没人发现，因为这一节下面「真起一次」在那之后没人跑过。
+     > **一个键同时被当成「称呼」和「身份」，必然在其中一个上是错的。**
+     ⚠️ 这条和下面「真起一次」**都要有**：这一条说得出**为什么**崩（省掉一轮排查），
+     那一条保证**没说出来的崩也会被抓到**。两条不是重复，是「诊断」和「兜底」。 */
+  ok(rawOf("CFBundleName") === B.appIdentityName,
+     "**`CFBundleName` 等于冻结的身份名**（Electron 拿它找 helper —— 本地化或改名都会让包起不来）",
+     `${rawOf("CFBundleName")} vs ${B.appIdentityName}`);
+  /* 反面：`.lproj` 里**不许**出现 `CFBundleName` —— 本地化身份键 =
+     「只在某些系统语言下起不来」，比每个包都起不来**更难查**。 */
+  const locNamed = Object.keys(B.bundleDisplayNameByLocale).filter((loc) => {
+    const f = join(TARGET, "Contents", "Resources", `${loc}.lproj`, "InfoPlist.strings");
+    /* ⚠️⚠️ **判准认真正的键赋值，不认提到它的注释**（2026-10-24 当场栽了一次）。
+       第一版是 `includes("CFBundleName")`，而生成出来的文件里**我自己写了一行注释**
+       「只有 CFBundleDisplayName：CFBundleName 是 Electron 找 helper 的键，不许本地化」——
+       判据被那行注释命中，报「四份里都有」，而那四份里一个赋值都没有。
+       > **判据里出现的字符串，要是它检查的那个东西本身，不是提到它的文字**（§106 同族，
+       > 而这次是我亲手给它造的样本）。 */
+    try { return existsSync(f) && /^\s*CFBundleName\s*=/m.test(readFileSync(f, "utf8")); } catch { return false; }
+  });
+  ok(locNamed.length === 0,
+     "**`.lproj` 里没有 `CFBundleName`**（只本地化显示名 —— 本地化身份键 = 按系统语言随机破坏启动）",
+     locNamed.length ? `这几个里有：${locNamed.join(" · ")}` : "四份都只有 CFBundleDisplayName");
 
   /* ⚠️⚠️ **这一条才是用户那件事**：某个系统语言下，Finder 到底显示什么。
      前面两条只说明「文件写对了」，而**写对了不等于匹配得上** ——

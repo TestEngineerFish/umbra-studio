@@ -52,9 +52,17 @@ async function writeLocalizedNames(app) {
   for (const [loc, name] of Object.entries(byLocale)) {
     const dir = `${loc}.lproj`;
     if (!have.has(dir)) { missing.push(dir); continue; }
+    /* ⚠️⚠️ **只本地化 `CFBundleDisplayName`，绝不碰 `CFBundleName`**（2026-10-24）。
+       `CFBundleName` 是 Electron 找 helper 的键
+       （`Contents/Frameworks/<CFBundleName> Helper.app`），而 helper 目录名跟着
+       冻结的 `productName`。本地化它 = 在某些系统语言下让 Electron 去找一个不存在的 helper
+       → `FATAL … Unable to find helper app`，退出码 133。
+       > **本地化一个被当成身份用的键，等于按用户的系统语言随机破坏启动。**
+       改名那一批把 `Info.plist` 里那一份换成中文时就已经踩了这个（每个包都起不来）；
+       这里差一点把它变成「只在中文系统上起不来」—— **那更难查**。 */
     const body = `/* 自动生成（shell/afterPack.cjs）—— 出处 server/src/shared/brand.ts */\n`
-      + `CFBundleDisplayName = ${JSON.stringify(name)};\n`
-      + `CFBundleName = ${JSON.stringify(name)};\n`;
+      + `/* 只有 CFBundleDisplayName：CFBundleName 是 Electron 找 helper 的键，不许本地化 */\n`
+      + `CFBundleDisplayName = ${JSON.stringify(name)};\n`;
     mkdirSync(join(res, dir), { recursive: true });
     writeFileSync(join(res, dir, "InfoPlist.strings"), body, "utf8");
     wrote.push(`${dir}=${name}`);
