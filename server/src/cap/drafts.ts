@@ -2,14 +2,12 @@ import { z } from "zod";
 import { join } from "node:path";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
-import { createFolder, duplicateDraft, isDesignProject } from "../project.js";
-import { resolveDraft } from "../locate.js";
+import { createFolder, duplicateDraft } from "../project.js";
 import {
-  deleteDraft, deleteDraftImpact, emptyTrash, listTrash, moveDraft, purgeTrash, renameDraft, restoreDraft,
+  deleteDraftImpact, emptyTrash, isDcPath, listTrash, purgeTrash, restoreDraft,
 } from "../refs.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
-import { assetDir } from "../statedirs.js";
 
 /** 稿件生命周期（M11-7 第一批搬）。
  *
@@ -57,16 +55,16 @@ const p = (c: CapCtx) => c.project!;
    > **退场一件 dc 能力，不该顺手把「能新建文件」一起退掉** ——
    > 而这两件事在这个入口上是同一颗按钮。 */
 
-defineCap({
-  name: "rename_draft", title: "给稿改名", scope: "project",
-  summary: "改名并**把引用它的稿一起改写**。所以不要用系统的文件管理器改名 —— 那样引用会断。",
-  input: { path: z.string().describe("当前稿的相对路径"), newName: z.string().describe("新基名，不用加 .dc.html") },
-  http: { method: "POST" },
-  run: async ({ path, newName }, c) => {
-    const r = await renameDraft(p(c), path, newName);
-    return envelope(r, [], { referencesUpdated: r.referencesUpdated });
-  },
-});
+/* ⚠️⚠️ **`rename_draft` / `move_draft` 2026-10-24 并进 `move_file`**（M16-8 ①，geek-99 定）。
+   并的理由不是「两件长得像」，是**它们回答的是同一个问题而只有一件被人调**：
+   前端的改名 / 移动 / 拖拽走的全是 `file_move`，而这两件的调用方是零。
+   ⚠️ 而「并」不等于「删」：它们真正做的那件事（改写 `<dc-import name=…>` 的引用）
+   **`move_file` 原来不做** —— 探针读数：`delete_impact` 说 1 处引用它，
+   `file_move` 改完名引用方仍写着旧名、回执 `rewrote: []`。
+   现在那一段住在 `refs.ts` 的 `dcImportsFollow`，由 `moveFile` 调，
+   而且落盘改走第二条写入口（原来是 `writeAtomic` 直写，**没有快照也没有并发闸**）。
+   > **并掉一件能力之前要先量它做了什么，而不是看它的名字像不像另一件。**
+   闸的对账见 `moveFile` 里逐条的注释：只读闸和目标端的 `isInsideReal` 是**补上的**。 */
 
 defineCap({
   name: "duplicate_draft", title: "复制一份稿", scope: "project",
@@ -76,17 +74,6 @@ defineCap({
   run: async ({ path, newName }, c) => {
     const r = await duplicateDraft(p(c), path, newName ? { newName } : {});
     return envelope(r, [], { newPath: r.newPath });
-  },
-});
-
-defineCap({
-  name: "move_draft", title: "把稿移到别的目录", scope: "project",
-  summary: "移动并**把引用它的稿一起改写**。同 rename_draft：不要用文件管理器搬。",
-  input: { path: z.string(), targetDir: z.string().describe("目标目录相对项目根的路径") },
-  http: { method: "POST" },
-  run: async ({ path, targetDir }, c) => {
-    const r = await moveDraft(p(c), path, targetDir);
-    return envelope(r, [], { referencesUpdated: r.referencesUpdated });
   },
 });
 
@@ -122,7 +109,7 @@ defineCap({
        文件在、只是这件能力不管它。
        ⚠️ 用**已有的** `E_BAD_INPUT`，不新造码（和门面那道 `safeParse` 同一条口径）。 */
     const rel = path;
-    if (!/\.dc\.html$/i.test(rel)) {
+    if (!isDcPath(rel)) {
       throw new ToolError(err(X.BAD_INPUT, rel, { kind: "file", name: rel },
         "这件只对 `.dc.html` 成立 —— 它查的是 `<dc-import name=…>` 那种按组件名的引用",
         { fix: "按路径的引用（href / src / url()）问 `list_file_refs`；它对 html / css / svg / md 都成立。" }));
@@ -132,20 +119,22 @@ defineCap({
   },
 });
 
-defineCap({
-  name: "delete_draft", title: "把稿移进回收站", scope: "project",
-  summary: "不是真删 —— 进项目的回收站，可以恢复。建议先用 get_delete_impact 看影响面。",
-  /* ⚠️ `file` 是**宽松的**：可以给相对路径，也可以只给文件名 —— `resolveDraft` 负责认。
-     S1 稿件索引的行内删除就只有文件名（`ui/S1` 第 759 行）。
-     M11-7 第一批把入参改成了严格的 `path`，**当场把 S1 弄坏了**（见 `00` §九十）。 */
-  input: { file: z.string().describe("稿的相对路径或文件名") },
-  http: { method: "POST" },
-  run: async ({ file }, c) => {
-    const proj = p(c);
-    const r = await deleteDraft(proj, await resolveDraft(proj, file));
-    return envelope(r, [], { trashPath: r.trashPath });
-  },
-});
+/* ⚠️⚠️ **`delete_draft` 2026-10-24 并进 `trash_file`**（M16-8 ③，geek-99 定）。
+   两件都是「挪进项目回收站、可恢复」，而回收站的布局本来就是**同一套**
+   （`<时间戳>/<原相对路径>`，issue #81 那一轮统一的）。
+   调用方：前端走 `file_trash`；`delete_draft` 原来唯一的调用方是 `ui/S1-稿件索引.dc.html`，
+   而那份稿 C3（M16-7）已经删了 —— **它的调用方是零**。
+
+   ⚠️ **并掉之后少了一样，照实说**：`delete_draft` 的回执带 `impact`
+   （有几处 `<dc-import>` 会断）。那件事现在**单独问** `delete_impact` ——
+   M16-8 ⑤ 刚把前端改成这么做，而且必须这么做：
+   > **`delete_impact` 要在文件还在盘上的时候问** —— 实测删完再问它抛「找不到稿」。
+   把影响面绑在「删」的回执里，看着方便，实际上是让一个破坏性动作同时承担一个查询，
+   而两者对「文件还在不在」的要求正好相反。
+
+   ⚠️ `delete_draft` 的 `file` 原来是**宽松的**（给文件名也认，`resolveDraft` 负责找），
+   而 `trash_file` 的 `path` 是严格相对路径。那半宽松没有丢 ——
+   它搬到了 `restore_trashed_by_name` 那一侧（「我只记得文件名」真正发生在**恢复**的时候）。 */
 
 defineCap({
   name: "list_trash", title: "回收站里有什么", scope: "project",
@@ -159,15 +148,30 @@ defineCap({
 });
 
 /* ⚠️ **恢复有两件，不是重叠**（M11-7 第一批误判过，`00` §九十）：
-   - `restore_draft`（按**文件名**）：给**行内撤销**用 —— 用户刚删完点「撤销」，
-     他手上只有文件名，没有 trashPath。S1 稿件索引就是这么用的。
+   - `restore_trashed_by_name`（按**文件名**）：**只记得名字**的时候用 ——
+     「把我刚删的 需求.md 恢复一下」，手上没有 trashPath。
    - `restore_trashed`（按 **trashPath**）：给**回收站列表**用 —— 那里每一项都带着自己的
      trashPath，按它恢复才不会在同名多次删除时选错。
-   合成一条就得二选一，而两边都有真实用途。 */
+   合成一条就得二选一，而两边都有真实用途。
+
+   ⚠️⚠️ **改名的理由，以及顺手更正它原来的说明**（M16-8 ③，2026-10-24）。
+   旧名 `restore_draft` 带着「稿」字，而它收的从来是**任何文件的文件名** ——
+   `listTrash` 把两条删除路径的回收站读成同一套，所以它一直能恢复 `.md` 和图片。
+   新名字和 `trash_file` / `restore_trashed` 对齐（`*_trashed*` 一族）。
+
+   ⚠️ 它原来的 summary 写着「**行内撤销用它**」—— 那句话现在是假的，而且
+   **它指的那个调用方已经不存在了**（`ui/S1-稿件索引.dc.html`，C3 删了）。
+   实测现在的行内撤销**一次都不调恢复**：删除是**延后落实的**
+   （`Workbench.tsx` 的 `commitTrash`，离开那一行时才真删），所以「撤销」
+   只是把那一行从待删清单里拿掉 —— 文件压根没离开过磁盘。
+   > **一条判据的文案里写着一个前提时，那个前提下线了，文案就开始骗人** ——
+   > 而一件能力的 summary 也一样：它会让下一个人去维护一条没有人走的路。
+   ⚠️ 而延后落实**不是可以顺手改掉的**：M16-8 ⑤ 那句「有 N 处引用它，会断」
+   靠的正是「文件还在盘上」（删完再问 `delete_impact` 实测抛「找不到稿」）。 */
 defineCap({
-  name: "restore_draft", title: "撤销刚才的删除（按文件名）", scope: "project",
-  summary: "在回收站里按文件名找**最近删的那一份**恢复。行内撤销用它 —— 那时用户手上只有文件名。要精确恢复某一版请用 restore_trashed。",
-  input: { file: z.string().describe("被删的稿的文件名") },
+  name: "restore_trashed_by_name", title: "按文件名从回收站恢复", scope: "project",
+  summary: "在回收站里按文件名找**最近删的那一份**恢复。只记得名字时用它。要精确恢复某一版（同名删过多次）请用 restore_trashed。",
+  input: { file: z.string().describe("被删掉的那个文件的文件名") },
   http: { method: "POST" },
   run: async ({ file }, c) => {
     const proj = p(c);
@@ -176,7 +180,8 @@ defineCap({
        同名删过多次时这是唯一合理的语义（用户点的是「撤销刚才那一下」）。 */
     const hit = (await listTrash(proj)).find((t) => t.originalName === base);
     if (!hit) return envelope(null, [{ level: "error", code: "E_TRASH_NOT_FOUND",
-      message: `回收站里没有 ${base}`, where: "(trash)", at: { kind: "key", name: base } } as never]);
+      message: `回收站里没有 ${base}`, where: "(trash)", at: { kind: "key", name: base },
+      fix: "用 list_trash 看回收站里现在有什么；同名删过多次时用它给的 trashPath 调 restore_trashed。" } as never]);
     const r = await restoreDraft(proj, hit.trashPath);
     return envelope(r, [], { restored: r.originalPath });
   },

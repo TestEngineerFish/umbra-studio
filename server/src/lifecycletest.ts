@@ -17,7 +17,8 @@ import { createProject, loadProject, listDrafts, buildProject, updateProject, ar
    > **一件能力退场之后，钉它的判据要么换主体、要么拿掉 —— 而换主体之前要先确认
    > 「它钉的那件事」在新主体上仍然成立。** 这里成立：节点地址与 v1 快照都是写入口给的。 */
 import { writeDraft } from "./write.js";
-import { buildRefGraph, renameDraft, moveDraft, deleteDraft, restoreDraft, listTrash, deleteDraftImpact } from "./refs.js";
+import { buildRefGraph, deleteDraft, restoreDraft, listTrash, deleteDraftImpact } from "./refs.js";
+import { moveFile } from "./files.js";
 import { validateDraft } from "./validate.js";
 import { touchProject, listRecentProjects } from "./workspace.js";
 
@@ -310,8 +311,15 @@ async function step3_checkReferences() {
 async function step4_renameDraft() {
   bar("步骤 4：重命名组件稿");
 
-  const renameR = await renameDraft(p, "PC 按钮.dc.html", "主按钮");
-  ok(`组件重命名：PC 按钮 → 主按钮（修了 ${renameR.referencesUpdated} 处引用）`);
+  /* ⚠️⚠️ **2026-10-24（M16-8 ①）改走 `moveFile`** —— `rename_draft` 并进去了。
+     这一节的判据**一条都没放松**：文件名变了 · 引用方的 `dc-import name` 跟着改了 ·
+     改完没有 `E_IMPORT_MISSING`。变的只有「谁来做」。
+     ⚠️ 读数换了出处：`referencesUpdated` → `dcImports`（按组件名那一栏）。
+     **不读 `rewrote`** —— 那是按路径的引用，是另一种关系，混用的话这一节
+     在 dc 引用一处没改的情况下照样绿。 */
+  const renameR = await moveFile(p, "PC 按钮.dc.html", "主按钮.dc.html");
+  ok(`组件重命名：PC 按钮 → 主按钮（改了 ${renameR.dcImports?.length ?? 0} 处 dc-import 引用）`);
+  if ((renameR.dcImports?.length ?? 0) !== 1) { fail(`dc-import 引用该改 1 处，实际 ${renameR.dcImports?.length ?? 0}`); return; }
 
   // 验证文件名变了
   const oldAbs = join(p.dir, "PC 按钮.dc.html");
@@ -334,8 +342,12 @@ async function step4_renameDraft() {
 async function step5_moveDraft() {
   bar("步骤 5：移动组件稿到子目录");
 
-  const moveR = await moveDraft(p, "主按钮.dc.html", "Components");
-  ok(`组件移动到 Components/（修了 ${moveR.referencesUpdated} 处引用）`);
+  /* 同步骤 4：`move_draft` 并进 `moveFile`。它收的是**完整目标路径**而不是目标目录，
+     所以「重名顺延序号」那一档没了 —— `moveFile` 的口径是**目标已存在就拒**。
+     ⚠️ 这是有意的：顺延序号会让调用方拿到一个它没要求的名字，
+     而它下一步往往就按自己给的那个名字去找。**显式胜过聪明。** */
+  const moveR = await moveFile(p, "主按钮.dc.html", "Components/主按钮.dc.html");
+  ok(`组件移动到 Components/（改了 ${moveR.dcImports?.length ?? 0} 处 dc-import 引用）`);
 
   // 验证文件在新位置
   const oldAbs = join(p.dir, "主按钮.dc.html");
@@ -357,20 +369,20 @@ async function step5_moveDraft() {
      ⚠️ **这里原来是回归盲区**：上面移动的是**组件**稿，它自己没有任何
      `dc-import`，所以 `checkNoMissingImports` 一直全绿。
      而 `dc-import name` 是相对引用方所在目录解析的 —— 页面稿换了目录，
-     它自己那些引用的基准就变了，而 `moveDraft` 原来只改「引用它的稿」。
+     它自己那些引用的基准就变了，而 `move_draft` 原来只改「引用它的稿」。
      **页面稿几乎都引用组件，所以这是最常见的整理动作里最容易中的一刀。** */
   {
-    const mv = await moveDraft(p, "登录页.dc.html", "Pages");
+    const mv = await moveFile(p, "登录页.dc.html", "Pages/登录页.dc.html");
     const movedSrc = await readFile(join(p.dir, "Pages", "登录页.dc.html"), "utf8");
     expect(/name="\.\.\/Components\/主按钮"/.test(movedSrc),
       `**移动后它自己的 dc-import 也改了**：${movedSrc.match(/<dc-import[^>]*name="([^"]*)"/)?.[1] ?? "(没有)"}`);
-    expect(mv.ownImportsUpdated.length === 1,
-      `回执里说清改了自己几条引用：${mv.ownImportsUpdated.length}`);
+    expect((mv.ownDcImports?.length ?? 0) === 1,
+      `回执里说清改了自己几条引用：${mv.ownDcImports?.length ?? 0}`);
     const vm = validateDraft(p, "Pages/登录页.dc.html", movedSrc, "Pages/登录页.dc.html");
     const miss = vm.diags.filter((d) => d.code === "E_IMPORT_MISSING");
     expect(miss.length === 0, `**移动后它引用的组件没缺**：E_IMPORT_MISSING = ${miss.length}`);
     // 搬回来，后面几步照旧；搬回来也得是对的（相当于反向走一次）
-    await moveDraft(p, "Pages/登录页.dc.html", ".");
+    await moveFile(p, "Pages/登录页.dc.html", "登录页.dc.html");
     const backSrc = await readFile(join(p.dir, "登录页.dc.html"), "utf8");
     expect(/name="Components\/主按钮"/.test(backSrc),
       `搬回项目根时引用也跟着回来：${backSrc.match(/<dc-import[^>]*name="([^"]*)"/)?.[1] ?? "(没有)"}`);
@@ -493,42 +505,75 @@ async function step7_restoreFromTrash() {
     expect((await listDrafts(p)).length === draftsBefore, `项目里也没多出稿（${draftsBefore} 份没变）`);
     await rm(sibling, { recursive: true, force: true });
 
-    // 改名：名字不是路径，而且改坏之前**不许先把引用方改了**
+    /* ── 改名的形状闸（M16-8 ① 并进 `move_file` 之后）──
+       ⚠️⚠️ **三个旧样本只有两个还成立，第三个的问法变了，照实改而不是照抄。**
+       `rename_draft` 收的是**名字**，所以 `"a/b"` 非法（`plainNameProblem`）；
+       `move_file` 收的是**路径**，`"a/b"` 是一次合法的移动。
+       > **把一个样本从旧判据搬到新判据上，要先问「这件事在新的问题里还错吗」** ——
+       > 照抄的话它会在一个合法输入上要求拒绝，而那种红是判据自己错了。
+       留下的两个（`..` 和绝对路径）是真的还非法，而且**非法的理由换了**：
+       原来是「名字里不能有分隔符」，现在是「路径不能跳出项目 / 不要绝对路径」。 */
     const pageBefore = await readFile(join(p.dir, "登录页.dc.html"), "utf8");
-    for (const nm of ["../逃出去", "a/b", ".."]) {
+    for (const nm of ["../逃出去.dc.html", "..", "/逃出去.dc.html", "子/../../外面.dc.html"]) {
       /* ⚠️ **先看夹具还在不在**（2026-10-05 反向验证实测）：闸破了的时候
-         第一条真把稿改名走了，后两条报的是「找不到稿」——
+         第一条真把稿改名走了，后几条报的是「找不到稿」——
          于是它们在**破了的实现下也算「被拒」**。
          **判据说不出「我根本没跑」的时候，它的绿和红都不可信。** */
       const had = existsSync(join(p.dir, "Components", "主按钮.dc.html"));
       let why = "";
-      try { await renameDraft(p, "Components/主按钮.dc.html", nm); } catch (e) { why = String((e as Error)?.message ?? e); }
-      expect(had && /新名字不合法/.test(why),
-        `**拒绝改名成 ${JSON.stringify(nm)}**：${had ? (why || "✗ 没拒") : "✗ 夹具已被前一条毁掉，这一条压根没跑"}`);
+      try { await moveFile(p, "Components/主按钮.dc.html", nm); } catch (e) { why = String((e as Error)?.message ?? e); }
+      expect(had && /目标路径不合法/.test(why),
+        `**拒绝挪成 ${JSON.stringify(nm)}**：${had ? (why || "✗ 没拒") : "✗ 夹具已被前一条毁掉，这一条压根没跑"}`);
     }
-    expect(await readFile(join(p.dir, "登录页.dc.html"), "utf8") === pageBefore,
-      "改名被形状闸拒掉时引用方没动");
-    /* ⚠️ 这一条测的是**顺序 + 回滚**（issue #80 第 3 点）：原来是先改完所有
-       引用方、最后才 `rename`，改名失败时引用方已经落盘改坏且没有回滚。
-
-       **样本必须是「过了闸之后才失败」的那一种** —— 上面那三个被形状闸
-       当场拒掉，`rename` 压根没跑，所以顺序对不对它们都绿（§142.4 同一个坑，
-       我差点第二次踩）。这里用一个 **300 字符的名字**：形状合法，
-       而文件系统报 `ENAMETOOLONG`，于是失败点正好落在 `rename` 上。 */
+    /* ⚠️ **源那一头也要有** —— 并名之前 `move_file` 两头都没有形状闸，
+       而 `clean()` 滤掉 `..` 之后 `move_file("../登录页.dc.html", "x.md")`
+       会**静默挪走项目根的那一份**（不是报错，是挪错了一个文件）。 */
     {
       let why = "";
-      try { await renameDraft(p, "Components/主按钮.dc.html", "长".repeat(300)); }
+      try { await moveFile(p, "../登录页.dc.html", "挪错了.dc.html"); } catch (e) { why = String((e as Error)?.message ?? e); }
+      expect(/源路径不合法/.test(why), `**源路径里的两点也拒**：${why || "✗ 没拒"}`);
+      expect(existsSync(join(p.dir, "登录页.dc.html")) && !existsSync(join(p.dir, "挪错了.dc.html")),
+        "而且它没有静默挪走项目根的那一份");
+    }
+    /* `"a/b"` 这种在 `move_file` 上是**合法**的 —— 正面验一次，然后挪回去。
+       ⚠️ 不验的话「拒了三个」会被读成「这一类全拒」，而那是假的。 */
+    {
+      const mv = await moveFile(p, "Components/主按钮.dc.html", "子目录/主按钮.dc.html").catch((e) => e as Error);
+      expect(!(mv instanceof Error) && mv.to === "子目录/主按钮.dc.html",
+        `**而「挪进一个子目录」是合法的**（它是路径不是名字）：${mv instanceof Error ? mv.message : mv.to}`);
+      await moveFile(p, "子目录/主按钮.dc.html", "Components/主按钮.dc.html");
+      await rm(join(p.dir, "子目录"), { recursive: true, force: true });
+    }
+    expect(await readFile(join(p.dir, "登录页.dc.html"), "utf8").then((x) => x.includes('name="Components/主按钮"')),
+      "一来一回之后引用方指回了 Components/主按钮");
+    /* ⚠️ 这一条原来测的是**顺序 + 回滚**（issue #80 第 3 点）：`renameDraft` 是
+       先改完所有引用方、最后才 `rename`，所以改名失败时引用方已经落盘改坏且没有回滚，
+       于是它必须**回滚**。
+
+       ⚠️⚠️ **并进 `move_file` 之后这条性质换了，而且是换强了，照实改判据措辞**：
+       `moveFile` 的顺序是「**先把文件挪成功，再改引用**」——
+       挪这一步失败时引用方**压根没被动过**，不需要回滚就成立。
+       > **「回滚对不对」和「压根不需要回滚」是两条不同的性质，
+       > 而把后者的读数写成前者的话，下一个人会去找一段不存在的回滚代码。**
+
+       **样本必须是「过了闸之后才失败」的那一种** —— 上面那几个被形状闸
+       当场拒掉，落盘压根没跑，所以顺序对不对它们都绿（§142.4 同一个坑）。
+       这里用一个 **300 字符的名字**：形状合法，而文件系统报 `ENAMETOOLONG`。 */
+    {
+      let why = "";
+      try { await moveFile(p, "Components/主按钮.dc.html", "Components/" + "长".repeat(300) + ".dc.html"); }
       catch (e) { why = String((e as Error)?.message ?? e); }
-      expect(/ENAMETOOLONG|too long/i.test(why), `（样本有效性）300 字的名字确实栽在 rename 上：${why.slice(0, 60) || "✗ 没抛"}`);
+      expect(/ENAMETOOLONG|too long/i.test(why), `（样本有效性）300 字的名字确实栽在落盘上：${why.slice(0, 60) || "✗ 没抛"}`);
       expect(await readFile(join(p.dir, "登录页.dc.html"), "utf8") === pageBefore,
-        "**改名在 rename 这一步失败时，已改的引用方被退回去了**（原来：引用改坏、文件没改名、没有回滚）");
+        "**挪动在落盘这一步失败时，引用方一个字都没被动过**（顺序决定的 —— 挪成功才改引用）");
       expect(existsSync(join(p.dir, "Components", "主按钮.dc.html")), "而稿还在原来的名字上");
     }
     // 正面：正常改名还得能用
-    const rn = await renameDraft(p, "Components/主按钮.dc.html", "主按钮改名").catch(() => null);
-    expect(rn?.newPath === "Components/主按钮改名.dc.html", `**正常改名照常能用**：${rn?.newPath ?? "✗ 失败"}`);
+    const rn = await moveFile(p, "Components/主按钮.dc.html", "Components/主按钮改名.dc.html").catch(() => null);
+    expect(rn?.to === "Components/主按钮改名.dc.html", `**正常改名照常能用**：${rn?.to ?? "✗ 失败"}`);
+    expect((rn?.dcImports?.length ?? 0) === 1, `**而且引用方跟着改了**：${rn?.dcImports?.length ?? 0} 处 dc-import`);
     await checkNoMissingImports("正常改名后");
-    await renameDraft(p, "Components/主按钮改名.dc.html", "主按钮");
+    await moveFile(p, "Components/主按钮改名.dc.html", "Components/主按钮.dc.html");
   }
 
   /* ── 从文件面删的东西在回收站里是一份**文件**，不是一个目录（issue #81 第 3 点）──

@@ -27,7 +27,8 @@ const gzip = promisify(gzipCb);
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
-import { isInside, isInsideReal, isOutsideLink } from "./pathguard.js";
+import { isInside, isInsideReal, isOutsideLink, relPathProblem } from "./pathguard.js";
+import { dcImportsFollow, dcImportsOf } from "./refs.js";
 import { writeAtomic } from "./normalize.js";
 import { listDrafts, type Project } from "./project.js";
 
@@ -691,15 +692,27 @@ export interface WriteFileResult {
  *  末尾的 `sha256`），**二进制进来会被静默损坏** —— 文件还在、还能打开、只是花了。
  *  现在一进来就归一成 Buffer，后面全按字节算；文本那条路**行为一个字没变**
  *  （`Buffer.from(s,"utf8")` 再 `byteLength` 和原来是同一个数）。 */
+/** M14-7（Q70）那道只读闸 —— **一处实现，四条路共用**。
+ *
+ *  ⚠️ 原来它只长在 `writeAnyFile`（和 `write.ts` 的 `writeDraft`）里，
+ *  而「挪一个文件」「删一个文件进回收站」这两条路上**一道都没有**。
+ *  M16-8 ① / ③ 并名时补上，顺手收口成一个函数：
+ *  > **一道闸写在四个地方，就会有一天只剩三个地方有它**（#75 那条的反面教训）。
+ *
+ *  ⚠️ 拒因里那句出路必须**四条路完全一样** —— 不一样的话用户在两条路上
+ *  会被告知两件不同的「该怎么办」，而他做的是同一件事。 */
+export function requireEditable(p: Project, rel: string): void {
+  if (isEditable(p.dir)) return;
+  throw new ToolError(err(X.NOT_EDITABLE, normalizeRel(p, rel), { kind: "path", name: p.dir },
+    "这个目录还是只读预览",
+    { fix: `这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 \`start_editing\`。版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。` }));
+}
+
 export async function writeAnyFile(p: Project, rel: string, content: string | Buffer, opts: WriteFileOptions = {}): Promise<WriteFileResult> {
   /* M14-7（Q70）：这个目录还没解锁 → 一个字节都不写。
      **和 `write.ts` 那一道是同一件事的两条路** —— 两条写入口各装一道，
      装一条等于没装（#75）。拒因里的出路也要一样，不然两条路上说的话不一致。 */
-  if (!isEditable(p.dir)) {
-    throw new ToolError(err(X.NOT_EDITABLE, normalizeRel(p, rel), { kind: "path", name: p.dir },
-      "这个目录还是只读预览",
-      { fix: `这个文件不在你的项目里，所以我们默认不动它（右键打开一个随手的文件时，多半只是想看一眼）。要改的话点工作台顶部那条横条上的「开始编辑」，或者调 \`start_editing\`。版本历史记在${productName}自己的目录里，原文件夹不会多出任何文件。` }));
-  }
+  requireEditable(p, rel);
   /** 一进来就归一成字节 —— 后面每一处都用它，免得「有的地方按字符有的地方按字节」 */
   const buf = typeof content === "string" ? Buffer.from(content, "utf8") : content;
   const clean = normalizeRel(p, rel);
@@ -1038,6 +1051,19 @@ export async function revertFile(p: Project, rel: string, version: string, origi
 
 /** 删除（回收站语义，和稿一样）：移进 `.umbrastudio/trash/<时间戳>/`，不是真删 */
 export async function trashFile(p: Project, rel: string): Promise<{ path: string; trashPath: string }> {
+  /* ⚠️ 形状闸：和 `moveFile` 同一道（被并掉的 `delete_draft` 走 `draftPath`，
+     它对 `..` 是**拒**的，而这条路的 `clean()` 是**滤掉** —— 并名要把拒带过来）。 */
+  {
+    const bad = relPathProblem(rel);
+    if (bad) {
+      throw new ToolError(err(X.BAD_INPUT, rel, { kind: "path", name: rel },
+        `路径不合法：${bad}`, { fix: "给相对项目根的路径，比如 需求.md 或 docs/需求.md。" }));
+    }
+  }
+  /* ⚠️ 和 `moveFile` 同一道闸（M16-8 ③）：只读预览的目录里一个文件都不许删。
+     被并掉的 `delete_draft` 也没有这一道（它只走 `draftPath` = 在项目里 + 存在），
+     所以这是并名时补的。 */
+  requireEditable(p, rel);
   /* ⚠️ 和 `moveFile` 同一道闸（issue #75）：`trash_file(".git/HEAD")` 原来照做。 */
   const noTrash = denyReason(rel);
   if (noTrash) {
@@ -1057,8 +1083,16 @@ export async function trashFile(p: Project, rel: string): Promise<{ path: string
 
 export interface MoveFileResult {
   from: string; to: string;
-  /** 一并改写了引用的稿：{ file, count } */
+  /** 一并改写了**按路径**引用它的文件：{ file, count }（`href` / `src` / `url()`）*/
   rewrote: Array<{ file: string; count: number }>;
+  /** 一并改写了**按组件名**引用它的稿：`<dc-import name=…>`（M16-8 ①，只有 `.dc.html` 才有）
+   *
+   *  ⚠️ **和 `rewrote` 分两栏，不合并** —— 它们是两种关系，而 M16-8 ⑤ 刚因为
+   *  「两件都叫谁引用了它」栽过一次：合成一栏之后「改写引用 0 处」这句话
+   *  会在另一种关系上有 4 处的情况下照样说出来。 */
+  dcImports?: Array<{ file: string; oldName: string; newName: string }>;
+  /** 这份稿**自己**的 `<dc-import>` 跟着改的那几条（跨目录移动，issue #82）*/
+  ownDcImports?: Array<{ oldName: string; newName: string }>;
   steps: string[];
   /** 名字对得上、但路径解不出来所以没动的写法（外链 / 根相对）。**不静默**（issue #76 第 3 点） */
   unresolved?: Array<{ file: string; line: number; value: string }>;
@@ -1070,11 +1104,37 @@ export interface MoveFileResult {
  *  S15 对用户的承诺就是这一句「改名或移动会一并改写引用」—— 不做的话那句话是假的。
  *  稿的改写走 `write_draft`（唯一写入口），所以引用改完照样有语义快照可退。 */
 export async function moveFile(p: Project, fromRel: string, toRel: string): Promise<MoveFileResult> {
-  const from = normalizeRel(p, fromRel), to = normalizeRel(p, toRel);
-  if (kindOf(from) === "dc" || kindOf(to) === "dc") {
-    throw new ToolError(err(X.IO, from, { kind: "file", name: basename(from) },
-      "`.dc.html` 不走这条路", { fix: "稿的改名 / 移动用 rename_draft / move_draft，它们会跟着改 dc-import 的引用。" }));
+  /* ⚠️ **形状闸在 `normalizeRel` 之前**（M16-8 ①）—— 顺序反了这一道就永远不响：
+     `normalizeRel` 的 `clean()` 会把 `..` 和空段**先滤掉**，于是等它跑完
+     「路径里有 `..`」这件事已经不存在了，判据怎么写都绿。
+     > **一道检查放在归一化之后，检查的是归一化的输出，不是调用方的输入。** */
+  for (const [label, raw] of [["from", fromRel], ["to", toRel]] as const) {
+    const bad = relPathProblem(raw);
+    if (bad) {
+      throw new ToolError(err(X.BAD_INPUT, String(raw), { kind: "path", name: String(raw) },
+        `${label === "from" ? "源" : "目标"}路径不合法：${bad}`,
+        { fix: "两头都要是相对项目根的路径，比如 需求.md 或 docs/需求.md。" }));
+    }
   }
+  const from = normalizeRel(p, fromRel), to = normalizeRel(p, toRel);
+  /* ⚠️⚠️ **原来这里有一道「`.dc.html` 不走这条路」的拒，指向 `rename_draft` / `move_draft`。**
+     C3（M16-7）删掉 `FileKind` 表里的 `dc` 那一条之后，`kindOf(...) === "dc"`
+     **恒假** —— 拒自动撤了，而它指向的那两件没有任何人改去调。
+     实测后果（探针）：`delete_impact` 说「1 处 `<dc-import>` 引用它」，
+     而用 `file_move` 改完名，引用方仍写着旧名、回执 `rewrote: []` 一声不吭。
+     **前端的改名、移动、拖拽走的全是这条路。**
+     > **一道拒和它指向的那条出路，是同一件事的两半 —— 撤掉拒的那一半，
+     > 出路就成了没人走的路，而「引用跟着改」这个承诺没人兑现。**
+     M16-8 ① 的并名因此不是搬家：是把那两件真正做的事搬进来（见下面 `dcImportsFollow`）。 */
+  /* ── M14-7（Q70）：这个目录还是只读预览 → 一个文件都不许挪 ──
+     ⚠️ **这一道原来两边都没有** —— `moveFile` / `trashFile` 不是「写入口」，
+     所以 `isEditable` 那道闸只装在 `writeAnyFile` 和 `writeDraft` 上，
+     而「把文件挪走」「把文件删进回收站」对用户目录的改动不比写一个字小。
+     被并掉的 `rename_draft` / `move_draft` / `delete_draft` 也都没有这一道，
+     所以这是**并名时补上的，不是并名弄坏的** —— 照实记。
+     > **「写入口」这个词圈出的是「内容变了」那一类，而「文件没了 / 换了名字」
+     > 不在那个圈里，却一样是改动。一道按词圈出来的闸，守不住词外面的那条路。** */
+  requireEditable(p, from);
   /* ⚠️ **两头都查「这是工具自己的东西吗」**（issue #75，2026-10-05）。
      `writeAnyFile` 对 `isToolArtifact` 拒写（`.git/`、`.umbrastudio/`、
      `index-data.js`、壳页…），而 `moveFile` 原来**一头都不查** ——
@@ -1093,12 +1153,21 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
     }
   }
   const absFrom = mustFile(p, from);
-  const absTo = join(p.dir, to.split("/").join(sep));
+  /* ⚠️ **目标那一头也走 `safeJoin`**（issue #140 的形状，这次在同一个函数里）。
+     原来是 `join(p.dir, to…)` —— `normalizeRel` 的 `clean()` 已经把 `..` 滤掉了，
+     所以字面跳出那一半碰巧守住了；**而「项目里放一条指向外面的链接」那一半没有**：
+     `move_file("a.md", "链接目录/a.md")` 会把文件搬到项目外面去。
+     被并掉的 `rename_draft` / `move_draft` 两件**都**走了 `isInsideReal`（#19 + #140），
+     所以这一道是它们原来守着而这条路没守的 —— 并名必须把它带过来。 */
+  const absTo = safeJoin(p, to);
   if (existsSync(absTo)) {
     throw new ToolError(err(X.IO, to, { kind: "file", name: basename(to) }, `${to} 已经存在`,
       { fix: "换一个名字，或者先把那一个挪开。" }));
   }
   const refs = await referencesOf(p, from);
+  /* ⚠️ **在动文件之前取** —— `<dc-import>` 图的 key 是旧路径（M16-8 ①）。
+     非 `.dc.html` 回 `null`，整段跳过：**不是「查了没有」，是「这件关系对它不成立」**。 */
+  const dcBefore = await dcImportsOf(p, from);
   const steps: string[] = [];
   await mkdir(dirname(absTo), { recursive: true });
   await writeFile(absTo, await readFile(absFrom));
@@ -1164,6 +1233,30 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
       steps.push(`⚠️ ${srcRel} 里还有 ${count - changed} 处提到 ${basename(from)} 但解不出路径，没动`);
     }
   }
+  /* ── `<dc-import name=…>` 那一种引用跟着改（M16-8 ①，原来是 `rename_draft` / `move_draft` 做的）──
+     ⚠️ **落盘走第二条写入口**（`writeAnyFile`），而那两件原来是 `writeAtomic` 直写：
+     并进来之后被改的稿**第一次有了快照、并发闸和只读闸**。
+     ⚠️ 带上我们刚读到那一份的 sha —— 和上面按路径改写同一条口径：
+     「顺带帮你改一下」不该比用户自己改更有特权。 */
+  const dcImports: Array<{ file: string; oldName: string; newName: string }> = [];
+  const ownDcImports: Array<{ oldName: string; newName: string }> = [];
+  if (dcBefore) {
+    const r = await dcImportsFollow(p, dcBefore, from, to, async (rel, next, prev) => {
+      await writeAnyFile(p, rel, next, {
+        expectSha256: sha256(Buffer.from(prev, "utf8")),
+        origin: "人手改",
+        note: `<dc-import> 跟着 ${basename(from)} 的移动改了`,
+      });
+    });
+    for (const u of r.updatedFiles) dcImports.push({ file: u.rel, oldName: u.oldName, newName: u.newName });
+    ownDcImports.push(...r.ownUpdated);
+    for (const f of r.refused) {
+      refused.push(f);
+      steps.push(`⚠️ ${f.file} 的 <dc-import> **没改成**：${f.reason}`);
+    }
+    if (dcImports.length) steps.push(`改写 <dc-import> 引用 ${dcImports.length} 处（${new Set(dcImports.map((x) => x.file)).size} 份稿）`);
+    if (ownDcImports.length) steps.push(`这份稿自己的 <dc-import> 改了 ${ownDcImports.length} 条（换了目录，相对基准变了）`);
+  }
   /* 改完再扫一遍：名字对得上、但解不出路径的写法（`https://…/img.png`、`/img.png`），
      以及**正文里提到文件名**的地方。它们本来就不该被改 —— 但也不该一声不吭。 */
   for (const srcRel of (await listRefSources(p)).files) {
@@ -1178,6 +1271,7 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
   }
   /* ⚠️ `truncated` 要跟着回出去：到了 5000 的上限时「没有别的引用」这句话说不了。 */
   return { from, to, rewrote, steps, ...(refs.truncated ? { truncated: true } : {}),
+    ...(dcImports.length ? { dcImports } : {}), ...(ownDcImports.length ? { ownDcImports } : {}),
     ...(unresolved.length ? { unresolved } : {}), ...(refused.length ? { refused } : {}) };
 }
 

@@ -31,7 +31,7 @@ import { locateNode } from "./locate.js";
 import { listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, revertFile, writeAnyFile } from "./files.js";
 import { revertTo, setProp } from "./edit.js";
 import { touchProject, listRecentProjects, removeRecentProject, clearRecentProjects } from "./workspace.js";
-import { buildRefGraph, listReferences, renameDraft, moveDraft, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
+import { buildRefGraph, listReferences, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
 import { globalSearch } from "./search.js";
 import { setTokenValue } from "./token_edit.js";
 import { exportProject, importProject } from "./export.js";

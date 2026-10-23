@@ -273,11 +273,38 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
 
   const [trashed, setTrashed] = useState<string[]>([]);
   const trashedRef = useRef<string[]>([]); trashedRef.current = trashed;
+  /** 已经**真的落实**过删除的那几份路径 —— 撤销它们要走「从回收站恢复」，
+   *  而不是「从待删清单里拿掉」。
+   *
+   *  ⚠️⚠️ **为什么要有它**（M16-8 ③，2026-10-24）：今天「撤销」从来不调恢复 ——
+   *  删除是**延后落实**的（`commitTrash` 在「做下一件事」时才真删），
+   *  所以撤销那一下文件压根没离开过磁盘。而那件事成立**只依赖一条隐式不变量**：
+   *  「`commitTrash` 一定会把那几行一起清掉」，而它写在 140 行之外。
+   *  > **一条正确性依赖「另一处一定会做某件事」的代码，
+   *  > 在那一处被改动时不会报错，只会开始静默地什么都不做。**
+   *  记下来之后，撤销在两种世界里都对：没落实 → 拿掉那一行；落实了 → 真恢复。
+   *  ⚠️ **不改成「删的那一刻就落盘」**：M16-8 ⑤ 那句「有 N 处引用它，会断」
+   *  靠的正是文件还在盘上（实测删完再问 `delete_impact` 抛「找不到稿」）。 */
+  const committedRef = useRef<Set<string>>(new Set());
   const commitTrash = useCallback(() => {
     const list = trashedRef.current;
     if (!list.length) return;
     setTrashed([]);
-    for (const path of list) void core.post("file_trash", { path });
+    for (const path of list) {
+      committedRef.current.add(path);
+      /* ⚠️ **看一眼它成不成** —— 原来是 `void core.post(...)`，错整个吞掉。
+         M16-8 ③ 给 `trash_file` 补了只读闸之后这件事有了真实后果：
+         在一个还只读的目录里删一份文件会被拒，而用户看到的是「已移到回收站」。
+         > **一个破坏性动作静默失败，和它静默成功一样危险 —— 两种都让界面在说假话。** */
+      void (async () => {
+        const r = await core.post("file_trash", { path });
+        if (!r.ok) {
+          committedRef.current.delete(path);
+          toast("没能移到回收站", r.errors?.[0]?.message ?? path, "error");
+          setLocalTick((t) => t + 1);
+        }
+      })();
+    }
   }, [core]);
   /* 关窗 / 切项目：卸载时落实 */
   useEffect(() => () => commitTrash(), [commitTrash]);
@@ -412,7 +439,20 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
       onOpenFile={(f, dbl) => { open(f, false, dbl ? "open" : "preview"); if (!treeInline) setLayout({ ...layout, left: false }); }}
       onOpenDir={(d) => { open(d, true); if (!treeInline) setLayout({ ...layout, left: false }); }}
       actions={ctxActions} trashed={trashed} trashWarn={trashWarn}
-      onUndoTrash={(p) => { setTrashed((xs) => xs.filter((x) => x !== p)); setTrashWarn(({ [p]: _drop, ...rest }) => rest); }}
+      onUndoTrash={(p) => {
+        setTrashed((xs) => xs.filter((x) => x !== p));
+        setTrashWarn(({ [p]: _drop, ...rest }) => rest);
+        /* 已经落实了的，撤销就是真的从回收站取回来（M16-8 ③ 的 `restore_trashed_by_name`）。
+           ⚠️ 按**文件名**而不是 trashPath —— 这一行手上只有路径，没有回收站地址，
+           而「按名字取最近删的那一份」正是这件能力存在的理由。 */
+        if (!committedRef.current.has(p)) return;
+        committedRef.current.delete(p);
+        void (async () => {
+          const r = await core.post("restore_trashed_by_name", { file: p.split("/").pop() ?? p });
+          if (!r.ok) toast("没能撤销", r.errors?.[0]?.message ?? p, "error");
+          setLocalTick((t) => t + 1);
+        })();
+      }}
       tick={`${store.lastEvent?.at ?? ""}:${localTick}`}
       beforeRename={async (p) => {
         /* 目录改名时，没落盘的那份可能在它**底下** —— 问的是那一份 */

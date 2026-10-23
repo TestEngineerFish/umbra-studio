@@ -182,24 +182,57 @@ ok("countTypes 全项目分布（三档；`.dc.html` 按 html 落 other）", t.m
 
 const mv = await moveFile(p, "图.png", "assets/图.png");
 ok("move_file 挪得动文件", mv.to === "assets/图.png" || !!mv);
-/* ⚠️⚠️ **引用改写这一层 C3（M16-7）之后没有对象了，照实记。**
-   原来这两条钉的是「挪文件时**改写稿里的引用**」和「被改写的稿留下语义快照（走 `write_draft`）」。
-   而改写引用走 `mapDraftRefs`，它扫的是 `listDrafts(p)` ——
-   C3 删掉 `dc` kind 之后 `listDrafts` 返回空，所以**一处都不改写了**。
-   ⚠️ 这不是「坏了」，是「那件事的对象不存在了」：`<dc-import>` 和 `@ds` 都是 dc 的概念。
-   ⏳ `mapDraftRefs` / `referencesOf` / `list_file_refs` 要一起处理 —— 归 **M16-7c**：
-   要么删掉，要么改成真的扫所有文本文件（那是另一件事，别顺手做）。
-   这里钉住「它现在不改写了」，让这件事在读数里看得见。 */
-ok("**而引用改写这一层现在是零处**（它扫的是「稿」，C3 之后没有稿了 —— 归 M16-7c）", mv.rewrote.length === 0);
-/* ⚠️ 同 `write_file` 那一道：`moveFile` 对 `.dc.html` 的拒
-   （`files.ts:965`，指向 `rename_draft` / `move_draft`）**也自动进不去了**
-   —— 它的条件同样是 `kindOf(...) === "dc"`。
-   > **两道拒是同一个改动的两面：删掉 kind 条目就等于两道一起撤。**
-   geek-99 要的「先撤 `write_file` 那道拒」因此自动满足，而且是两道都满足。 */
+/* ⚠️⚠️ **这里原来有一条「而引用改写这一层现在是零处」，而它说的理由已经过期了。**
+   那条注释写的是「它扫的是 `listDrafts`，C3 之后返回空，所以一处都不改写」——
+   而 M16-7c-2d（同一天晚些时候）已经把数据源换成六种文本格式了。
+   它**照样绿**，但绿的原因换成了另一个：开头那份 `稿.dc.html`（里面有
+   `<img src="图.png">`）**被前面几条判据当样本把内容换掉了**，所以这个夹具里
+   压根没人引用 `图.png`。
+   > **一条判据的文案里写着一个前提时，那个前提下线了，文案就开始骗人** ——
+   > 而它骗得很体面：它还是绿的，于是没有任何东西提醒你去读它。
+   > **判据绿的时候也要问「它还可能因为什么原因这么说」。**
+   换成**自带夹具**，而且两种关系各量一次（M16-8 ①）。 */
 {
-  const mvd = await moveFile(p, "稿.dc.html", "挪过的稿.dc.html");
-  ok("**`.dc.html` 现在挪得动了**（原来这条路拒它并指向 `move_draft`）", !!mvd);
-  await moveFile(p, "挪过的稿.dc.html", "稿.dc.html");   // 挪回去，后面的判据还要用它
+  /* ① 按路径的引用（`href` / `src` / `url()`）—— 挪一张图，html 和 md 都要跟着改 */
+  const IMG = "_mv图.png", HOST = "_mv宿主.html", MD = "_mv说明.md";
+  await writeFile(join(DIR, IMG), "png");
+  await writeFile(join(DIR, HOST), `<img src="${IMG}">\n`);
+  await writeFile(join(DIR, MD), `![图](${IMG})\n`);
+  const r = await moveFile(p, IMG, "图库/" + IMG);
+  ok("**挪一张图，按路径引用它的 html 与 md 都跟着改**（`rewrote` 那一栏）",
+     r.rewrote.length === 2, `改了 ${r.rewrote.length} 份：${r.rewrote.map((x) => `${x.file}×${x.count}`).join(" ")}`);
+  ok("而且改对了（指向新位置）",
+     (await readFile(join(DIR, HOST), "utf8")).includes("图库/" + IMG)
+     && (await readFile(join(DIR, MD), "utf8")).includes("图库/" + IMG));
+  /* ⚠️ **被改写的那一份要留下快照** —— 落盘走第二条写入口才有这一样。
+     只验「内容改了」的话，直写 `writeAtomic` 也能让上一条绿。 */
+  ok("**被改写的引用方留下了一版快照**（走的是第二条写入口，不是直写）",
+     (await listSnapshots(p, HOST)).length >= 1, `${HOST} 有 ${(await listSnapshots(p, HOST)).length} 版`);
+  await rm(join(DIR, HOST), { force: true });
+  await rm(join(DIR, MD), { force: true });
+  await rm(join(DIR, "图库"), { recursive: true, force: true });
+}
+/* ── M16-8 ①：`rename_draft` / `move_draft` 并进来之后，`<dc-import>` 那一种引用也要跟着改 ──
+   ⚠️ 原来这一节只钉「`.dc.html` 现在挪得动了」（C3 把那道拒变成恒假的副作用）。
+   **「挪得动」和「挪完引用还对」是两件事**，而当时只有前一件有判据 ——
+   于是「改名把引用方全弄断」这件事在产品里躺了一天，全套回归照旧全绿。 */
+{
+  const COMP = "_mv组件.dc.html", PAGE = "_mv页面.dc.html";
+  await writeFile(join(DIR, COMP), "<x-dc><div>c</div></x-dc>\n");
+  await writeFile(join(DIR, PAGE), `<dc-import name="${COMP.replace(/\.dc\.html$/, "")}"></dc-import>\n<x-dc><div>p</div></x-dc>\n`);
+  const mvd = await moveFile(p, COMP, "组件/" + COMP);
+  ok("**`.dc.html` 挪得动**（C3 之后那道拒恒假，而前端的改名走的就是这条路）", mvd.to === "组件/" + COMP);
+  ok("**而且 `<dc-import>` 的引用跟着改了**（并进来的那件事：按组件名的那一种关系）",
+     (mvd.dcImports?.length ?? 0) === 1,
+     `dcImports ${mvd.dcImports?.length ?? 0} 处：${(mvd.dcImports ?? []).map((x) => `${x.file} ${x.oldName}→${x.newName}`).join(" ")}`);
+  ok("引用方盘上真的写的是新 name",
+     (await readFile(join(DIR, PAGE), "utf8")).includes('name="组件/_mv组件"'),
+     /<dc-import[^>]*name="([^"]*)"/.exec(await readFile(join(DIR, PAGE), "utf8"))?.[1] ?? "(没有)");
+  /* ⚠️ **两栏分开**：按路径那一栏对这次移动该是 0（页面稿里没有 href/src 指向它）。
+     合成一栏的话「改了 1 处」说不清改的是哪一种关系（M16-8 ⑤ 那条口径）。 */
+  ok("**按路径那一栏仍是 0**（两种关系分两栏，不混算）", mvd.rewrote.length === 0, `rewrote ${mvd.rewrote.length}`);
+  await rm(join(DIR, PAGE), { force: true });
+  await rm(join(DIR, "组件"), { recursive: true, force: true });
 }
 
 /* ── 改写引用不许改坏别的引用、也不许静默漏改（issue #76，2026-10-05）──
@@ -903,7 +936,13 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
   const names = allowedCapNames();
   ok("**`read_file_version` 在插件白名单里**（编辑区是插件的，它得自己读那一版）",
      names.includes("read_file_version"), names.join(" "));
-  ok("白名单没顺手放开写权限的东西", !names.includes("revert_draft") && !names.includes("delete_draft"));
+  /* ⚠️ `delete_draft` M16-8 ③ 并进 `trash_file` 了，**而 `trash_file` 本来就在白名单里**
+   （上面那条读数里看得见）—— 所以拿它当「没放开的东西」是假判据：
+   > **一个已经不存在的名字，永远不在任何白名单里。**
+   换成两个真的还在、而且真的不该给插件的：`revert_draft`（回退设计稿）
+   与 `purge_trash`（真删，退不回来）。 */
+ok("白名单没顺手放开写权限的东西", !names.includes("revert_draft") && !names.includes("purge_trash"),
+   `revert_draft=${names.includes("revert_draft")} · purge_trash=${names.includes("purge_trash")}`);
   ok("**草稿暂存三件也在白名单里**（插件自己存不了，只能调宿主）",
      names.includes("stage_draft") && names.includes("get_staged_draft") && names.includes("clear_staged_draft"),
      names.filter((n) => /staged|stage_/.test(n)).join(" "));

@@ -1267,6 +1267,30 @@ console.log("\n⑲ 只读预览 + 一键解锁（M14-7）");
     const r = await post9("draft_write", { path: "别人发来的.dc.html", content: "<!DOCTYPE html><html><body><x-dc><div>改过了</div></x-dc></body></html>\n", kind: "page" });
     ok(r.ok === false, "**设计稿那条写入口也拦**（两条写入口各一道）", r.errors?.[0]?.message);
   }
+  /* ⓑ′ **挪走一个文件、把一个文件删进回收站 —— 这两条路原来一道闸都没有**（M16-8 ① / ③，2026-10-24）。
+     ⚠️⚠️ 这一条是**并名时量出来的**，而它不是并名弄坏的：`isEditable` 原来只装在
+     `writeAnyFile` 和 `writeDraft` 上，也就是「写入口」那两条；
+     而被并掉的 `rename_draft` / `move_draft` / `delete_draft` **三件也都没有**。
+     > **「写入口」这个词圈出的是「内容变了」那一类，而「文件没了 / 换了名字」
+     > 不在那个圈里，却一样是对用户目录的改动。一道按词圈出来的闸，守不住词外面的那条路。**
+     ⚠️ 两条各验「被拒」+「盘上没动」两件 —— 只验被拒的话，
+     一个「先挪了再抛」的实现照样绿（§143.6「被拒 ≠ 没被挪走」同一条）。 */
+  {
+    const mv = await post9("file_move", { from: "别人的笔记.md", to: "挪过的笔记.md" });
+    ok(mv.ok === false && /只读预览/.test(mv.errors?.[0]?.message ?? ""),
+       "**只读目录里挪一个文件被拦住**（`move_file`）", mv.errors?.[0]?.message);
+    ok(ex9(j9(casual, "别人的笔记.md")) && !ex9(j9(casual, "挪过的笔记.md")),
+       "**而他那份文件还在原来的名字上**（被拒 ≠ 没被挪走，分开验）");
+    const tr = await post9("file_trash", { path: "别人的笔记.md" });
+    ok(tr.ok === false && /只读预览/.test(tr.errors?.[0]?.message ?? ""),
+       "**只读目录里删一个文件也被拦住**（`trash_file`）", tr.errors?.[0]?.message);
+    ok(ex9(j9(casual, "别人的笔记.md")), "**而他那份文件还在**（同上，分开验）");
+    /* ⚠️ 拒因里的出路要和写入口**一字不差** —— 四条路上说的是同一件事，
+       说法不一样的话用户在两条路上会被告知两件不同的「该怎么办」。 */
+    ok(/开始编辑/.test(mv.errors?.[0]?.fix ?? "") && mv.errors?.[0]?.fix === tr.errors?.[0]?.fix,
+       "两条路的拒因出路完全一样（一处实现 `requireEditable`）",
+       (mv.errors?.[0]?.fix ?? "").slice(0, 24) + "…");
+  }
   /* ⓒ **那个洞**：暂存草稿会建出记录目录，而它不许算解锁 */
   {
     const st = await post9("draft_stage", { path: "别人的笔记.md", content: "在编辑框里打了几个字" });
@@ -1994,6 +2018,102 @@ console.log("\n㉖ `get_delete_impact` 只答 `<dc-import>` 那种引用（M16-8
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。
    **这一条是上面那条教训的判据化** —— 不然下一个人还会把清理写在中间。 */
 
+/* ── ㉗ 按文件名从回收站恢复（`restore_trashed_by_name`，M16-8 ③）──
+   ⚠️⚠️ **这一节补的是一件「从来没有判据」的能力。**
+   它原来叫 `restore_draft`，而 summary 写着「**行内撤销用它**」—— 实测那句话是假的：
+   · 它唯一的调用方是 `ui/S1-稿件索引.dc.html`，而那份稿 C3（M16-7）已经删了；
+   · 现在的行内撤销**一次都不调恢复** —— 删除是延后落实的（`Workbench.tsx` 的
+     `commitTrash`，离开那一行时才真删），所以「撤销」只是把那一行从待删清单里拿掉，
+     文件压根没离开过磁盘。
+   > **一件能力的 summary 里写着一个调用方时，那个调用方消失了，summary 就开始骗人** ——
+   > 而它骗得很体面：它让下一个人以为这条路有人在走。
+
+   ⚠️ 而延后落实**不是可以顺手改掉的**（这是量出来的，不是想出来的）：M16-8 ⑤ 那句
+   「有 N 处引用它，会断」靠的正是「文件还在盘上」——
+   实测删完再问 `delete_impact`，它抛「找不到稿」。
+   > **一个查询和一个破坏性动作对「文件还在不在」的要求正好相反，
+   > 所以它们的先后顺序不是实现细节，是那个功能存不存在。**
+   所以这一节打的是它**真正**的用途：「我只记得文件名」那一种（AI / MCP / 回收站）。 */
+console.log("\n㉗ 按文件名从回收站恢复（restore_trashed_by_name）");
+{
+  const { mkdtemp: mkT, writeFile: wfT, rm: rmT, mkdir: mdT } = await import("node:fs/promises");
+  const { tmpdir: tdT } = await import("node:os");
+  const { join: jT } = await import("node:path");
+  const { existsSync: exT, realpathSync: rpT, readFileSync: rfT } = await import("node:fs");
+  const dir = rpT(await mkT(jT(rpT(tdT()), "umbra-restore-")));
+  await wfT(jT(dir, "project.json"), JSON.stringify({ name: "restore-by-name" }), "utf8");
+  await mdT(jT(dir, "文档", "深一层"), { recursive: true });
+  await wfT(jT(dir, "文档", "深一层", "需求.md"), "# 第一版\n", "utf8");
+  const svcT = await (await import("./serve.js")).serveStart(await (await import("./project.js")).buildProject(dir));
+  const postT = (route: string, body: unknown) => fetch(`${svcT.url}__ud/${route}?token=${encodeURIComponent(svcT.token)}`, {
+    method: "POST", headers: { "content-type": "application/json", origin: svcT.url.replace(/\/$/, "") }, body: JSON.stringify(body),
+  }).then((r) => r.json() as Promise<{ ok: boolean; data?: Record<string, unknown>; errors?: Array<{ message?: string; fix?: string }> }>);
+
+  /* ⓐ 删 → 按**文件名**（不是 trashPath、不是相对路径）恢复 → 回到**原来那层目录** */
+  {
+    const t = await postT("file_trash", { path: "文档/深一层/需求.md" });
+    ok(t.ok === true && !exT(jT(dir, "文档", "深一层", "需求.md")),
+       "（前提）文件真的进回收站了 —— 没有这一条，下面的「恢复成功」可能只是它压根没删",
+       `${t.ok} · 盘上还在=${exT(jT(dir, "文档", "深一层", "需求.md"))}`);
+    const r = await postT("restore_trashed_by_name", { file: "需求.md" });
+    /* ⚠️ 读 `data.originalPath`，不是 `data.restored` —— 后者是**信封的 meta**，
+       `data` 里是 `RestoreDraftResult` 本身。第一版读错了字段，于是判据红而产品是对的。
+       > **抓到它的是诊断行里打出的那一整个对象** ——
+       > 一条红的 detail 该说出「我看到了什么」，而不只是「我期望什么」（同 `filetest` 那条）。 */
+    ok(r.ok === true && r.data?.originalPath === "文档/深一层/需求.md",
+       "**只给文件名就恢复得回来，而且回到原来那层目录**（issue #81 那条性质）",
+       JSON.stringify(r.data ?? r.errors?.[0]?.message));
+    ok(exT(jT(dir, "文档", "深一层", "需求.md"))
+       && rfT(jT(dir, "文档", "深一层", "需求.md"), "utf8") === "# 第一版\n",
+       "**盘上真的回来了，而且内容是原文**（回执说成功 ≠ 文件回来了）");
+  }
+  /* ⓑ 同名删过多次 → 拿**最近**删的那一份（这是它和 `restore_trashed` 唯一的差别所在） */
+  {
+    await wfT(jT(dir, "需求.md"), "# 根目录那份\n", "utf8");
+    await postT("file_trash", { path: "文档/深一层/需求.md" });      // 先删深的
+    await postT("file_trash", { path: "需求.md" });                   // 再删浅的 ← 最近
+    const r = await postT("restore_trashed_by_name", { file: "需求.md" });
+    ok(r.ok === true && r.data?.originalPath === "需求.md",
+       "**同名删过两次时拿最近删的那一份**（「撤销刚才那一下」唯一合理的语义）",
+       JSON.stringify(r.data));
+    ok(rfT(jT(dir, "需求.md"), "utf8") === "# 根目录那份\n",
+       "而且回来的是那一份的内容，不是另一份");
+    /* 另一份还在回收站里 —— 它该由 `restore_trashed` 按 trashPath 取 */
+    const lst = await fetch(`${svcT.url}__ud/trash?token=${encodeURIComponent(svcT.token)}`).then((x) => x.json() as Promise<{ data?: { items?: Array<{ originalPath?: string; trashPath?: string }> } }>);
+    const left = lst.data?.items ?? [];
+    ok(left.some((x) => x.originalPath === "文档/深一层/需求.md"),
+       "**另一份还躺在回收站里**（按名字恢复不该把同名的都捞出来）",
+       left.map((x) => x.originalPath).join(" · ") || "(空)");
+    /* 顺带把它也取回来，验两件分工：这一件按 trashPath */
+    const tp = left.find((x) => x.originalPath === "文档/深一层/需求.md")?.trashPath ?? "";
+    const r2 = await postT("trash_restore", { trashPath: tp });
+    ok(r2.ok === true && exT(jT(dir, "文档", "深一层", "需求.md")),
+       "而按 trashPath 那一件能精确取回它（两件分工，不是重叠）", JSON.stringify(r2.data ?? r2.errors?.[0]?.message));
+  }
+  /* ⓒ 回收站里没有这个名字 → 照实拒，而且**给出路**
+     ⚠️ 不只验 `ok === false`：那在「任何输入都拒」的实现下也绿。要它说得出名字。 */
+  {
+    const r = await postT("restore_trashed_by_name", { file: "压根没删过.md" });
+    ok(r.ok === false && /压根没删过\.md/.test(r.errors?.[0]?.message ?? ""),
+       "**回收站里没这个名字时照实说，而且说得出是哪个名字**", r.errors?.[0]?.message);
+    ok(/list_trash/.test(r.errors?.[0]?.fix ?? ""),
+       "拒因里有出路（去 `list_trash` 看现在有什么）", (r.errors?.[0]?.fix ?? "").slice(0, 40) || "(没有 fix)");
+  }
+  /* ⓓ **旧名字真的没了** —— 改名不是加一个别名
+     ⚠️ 这一条是「并名 / 改名」这一批唯一能在 HTTP 面上证明「旧路由消失了」的判据。
+     ⚠️ 404 还是 400 都算（门面对不认识的路由怎么回是它自己的事），
+     **但 `ok: true` 不算** —— 那说明旧名字还在。 */
+  for (const dead of ["restore_draft", "rename_draft", "move_draft", "delete_draft"]) {
+    const r = await postT(dead, { file: "需求.md", path: "a", newName: "b", targetDir: ".", from: "a", to: "b" });
+    ok(r.ok !== true, `**旧路由 \`${dead}\` 真的不在了**`, JSON.stringify(r).slice(0, 80));
+  }
+  /* ⚠️ `serveStop(dir)` —— 服务表按**目录**去重（issue #20），所以停它要给目录不是给 svc。
+     ⚠️ **必须停**：`doc/00` §166 记着「回归自己攒了 33 个 LISTEN」那一次，
+     而那一次的根因就是「起了没人停」。 */
+  try { const { serveStop } = await import("./serve.js"); serveStop(dir); } catch { /* 停不掉就算了 */ }
+  await rmT(dir, { recursive: true, force: true });
+}
+
 /* ── 总数本身也是一条判据（口径同 `uitest` 文件末尾那一段）──
    ⚠️ 这道闸只拦**变少**，不拦变多 —— 加判据是常态，少判据才是事故。
    它拦的是**没说出来的那种没跑**：`skip()` 报过的已经进分母了，减掉之后还少，
@@ -2003,13 +2123,16 @@ console.log("\n㉖ `get_delete_impact` 只答 `<dc-import>` 那种引用（M16-8
    1 条 + 「换一件无关的能力也拦得住」那一组 2 条）· **+4 = ㉖**（`get_delete_impact`
    只答 `<dc-import>` 那种引用：三条拒 + 两条对照 + 一条「盘上没有是另一种拒」）· **−9 = ⑦ 整节拿掉**（模板名那一组：它钉的攻击面随
    `list_templates` / `save_as_template` / `delete_template` 三件退场一起消失，M16-8 ⑥）。
-   合计 **215**。
+   合计 **215**；**M16-8 ① / ③ 这一批 +5（⑲ⓑ′ 只读闸两条路各两条 + 拒因一致那条）
+   +13（㉗ 按文件名恢复整节）= 233**，而 233 正是实跑的总数（231 过 + 2 条没登录）。
+   ⚠️ 原来这个数停在 215 而实跑 224 —— 那不影响这道闸（它只拦变少），
+   但**一个和实跑差 9 的下界，说明有 9 条是什么时候加进来的没人记得**。这次对齐了。
    ⚠️ **这一次是那道闸逼我把数字改对的**：删掉一整节却没动基线，它立刻报
    `213/218` 并说「少跑了」—— 而**「有意删掉」和「静默跳过」在读数上必须分得开**，
    所以删判据时改这个数不是收尾工作，是那个动作的一部分。
    ⚠️ 我先算成 221 —— 漏数了 ㉖ 自己那一节里新增的第六条（两条对照我当成一条算了）。
    实跑 222 把它顶出来了：**总数本身也是一条判据**，而它这次抓的是我的算术。 */
-const EXPECT_AT_LEAST = 215;
+const EXPECT_AT_LEAST = 233;
 const miss = NOT_RUN.length;
 const total = pass + fail + miss;
 let silent = 0;

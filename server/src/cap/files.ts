@@ -401,17 +401,37 @@ defineCap({
   },
 });
 
+/* ⚠️ **M16-8 ①（2026-10-24）：`rename_draft` / `move_draft` 并进来了。**
+   标题里那句「非设计稿」因此去掉 —— `.dc.html` 也走这条路（C3 之后那道拒已恒假，
+   而前端的改名 / 移动 / 拖拽本来就都在这条路上）。
+   ⚠️ **两种引用都改**，而且回执**分两栏**（`rewrote` 按路径 · `dcImports` 按组件名）：
+   M16-8 ⑤ 刚因为「两件都叫谁引用了它」栽过，合成一栏会让「改写 0 处」
+   在另一种关系上有 4 处的情况下照样说出来。 */
 defineCap({
-  name: "move_file", title: "改名 / 移动一个文件（非设计稿）", scope: "project",
-  summary: "改名或移动。引用它的稿会被一起改写 —— 所以不要用系统的文件管理器搬，那样引用会断。",
-  input: { from: z.string(), to: z.string() },
+  name: "move_file", title: "改名 / 移动一个文件", scope: "project",
+  summary: [
+    "改名或移动，**引用它的文件一起改对** —— 所以不要用系统的文件管理器搬，那样引用会断。",
+    "两种引用都跟着改，回执里分两栏：`rewrote` 是按路径的（`href` / `src` / `url()`），",
+    "`dcImports` 是 `.dc.html` 里按组件名的（`<dc-import name=…>`）。",
+    "⚠️ 目标已存在就**拒**，不会替你顺延一个序号。",
+  ].join("\n"),
+  input: { from: z.string(), to: z.string().describe("完整的目标相对路径，不是目标目录") },
   http: { route: "file_move", method: "POST" },
   run: async ({ from, to }, c) => envelope(await moveFile(p(c), from, to)),
 });
 
+/* ⚠️ **M16-8 ③（2026-10-24）：`delete_draft` 并进来了**（回收站布局本来就是同一套）。
+   少了它回执里的 `impact` —— 「有几处 `<dc-import>` 会断」改成**删之前**单独问
+   `get_delete_impact`，而那件事只在文件还在盘上时答得出来（删完再问它抛「找不到稿」）。
+   > **把一个查询绑在破坏性动作的回执里，看着方便 ——
+   > 而两者对「文件还在不在」的要求正好相反。** */
 defineCap({
   name: "trash_file", title: "把文件挪进回收站", scope: "project",
-  summary: "不是真删 —— 挪进项目的回收站，可以恢复。",
+  summary: [
+    "不是真删 —— 挪进项目的回收站，可以恢复（`list_trash` / `restore_trashed`）。",
+    "⚠️ 删之前想知道「有谁引用它、会不会断」，**先问** `get_delete_impact`（按组件名）",
+    "和 `list_file_refs`（按路径）—— 这件的回执不带影响面。",
+  ].join("\n"),
   input: { path: z.string() },
   http: { route: "file_trash", method: "POST" },
   run: async ({ path }, c) => envelope(await trashFile(p(c), path)),

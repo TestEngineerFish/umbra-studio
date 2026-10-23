@@ -14,7 +14,8 @@ import { realpathSync } from "node:fs";
  *  ```
  *
  *  **任何以项目目录名为前缀的兄弟目录都能穿进去。** `create_folder("../Umbra_design2")`
- *  先把那个兄弟目录建出来，之后 `write_draft` / `create_draft` / `move_draft` 就能往里写 ——
+ *  先把那个兄弟目录建出来，之后 `write_draft` / `write_file` / `move_file` 就能往里写
+ *  （原文写的是 `create_draft` / `move_draft`，那两件 2026-10-24 分别在 M16-8 ⑥ / ① 退场了）——
  *  而报错文案承诺的是「路径跨出了项目目录」。**承诺了却不成立的边界比没有边界更糟。**
  *
  *  六处写六遍，就意味着修也要修六遍、而且只要有一处没跟上就等于没修。
@@ -177,6 +178,42 @@ export function suggestedNameOf(dir: string, p: PlatformPath = path): string {
  *  ⚠️ **不自己抛** —— 各处的错误码和 `fix` 文案不同（「模板名」/「会话 ID」/「副本名」），
  *  而那句话是给人看的，不该统一成一句含糊的「名字不合法」。
  */
+/** 这个**相对路径**有没有明显的毛病 —— 回 `null` = 没问题，否则回一句说得出哪里不对的话。
+ *
+ *  ⚠️⚠️ **它是 `plainNameProblem` 的兄弟，不是它的替代**（M16-8 ①，2026-10-24）：
+ *  那一件答的是「这是一个**名字**吗」（`rename_draft` 的 `newName`），
+ *  这一件答的是「这是一条**项目内的相对路径**吗」（`move_file` 的 `from` / `to`）。
+ *  并名时四条规则只转得过来三条：
+ *
+ *  | `plainNameProblem` 的规则 | 转得过来吗 |
+ *  | --- | --- |
+ *  | 空 | ✅ |
+ *  | 是 `.` / `..` | ✅ 扩成「任何一段是 `..`」 |
+ *  | 含路径分隔符 | ❌ **反过来** —— 路径本来就有分隔符 |
+ *  | 含 `: * ? " < > \|` 或控制字符 | ✅ |
+ *  | 以点开头 | ❌ **不转** —— Q77 定了 `.gitignore` 是**用户的**文件，看得见且写得动 |
+ *
+ *  > **一条规则在另一个问题上照抄，是「一个谓词回答两个问题」的另一种长相**（Q77 同族）。
+ *
+ *  ⚠️ **为什么非要有这一道**：`normalizeRel` 的 `clean()` 把 `..` 和空段
+ *  **滤掉**而不是拒掉 —— 于是 `move_file("a.md", "../x.md")` 今天会**静默**
+ *  把文件挪到项目根的 `x.md`，`move_file("a.md", "/etc/passwd")` 挪到项目根的
+ *  `etc/passwd`。两次都没跑到项目外（所以不是安全漏洞），
+ *  **但调用方拿到的是一个它没要求的落点，而回执里只说「挪好了」。**
+ *  被并掉的 `rename_draft` 对这种输入是**拒**的（它走 `plainNameProblem`），
+ *  所以这是并名必须带过来的那一道。 */
+export function relPathProblem(rel: unknown): string | null {
+  const s = String(rel ?? "");
+  if (!s.trim()) return "路径是空的";
+  if (/^([a-zA-Z]:)?[/\\]/.test(s)) return "要给相对项目根的路径，不要绝对路径";
+  // eslint-disable-next-line no-control-regex
+  if (/[:*?"<>|\x00-\x1f]/.test(s)) return "路径里不能有 `: * ? \" < > |` 或控制字符";
+  const segs = s.split(/[/\\]/);
+  if (segs.some((x) => x === "..")) return "路径里不能有 `..`（不能跳出项目目录）";
+  if (!segs.some((x) => x && x !== ".")) return "路径里没有一个有效的段";
+  return null;
+}
+
 export function plainNameProblem(name: unknown): string | null {
   const s = String(name ?? "");
   if (!s) return "名字是空的";

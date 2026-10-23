@@ -38,7 +38,7 @@ import { listFiles, readAnyFile, writeAnyFile, moveFile, listSnapshotMeta } from
 import { locateNode } from "./locate.js";
 import { revertTo, setProp } from "./edit.js";
 import { touchProject, listRecentProjects, removeRecentProject, clearRecentProjects } from "./workspace.js";
-import { buildRefGraph, listReferences, renameDraft, moveDraft, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
+import { buildRefGraph, listReferences, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
 import { globalSearch } from "./search.js";
 import { setTokenValue } from "./token_edit.js";
 import { exportProject, importProject } from "./export.js";
@@ -390,8 +390,13 @@ server.registerTool("chat_send", {
 
 // ──────────────────────── M8-2：泛型文件工具 ────────────────────────
 /* 设计稿之外的文件（`.md`、图片、json、zip…）也要能列、能读、能改、能挪。
-   `.dc.html` 在 write_file / move_file 里被显式拒绝并指回 write_draft / move_draft ——
-   那条路做的归一化、@ds 展开、节点地址、语义快照，这条路一样都不做。 */
+   ⚠️ **第二句（2026-10-24 更正）**：原来写着「`.dc.html` 在 write_file / move_file 里
+   被显式拒绝并指回 write_draft / move_draft」—— 两头都不成立了。
+   两道拒的条件都是 `kindOf(...) === "dc"`，而 C3（M16-7）删掉了 `FileKind` 表里的 `dc`
+   那一条，于是**两道一起变成恒假**；而 `move_draft` 本人 M16-8 ① 已经并进 `move_file`。
+   现在：`.dc.html` 的改名 / 移动走 `move_file`（它会把两种引用都改对），
+   内容还是走 `write_draft`（那条路的归一化、`@ds` 展开、节点地址、语义快照，这条路不做）。
+   > **一句描述两道闸的注释，在闸被别处撤掉时不会报错，只会开始骗人。** */
 
 // ──────────────────────────── 启动 ────────────────────────────
 

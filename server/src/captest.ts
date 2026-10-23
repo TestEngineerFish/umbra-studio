@@ -85,7 +85,11 @@ for (const n of wasHttpOnly) {
   const RETIRED: Record<string, string> = {
     diff_drafts: "并进 list_changes（它的 from/to 是超集）",
     get_changes_since: "并进 list_changes（单份稿）与 list_project_changes（整个项目）",
-    restore_draft: "还在，只是搬进了 cap/drafts.ts",
+    /* ── M16-8 ① / ③（2026-10-24）：生命周期那四件并进文件面 ── */
+    rename_draft: "M16-8 ①：并进 move_file。并的理由是量出来的 —— 前端的改名 / 移动 / 拖拽走的全是 file_move，这件的调用方是零；而它真正做的那件事（改写 <dc-import name> 的引用）move_file 原来不做，现在住在 refs.ts 的 dcImportsFollow 里，由 moveFile 调。落盘也从 writeAtomic 改走第二条写入口（原来没有快照、没有并发闸）",
+    move_draft: "M16-8 ①：同上，并进 move_file。它收「目标目录」而 move_file 收「完整目标路径」—— 重名顺延序号那一档因此没了，口径统一成「目标已存在就拒」（显式胜过聪明）",
+    delete_draft: "M16-8 ③：并进 trash_file（回收站布局本来就是同一套 <时间戳>/<原相对路径>）。唯一的调用方是 ui/S1-稿件索引.dc.html，而那份稿 C3 已经删了。⚠️ 它回执里的 impact 没了 —— 那件事改成单独问 delete_impact（M16-8 ⑤），而且必须这样：delete_impact 要在文件还在盘上的时候问",
+    restore_draft: "M16-8 ③：改名 restore_trashed_by_name（和 trash_file / restore_trashed 一族对齐）。旧名带着「稿」字，而它收的从来是任何文件的文件名",
     /* MCP 侧原来**同时有** chat_list 和 list_chats、chat_get 和（没有）——
        前者是 HTTP 路由名混进了工具名。统一成动作在前的 list_chats / get_chat */
     chat_list: "和 list_chats 重复，统一成 list_chats（HTTP 路由仍叫 chat_list）",

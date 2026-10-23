@@ -1188,7 +1188,10 @@ if (await ctxDirRow.count()) {
          `.first()` / `.last()` 这种「按位置选」的定位器，在一屏上有多个同类元素时
          **选中的是哪一个取决于渲染顺序**，而那不是判据该依赖的东西。 */
       const nameInput = pg.locator('input[placeholder^="例如"]').first();
-      const NAME = `_uitest回车误建-${Date.now()}`;
+      /* ⚠️ **名字自带后缀**（M16-8 ⑥ 之后「新建文件」不补扩展名了）——
+         不带的话下面的清理会去删一个 `.dc.html`，而盘上那份叫别的名字。
+         > **「文件不在」和「文件在别的名字下」在 `existsSync` 上长得一样**（⑥ 那条，第三次）。*/
+      const NAME = `_uitest回车误建-${Date.now()}.md`;
       await nameInput.fill(NAME);
       await pg.waitForTimeout(200);
       /* Tab 走到「取消」那颗钮上再按回车 */
@@ -1222,19 +1225,23 @@ if (await ctxDirRow.count()) {
         await pg.evaluate(async ({ nm, pd }) => {
           const b = window.__UD_APP;
           const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
-          /* ⚠️ 路由名是 **`delete_draft`**（不是 `draft_delete`），入参是 **`file`**（不是 `path`）——
-             两个我都写反了，而症状只是控制台里一条 `404 /__ud/draft_delete`：
-             **清理静默失败，而判据照样绿**。
+          /* ⚠️ **路由是 `file_trash`，入参是 `path`**（M16-8 ③：`delete_draft` 并进去了）。
+             原来写的是 `delete_draft` + `file`，而在那之前我把它写成 `draft_delete` + `path`，
+             症状只是控制台里一条 `404`：**清理静默失败，而判据照样绿**。
              是「让零 error 判据说出哪个 URL」之后才看见的。
              ⚠️ 而且**只删真在的那一条**：两个候选路径里至多一个存在，
-             对不存在的那个调 `delete_draft` 回 **400**（`E_DRAFT_NOT_FOUND`）——
-             于是「零 error」那条判据红在**我的清理**上。
-             「无条件清理」说的是**不看判据的结论**，不是「不看盘上有没有」。 */
+             对不存在的那个调会回 **400** → 于是「零 error」那条判据红在**我的清理**上。
+             「无条件清理」说的是**不看判据的结论**，不是「不看盘上有没有」。
+             ⚠️ **删完还要把回收站那一份也清掉** —— `file_trash` 不是真删，
+             它把文件挪进 `STATE_ROOT` 的回收站，不清的话每跑一轮多攒一份
+             （`doc/00` §166：「清掉自己造的文件」和「清掉自己造的状态」是两件事）。 */
           const list = async (d) => JSON.stringify((await fetch(u("files") + `&dir=${encodeURIComponent(d)}`).then((x) => x.json()).catch(() => null))?.data?.entries ?? []);
           const roots = [["", ""], ...(pd ? [[pd, pd + "/"]] : [])];
           for (const [d, pre] of roots) {
             if (!(await list(d)).includes(nm)) continue;
-            await fetch(u("delete_draft"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ file: `${pre}${nm}.dc.html` }) }).catch(() => {});
+            const t = await fetch(u("file_trash"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: `${pre}${nm}` }) }).then((x) => x.json()).catch(() => null);
+            const tp = t?.data?.trashPath;
+            if (tp) await fetch(u("trash_purge"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ trashPath: tp }) }).catch(() => {});
           }
         }, { nm: NAME, pd: parentDir });
       }
@@ -1296,9 +1303,35 @@ console.log("\n删掉被引用的稿：撤销那一行说「会断几处」（M1
     ok(typeof warnComp === "string" && /4 处 <dc-import>|1 处 <dc-import>|\d+ 处 <dc-import>/.test(warnComp),
        "**删掉被 `<dc-import>` 引用的稿：撤销那一行上说了会断几处**（真值，不是「有句话就算过」）",
        warnComp || "（那一行上什么都没说）");
+    /* ── 行内撤销到底在撤什么（M16-8 ③，2026-10-24）──
+       ⚠️⚠️ **这两条钉的是 ⑤ 赖以成立的那条不变量：删除是「延后落实」的。**
+       geek-99 这一批要我「把行内撤销改成调 `restore_trashed_by_name`」，
+       而量下来那条路**从界面上够不着**：删除要等「做下一件事」才真落盘
+       （`Workbench.tsx` 的 `commitTrash`），而落盘那一下会把撤销那一行一起清掉 ——
+       于是撤销那一行在的时候，文件一定还在磁盘上。
+       ⚠️ 而这**不是可以顺手改掉的**：⑤ 那句「有 N 处引用它，会断」要问 `delete_impact`，
+       而它只在文件还在盘上时答得出来（apitest ㉗ 里实测删完再问它抛「找不到稿」）。
+       > **一个查询和一个破坏性动作对「文件还在不在」的要求正好相反，
+       > 所以它们的先后顺序不是实现细节，是那个功能存不存在。**
+       `restore_trashed_by_name` 这条路改在了 HTTP 面上验（`apitest` ㉗，13 条），
+       前端留一条「已经落实过就真恢复」的回退 —— 把那条隐式不变量变成显式的。 */
+    const onDisk = async (name) => pg.evaluate(async (n) => {
+      const x = window.__UD_APP;
+      const r = await fetch(`${x.url.replace(/\/$/, "")}/__ud/files?token=${encodeURIComponent(x.token)}&dir=`).then((y) => y.json()).catch(() => null);
+      return (r?.data?.entries ?? []).some((e) => e.name === n);
+    }, name);
+    ok(await onDisk(COMP) === true,
+       "**撤销那一行还在的时候，文件一定还在磁盘上**（删除是延后落实的 —— ⑤ 那句警告赖以成立的前提）",
+       "盘上还在");
     /* 撤销回来 —— 这一节不往回收站留东西（纪律⑥），而且下一条要用干净的树 */
     const undo = pg.locator("button").filter({ hasText: /^撤销$/ }).first();
     if (await undo.count()) { await undo.click(); await pg.waitForTimeout(600); }
+    /* ⚠️ 撤销之后既要「盘上还在」，也要「树里又看得见了」——
+       只验盘上的话，一个「撤销什么都不做、那一行永远塌着」的实现照样绿。 */
+    const backInTree = await pg.locator('[role="treeitem"]').filter({ hasText: COMP }).count();
+    ok(await onDisk(COMP) === true && backInTree >= 1,
+       "**撤销之后文件还在，而且那一行回到树里了**（撤销不是「什么都不做」）",
+       `盘上=${await onDisk(COMP)} · 树里 ${backInTree} 行`);
 
     /* ⚠️ **反面一条**：没人引用的稿删掉时**不许**出现那句话。
        少了它，把条件写成「总是说」也全绿 —— 而那会在每次删文件时都加一句噪声。 */
@@ -5428,8 +5461,18 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
 
    > **「这条判据现在不跑」有三种，而第三种最危险**：等某件事做完（留在分母里）·
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
-   > 把第三种算成第二种，就等于亲手把缺口抹平。 */
-const EXPECT_AT_LEAST = 455;
+   > 把第三种算成第二种，就等于亲手把缺口抹平。
+
+   ⚠️⚠️ **457 = 455 + 2（M16-8 ③ 加的两条「删除是延后落实的」），而这个数必须跟着加 ——
+   不加的话这道闸会被我自己新加的判据悄悄填平。**
+   实测当场撞到：上一轮 ran = **453**，闸正确地报「少跑了 2 条」（那 2 条是刻意留在分母里的 ◨）；
+   我加了 2 条之后 ran = 455 = 基线，于是它**一声不响地全绿了** ——
+   而那 2 条缺口一条都没补上。
+   > **一道只比较一个总数的下界闸，会被别处新增的判据填平** ——
+   > 它分不清「缺的那 2 条补上了」和「别处多了 2 条」。
+   > 所以**加判据时把这个数加上去，和删判据时把它减下来，是同一条纪律的两半**；
+   > 而加的那一半更容易忘，因为忘了的后果是「全绿」。 */
+const EXPECT_AT_LEAST = 457;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

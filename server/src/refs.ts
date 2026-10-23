@@ -4,8 +4,8 @@
  * 改名 / 移动 / 删除任何被引用的稿都会静默打断引用，而校验要等下一次才报。
  * 所以生命周期操作必须先能回答「谁引用了我」。
  */
-import { readFile, rename, writeFile } from "node:fs/promises";
-import { isInside, isInsideReal, plainNameProblem } from "./pathguard.js";
+import { readFile, rename } from "node:fs/promises";
+import { isInside } from "./pathguard.js";
 import { existsSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseDraft } from "./draft.js";
@@ -146,303 +146,148 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// ──────────────────────── M1-4: rename_draft ───────────────────────
+/** 这是一份设计稿（`.dc.html`）吗 —— **一处判定**。
+ *
+ *  ⚠️⚠️ 它和 `kindOf(rel) === "dc"` **不是同一个判准**，而这件事坑过两道闸：
+ *  后者查的是 `FileKind` 表，而 C3（M16-7）把 `dc` 那一条删了 ——
+ *  于是写成 `kindOf(...) === "dc"` 的判断**一夜之间全部恒假**，
+ *  包括 `write_file` 和 `move_file` 里那两道「`.dc.html` 不走这条路」的拒。
+ *  > **一道拒和它指向的那条出路，是同一件事的两半。** 删掉 kind 条目等于两道一起撤，
+ *  > 而被指向的那条路（`move_draft`）还在原地等着 —— 实测前端改名走的已经是
+ *  > `file_move`，于是「改名跟着改 `<dc-import>` 引用」这件事**产品里没有人做了**
+ *  > （探针读数：`delete_impact` 说 1 处引用它，改完名引用方仍写着旧名，`rewrote: []`）。 */
+export const isDcPath = (rel: string): boolean => /\.dc\.html$/i.test(rel);
 
-export interface RenameDraftResult {
-  oldPath: string;
-  newPath: string;
-  /** 更新了多少个引用方的 dc-import name */
-  referencesUpdated: number;
-  /** 哪些稿被更新了 */
-  updatedFiles: Array<{ rel: string; oldName: string; newName: string }>;
+/** 移动 / 改名**之前**，把这份稿在 `<dc-import>` 图里的位置取下来。
+ *  回 `null` = 它不在图里（不是 `.dc.html`，或者压根不在项目里）。
+ *
+ *  ⚠️ **必须在动文件之前取** —— 图的 key 是旧路径，文件挪走之后就查不到了。 */
+export async function dcImportsOf(
+  p: Project,
+  rel: string,
+): Promise<{ importedBy: Array<{ rel: string; name: string }>; imports: Array<{ rel: string; name: string }> } | null> {
+  if (!isDcPath(rel)) return null;
+  const graph = await buildRefGraph(p);
+  const entry = graph.files.get(rel);
+  if (!entry) return null;
+  /* ⚠️ `entry.imports` 只装**解析得到的**引用（`buildRefGraph` 第二步那个
+     `im.relTarget && files.has(...)`）—— 移动前就断掉的那几条不在里面，
+     所以「不瞎改」是数据结构自带的，不靠这里再判一次。 */
+  return {
+    importedBy: entry.importedBy.map(({ rel: r, name }) => ({ rel: r, name })),
+    imports: entry.imports.map(({ rel: r, name }) => ({ rel: r, name })),
+  };
 }
 
-/**
- * 重命名一份稿，并连带更新所有引用它的 dc-import name。
+export interface DcImportsFollowed {
+  /** 引用方被改对的那几处 */
+  updatedFiles: Array<{ rel: string; oldName: string; newName: string }>;
+  /** 这份稿**自己**的 `<dc-import>` 改了哪几条（跨目录移动时相对基准变了，issue #82）*/
+  ownUpdated: Array<{ oldName: string; newName: string }>;
+  /** 该改而**没改成**的（写入口拒了）—— 不静默（issue #92 同一条口径）*/
+  refused: Array<{ file: string; reason: string }>;
+}
+
+/** 一份 `.dc.html` 已经挪好了，把 `<dc-import name=…>` 那一种引用跟着改对。
  *
- * 改名只是改基名，不跨目录（跨目录是 move_draft 的事）。
- * dc-import name 的解析：同层引用写基名，跨层引用写相对路径。
- * 改名时需要更新引用方中的 name，但只更新指向这份稿的 name 的基名部分。
- */
-export async function renameDraft(
+ *  ⚠️⚠️ **「谁引用了它」是两种关系，这件只管其中一种**（M16-8 ⑤ 定的那条口径）：
+ *  这里改的是**按组件名**的 `<dc-import name=…>`；按路径的 `href` / `src` / `url()`
+ *  由 `moveFile` 自己那一段改。**两段都要跑** —— 实测同一份组件稿前者 4 处、后者 0 处，
+ *  只跑一段就是「一个更弱的答案冒用了一个更强的名字」。
+ *
+ *  ⚠️ **落盘走传进来的 `write`，而不是 `writeAtomic`。**
+ *  `rename_draft` / `move_draft` 原来直接 `writeAtomic` —— 绕过写入口，
+ *  于是被它改过的稿**没有快照、没有并发闸、也不受只读闸约束**。
+ *  并进 `move_file` 之后由调用方给第二条写入口，这三样一起有了（纪律①）。
+ *
+ *  ⚠️ **不回滚，照实报**。`rename_draft` 原来是「改引用中途炸了就把文件名退回去」；
+ *  `moveFile` 的口径是「文件已经挪了，哪几处引用没跟上就说出来」（`refused`）。
+ *  两种都成立，而**在一个函数里同时承诺两种做不到** —— 这里跟并进去的那一边。
+ *
+ *  ⚠️ **按引用方分组，一个文件只写一次**（原来是每一条 import 写一次）：
+ *  同一份稿里两条 import 都指向我们时，第二次写要带着第一次的结果，
+ *  否则并发闸会拿着过期的 sha 把自己拒掉。 */
+export async function dcImportsFollow(
   p: Project,
-  oldPath: string,
-  newBaseName: string,
-): Promise<RenameDraftResult> {
-  const { listDrafts, draftPath } = await import("./project.js");
-  const { writeAtomic } = await import("./normalize.js");
-
-  // 验证源文件存在
-  const oldAbs = draftPath(p, oldPath);
-
-  /* ⚠️ **新基名是一个名字，不是一段路径**（issue #80，2026-10-05）。
-     原来 `newBaseName` 原样进 `resolve` —— `rename_draft({ newName: "../../x" })`
-     把稿 `rename` 到**项目外**，而引用方的 `dc-import name` 已经先被改写成 `../../x`。
-     同文件的 `moveDraft` 走了 `isInside`（#19 那一轮），**这里没跟上**。
-     「改名不跨目录」本来就是这个函数自己的契约，所以形状那一道也该在。
-     判定走 `plainNameProblem()` —— 和 #23 / #57 / #63 / #70 同一份。 */
-  const nameBad = plainNameProblem(newBaseName.replace(/\.dc\.html$/i, ""));
-  if (nameBad) throw new Error(`新名字不合法：${nameBad}`);
-
-  // 计算新路径（同一目录，只改基名）
-  const oldDir = dirname(oldAbs);
-  const newFileName = newBaseName.endsWith(".dc.html") ? newBaseName : newBaseName + ".dc.html";
-  const newAbs = resolve(oldDir, newFileName);
-  /* 第二道：算出来的路径还得在项目里 —— 不依赖我对形状想得全不全。 */
-  if (!isInsideReal(p.dir, newAbs)) throw new Error("改名后的路径跨出了项目目录（链接也算，issue #140）");
-
-  if (newAbs === oldAbs) {
-    throw new Error("新旧文件名相同");
-  }
-
-  // 验证目标文件不存在
-  const { existsSync } = await import("node:fs");
-  if (existsSync(newAbs)) {
-    const newRel = newAbs.slice(p.dir.length + 1).split(sep).join("/");
-    throw new Error(`目标文件 "${newRel}" 已经存在`);
-  }
-
-  // 获取引用图谱，找到所有引用了这份稿的稿
-  const graph = await buildRefGraph(p);
-  const oldEntry = graph.files.get(oldPath);
-  if (!oldEntry) {
-    throw new Error(`找不到稿 "${oldPath}"`);
-  }
-
-  // 需要更新的引用方：那些 import 了我们这份稿的
-  const importedBy = oldEntry.importedBy;
-
-  // 算出新的 name（相对于引用方的路径）
-  // 因为改名不改路径，只改基名，所以 name 的目录部分不变，只改基名
+  before: { importedBy: Array<{ rel: string; name: string }>; imports: Array<{ rel: string; name: string }> },
+  oldRel: string,
+  newRel: string,
+  write: (rel: string, next: string, prevText: string) => Promise<void>,
+): Promise<DcImportsFollowed> {
+  const oldAbs = resolve(p.dir, oldRel);
+  const newAbs = resolve(p.dir, newRel);
   const updatedFiles: Array<{ rel: string; oldName: string; newName: string }> = [];
+  const ownUpdated: Array<{ oldName: string; newName: string }> = [];
+  const refused: Array<{ file: string; reason: string }> = [];
+  /** `<dc-import name="旧">` → `<dc-import name="新">`，只换 name 的值 */
+  const swap = (src: string, oldName: string, newName: string): string =>
+    src.replace(new RegExp(`(<dc-import\\b[^>]*name\\s*=\\s*["'])${escapeRegex(oldName)}(["'])`, "gi"), `$1${newName}$2`);
+  /** 从 `fromDir` 看过去，`targetAbs` 该写成什么 name（无扩展名、posix 分隔符）*/
+  const nameFrom = (fromDir: string, targetAbs: string): string =>
+    relative(fromDir, targetAbs).replace(/\.dc\.html$/i, "").split(sep).join("/");
 
-  /* ⚠️ **先动文件、再改引用**（issue #80 第 3 点，2026-10-05）。
-     原来顺序是反的：先把所有引用方落盘改好，最后才 `rename`。
-     `newName` 指向一个不存在的子目录时 `rename` 抛 ENOENT ——
-     **引用方已经改完了，文件没改名，所有引用当场断掉，而且没有回滚。**
-     现在：改名成功才动引用；改引用中途炸了，把改过的稿和文件名一起退回去。
-     （形状那道闸已经让 ENOENT 这一种不可能发生了，但**闸是按我想到的情况写的，
-     回滚是按"我没想到"写的** —— 两个都要。） */
-  await rename(oldAbs, newAbs);
-  const touched: Array<{ abs: string; before: string }> = [];
-  try {
-  for (const ref of importedBy) {
-    // ref.rel 是引用方的相对路径
-    // ref.name 是引用方中使用的 name（可能是基名或带路径的）
-    const refAbs = resolve(p.dir, ref.rel);
-    const refSrc = await readFile(refAbs, "utf8");
-
-    // 算出旧 name 解析到的目标文件
-    const refDir = dirname(refAbs);
-    const oldTargetAbs = resolve(refDir, ref.name + ".dc.html");
-
-    // 确认这个目标文件确实是我们要改的这份稿
-    if (oldTargetAbs !== oldAbs) {
-      // 可能是不同路径但指向同一文件（符号链接等），用 realpath 比较
-      try {
-        const { realpath } = await import("node:fs/promises");
-        const [a, b] = await Promise.all([realpath(oldTargetAbs), realpath(oldAbs)]);
-        if (a !== b) continue; // 不是我们这份稿，跳过
-      } catch {
-        continue; // 解析不到，跳过
+  /* ── ① 这份稿自己引用的组件（issue #82）──
+     `dc-import name` 相对**引用方所在目录**解析（`doc/01` H4），稿换了目录基准就变了：
+       登录页.dc.html        name="主按钮"  → 主按钮.dc.html         ✓
+       挪进 Pages/ 之后      name="主按钮"  → Pages/主按钮.dc.html   ✗
+     ⚠️ 纯改名（没换目录）时这一段什么都不会改 —— 基准没变。*/
+  if (before.imports.length) {
+    let own = "";
+    try { own = await readFile(newAbs, "utf8"); } catch { own = ""; }
+    if (own) {
+      let next = own;
+      for (const im of before.imports) {
+        const newName = nameFrom(dirname(newAbs), resolve(p.dir, im.rel));
+        if (newName === im.name) continue;
+        const after = swap(next, im.name, newName);
+        if (after !== next) { next = after; ownUpdated.push({ oldName: im.name, newName }); }
+      }
+      if (next !== own) {
+        try { await write(newRel, next, own); }
+        catch (e) { ownUpdated.length = 0; refused.push({ file: newRel, reason: (e as Error)?.message ?? String(e) }); }
       }
     }
+  }
 
-    // 算出新的 name：保持引用方的相对路径结构，只改基名
-    // 旧 name 可能是 "Component" 或 "../Components/Component"
-    // 新 name 应该是同样的目录前缀 + 新基名
-    const oldNameParts = ref.name.split("/");
-    oldNameParts[oldNameParts.length - 1] = newBaseName;
-    const newName = oldNameParts.join("/");
-
-    // 替换引用方中的 dc-import name
-    // 用正则匹配 <dc-import name="旧名"> 并替换成 <dc-import name="新名">
-    const nameRe = new RegExp(
-      `(<dc-import\\b[^>]*name\\s*=\\s*["'])${escapeRegex(ref.name)}(["'])`,
-      "gi"
-    );
-    const newSrc = refSrc.replace(nameRe, `$1${newName}$2`);
-
-    if (newSrc !== refSrc) {
-      touched.push({ abs: refAbs, before: refSrc });
-      await writeAtomic(refAbs, newSrc);
-      updatedFiles.push({ rel: ref.rel, oldName: ref.name, newName });
+  /* ── ② 引用它的那几份稿 ── */
+  const byFile = new Map<string, Array<{ name: string }>>();
+  for (const ref of before.importedBy) {
+    /* 自引用（这份稿自己 import 自己）：它已经挪走了，按新路径找 */
+    const key = ref.rel === oldRel ? newRel : ref.rel;
+    (byFile.get(key) ?? byFile.set(key, []).get(key)!).push({ name: ref.name });
+  }
+  for (const [refRel, names] of byFile) {
+    const refAbs = resolve(p.dir, refRel);
+    let src = "";
+    try { src = await readFile(refAbs, "utf8"); } catch { continue; }
+    let next = src;
+    const done: Array<{ oldName: string; newName: string }> = [];
+    for (const { name } of names) {
+      /* ⚠️ **纯改名时保留引用方自己写的目录前缀**（`rename_draft` 原来的行为）：
+         它写 `../Components/组件B` 就还写 `../Components/组件C`，而不是被我们
+         重算成一个等价但不一样的写法。跨目录移动时基准真的变了，才整条重算
+         （`move_draft` 原来的行为）。**两种旧行为都保住，因为它们各自是对的。** */
+      let newName: string;
+      if (dirname(oldRel) === dirname(newRel)) {
+        const parts = name.split("/");
+        parts[parts.length - 1] = basename(newRel).replace(/\.dc\.html$/i, "");
+        newName = parts.join("/");
+      } else {
+        newName = nameFrom(dirname(refAbs), newAbs);
+      }
+      if (newName === name) continue;
+      const after = swap(next, name, newName);
+      if (after !== next) { next = after; done.push({ oldName: name, newName }); }
+    }
+    if (next === src || !done.length) continue;
+    try {
+      await write(refRel, next, src);
+      for (const d of done) updatedFiles.push({ rel: refRel, ...d });
+    } catch (e) {
+      refused.push({ file: refRel, reason: (e as Error)?.message ?? String(e) });
     }
   }
-  } catch (e) {
-    for (const t of touched.reverse()) await writeAtomic(t.abs, t.before).catch(() => { /* 尽力 */ });
-    await rename(newAbs, oldAbs).catch(() => { /* 尽力 */ });
-    throw e;
-  }
-
-  const newRel = newAbs.slice(p.dir.length + 1).split(sep).join("/");
-  return {
-    oldPath,
-    newPath: newRel,
-    referencesUpdated: updatedFiles.length,
-    updatedFiles,
-  };
-}
-
-// ──────────────────────── M1-6: move_draft ───────────────────────
-
-export interface MoveDraftResult {
-  oldPath: string;
-  newPath: string;
-  /** 更新了多少个引用方的 dc-import name（路径变了要重新算） */
-  referencesUpdated: number;
-  updatedFiles: Array<{ rel: string; oldName: string; newName: string }>;
-  /** 这份稿**自己**的 dc-import 改了哪几条（issue #82 —— 原来一条都没改） */
-  ownImportsUpdated: Array<{ oldName: string; newName: string }>;
-}
-
-/**
- * 移动稿到目标目录。跨目录移动时引用路径要跟着修（相对路径基准变了）。
- *
- * targetDir 是目标目录的相对路径（相对项目根），如 "Components" 或 "Pages"。
- * 移动到 targetDir 下，新文件名是 `<原名>.dc.html`（除非目标已有同名）。
- */
-export async function moveDraft(
-  p: Project,
-  path: string,
-  targetDir: string,
-): Promise<MoveDraftResult> {
-  const { listDrafts, draftPath } = await import("./project.js");
-  const { writeAtomic } = await import("./normalize.js");
-  const { existsSync } = await import("node:fs");
-  const { mkdir } = await import("node:fs/promises");
-
-  // 验证源文件存在
-  const oldAbs = draftPath(p, path);
-  const oldDir = dirname(oldAbs);
-  const oldBase = basename(path);
-
-  // 计算目标路径
-  const targetAbs = resolve(p.dir, targetDir);
-  if (!isInsideReal(p.dir, targetAbs)) {            // issue #19 + #140（链接）
-    throw new Error("目标目录跨出了项目目录");
-  }
-
-  // 目标目录不存在就创建
-  await mkdir(targetAbs, { recursive: true });
-
-  let newAbs = resolve(targetAbs, oldBase);
-  if (newAbs === oldAbs) {
-    throw new Error("目标位置和当前位置相同");
-  }
-
-  // 如果目标文件已存在，加序号
-  if (existsSync(newAbs)) {
-    const baseWithoutExt = oldBase.replace(/\.dc\.html$/, "");
-    let i = 2;
-    do {
-      newAbs = resolve(targetAbs, `${baseWithoutExt} ${i}.dc.html`);
-      i++;
-    } while (existsSync(newAbs) && i < 100);
-  }
-
-  // 获取引用图谱
-  const graph = await buildRefGraph(p);
-  const oldEntry = graph.files.get(path);
-  if (!oldEntry) {
-    throw new Error(`找不到稿 "${path}"`);
-  }
-
-  // 需要更新的引用方
-  const importedBy = oldEntry.importedBy;
-  const updatedFiles: Array<{ rel: string; oldName: string; newName: string }> = [];
-
-  /* ⚠️ 和 `renameDraft` 同一个顺序（issue #80 第 3 点）：先动文件、后改引用。 */
-  await rename(oldAbs, newAbs);
-  const touched: Array<{ abs: string; before: string }> = [];
-  const ownUpdated: Array<{ oldName: string; newName: string }> = [];
-  try {
-  /* ── 这份稿**自己**引用的组件也得跟着改（issue #82，2026-10-05）──
-     `dc-import name` 是相对**引用方所在目录**解析的（`doc/01` H4）。
-     稿换了目录，它自己的相对基准就变了：
-
-       登录页.dc.html        <dc-import name="主按钮">  → 主按钮.dc.html        ✓
-       move_draft(…, "Pages")
-       Pages/登录页.dc.html  <dc-import name="主按钮">  → Pages/主按钮.dc.html  ✗
-
-     而原来这个函数只遍历 `importedBy`（谁引用了我），`imports`（我引用了谁）
-     **一行都没动** —— 函数头注释自己写着「跨目录移动时引用路径要跟着修
-     （相对路径基准变了）」，工具说明写「移动并把引用它的稿一起改写」。
-     **两句话都对，而实现只做了一半** —— 页面稿几乎都引用组件，
-     所以「把页面挪进 Pages/」这个最常见的整理动作，挪完那页的组件全缺失。
-
-     ⚠️ 回归盲区在这里：`lifecycletest` 步骤 5 移动的是**组件**稿（它自己没有
-     任何 `dc-import`），所以 `checkNoMissingImports` 一直全绿。
-     **从没移动过一份「自己有引用」的页面稿。**
-
-     `oldEntry.imports` 只装**解析得到的**引用（`buildRefGraph` 第二步的
-     `im.relTarget && files.has(...)`）—— 移动前就断掉的那几条不在里面，
-     所以「不瞎改」是数据结构自带的。 */
-  {
-    const own = await readFile(newAbs, "utf8");
-    let next = own;
-    for (const im of oldEntry.imports) {
-      const targetAbs = resolve(p.dir, im.rel);
-      const newName = relative(dirname(newAbs), targetAbs).replace(/\.dc\.html$/, "").split(sep).join("/");
-      if (newName === im.name) continue;
-      const re = new RegExp(`(<dc-import\\b[^>]*name\\s*=\\s*["'])${escapeRegex(im.name)}(["'])`, "gi");
-      const after = next.replace(re, `$1${newName}$2`);
-      if (after !== next) { next = after; ownUpdated.push({ oldName: im.name, newName }); }
-    }
-    if (next !== own) {
-      touched.push({ abs: newAbs, before: own });
-      await writeAtomic(newAbs, next);
-    }
-  }
-
-  for (const ref of importedBy) {
-    const refAbs = resolve(p.dir, ref.rel);
-    const refDir = dirname(refAbs);
-
-    // 旧 name 解析到的目标
-    const oldTargetAbs = resolve(refDir, ref.name + ".dc.html");
-    const isOurFile = oldTargetAbs === oldAbs || (async () => {
-      try {
-        const { realpath } = await import("node:fs/promises");
-        return (await realpath(oldTargetAbs)) === (await realpath(oldAbs));
-      } catch { return false; }
-    })();
-    const resolved = typeof isOurFile === "boolean" ? isOurFile : await isOurFile;
-    if (!resolved) continue;
-
-    // 计算新的 name：从引用方到新位置的相对路径（无扩展名）
-    const newRelFromRef = relative(refDir, newAbs).replace(/\.dc\.html$/, "");
-    // 用相对路径作为 name
-    const newName = newRelFromRef.split(sep).join("/");
-
-    // 替换 dc-import name
-    const nameRe = new RegExp(
-      `(<dc-import\\b[^>]*name\\s*=\\s*["'])${escapeRegex(ref.name)}(["'])`,
-      "gi"
-    );
-    const refSrc = await readFile(refAbs, "utf8");
-    const newSrc = refSrc.replace(nameRe, `$1${newName}$2`);
-
-    if (newSrc !== refSrc) {
-      touched.push({ abs: refAbs, before: refSrc });
-      await writeAtomic(refAbs, newSrc);
-      updatedFiles.push({ rel: ref.rel, oldName: ref.name, newName });
-    }
-  }
-  } catch (e) {
-    for (const t of touched.reverse()) await writeAtomic(t.abs, t.before).catch(() => { /* 尽力 */ });
-    await rename(newAbs, oldAbs).catch(() => { /* 尽力 */ });
-    throw e;
-  }
-
-  const newRel = newAbs.slice(p.dir.length + 1).split(sep).join("/");
-  return {
-    oldPath: path,
-    newPath: newRel,
-    referencesUpdated: updatedFiles.length,
-    updatedFiles,
-    ownImportsUpdated: ownUpdated,
-  };
+  return { updatedFiles, ownUpdated, refused };
 }
 
 // ──────────────────────── M1-7: delete_draft + restore ───────────────────────
