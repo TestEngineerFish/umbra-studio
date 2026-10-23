@@ -270,7 +270,7 @@ function View({ ctx }: { ctx: ViewContext }) {
 }
 
 export const image: KindModule = {
-  ids: ["image"],
+  ids: ["image", "svg"],
   Provider, View, Toolbar, Corner,
   /* `⋯` 浮层头的读数（M8-33）。**图片的读数就这三样，只有这一处**
      —— 原来状态行里还有一份同样的串（`Status`），2026-09-28 随那个死接口一起删了

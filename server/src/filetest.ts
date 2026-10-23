@@ -47,6 +47,13 @@ const l = await listFiles(p);
 ok("列一层：目录在前，工具产物不列", l.entries.length === 7 && l.entries[0]!.isDir === true, { n: l.entries.length, types: l.types });
 ok("图片尺寸从文件头读（png 1×1 · svg 48×24）",
   l.entries.find((e) => e.name === "图.png")?.width === 1 && l.entries.find((e) => e.name === "图.svg")?.width === 48);
+/* ⚠️ **`listFiles` 的那份类型统计原来一条断言都没有**（只在上面那条的 detail 里打印）。
+   2026-10-23 拆出 `svg` kind 时发现 `listFiles` 和 `countTypes` **各写了一遍同样的四档计数**，
+   两份一起把矢量图算进了 `other` —— 而只有 `countTypes` 那份被钉着，
+   所以**另一份是悄悄坏的**。两处已经抽成 `bumpTypeCount` 一处，这一条钉住另一头。
+   > **两份相同的判断，就是两个会一起过期、而只有一个会被发现的地方。** */
+ok("**`listFiles` 的类型统计也对**（矢量图算进「图」那一档，不落 other）",
+  l.types.dc === 1 && l.types.md === 1 && l.types.image === 2 && l.types.other === 2, l.types);
 ok("md 摘录跳过 frontmatter", l.entries.find((e) => e.name === "需求.md")?.excerpt === "# 日志页需求");
 
 const r1 = await readAnyFile(p, "需求.md");

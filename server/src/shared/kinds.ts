@@ -30,6 +30,18 @@ export type FileKind = string;
 export const BUILTIN = {
   dir: "dir", dc: "dc", md: "md", image: "image",
   json: "json", code: "code", html: "html", other: "other",
+  /* **矢量图**（2026-10-23，`doc/11` Q84 定甲）。
+     ⚠️ **为什么从 `image` 里拆出来**：`.svg` 和 `.png` 除了「都是图」之外几乎处处不同 ——
+     它是文本、能用代码编辑器改源码、裁剪它要栅格化（**有损**）。
+     而这件事**宿主自己的代码早就自白过两次**：
+     ① `image` 那一条原来写着 `textual: (n) => n.endsWith(".svg")` —— 一个**只为一种扩展名存在的例外函数**；
+     ② `files.ts` 的 `isTextual` 注释写着「`.svg` 是图片但也是文本，**只看 kind 会误判**」。
+     > **一个只为某一个成员存在的例外，就是「这其实是两类东西」的自白。**
+     直接起因是 Q84：图片编辑插件要认领 `image`，而**认领内置类型时清单里的 `ext` 不生效**，
+     所以不拆的话它会连 `.svg` 一起接管，然后把一张矢量图裁成栅格图。
+     ⚠️ **它照旧由宿主的看图模块显示**（sam 的边界是「图片能显示就显示」，而 svg 能显示）——
+     拆的是类型，不是「以后 svg 只能看源码」。 */
+  svg: "svg",
   /* 2026-10-21（M14-11 / Q76）。⚠️ **加的是「类型」不是「编辑器」** ——
      Studio 只管**通用查看**（浏览器原生 `<video>` / `<audio>` 能播就播），
      逐帧 / 波形 / 频谱这些**专业查看与编辑归插件**（用户 2026-10-21 定的边界）。
@@ -106,7 +118,18 @@ export interface KindDef {
 }
 
 /** 后缀集合，拿出来是为了让「支持哪些扩展名」一眼看全、也方便别处复用 */
-export const IMAGE_EXT = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".bmp", ".ico"];
+/** **栅格图**（2026-10-23 Q84：`.svg` 搬去 `SVG_EXT` 了）。这几种都是像素，裁剪无损。 */
+export const IMAGE_EXT = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bmp", ".ico"];
+/** **矢量图**。单独一条是因为它同时是文本（见 `BUILTIN.svg` 那段注释）。 */
+export const SVG_EXT = [".svg"];
+/** 「这个 kind 是一张图」—— 看图模块认领它们，而**按文件头读尺寸那条路也要认它们**。
+ *
+ *  ⚠️ **一处定义，别在调用点写 kind 字面量。** 原来 `files.ts` 有**两处**
+ *  `if (kind === "image")` 才去读尺寸（`imageSize`）—— 而 Q84 把 `svg` 拆出来之后，
+ *  那两处会**静默**不再为 svg 读尺寸：不报错，只是图片视图里的「宽 × 高」变成「? × ?」，
+ *  而 `imageSize` 里专门为 svg 写的那段（解析 width/height/viewBox）变成死代码。
+ *  > **一个按 kind 字面量分支的判断，在 kind 被拆开时静默失效。** */
+export const IMAGE_LIKE_KINDS: readonly string[] = ["image", "svg"];
 /** 浏览器原生 `<video>` 放得动的那些（M14-11）。**只列能播的** ——
  *  列一个播不了的（`.mkv` / `.avi`）等于把「打不开」包装成「打开了但黑屏」，
  *  而后者更难判断是文件坏了还是我们不支持。拿不准的留给 `other` 的纯文本兜底去说实话。 */
@@ -146,8 +169,14 @@ const BUILTIN_KINDS: readonly KindDef[] = [
      priority 100 > `PLUGIN_MAX_PRIORITY` 已经挡住「抢」，这一条挡的是「认领」。 */
   { id: BUILTIN.dc, label: "设计稿", icon: "◧", priority: 100, textual: true, claimable: false, match: (n) => n.endsWith(".dc.html") },
   { id: BUILTIN.md, label: "Markdown", icon: "≡", priority: 90, textual: true, match: (n) => n.endsWith(".md") || n.endsWith(".markdown") },
-  /* `.svg` 是图片里唯一的文本 —— 所以这里是函数不是 true */
-  { id: BUILTIN.image, label: "图片", icon: "▣", priority: 80, textual: (n) => n.endsWith(".svg"), match: (n) => endsWithAny(n, IMAGE_EXT) },
+  /* ⚠️ **`textual` 那个例外函数 2026-10-23 删了**（Q84）：原来写的是
+     `textual: (n) => n.endsWith(".svg")` —— 而 `.svg` 现在是自己一种 kind，
+     于是这里回到它本来的样子：**栅格图不是文本**。
+     > 删掉一个例外，比记住一个例外可靠。 */
+  { id: BUILTIN.image, label: "图片", icon: "▣", priority: 80, match: (n) => endsWithAny(n, IMAGE_EXT) },
+  /* 矢量图：和栅格图**同档优先级**（它们扩展名不重叠，所以同档不会打架），
+     而 `textual: true` 让它**既能看图也能看源码** —— 纯文本兜底和代码插件都够得着它。 */
+  { id: BUILTIN.svg, label: "矢量图", icon: "◇", priority: 80, textual: true, match: (n) => endsWithAny(n, SVG_EXT) },
   /* ⚠️ **priority 5 是这一条的要害，不是随手填的**：它必须**低于 `PLUGIN_DEFAULT_PRIORITY`(50)**，
      这样装了媒体插件之后插件自然赢，而这是「兜底」两个字的全部含义 ——
      兜底的意思是**没有别人的时候才轮到我**。

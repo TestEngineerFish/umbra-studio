@@ -27,7 +27,13 @@ const cases: Array<[string, string, boolean, string]> = [
   // 路径,                      该是什么,        是不是文本, 为什么钉它
   ["ui/S2-单稿预览壳.dc.html",  BUILTIN.dc,     true,  "设计稿要压过网页，否则整个设计稿能力凭空消失"],
   ["a/b/index.html",            BUILTIN.html,   true,  "普通网页还是网页"],
-  ["logo.svg",                  BUILTIN.image,  true,  "svg 归图片（能无损缩放），但它是文本 —— 唯一的跨界情形"],
+  /* ⚠️ **2026-10-23（Q84）从 `image` 改成自己一种 kind。**
+     这一行原来的描述是「svg 归图片，但它是文本 —— **唯一的跨界情形**」，
+     而「唯一的跨界情形」正是拆开它的全部理由：
+     一个只有一个成员的例外，不是例外，是**一类还没被命名的东西**。
+     拆完它照旧由看图模块显示（`image/index.tsx` 的 `ids` 含 `svg`），
+     而 `textual: true` 让它同时够得着源码 —— **两边都不丢**。 */
+  ["logo.svg",                  BUILTIN.svg,    true,  "svg 自己一种 kind：既是图（看图模块显示它）又是文本（能看源码）"],
   ["tokens.json",               BUILTIN.json,   true,  "json 要压过代码：它有结构化的看法"],
   ["main.ts",                   BUILTIN.code,   true,  "代码"],
   ["readme.md",                 BUILTIN.md,     true,  "Markdown"],
@@ -240,16 +246,23 @@ console.log("\n⑨ 视频 / 音频");
  *  ① `md` 这种 `claimable` 的 → 第三方插件**认领得到**（M16-3 要的）
  *  ② `dc` 这种 `claimable: false` 的 → **谁都认领不到**，连出厂插件也不行
  *  只钉 ① 的话，把判准写成「一律放行」也会绿；只钉 ② 的话，写回 `bundled` 也会绿。 */
+/* ⚠️⚠️ **这个临时目录是第 ⑧ 和第 ⑨ 两节共用的，而那不是为了省事。**
+ *  `plugin/store.js` 在**首次 import 时**就算出 `BUNDLED_DIR` / `PLUGINS_DIR` ——
+ *  所以第二节再设一遍 `UMBRASTUDIO_STATE_DIR` **根本不生效**，store 还指着第一节那个目录。
+ *  第一版我让两节各自建、各自 `rm`，于是第 ⑨ 节的夹具搭在一个**已经被删掉的目录**上，
+ *  症状是「插件一种 kind 都没登记上」—— **看起来完全像产品的问题**。
+ *  > **模块级的环境变量快照，让「每节自带夹具」这个好习惯失效。**
+ *  这是 verbtest 那条「环境变量要在 import 之前设」的变体，而且更阴：
+ *  第一节设对了，第二节照着做反而错。 */
+const { mkdtemp, mkdir, writeFile, rm, realpath } = await import("node:fs/promises");
+const { tmpdir } = await import("node:os");
+const STATE = await realpath(await mkdtemp(join(tmpdir(), "umbra-kindtest-")));
+const EMPTY_BUNDLED = join(STATE, "没有出厂插件");
+await mkdir(EMPTY_BUNDLED, { recursive: true });
+process.env.UMBRASTUDIO_STATE_DIR = STATE;
+process.env.UMBRASTUDIO_BUNDLED_DIR = EMPTY_BUNDLED;
+
 {
-  const { mkdtemp, mkdir, writeFile, rm, realpath } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const STATE = await realpath(await mkdtemp(join(tmpdir(), "umbra-kindtest-")));
-  const EMPTY_BUNDLED = join(STATE, "没有出厂插件");
-  await mkdir(EMPTY_BUNDLED, { recursive: true });
-  /* ⚠️ 环境变量必须在 import `plugin/store.js` **之前**设（verbtest 那条教训）——
-     那个模块在 import 时就算出 `BUNDLED_DIR` / `PLUGINS_DIR`。 */
-  process.env.UMBRASTUDIO_STATE_DIR = STATE;
-  process.env.UMBRASTUDIO_BUNDLED_DIR = EMPTY_BUNDLED;
 
   /** 造一个「用户自己装的」插件：`PLUGINS_DIR/<id>/<version>/manifest.json`
    *
@@ -325,7 +338,83 @@ console.log("\n⑨ 视频 / 音频");
      "**认领 `dc` 的插件最终拿不到 `dc`**（这一条不区分是哪一道闸挡的 —— 注册期那道是纵深防御，在当前架构下测不到）",
      JSON.stringify(got2));
 
-  await rm(STATE, { recursive: true, force: true });
+  /* ⚠️ 这里**不清理** —— 第 ⑨ 节要用同一个目录（见上面那段） */
+}
+
+/* ══════════ ⑨ Q84：`.svg` 从 `image` 里拆出来（2026-10-23）══════════
+ *
+ *  起因是图片编辑插件要认领 `image`，而**认领内置类型时清单里的 `ext` 不生效** ——
+ *  不拆的话它会连 `.svg` 一起接管，然后把一张矢量图裁成栅格图（有损）。
+ *  geek-99 定甲：拆出独立 kind，**而宿主的看图模块照样显示它**
+ *  （sam 的边界是「图片能显示就显示」，svg 能显示，就不能让它退化成源码）。 */
+{
+  console.log("\n⑨ Q84：矢量图自己一种 kind");
+  const { BUILTIN: B2, IMAGE_EXT, SVG_EXT, IMAGE_LIKE_KINDS } = await import("./shared/kinds.js");
+
+  ok(kindOf("图标.svg") === B2.svg, "**`.svg` 落到新的矢量图 kind**", kindOf("图标.svg"));
+  ok(kindOf("照片.png") === B2.image && kindOf("照片.jpg") === B2.image,
+     "栅格图照旧归 `image`（拆的是 svg，不是把图片都拆了）", `${kindOf("照片.png")} / ${kindOf("照片.jpg")}`);
+  /* ⚠️ **这一条是「拆完还能看图」的那一半** —— 光拆开不够，看图模块得认领它。
+     前端 `app/src/kinds/image/index.tsx` 的 `ids` 要含 `svg`，
+     而这里能钉的是服务端这一侧：它**不许**落到 `other`（那就是退化成文件卡了）。 */
+  ok(kindOf("图标.svg") !== B2.other && kindOf("图标.svg") !== B2.code,
+     "**而且它没退化成 `other` 或 `code`** —— 拆的是类型，不是「以后 svg 只能看源码」", kindOf("图标.svg"));
+
+  /* `textual` 两面都要钉：svg 是文本（能看源码），而栅格图**不是**。 */
+  ok(isTextualPath("图标.svg"), "**矢量图是文本** —— 纯文本兜底和代码插件都够得着它的源码");
+  ok(!isTextualPath("照片.png") && !isTextualPath("照片.webp"),
+     "**而栅格图不是文本** —— 原来 `image` 那条 `textual` 是个只为 `.svg` 存在的例外函数，拆完删掉了");
+
+  /* 两组扩展名不许重叠（同 VIDEO/AUDIO 那条：重叠了谁赢取决于表里的顺序，而那是隐式的） */
+  ok(!IMAGE_EXT.includes(".svg"), "`IMAGE_EXT` 里不再有 `.svg`（否则两条都 match，谁赢看顺序）");
+  ok(SVG_EXT.every((e) => !IMAGE_EXT.includes(e)), "两组扩展名不重叠");
+  /* 同档优先级：它们不重叠，所以同档不会打架 —— 而「同档」本身要钉住，
+     不然哪天有人把 svg 调低，它就会被某个 priority 更高的插件顺手抢走。 */
+  /* ⚠️ 用 `kindDef` 而不是上一节那个局部的 `KINDS()` —— 它在另一个块的作用域里 */
+  const imgDef = kindDef(B2.image as never), svgDef = kindDef(B2.svg as never);
+  ok(imgDef?.priority === svgDef?.priority,
+     "两种图**同档优先级**（不重叠所以不打架；调低的那个会被插件顺手抢走）", `${imgDef?.priority} / ${svgDef?.priority}`);
+
+  /* ⚠️⚠️ **这一条钉的是拆 kind 最容易漏的那一处**：`files.ts` 有两处原来写
+     `if (kind === "image")` 才去读图片尺寸 —— 拆完它们会**静默**不再为 svg 读，
+     症状是图片视图里「宽 × 高」变成「? × ?」，而 `imageSize` 里专门为 svg 写的
+     那段（解析 width/height/viewBox）变成死代码。**不报错，只是读数空了。**
+     收口成 `IMAGE_LIKE_KINDS` 之后，这条判据钉的是那个集合**两种都在**。 */
+  ok(IMAGE_LIKE_KINDS.includes(B2.image) && IMAGE_LIKE_KINDS.includes(B2.svg),
+     "**`IMAGE_LIKE_KINDS` 两种图都在** —— 按文件头读尺寸那条路按它分支（原来是两处 `kind === \"image\"` 字面量）",
+     IMAGE_LIKE_KINDS.join(" / "));
+
+  /* ── 图片编辑插件认领 `image`：装了它赢，卸了退回宿主看图 ── */
+  /* ⚠️ **复用第 ⑧ 节那个临时目录**（理由见它上面那段注释：store 的路径是首次 import 时定的，
+     这里另起一个目录 + 重设环境变量**不生效**）。 */
+  const dir2 = join(STATE, ".umbrastudio", "plugins", "com.umbra.imageedit", "1.0.0");
+  await mkdir(dir2, { recursive: true });
+  await writeFile(join(dir2, "manifest.json"), JSON.stringify({
+    id: "com.umbra.imageedit", name: "图片编辑", version: "1.0.0", hostApi: "^1",
+    surfaces: ["ui"], ui: "index.html",
+    permissions: { files: ["read", "write"], scope: "project", net: [] },
+    /* 按 Q84 甲：**直接认领内置的 `image`**，不自己定义 `image-edit`。
+       ⚠️ 认领型插件的 `ext` 不生效，所以这里空着 —— 它认的就是 `IMAGE_EXT` 那一组。 */
+    kinds: [{ id: B2.image, label: "图片编辑", icon: "✎" }],
+  }), "utf8");
+  await writeFile(join(dir2, "index.html"), "<!doctype html><p>判据用</p>", "utf8");
+
+  const { registerPluginKinds: rpk2 } = await import("./plugin/store.js");
+  const got3 = await rpk2();
+  const row3 = got3.find((r) => r.id === "com.umbra.imageedit");
+  ok(!!row3 && row3.kinds.includes(B2.image),
+     "**图片编辑插件认领得到 `image`**（Q84 甲 —— M16-3 撤掉那条特例才成立的）",
+     row3 ? JSON.stringify(row3.kinds) : "一种都没登记上");
+  /* ⚠️ **而 `.svg` 不跟着被它接管** —— 这正是拆 kind 的全部目的。 */
+  ok(!(row3?.kinds ?? []).includes(B2.svg) && kindOf("图标.svg") === B2.svg,
+     "**而 `.svg` 不跟着被它接管** —— 这就是拆开的全部目的（认领型插件的 ext 不生效，不拆就连 svg 一起要了）");
+  /* ⚠️ **卸掉插件之后 `.png` 要退回宿主看图** ——「认领」只是让插件画 UI，
+     kind 本身一直是 `image`，所以卸了之后宿主模块自然接回去。
+     钉它是因为这一条正是 Q84 选甲（而不是插件自己定义 `image-edit`(90)）换来的保证：
+     **插件挂了 / 卸了，用户照样看得到图。** */
+  ok(kindOf("照片.png") === B2.image,
+     "**装着插件时 `.png` 的 kind 仍然是 `image`**（认领不改类型，所以卸了就退回宿主看图）", kindOf("照片.png"));
+  await rm(STATE, { recursive: true, force: true });   // ⑧⑨ 共用，统一在这里清
 }
 
 console.log(fail === 0 ? `\n✓ 类型表 ${pass}/${pass + fail}` : `\n✗ 类型表 ${pass}/${pass + fail}`);

@@ -10,7 +10,8 @@
     "uitest": "node uitest.mjs",
     "hometest": "node hometest.mjs",
     "build:shared": "vite build --config vite.shared.config.ts",
-    "multiprojtest": "node multiprojtest.mjs"
+    "multiprojtest": "node multiprojtest.mjs",
+    "svgprobe": "node svgprobe.mjs"
   },
   "dependencies": {
     "@codemirror/legacy-modes": "6.5.4",

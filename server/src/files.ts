@@ -80,14 +80,17 @@ async function binaryMaxSetting(): Promise<number> {
 /* 文件类型的认定**只有一份**，在 `shared/kinds.ts` —— 前端 `app/` 也 import 同一份
    （`@shared/kinds`）。以前前后端各写一套 `kindOf`，两边迟早判不一样。
    注意是 import 进来再 re-export：`export {} from` 只转发，本模块内部还是取不到这个名字。 */
-import { kindOf, isTextualPath, type FileKind } from "./shared/kinds.js";
+import { kindOf, isTextualPath, type FileKind, IMAGE_LIKE_KINDS } from "./shared/kinds.js";
 import { assetDir, UD_DIRNAME } from "./statedirs.js";
 import { isEditable } from "./records.js";   // M14-7 那道闸的判准
 import { productName, studioName } from "./shared/brand.js";
 export { kindOf };
 
 /** 这个扩展名的内容能不能当文本读 */
-/** 是不是文本 —— 走 shared 那一份（`.svg` 是图片但也是文本，只看 kind 会误判） */
+/** 是不是文本 —— 走 shared 那一份。
+ *  ⚠️ 这里原来的注释是「`.svg` 是图片但也是文本，**只看 kind 会误判**」——
+ *  **2026-10-23（Q84）之后那句话不成立了**：`.svg` 是自己一种 kind 且 `textual: true`，
+ *  所以看 kind 就够。这一层保留是因为它仍然是「别处别自己判」的唯一入口。 */
 export function isTextual(rel: string): boolean { return isTextualPath(rel); }
 
 export function sha256(s: string | Buffer): string {
@@ -282,11 +285,8 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
       if (isOpaquePath(rel)) entry.opaque = true;
       try { entry.count = (await readdir(full)).filter((x) => !isHiddenFromList(`${rel}/${x}`, showHiddenFiles)).length; } catch { entry.count = 0; }
     } else {
-      if (entry.kind === "dc") types.dc++;
-      else if (entry.kind === "md") types.md++;
-      else if (entry.kind === "image") types.image++;
-      else types.other++;
-      if (entry.kind === "image") Object.assign(entry, await imageSize(full));
+      bumpTypeCount(types, entry.kind);
+      if (IMAGE_LIKE_KINDS.includes(entry.kind)) Object.assign(entry, await imageSize(full));
       if (isTextual(rel) && entry.kind !== "dc" && st.size <= TEXT_MAX) entry.excerpt = await firstLine(full);
       const snaps = await listSnapshots(p, rel);
       if (snaps.length) entry.snapshot = snaps[snaps.length - 1];
@@ -301,6 +301,26 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
   return { dir: dirRel, entries: page, types, total, truncated: page.length < total };
 }
 
+/** 把一个 kind 记到那四档粗分类里（稿 / 文档 / 图 / 其他）。
+ *
+ *  ⚠️⚠️ **这个函数的全部存在理由是「原来有两份一模一样的」**：
+ *  `listFiles`（当前目录）和 `countTypes`（整个项目）各写了一遍同样的四档 if 链，
+ *  而 2026-10-23 拆出 `svg` kind 那一下**两份一起过期了** ——
+ *  矢量图静默落进 `other`，用户问「有几张图」时少算一张。
+ *  只有 `countTypes` 那一份被 `filetest` 钉着，所以另一份是**悄悄坏的**。
+ *  > **两份相同的判断，就是两个会一起过期、而只有一个会被发现的地方。**
+ *
+ *  ⚠️ **最后那个 `else` 是一个黑洞**：这四档是粗分类，不是 kind 的完整枚举 ——
+ *  **每加一种 kind，它都会默默落进 `other`**，而没有任何东西会报警。
+ *  这和「安全线是白名单不是黑名单」（M14-3）是同一个形状：
+ *  那次的后果是「会被误删」，这次是「会被误归类」。**加新 kind 的人请回来看一眼。** */
+function bumpTypeCount(types: { dc: number; md: number; image: number; other: number }, kind: string): void {
+  if (kind === "dc") types.dc++;
+  else if (kind === "md") types.md++;
+  else if (IMAGE_LIKE_KINDS.includes(kind)) types.image++;
+  else types.other++;
+}
+
 /** 整个项目的类型统计（S1 的 `project.types`）。 */
 export async function countTypes(p: Project): Promise<{ dc: number; md: number; image: number; other: number }> {
   const t = { dc: 0, md: 0, image: 0, other: 0 };
@@ -313,8 +333,7 @@ export async function countTypes(p: Project): Promise<{ dc: number; md: number; 
          而这个函数是**整个项目递归**的 —— 走进去等于拿 git 的 object 数量
          去算「这个项目有几份稿」，既慢又错。 */
       if (e.isDirectory()) { if (!isOpaquePath(rel)) await walk(rel); continue; }
-      const k = kindOf(rel);
-      if (k === "dc") t.dc++; else if (k === "md") t.md++; else if (k === "image") t.image++; else t.other++;
+      bumpTypeCount(t, kindOf(rel));
     }
   };
   await walk("");
@@ -435,7 +454,7 @@ export async function readAnyFile(p: Project, rel: string, encoding?: string, op
   if (whole) out.sha256 = sha256(buf);
   const snaps = await listSnapshots(p, rel);
   if (snaps.length) out.snapshot = snaps[snaps.length - 1];
-  if (out.kind === "image") Object.assign(out, await imageSize(abs));
+  if (IMAGE_LIKE_KINDS.includes(out.kind)) Object.assign(out, await imageSize(abs));
   /* ⚠️ 复用上面那两个值，**不要再算一遍** —— 再算一遍就有两个来源，
      而「按哪个读」和「按哪个判」一旦分叉，症状是「它说超限却给了内容」。 */
   const textMax = textMaxEarly;
