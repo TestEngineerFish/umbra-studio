@@ -147,22 +147,19 @@ await pg.goto(URL_, { waitUntil: "domcontentloaded" });
 await pg.waitForFunction(() => document.querySelectorAll('[role="treeitem"]').length > 0, null, { timeout: 30000 });
 await pg.waitForTimeout(1500);
 
-/* ⚠️⚠️ **「转到文件」（⌘P）2026-10-23（M16-7c / C3）整个删了，这一节和下面那一节
-   （列头 ⌕ + 搜索的 10 条判据）跟着删 —— 而这是一条**真的功能退化**，不是「理由消失」。**
+/* ⌘P 在**这里**测：刚启动，没有任何浮层开着。
+   放到后面测会被前几步留下的状态干扰（M8-27 实测），而那不是它自己的毛病。
 
-   它的交互逻辑全都和设计稿无关（120ms 防抖 · 漫游焦点 · 「还有 N 条」截断说明 ——
-   那是用户 2026-09-27 tmp.txt 第 2 条提的需求），**只有数据源是 dc 的**：
-   它搜的是 `list_drafts` 的那份名单，也就是**全项目的 `.dc.html`**。
-   设计稿这一档删掉之后那份名单是空的，而 `list_files` **不递归**（它的 summary
-   明写着「要看深层就再调一次」），补不上这个数据源。
-
-   > **「理由消失」和「数据源消失」要分开记**：AdoptBar 是前者（它问的那件事不存在了，
-   > 删掉没有代价）；这一节是后者（**用户少了一个他提过的功能**）。
-   > 把两者都写成「C3 删掉了」，下一个人就看不出哪一条是欠着的。
-
-   欠的那条已列进回执：要补回来需要给 `list_files` 加一档 `recursive`（带上限），
-   而那是一个有设计决定的改动（搜什么范围 · 上限多少 · 列表里显示什么），
-   不在「纯删除」这一批里自己定。 */
+   ⚠️⚠️ **这一节的历史值得留着**：7c-1 把「转到文件」整个删了，因为它的数据源
+   （`list_drafts` = 全项目的 `.dc.html`）随 C3 没了 —— 而它的交互逻辑一个字都和设计稿无关
+   （120ms 防抖 · 漫游焦点 · 「还有 N 条」，那是 sam 2026-09-27 tmp.txt 第 2 条提的需求）。
+   当时照实记成**真的功能退化**（而不是「理由消失」），留了两条反面判据 + 登记 Q85；
+   geek-99 2026-10-23 定甲，7c-1b 给 `list_files` 加了一档 `recursive`（上限 5000）接回来。
+   > **一条判据删掉之前先问它测的那件事还在不在** —— 在的话欠账要能被看见，
+   > 而「留两条反面判据 + 一个编号」就是让它被看见的办法。 */
+await pg.keyboard.press("Meta+p"); await pg.waitForTimeout(800);
+ok(await pg.locator('input[placeholder="转到文件…"]').count() === 1, "⌘P 打开「转到文件」");
+await pg.keyboard.press("Escape"); await pg.waitForTimeout(400);
 
 console.log("\n常驻目录列（M8-11 · 设计侧第六轮 6.1 / 6.2）");
 const tree = pg.locator('[role="tree"]');
@@ -317,15 +314,95 @@ ok(await pg.locator('button[title="铺到详情区（多选 · 网格 · 回收�
 ok(await pg.locator('[data-ud="tree-collapse"]').count() === 0, "列头的收起钮已删（显隐只归顶栏）");
 ok(await pg.locator('[data-ud="tree-reopen"]').count() === 0, "页签条最左的展开钮也删了");
 ok(await pg.locator('[data-ud="tree-more"]').count() === 1, "目录列头换成了 ⋯（和空白处右键同一张菜单）");
-/* ⚠️ **「转到文件」那 10 条判据删了** —— 理由与去处写在上面启动那一节（搜「真的功能退化」）。
-   ⚠️ 这里**留一条反面判据**：那颗钮和那个浮层**真的不在了**。
-   不留的话，「功能删了」和「判据删了」在读数上长得一模一样，
-   而半个月后谁都说不清它是被删掉的还是被漏测的。 */
-ok(await pg.locator('button[title="转到文件（⌘P）"]').count() === 0,
-   "「转到文件」那颗钮确实不在了（C3 删的，不是漏测 —— 见上面那段）");
-await pg.keyboard.press("Meta+p"); await pg.waitForTimeout(500);
-ok(await pg.locator('input[placeholder="转到文件…"]').count() === 0,
-   "⌘P 也不再开出那个浮层（快捷键跟着摘了，不留一个按了没反应的键）");
+/* ⌘P 之前先确保目录开着 —— 它的入口在目录列头，列收起来时浮层挂在一个不存在的列上。 */
+if ((await pg.locator('header [data-ud="region-left"]').getAttribute("aria-pressed")) !== "true") {
+  await pg.locator('header [data-ud="region-left"]').click(); await pg.waitForTimeout(600);
+}
+/* 点列头的 ⌕ —— 这是真实入口。⌘P 走的是同一条路（代码里派发同一个事件），
+   在这一步之前测过它单独可用。 */
+await pg.locator('button[title="转到文件（⌘P）"]').click(); await pg.waitForTimeout(900);
+ok(await pg.locator('input[placeholder="转到文件…"]').count() === 1, "列头的 ⌕ 打开「转到文件」");
+/* ── 搜索：打字才出结果 · 只列前 10 · 防抖（用户 tmp.txt 第 2 条，2026-09-27）── */
+{
+  ok(await pg.locator('#goto-list [role="option"]').count() === 0, "**空着不列任何结果**（打开浮层不等于「我要看全部文件」）");
+  const inp = pg.locator('input[placeholder="转到文件…"]');
+  /* ⚠️⚠️ **这一条是 Q85 的全部要害，所以搜的关键词刻意不是 `.dc.html`。**
+     它原来的数据源是 `list_drafts`（只有设计稿）—— 拿 `dc` 当关键词的话，
+     **旧实现和新实现都会绿**，而那正是 7c-1 删掉它的理由。
+     搜 `.md`：旧实现一条都搜不到，新实现（`list_files?recursive=true`）搜得到。 */
+  await inp.fill(".md"); await pg.waitForTimeout(400);
+  const nMd = await pg.locator('#goto-list [role="option"]').count();
+  ok(nMd > 0 && nMd <= 10, "**搜得到 `.md`（不只是设计稿）**，且最多 10 条 —— 这是 Q85 换数据源的要害", `${nMd} 条`);
+  /* 相对路径那一列要真的在：同名文件（一个项目里常有好几份 README.md）只能靠它分辨。
+     ⚠️⚠️ **这一条前后写错两次，两次的教训不同，都记着。**
+
+     **第一次**：判准写的是「整行里有 `/`」—— 而命中的第一条是**项目根**的文件，
+     它的 `path` 就等于 `name`，本来就没有斜杠。
+     而它红出来的 detail（`≡ CHANGELOG-设计侧.md CHANGELOG-设计侧.md 15 小时前`）
+     顺带暴露了一个**真的界面问题**：那一列把文件名写了两遍。
+     > **判据的条件错了，不代表它红得没有价值** —— 要看它的 detail 说了什么。
+     （界面已改成只画目录那一段；只改判据去迁就实现的话，那个重复的行就永久留下了。）
+
+     **第二次**：改成「`deepRows.length === 0 || withDir.length > 0`」，搜的是「深」字 ——
+     而这个项目里没有带「深」字的子目录文件，于是**它绿了而什么都没验到**，
+     detail 里还是我自己写的那句「这一条没验到」。
+     > **一个 `||` 里的某一支会在要测的那件事完全没发生时也成立**（`CLAUDE.md` §9 原话）。
+     > 而**一条 ✓ 在日志里就是「过了」，不管它的 detail 写了什么。**
+
+     现在：**判据自带一个子目录夹具**，前提写进断言本身。
+     不依赖用户项目里恰好有什么 —— 那种依赖换个项目跑就变成静默绿。 */
+  const SUBD = "_uitest子目录", SUBF = "_uitest深处.md";
+  const projDir = await pg.evaluate(() => window.__UD_APP.dir);
+  mkdirSync(`${projDir}/${SUBD}`, { recursive: true });
+  writeFileSync(`${projDir}/${SUBD}/${SUBF}`, "# 子目录样本\n\n这一份是 uitest 造的（转到文件那一组）。\n", "utf8");
+  /* ⚠️⚠️ **这里原来写的是 `await settleTree(SUBD)`，而那是一个 TDZ 崩溃** ——
+     `settleTree` 是个 `const`，定义在本文件 500 多行处，而这一组在 350 行左右跑。
+     `node --check` 对这件事一无所知（它是**运行时**错误），症状是整套跑到 49 条就抛。
+     ⚠️ **这是同一个会话里第二次**（上一次是 `clickRow`）。
+
+     而绕回来看，**我压根不该等树**：名单是「打开浮层时取一次」的，
+     所以要等的是「**浮层里搜到了**」，不是「树里出现了」。
+     > 用一个现成 helper 的时候，顺手接受了它的语义，而没问「我要等的到底是哪件事」。
+
+     所以这里自己轮询：**重开浮层 → 重取名单 → 看搜不搜到**，带 40 次上限
+     （`CLAUDE.md` §8 3.4：等待循环一律带上限，`until` 的默认行为是永动机）。 */
+  const inp2 = () => pg.locator('input[placeholder="转到文件…"]');
+  let deepRows = [];
+  for (let i = 0; i < 40; i++) {
+    await inp2().fill("_uitest深处"); await pg.waitForTimeout(250);
+    deepRows = await pg.locator('#goto-list [role="option"]').allInnerTexts().catch(() => []);
+    if (deepRows.length) break;
+    /* 没搜到 → 名单是浮层打开那一刻取的，重开一次再试 */
+    await pg.keyboard.press("Escape"); await pg.waitForTimeout(150);
+    await pg.locator('button[title="转到文件（⌘P）"]').click(); await pg.waitForTimeout(400);
+  }
+  const withDir = deepRows.filter((t) => t.includes(SUBD));
+  /* ⚠️ **两个条件都在断言里**：① 真搜到了（否则下一条测的是空集）② 那一行带目录段。
+     ①②分开写的话 ① 绿 ② 红时能一眼看出是哪一半坏的。 */
+  ok(deepRows.length > 0, "（前提）刚造的子目录样本**真的被搜到了**（名单会跟着盘上的变化重取）", `${deepRows.length} 条命中`);
+  ok(deepRows.length > 0 && withDir.length === deepRows.length,
+     "**子目录里的命中带着目录段**（同名文件只能靠它分辨）",
+     deepRows.length ? `${withDir.length}/${deepRows.length} 行带 ${SUBD}/ · 例：${deepRows[0].replace(/\n/g, " ").slice(0, 44)}` : "（一条都没搜到，上一条已经红了）");
+  rmSync(`${projDir}/${SUBD}`, { recursive: true, force: true });
+  await inp2().fill(".md"); await pg.waitForTimeout(400);
+  /* ⚠️ 截断必须说出来 —— 「只列了前 10」和「一共就这 10 条」在界面上长得一样 */
+  await inp.fill("."); await pg.waitForTimeout(400);
+  const nAll = await pg.locator('#goto-list [role="option"]').count();
+  ok(nAll > 0 && nAll <= 10, "有关键词才出结果，且**最多 10 条**", `${nAll} 条`);
+  ok(await pg.locator('text=/还有 \\d+ 条/').count() === 1, "截断了就说「还有 N 条」，不静静截掉");
+  /* 防抖：连敲 5 个字，列表只该重排一次 */
+  await inp.fill("");
+  await pg.waitForTimeout(300);
+  await pg.evaluate(() => { window.__gl = 0; new MutationObserver(() => window.__gl++).observe(document.getElementById("goto-list"), { childList: true, subtree: true }); });
+  for (const ch of ["s", "a", "m", "p", "l"]) { await inp.type(ch); await pg.waitForTimeout(30); }
+  await pg.waitForTimeout(500);
+  const rerenders = await pg.evaluate(() => window.__gl);
+  ok(rerenders <= 2, "连敲 5 个字只重排一两次（120ms 防抖）", `${rerenders} 次`);
+  /* ⚠️ **「项目太大」那一句没有判据，照实说** —— 它要一个 5000 文件以上的项目才出得来，
+     而前端不传 `limit`（那一档只在服务端）。服务端那一侧由 `filetest` 用 `limit` 钉住
+     （给 5 就回 5 条 + `truncated`）。**这里量不到的那一半，要说出来而不是假装测过。** */
+}
+await pg.keyboard.press("Escape"); await pg.waitForTimeout(300);
 
 /* ── 格式注册表（M8-14）──
    这一轮把「每种文件怎么看」从 Workbench 的一条三元链搬进 `app/src/kinds/` 的独立模块。

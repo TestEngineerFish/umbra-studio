@@ -1,12 +1,13 @@
 import { studioName } from "@shared/brand";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Core } from "../api/client";
-import type { FileEntry, ListFilesResult } from "../api/types";
+import { timeAgo, type FileEntry, type ListFilesResult } from "../api/types";
 import { isFileDrag } from "../host/drop";
 import { Glyph } from "../ui/Glyph";
 import { CtxMenu, itemsFor, type CtxActions, type CtxTarget } from "./ctxmenu";
 import { toast } from "../ui/Toast";
 import { kindDef } from "@shared/kinds";
+import { PopoverAt } from "../ui/Popover";
 import { inActive } from "./scope";   // 并存：只找当前那个工作台（M15-1 S2）
 
 /** 常驻目录列里的那棵树（M8-11，形制按设计侧第六轮的 S11 窄列 / S12）。
@@ -69,7 +70,10 @@ const sayOutside = (path: string): void =>
   toast("这是一条指向项目外面的链接", `${path} 指到项目目录外面。从这里读写它等于读写项目外的文件，所以不放行。要改那个文件，直接打开它真正所在的那个目录。`, "error");
 
 export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile, onOpenDir, projectName, actions, trashed, onUndoTrash, tick, onRenamed, beforeRename, onDropFiles }: TreeProps) {
+  const [goto, setGoto] = useState(false);
+  const [q, setQ] = useState("");
   const [ctx, setCtx] = useState<{ x: number; y: number; target: CtxTarget } | null>(null);
+  const headRef = useRef<HTMLDivElement>(null);
   /** 正在就地改名的那一行（设计侧 §五：重命名就地改，不弹窗 ——
    *  弹窗要把视线从树里拉走，而改名的时候人正盯着这一行） */
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -124,6 +128,11 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
     for (const p of need) if (children[p] === undefined) void load(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
+
+  useEffect(() => {
+    const on = () => { setGoto(true); setQ(""); };
+    window.addEventListener("ud-goto-file", on); return () => window.removeEventListener("ud-goto-file", on);
+  }, []);
 
   /** 「在目录中显示」高亮的那一行（1.2 s 后退回普通的当前行，设计侧 §六.2） */
   const [flash, setFlash] = useState<string | null>(null);
@@ -288,11 +297,11 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
 
   return (
     <div className="flex-1 min-w-0 flex flex-col min-h-0">
-      {/* 列头：项目名（点回根）+ `⋯`。钮常驻不 hover 才出 —— 键盘和触控都要够得着 */}
+      {/* 列头：项目名（点回根）+ 两颗导航钮。钮常驻不 hover 才出 —— 键盘和触控都要够得着 */}
       {/* 高度和分隔线都跟页签条对齐（34px + border-b）——
           目录列通栏之后它和页签条并排，差 2px 或少一条线，那条横线就是断的 */}
       {/* 36px —— 所有模块状态栏一个值（第九轮 §二） */}
-      <div data-ud="tree-head" className="h-9 pl-2.5 pr-1 flex items-center gap-0.5 shrink-0 text-xs relative border-b border-border">
+      <div ref={headRef} data-ud="tree-head" className="h-9 pl-2.5 pr-1 flex items-center gap-0.5 shrink-0 text-xs relative border-b border-border">
         {/* 项目名**右键 = 空白处菜单**（M8-21）。
             光靠「树的空白区」不够：树一满就没有空白可点，用户等于没法在根目录新建。
             项目名就是项目根，在它上面右键最说得通。 */}
@@ -300,6 +309,10 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           onContextMenu={(ev) => { ev.preventDefault(); setCtx({ x: ev.clientX, y: ev.clientY, target: { kind: "blank" } }); }}
           onClick={() => onOpenDir("")} title="回到项目根（右键：对项目根的操作）">
           <Glyph icon="folder-open" className="text-muted shrink-0" /><span className="truncate">{projectName}</span>
+        </button>
+        <button className="w-6 h-6 grid place-items-center rounded text-muted hover:bg-hover hover:text-text shrink-0"
+          onClick={() => { setGoto((g) => !g); setQ(""); }} title="转到文件（⌘P）" aria-label="转到文件">
+          <Glyph icon="search" />
         </button>
         {/* 第九轮：**收起钮删掉**（用户第 14 条「有点多余」）—— 目录的显隐只归顶栏那一颗。
             这个位置换成 `⋯`，和在空白处右键是**同一张菜单**：
@@ -309,6 +322,9 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
           title="对这个项目的操作" aria-label="更多">
           <Glyph icon="more" />
         </button>
+        {goto && headRef.current && <GotoFile core={core} q={q} setQ={setQ} current={current} tick={tick}
+          anchor={{ x: headRef.current.getBoundingClientRect().left + 4, y: headRef.current.getBoundingClientRect().bottom - 4, w: headRef.current.getBoundingClientRect().width - 8 }}
+          onPick={(f) => { setGoto(false); onOpenFile(f); }} onClose={() => setGoto(false)} />}
       </div>
       {/* 空白处 = 项目根（设计侧 §五）。所以在树的空白区右键，新建就落在根目录。 */}
       <div className={`flex-1 min-h-0 overflow-auto pb-2 ${dropAt === "" ? "ring-1 ring-inset ring-accent bg-accentSoft/40" : ""}`} role="tree"
@@ -343,6 +359,114 @@ export function FileTree({ core, current, expanded, onExpandedChange, onOpenFile
   );
 }
 
+
+/** 「转到文件」浮层（⌘P）。原来是页签条右边那颗「N 份稿 ▾」——
+ *  按第七轮的分层，它变的是「在详情区看哪份文件」，属于导航，所以跟着目录列走。
+ *
+ *  ⚠️⚠️ **2026-10-23（Q85 / M16-7c-1b）换了数据源，而这是它第二次换。**
+ *  它原来搜的是 `list_drafts`，也就是**全项目的 `.dc.html`** —— C3 删掉设计稿之后
+ *  那份名单恒为空，于是 7c-1 把整个功能删了并照实记成「数据源消失」的欠账。
+ *  现在搜 `list_files?recursive=true`（Q85 为它新开的那一档，上限 5000）。
+ *
+ *  ⚠️ **三样东西一个字没改**：120ms 防抖 · 焦点不离开输入框的漫游（`keys="off"` +
+ *  `aria-activedescendant`）· 「还有 N 条」的截断说明。那是 sam 2026-09-27 tmp.txt
+ *  第 2 条提的需求，和数据源无关 —— 换数据源不是重做交互。
+ *
+ *  ⚠️ **列换了三样**：原来是 `稿名 / 健康点 / 版本号`（全是索引里算好的 dc 读数），
+ *  现在是 `文件名 / 相对路径（灰字）/ 改动时间`。健康与版本对普通文件压根不存在，
+ *  留一个永远空的列比不留糟。 */
+function GotoFile({ core, q, setQ, current, tick, onPick, onClose, anchor }: {
+  core: Core; q: string; setQ: (v: string) => void; current: string | null; tick: string;
+  onPick: (file: string) => void; onClose: () => void; anchor: { x: number; y: number; w: number };
+}) {
+  /* 名单在**打开浮层时取一次**，不是每次打字都问服务端 ——
+     筛选是内存里的（下面那个 `filter`），而递归列全项目是一次几十毫秒的 IO。
+     ⚠️ `tick` 进依赖：盘上有文件增删时（磁盘监听 → 工作台 bump）这一份要跟着重取，
+     否则刚建出来的文件在这里搜不到，而用户刚刚看见它出现在树里。 */
+  const [all, setAll] = useState<FileEntry[] | null>(null);
+  const [cut, setCut] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    void core.get<ListFilesResult>("files?recursive=true").then((r) => {
+      if (dead) return;
+      /* ⚠️ 拿不到就给空数组**而不是停在 null** —— null 画的是「正在找」，
+         而一个永远转着的转圈比一句「没有匹配」糟。失败的那一句由下面 `all` 为空时的文案兜。 */
+      setAll(r.ok && r.data ? r.data.entries : []);
+      setCut(!!r.data?.truncated);
+    }).catch(() => { if (!dead) setAll([]); });
+    return () => { dead = true; };
+  }, [core, tick]);
+
+  /* ═══ 打字才出结果、防抖、只列前 10（用户 tmp.txt 第 2 条，2026-09-27）═══
+     为什么空串不列全部：**打开这个浮层的动作本身不表达「我要看全部文件」** ——
+     要看全部，目录列一直在左边。空着就列全部只有两个效果：
+     首次打开要渲染几百行，以及把真正的入口埋在噪音里。
+     防抖 120ms：筛选本身是内存里的，不花钱；**花钱的是渲染**。 */
+  const [dq, setDq] = useState(q);
+  useEffect(() => { const t = setTimeout(() => setDq(q), 120); return () => clearTimeout(t); }, [q]);
+  const kw = dq.trim().toLowerCase();
+  /* 名字和路径都能搜（原来是 `title + file`，同一个口径） */
+  const hits = kw && all ? all.filter((e) => `${e.name} ${e.path}`.toLowerCase().includes(kw)) : [];
+  const MAX = 10;
+  const rows = hits.slice(0, MAX);
+  const more = hits.length - rows.length;
+  const [act, setAct] = useState(0);
+  const [grown, setGrown] = useState(false);
+  useEffect(() => { const r = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(r); }, []);
+  const hit = Math.min(act, Math.max(0, rows.length - 1));
+  useEffect(() => { setAct(0); }, [kw]);
+  const rowId = (i: number) => `goto-row-${i}`;
+  return (
+      <PopoverAt x={anchor.x} y={anchor.y} onClose={onClose} width={anchor.w} pad="0" keys="off">
+      <div className="max-h-[60vh] flex flex-col">
+        <div className="anim-col m-1.5" style={{ width: grown ? "auto" : 0, opacity: grown ? 1 : 0 }}>
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="转到文件…"
+          role="combobox" aria-expanded aria-controls="goto-list"
+          aria-activedescendant={rows.length ? rowId(hit) : undefined}
+          className="w-full h-7 px-2 rounded border border-borderStrong bg-bg outline-none focus:border-accent text-xs"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { if (q) setQ(""); else onClose(); return; }
+            if (!rows.length) return;
+            if (e.key === "Enter") { e.preventDefault(); onPick(rows[hit]!.path); return; }
+            const mv = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+            const to = e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : mv ? (hit + mv + rows.length) % rows.length : -1;
+            if (to < 0) return;
+            e.preventDefault(); setAct(to);
+            inActive(`#${CSS.escape(rowId(to))}`)?.scrollIntoView({ block: "nearest" });
+          }} />
+        </div>
+        <div id="goto-list" role="listbox" className="flex-1 overflow-auto pb-1">
+          {all === null ? <div className="px-2 py-3 text-muted text-[11px] text-center">正在列这个项目的文件…</div>
+            : !kw ? <div className="px-2 py-3 text-muted text-[11px] text-center">打几个字开始找 —— 名字或路径都行</div>
+            : rows.length ? rows.map((e, i) => (
+            <button key={e.path} id={rowId(i)} role="option" aria-selected={i === hit} tabIndex={-1}
+              onMouseEnter={() => setAct(i)}
+              className={`w-full px-2 py-1 flex items-center gap-2 text-left ${i === hit ? "bg-hover" : ""} ${e.path === current ? "bg-accentSoft" : ""}`} onClick={() => onPick(e.path)}>
+              <span className="shrink-0 text-muted">{kindDef(e.kind).icon}</span>
+              <span className="truncate shrink-0 max-w-[45%] text-xs">{e.name}</span>
+              {/* 相对路径：**同名文件只能靠它分辨**（`README.md` 在一个项目里常有好几份）。
+                  ⚠️ **只画目录那一段**，不画整条 `path` —— 整条的话根目录的文件
+                  会在同一行里把自己的名字写两遍（实测读数：
+                  `≡ CHANGELOG-设计侧.md CHANGELOG-设计侧.md 15 小时前`）。
+                  > **一个「为了消歧」的列，在不需要消歧的那一行里就是噪音。**
+                  这一条是判据的 detail 暴露的：它当时红在一个写错的条件上
+                  （我要求路径里有 `/`），而**读数顺带把重复画出来了**。 */}
+              <span className="truncate flex-1 text-muted font-mono text-[11px]">{e.path.slice(0, e.path.length - e.name.length)}</span>
+              <span className="text-muted text-[11px] shrink-0">{timeAgo(e.updatedAt)}</span>
+            </button>
+          )) : <div className="px-2 py-3 text-muted text-[11px] text-center">没有匹配的文件</div>}
+        </div>
+        {/* 截断要说出来 —— 「只列了前 10」和「一共就这 10 条」不是一回事 */}
+        {more > 0 && <div className="px-2 h-6 flex items-center border-t border-border text-[11px] text-muted">还有 {more} 条 —— 再多打几个字缩小范围</div>}
+        {/* ⚠️ **项目超过 5000 个文件时照实说**（geek-99 2026-10-23 定的口径）——
+            不说的话「搜不到某个文件」看起来和「这个文件不存在」一模一样。
+            ⚠️ 这句话**不能写成「还有 N 个没搜」**：那条路扫到上限就停，
+            压根算不出项目里一共有多少（见 `ListFilesResult.total` 的注释）。 */}
+        {cut && <div className="px-2 py-1 flex items-center border-t border-border text-[11px] text-warn">项目太大，只搜了前 {all?.length ?? 0} 个文件</div>}
+      </div>
+      </PopoverAt>
+  );
+}
 
 const Loading = ({ depth }: { depth: number }) => (
   <div className="flex items-center gap-1.5 text-[11px] text-muted" style={{ height: ROW_H, paddingLeft: 6 + depth * INDENT + 20 }}>

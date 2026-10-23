@@ -65,10 +65,25 @@ function decodeContent(content: string, encoding?: "utf8" | "base64"): string | 
 
 defineCap({
   name: "list_files", title: "列目录", scope: "project",
-  summary: "列一个目录下的文件与子目录（含类型、大小、改动时间）。不递归 —— 要看深层就再调一次。",
-  input: { dir: z.string().optional().describe("相对项目根的子目录，不给就是项目根"), limit: z.number().optional() },
+  summary: [
+    "列一个目录下的文件与子目录（含类型、大小、改动时间）。默认**只列一层** —— 要看深层就给 `recursive: true`，或者对子目录再调一次。",
+    "`recursive: true` 递归列**整个项目的文件**（不含目录项），上限 5000 个；扫到上限就停并回 `truncated: true`。",
+    "⚠️ 递归那条路**只给名字 / 路径 / 类型 / 大小 / 改动时间** —— 不读图片尺寸、不给首行摘要、不查快照，"
+      + "那几样对五千项是几千次 syscall。要某一份的详细信息，对它所在的那一层再调一次（不给 `recursive`）。",
+    "⚠️ 递归时 `total` 等于实际给出的条数（扫到上限就停，**算不出项目里一共有多少**）——"
+      + "所以「还有多少没给」这句话说不了，只能说「只列了前 5000 个」。",
+  ].join("\n"),
+  input: {
+    dir: z.string().optional().describe("相对项目根的子目录，不给就是项目根"),
+    limit: z.number().optional(),
+    recursive: z.boolean().optional().describe("递归列整个项目的文件（忽略 dir），上限 5000"),
+  },
   http: { route: "files", method: "GET" },
-  run: async ({ dir, limit }, c) => envelope(await listFiles(p(c), dir ?? "", limit)),
+  /* ⚠️ `limit` 原样传下去 —— **两条路默认值不同这件事住在 `listFiles` 里**，
+     不在这个门面里（第一版写在这儿，于是直接调 `listFiles` 的人拿到 200 条，
+     见那边的注释）。 */
+  run: async ({ dir, limit, recursive }, c) =>
+    envelope(await listFiles(p(c), dir ?? "", limit, { recursive })),
 });
 
 defineCap({

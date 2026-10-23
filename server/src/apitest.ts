@@ -19,7 +19,7 @@ import { buildProject, TOOL_ROOT } from "./project.js";
 import { basename as basename8 } from "node:path";
 import { start as startJob } from "./jobs.js";
 import { projectJobKey } from "./api.js";
-import { mkdtemp, rm as rmdirAll, writeFile as wfFix } from "node:fs/promises";
+import { mkdir as mkdirFix, mkdtemp, rm as rmdirAll, writeFile as wfFix } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir as osTmpdir } from "node:os";
 import { join as joinFix } from "node:path";
@@ -1917,6 +1917,58 @@ console.log("\n㉓ 流式回复的解帧与累加（issue #134）");
   /* ⚠️ 这一条钉的是**分寸**：流断在中间时把已经收到的那部分带出来，而不是整轮丢掉 */
   ok(/partial\.content \|\| partial\.toolCalls\.length/.test(provSrc),
      "**流断在中间时把已经收到的那部分带出来**（整轮丢掉正是这条 issue 要修的事）");
+}
+
+/* ══════════ ㉔ GET 的查询串里 `false` 不许被当成 true（2026-10-23）══════════
+   ⚠️⚠️ **这是一条从 M13-3 / M14-11 起就在的缺陷，而它一条判据都没有。**
+
+   门面早就在为「GET 的查询串全是字符串」把数字转回来（`isNumberSchema`），
+   **而它只转了一半** —— `z.boolean()` 的参数拿到的是字符串 `"false"`，
+   而 `cap.run(input as never, …)` **不跑 zod**，于是产品代码里那句 `if (x)`
+   看到的是一个 truthy 的字符串。
+
+   > **参数说「不要」而行为是「要」** —— 这个方向最糟，因为调用方明确表达过意图。
+
+   受影响的五条 GET 实测过：`list_files.recursive`（2026-10-23 加的）·
+   `read_file.asText` · `search_in_file.ignoreCase` · `list_icons.withPath` ·
+   `list_comments.unresolvedOnly`。
+
+   ⚠️ **这一节住在路由层是对的**：`filetest` 调的是 `listFiles()` 函数，
+   它收的本来就是 boolean —— **那一层永远看不到这个 bug**。 */
+console.log("\n㉔ GET 的查询串里的 boolean（`?x=false` 不许变成 true）");
+{
+  /* ⚠️ `u()` 自带 `?token=`，所以查询串要用 `&` 追加（和第 347 行那句 `u("files") + "&dir="` 同一个写法）。 */
+  type Env<T> = { ok: boolean; data?: T; errors?: Array<{ message?: string }> };
+  const g = async <T>(route: string, qs: string): Promise<Env<T>> => await (await fetch(u(route) + qs)).json() as Env<T>;
+
+  /* ── ⓐ `recursive=false` 要当成「不递归」 ── */
+  await mkdirFix(joinFix(FIXTURE, "子"), { recursive: true });
+  await wfFix(joinFix(FIXTURE, "子", "深处.txt"), "x", "utf8");
+  type Ls = { entries: Array<{ path: string }> };
+  const r1 = await g<Ls>("files", "&recursive=false");
+  const r2 = await g<Ls>("files", "&recursive=true");
+  const deep = (r: Env<Ls>): number => (r.data?.entries ?? []).filter((e: { path: string }) => e.path.includes("/")).length;
+  ok(r1.ok && deep(r1) === 0,
+     "**`?recursive=false` 真的不递归**（而它原来会 —— 字符串 `\"false\"` 是 truthy）",
+     `recursive=false → ${deep(r1)} 条多级路径`);
+  /* ⚠️ **对照组少不了**：没有它的话「不递归」可能只是因为递归整条路坏了，
+     而那两种在读数上长得一模一样。 */
+  ok(r2.ok && deep(r2) > 0, "**（对照）`?recursive=true` 真的递归**（不然上一条可能只是递归坏了）",
+     `recursive=true → ${deep(r2)} 条多级路径`);
+  /* ── ⓑ 同一个转换对别的 GET 能力也生效（它是门面的事，不是某一件能力的事）── */
+  await wfFix(joinFix(FIXTURE, "大小写.txt"), "Foo\nfoo\n", "utf8");
+  type Sr = { hits?: Array<unknown> };
+  /* ⚠️ 入参叫 `query` 不是 `q` —— 第一版写了 `&q=Foo`，两条都回「0 条命中」。
+     **对照组一眼把它和产品缺陷区分开了**：`ignoreCase=true` 那条也是 0，
+     说明两次调用都没搜到任何东西，那只能是入参错了。
+     > 对照组不只防「功能整条坏了」，也防「我把判据写错了」——
+     > 这两件事在**单条**读数上长得完全一样。 */
+  const qs = "&path=" + encodeURIComponent("大小写.txt") + "&query=Foo";
+  const cs = await g<Sr>("file_search", qs + "&ignoreCase=false");
+  const ci = await g<Sr>("file_search", qs + "&ignoreCase=true");
+  const n = (r: Env<Sr>): number => (r.data?.hits ?? []).length;
+  ok(cs.ok && n(cs) === 1, "**`search_in_file?ignoreCase=false` 真的区分大小写**（它的 describe 写着「默认区分大小写」）", `${n(cs)} 条命中`);
+  ok(ci.ok && n(ci) === 2, "**（对照）`ignoreCase=true` 不区分**（两行都命中）", `${n(ci)} 条命中`);
 }
 
 /* ⚠️ 收尾自检：夹具的身份在整轮里没被别的节悄悄破坏过。

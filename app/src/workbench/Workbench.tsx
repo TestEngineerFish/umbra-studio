@@ -480,6 +480,14 @@ export function Workbench({ entry, hidden, windowProjects, onSwitchProject, onCl
       /* ⌘E 展开 / 收起编辑栏（第九轮新给的键）。它归格式模块自己管，这里只发事件 */
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "e") { e.preventDefault(); if (mod.Toolbar) setEditOpen((o) => !o); }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "b") { e.preventDefault(); setLayout({ ...layout, left: !layout.left }); }
+      /* ⌘P 转到文件：入口在目录列头，收起时先展开它，不然浮层挂在一个不存在的列上。
+         ⚠️ 这一条 7c-1 删过一轮（它的数据源 `list_drafts` 随 C3 没了），
+         Q85 定了补回来之后又接上 —— 现在搜的是 `list_files?recursive=true`。 */
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        if (!layout.left) setLayout({ ...layout, left: true });
+        setTimeout(() => window.dispatchEvent(new CustomEvent("ud-goto-file")), layout.left ? 0 : 60);
+      }
       /* ⌘L 聚焦会话输入框。**原来是 ⌘J，让给底栏了**（`00` §75.4）——
          Cursor 和 VS Code 的 Copilot Chat 都用 ⌘L 聚焦聊天输入，用户正在用 Cursor。
          左栏关着时先打开再聚焦：他按这个键的意图很清楚，别让他按了没反应。

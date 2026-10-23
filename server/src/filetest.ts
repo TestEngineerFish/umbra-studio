@@ -1690,5 +1690,87 @@ console.log("\n⑮ 指向项目外的符号链接（issue #140）");
   await rm(L, { recursive: true, force: true });
 }
 
+/* ── ⓡ 递归列文件（Q85 / M16-7c-1b，2026-10-23）────────────────────────────
+   「转到文件」（⌘P）原来搜 `list_drafts`（全项目的 `.dc.html`），C3 之后那份名单恒为空。
+   Q85 定甲：给 `list_files` 加一档 `recursive`，上限 5000。
+
+   ⚠️⚠️ **这一节的第一条是我自己刚踩的那个 bug**：第一版把「两条路默认 limit 不同」
+   写在 `cap/files.ts` 的门面里，而 `listFiles` 的签名上是 `limit = LIST_PAGE` ——
+   于是**直接调这个函数的人拿到 200 条**，第一次真量就撞到了（232 个文件的项目回 200 + truncated）。
+   > **一个默认值在两个地方各有一个答案，就有一个是错的。**
+   而它的症状正是我在门面注释里自己写下的担心（「少了但不报错」）——
+   **我写了那个担心，然后在下一步造出了它。**
+   所以这条判据钉的不是「递归能用」，是**「不给 limit 时它用的是哪个默认值」**。 */
+{
+  const { mkdtemp, writeFile: wf3, mkdir: md3 } = await import("node:fs/promises");
+  /* ⚠️ `lsf` 在上一节的块作用域里，这里看不到 —— 自己拿一次。
+     （每节自带夹具与 import 是这一套的惯例，省得节与节之间互相依赖。） */
+  const { listFiles: lsf, LIST_PAGE: LP, WALK_MAX: WM } = await import("./files.js");
+  const R = await mkdtemp(join(tmpdir(), "umbrastudio-ftrec-"));
+  await wf3(join(R, "project.json"), JSON.stringify({ name: "ftrec", title: "ftrec" }), "utf8");
+  /* 造 **比 LIST_PAGE 多**的文件，否则「默认值用错了」这件事量不出来
+     （一个 50 个文件的项目上，200 和 5000 这两个默认值回的条数一模一样）。
+     > **判据要让它要测的那个差别真的发生** —— 这正是「判据在没有样本的时候，
+     > 测的是今天恰好没事」的反面做法。 */
+  /* ⚠️⚠️ **夹具要同时让两个差别都发生，而我第一版只照顾了一个。**
+     ① 「递归的默认 limit 不是 200」要**全项目**超过 `LIST_PAGE`；
+     ② 「一层那条路还是截断到 200」要**根目录**超过 `LIST_PAGE`。
+     第一版把文件按 `i % 3` 散到三层 → 根目录只占 1/3（82 项），
+     于是 ② 压根没到截断线，判据红在自己的夹具上。
+     > 我在下面写了「判据要让它要测的那个差别真的发生」，
+     > **然后在夹具布局上没做到** —— 同一个夹具要满足两个条件，而我只检查了一个。
+     现在：根目录放满 `N` 个，另外在两层深处各放几个（多级路径与「不止一层」靠它们）。 */
+  const N = LP + 37;
+  const DEEP = 5;
+  await md3(join(R, "深", "再深"), { recursive: true });
+  for (let i = 0; i < N; i++) await wf3(join(R, `样本${i}.txt`), `第 ${i} 个`, "utf8");
+  for (let i = 0; i < DEEP; i++) {
+    await wf3(join(R, "深", `深样本${i}.txt`), "x", "utf8");
+    await wf3(join(R, "深", "再深", `更深样本${i}.txt`), "x", "utf8");
+  }
+  /* ⚠️ **`project.json` 也是一个文件，它会被列进去** —— 第一版期望 `N` 而读数是 `N + 1`，
+     红在这一个字上。**自己造的夹具里有几个文件，要数全。** */
+  const ALL = N + DEEP * 2 + 1;
+  /* 一个 opaque 目录（`.git`）+ 里面一堆文件 —— 递归**不许走进去** */
+  await md3(join(R, ".git", "objects"), { recursive: true });
+  for (let i = 0; i < 5; i++) await wf3(join(R, ".git", "objects", `o${i}`), "x", "utf8");
+  const pr = await buildProject(R);
+
+  const rec = await lsf(pr, "", undefined, { recursive: true });
+  ok("**不给 limit 时递归用的是自己那个默认值，不是一层那条路的 200**（这一条钉我 2026-10-23 踩的那个 bug）",
+     rec.entries.length === ALL && rec.truncated === false, { 给出: rec.entries.length, 造了: ALL, LIST_PAGE: LP, truncated: rec.truncated });
+  ok("递归里**没有目录项**（搜索要的是文件）", rec.entries.every((e) => !e.isDir), rec.entries.filter((e) => e.isDir).length + " 个目录项");
+  ok("**真的走进了子目录**（多级路径在）", rec.entries.filter((e) => e.path.includes("/")).length > 0,
+     rec.entries.filter((e) => e.path.includes("/")).length + " 条带 /");
+  ok("**最深那一层也进去了**（广度优先不等于只走一层）",
+     rec.entries.filter((e) => e.path.startsWith("深/再深/")).length === DEEP,
+     rec.entries.filter((e) => e.path.startsWith("深/再深/")).length + " 条，造了 " + DEEP);
+  /* ⚠️ 这一条**要有样本才算数**：上面刻意在 `.git/objects` 里放了 5 个文件。
+     不放的话「没走进 .git」在一个压根没有 .git 的项目上也绿（§判据在没有样本时…）。 */
+  ok("**不走进 opaque 目录**（`.git` 的规模与用户的文件无关而且无界增长）",
+     rec.entries.every((e) => !e.path.startsWith(".git/")), rec.entries.filter((e) => e.path.startsWith(".git/")).length + " 条来自 .git");
+  ok("`total` 等于实际给出的条数（递归那条路算不出全项目总数，所以不假装）", rec.total === rec.entries.length, { total: rec.total, len: rec.entries.length });
+
+  /* ── 上限：给小的真的截断，并把 `truncated` 说出来 ── */
+  const cut = await lsf(pr, "", 5, { recursive: true });
+  ok("给 `limit: 5` → 只回 5 条**而且 `truncated` 为真**（不静默截断）",
+     cut.entries.length === 5 && cut.truncated === true, { n: cut.entries.length, truncated: cut.truncated });
+  /* ⚠️ 上限是**一道闸不是默认值**：调用方给 99999 不算数。
+     项目没有 5000 个文件，所以这里只能钉「不抛、不超过 WALK_MAX」—— 照实说它测到哪一层。 */
+  const over = await lsf(pr, "", 99999, { recursive: true });
+  ok("给 `limit: 99999` 不算数，clamp 在上限以内（**这一条只测到「不超过」，项目没那么大**）",
+     over.entries.length <= WM, { n: over.entries.length, WALK_MAX: WM });
+
+  /* ── 一层那条路没被改坏（这一档是加上去的，不是改过去的）── */
+  const flat = await lsf(pr, "");
+  ok("**一层那条路一个字节没变**：默认还是 `LIST_PAGE` 条、`total` 还是截断前的总数",
+     flat.entries.length === LP && flat.total > LP && flat.truncated === true,
+     { n: flat.entries.length, total: flat.total, LIST_PAGE: LP });
+  ok("一层那条路**只列这一层**（子目录里的文件不混进来）",
+     flat.entries.every((e) => !e.path.includes("/")), flat.entries.filter((e) => e.path.includes("/")).length + " 条带 /");
+
+  await rm(R, { recursive: true, force: true });
+}
+
 console.log(`\n${bad === 0 ? "✓" : "✗"} 泛型文件层 ${bad === 0 ? "全通过" : `${bad} 条没过`}\n`);
 process.exitCode = bad === 0 ? 0 : 1;

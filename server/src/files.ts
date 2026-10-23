@@ -239,9 +239,12 @@ export interface ListFilesResult {
   entries: FileEntry[];
   /** 这一层里非目录文件的类型分布，给「自动网格」与 S1 的类型统计用 */
   types: { dc: number; md: number; image: number; other: number };
-  /** 这一层实际有多少项（截断之前）。界面用它显示「还有 N 项」 */
+  /** 这一层实际有多少项（截断之前）。界面用它显示「还有 N 项」。
+   *  ⚠️ **`recursive` 那条路上它等于 `entries.length`** —— 那条路扫到上限就停，
+   *  压根不知道项目里一共有多少个文件。要说「还有多少」就得先走完全项目，
+   *  而那正是上限要避免的事。所以**递归模式下界面读 `truncated` 说话，不读 `total`**。 */
   total: number;
-  /** entries 是不是被截断过 */
+  /** entries 是不是被截断过（递归模式下 = 扫到上限就停了，后面还有没扫的） */
   truncated: boolean;
 }
 
@@ -251,7 +254,71 @@ export interface ListFilesResult {
  *  先给 200 条，末尾让界面显示「还有 N 项 · 全部显示」。 */
 export const LIST_PAGE = 200;
 
-export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Promise<ListFilesResult> {
+/** 递归那条路一次最多给多少项（Q85 / geek-99 2026-10-23 定）。
+ *
+ *  ⚠️ **扫到这个数就停，不是「扫完再截前 5000」** —— 后者对一个十万文件的项目
+ *  照样要走完整棵树，而上限要避免的正是那件事。
+ *  代价是**不知道真实总数**，所以界面只能说「只搜了前 5000 个文件」，
+ *  不能说「还有 N 个」。**照实说出自己量到哪儿，比给一个算不出来的数好。** */
+export const WALK_MAX = 5000;
+
+/** 递归列全项目的文件（Q85：「转到文件」要搜的那份名单）。
+ *
+ *  ⚠️⚠️ **它刻意不走 `listFiles` 那一层的逐项加工**：那条路对每个文件读图片尺寸
+ *  （`imageSize`）、读首行摘要（`firstLine`）、查快照列表（`listSnapshots`）——
+ *  对一层的两百项没问题，**对五千项是几千次 syscall 加上千次文件读**。
+ *  搜索要的只有「名字、路径、什么时候改的」，所以这里只给那几样。
+ *  > **同一件能力的两条路可以给不同详细度，但不能给不同形状** ——
+ *  > 回的还是 `ListFilesResult`，界面和模型不用认第二种结构。
+ *
+ *  ⚠️ **广度优先，不是 readdir 顺序**。扫到上限就停意味着「哪些文件进得来」
+ *  由遍历顺序决定，而 `readdir` 的顺序是任意的 —— 那样「搜不到某个文件」
+ *  在一台机器上必现、换台机器就好了。按层走至少是**可解释**的：
+ *  浅层先进来，而浅层文件更可能是人要找的那个。
+ *
+ *  ⚠️ 两道「不看」和树里完全同一把尺子：`isHiddenFromList`（显不显示，Q77）
+ *  和 `isOpaquePath`（不走进 `.git` 这类 —— 它的规模与用户的文件无关而且无界增长，
+ *  走进去等于拿 git 的 object 数量去填这 5000 个名额）。 */
+async function walkAll(p: Project, limit: number): Promise<ListFilesResult> {
+  const entries: FileEntry[] = [];
+  const types = { dc: 0, md: 0, image: 0, other: 0 };
+  const { showHiddenFiles } = await (await import("./uiprefs.js")).getUiPrefs();
+  let truncated = false;
+  const queue: string[] = [""];
+  while (queue.length) {
+    const dirRel = queue.shift()!;
+    let list;
+    try { list = await readdir(safeJoin(p, dirRel), { withFileTypes: true }); } catch { continue; }
+    for (const e of list) {
+      const rel = dirRel ? `${dirRel}/${e.name}` : e.name;
+      if (isHiddenFromList(rel, showHiddenFiles)) continue;
+      if (e.isDirectory()) { if (!isOpaquePath(rel)) queue.push(rel); continue; }
+      if (entries.length >= limit) { truncated = true; break; }
+      let st;
+      try { st = statSync(join(safeJoin(p, dirRel), e.name)); } catch { continue; }
+      const kind = kindOf(rel, false);
+      entries.push({ path: rel, name: e.name, kind, isDir: false, size: st.size, updatedAt: st.mtime.toISOString() });
+      bumpTypeCount(types, kind);
+    }
+    if (truncated) break;
+  }
+  /* ⚠️ `total` 在这条路上**就是 entries.length**（见 `ListFilesResult` 的注释）——
+     给一个「扫到几个」而不是假装它是全项目的总数。 */
+  return { dir: "", entries, types, total: entries.length, truncated };
+}
+
+export async function listFiles(p: Project, dirRel = "", limit?: number, opts?: { recursive?: boolean }): Promise<ListFilesResult> {
+  /* ⚠️⚠️ **两条路的默认 `limit` 不同，而那个决定必须住在这里。**
+     第一版我把它写在 `cap/files.ts`（`limit ?? (recursive ? WALK_MAX : LIST_PAGE)`），
+     而签名上是 `limit = LIST_PAGE` —— 于是**直接调这个函数的人拿到 200 条**，
+     第一次真量就撞到了：`listFiles(p, "", undefined, { recursive: true })` 回 200 项 + `truncated: true`。
+     > **一个默认值在两个地方各有一个答案，就有一个是错的。**
+     而它的症状恰好是我在 cap 层注释里自己写下的那一句（「少了但不报错」），
+     —— 我写了那个担心，然后在下一步造出了它。闸和默认值都要装在**真正动手的那一层**（#75 同族）。 */
+  const cap = limit ?? (opts?.recursive ? WALK_MAX : LIST_PAGE);
+  /* 递归那条路**一进来就岔开**，底下那一层的逐项加工一个字节都不动（零回归面）。
+     上限硬性 clamp 到 `WALK_MAX` —— 调用方给更大的数不算数，那是一道闸不是默认值。 */
+  if (opts?.recursive) return walkAll(p, Math.min(Math.max(1, cap), WALK_MAX));
   const abs = safeJoin(p, dirRel);
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
     throw new ToolError(err(X.IO, dirRel || ".", { kind: "path", name: dirRel },
@@ -297,7 +364,7 @@ export async function listFiles(p: Project, dirRel = "", limit = LIST_PAGE): Pro
   /* 截断**在排序之后** —— 先截再排的话，给出去的 200 条就不是「最该先看的 200 条」，
      而是 readdir 碰巧先读到的那些。 */
   const total = entries.length;
-  const page = limit > 0 && total > limit ? entries.slice(0, limit) : entries;
+  const page = cap > 0 && total > cap ? entries.slice(0, cap) : entries;
   return { dir: dirRel, entries: page, types, total, truncated: page.length < total };
 }
 

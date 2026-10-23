@@ -117,6 +117,28 @@ function isNumberSchema(d: unknown): boolean {
   if (def.typeName === "ZodNumber") return true;
   return def.innerType ? isNumberSchema(def.innerType) : false;
 }
+/** 同上，但问的是 boolean。
+ *
+ *  ⚠️⚠️ **2026-10-23 加的，而它修的是一条从 M13-3 / M14-11 起就在的缺陷。**
+ *  下面那段早就在为「GET 的查询串全是字符串」把数字转回来 —— **而它只转了一半**：
+ *  `z.boolean()` 的参数拿到的是字符串 `"false"`，而 `cap.run` 不跑 zod
+ *  （`as never`），于是产品代码里那句 `if (opts?.recursive)` 看到的是一个 **truthy** 的字符串。
+ *
+ *  > **参数说「不要」而行为是「要」** —— 这个方向最糟，因为调用方明确表达过意图。
+ *
+ *  实测受影响的五条 GET：`list_files.recursive`（今天加的）·
+ *  `read_file.asText`（`asText=false` 会把二进制按文本读出乱码正文）·
+ *  `search_in_file.ignoreCase`（它的 describe 写着「默认区分大小写」，而 `=false` 变成不区分）·
+ *  `list_icons.withPath` · `list_comments.unresolvedOnly`。
+ *
+ *  ⚠️ **只认 `"true"` / `"false"` 两个字面值**，别的（`"1"` / `"0"` / `""`）原样传下去 ——
+ *  扩大认定范围是另一个决定，而这一处要修的只是「写了 false 却当成 true」。 */
+function isBooleanSchema(d: unknown): boolean {
+  const def = (d as { _def?: { typeName?: string; innerType?: unknown } })._def;
+  if (!def) return false;
+  if (def.typeName === "ZodBoolean") return true;
+  return def.innerType ? isBooleanSchema(def.innerType) : false;
+}
 
 export interface ApiCtx { project: Project | null; token: string; port: number }
 /** hub 服务（桌面壳的首页，不属于任何项目）只有这几条路由；其余都要项目上下文 */
@@ -571,12 +593,14 @@ export async function handleApi(
       const raw: Record<string, unknown> = cap.http!.method === "GET"
         ? Object.fromEntries(url.searchParams.entries())
         : await readBody(req) as Record<string, unknown>;
-      /* GET 的查询串**全是字符串** —— zod 里声明成 number 的会当场失败。
-         先按 schema 把数字转回来；这一步漏了的症状是 `limit=50` 报「期望 number 得到 string」。 */
+      /* GET 的查询串**全是字符串** —— zod 里声明成 number / boolean 的会拿到字符串。
+         按 schema 转回来；这一步漏了 number 的症状是 `limit=50` 报「期望 number 得到 string」，
+         而漏了 boolean 的症状更糟：**`?x=false` 被当成 true**（见 `isBooleanSchema` 的注释）。 */
       const shape = cap.input as Record<string, { _def?: unknown }>;
       const input: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(raw)) {
         const def = shape[k];
+        if (def && isBooleanSchema(def) && (v === "true" || v === "false")) { input[k] = v === "true"; continue; }
         input[k] = def && z.number().safeParse(Number(v)).success && isNumberSchema(def) ? Number(v) : v;
       }
       const capCtx: CapCtx = { project: cap.scope === "project" ? p : null, via: "http", port: ctx.port, token: ctx.token };

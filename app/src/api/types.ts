@@ -38,7 +38,24 @@ export interface FileEntry {
   /** 指向项目外的符号链接（issue #140）：列出来、标出来，但打不开 */
   outsideLink?: boolean;
 }
-export interface ListFilesResult { dir: string; entries: FileEntry[]; types: { dc: number; md: number; image: number; other: number } }
+/** ⚠️⚠️ **这是服务端 `files.ts` 里同名结构的第二份定义，而它一直缺两个字段。**
+ *  `total` / `truncated` 服务端从一开始就回（`LIST_PAGE` = 200 那道截断），
+ *  而这份手抄的类型压根没有它们 —— 2026-10-23 接「转到文件」时要读 `truncated`，
+ *  编译当场报 `Property 'truncated' does not exist`。
+ *  > **两份手抄的类型，缺字段的那一份不会报错 —— 它只会让那个字段在前端「不存在」。**
+ *  `FileEntry` 没出这个问题纯属运气：它的字段一直够用。
+ *  ⏳ 本该住在 `server/src/shared/`（前后端共用的纯 TS，`FileKind` 就在那儿）——
+ *  搬它是一次独立的重构，这里先把字段补齐并留下这段话。 */
+export interface ListFilesResult {
+  dir: string;
+  entries: FileEntry[];
+  types: { dc: number; md: number; image: number; other: number };
+  /** 截断之前这一层有多少项。⚠️ **`recursive` 那条路上它等于 `entries.length`** ——
+   *  那条路扫到上限就停，算不出项目里一共有多少（服务端那份注释写了全文）。 */
+  total?: number;
+  /** entries 被截断过（递归模式下 = 扫到 5000 的上限就停了） */
+  truncated?: boolean;
+}
 export interface ReadFileResult {
   path: string; kind: FileKindS; size: number; updatedAt: string; sha256: string;
   content: string | null;
