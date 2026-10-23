@@ -1,10 +1,23 @@
 /** 落盘前的确定性改写。doc/00 §5.2
  *
- * 三条保证里的第一条：归一化落盘。做四件事，顺序固定：
- *   ① 归一化编码与换行   ② @ds 别名展开   ③ __resources 注入   ④ 运行时副本分发
+ * 三条保证里的第一条：归一化落盘。现在做两件事，顺序固定：
+ *   ① 归一化编码与换行   ② @ds 别名展开
  *
- * ②③ 是同一类事 —— **源头写抽象，落盘写具体**。设计稿里不写真实 ds 路径、
- * 不写 React 的本地映射；这两件由工具在落盘那一刻填。
+ * ② 的道理是 **源头写抽象，落盘写具体**：设计稿里不写真实 ds 路径，由工具在落盘那一刻填。
+ *
+ * ⚠️⚠️ **原来还有 ③ `__resources` 注入 和 ④ 运行时副本分发，两件都删了。**
+ * ④ 在 C3（M16-7c-2a）删的；③ 在 2026-10-24 删的 —— 而**③ 的删除条件正是 ④ 的删除**：
+ * `window.__resources` 的唯一读者是 `support.js`，而 `support.js` 连往哪拷都没有了。
+ * 核过才删（纪律④，别拿一台被消音的仪器量）：
+ * `git grep __resources` 在 `server/src` 之外**零命中** —— `runtime/support.js` 7c-2b 删了，
+ * `ui/` 与 `fixtures/渲染/` 已不在仓库里（`git ls-files` 两个都空，盘上那几份是未跟踪的残留）。
+ * 而留着它比删掉更糟：`RESOURCE_MAP` 把一个**能下载的 unpkg URL** 改写成
+ * `./react.production.min.js` —— 一个**没有任何代码会再拷过去**的本地路径。
+ * > **一个改写规则的两端，一端还活着、另一端已经没了，它就从「离线兜底」变成了「制造死链」。**
+ *
+ * ⚠️ **已经写进用户稿里的那段标记不去动它**（用户的东西，纪律⑥）。
+ * 所以 `stripResourceBlock` 和 `injectResources` **一起**删 —— 只删注入、留着剥，
+ * 下一次落盘就会把用户稿里那段**删掉**，那才叫动了它。
  */
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -12,15 +25,6 @@ import { dirname, join, resolve } from "node:path";
 import { expandDsAlias, fixDsDepth, type Project } from "./project.js";
 import { NODE_ATTR, stampNodes } from "./nodeid.js";
 import { sweepTmpIn, tmpNameFor } from "./tmpfiles.js";   // 临时文件的唯一出处（M14-9）
-
-export const MARK_OPEN = "<!-- umbradesign:resources -->";
-export const MARK_CLOSE = "<!-- /umbradesign:resources -->";
-
-/** support.js 里硬编码的 CDN URL（doc/05 §1.2）→ 同层本地副本 */
-export const RESOURCE_MAP: Record<string, string> = {
-  "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "./react.production.min.js",
-  "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "./react-dom.production.min.js",
-};
 
 /* ⚠️⚠️ **`RUNTIME_FILES` / `ensureRuntimeBeside` / `missingRuntime` 三件
    2026-10-23（M16-7c-2a / C3）删了，而它们是一整串的源头。**
@@ -45,31 +49,7 @@ export function normalizeSource(s: string): string {
   return s.replace(/^﻿/, "").replace(/\r\n?/g, "\n").replace(/\n*$/, "\n");
 }
 
-const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-function stripResourceBlock(src: string): string {
-  const re = new RegExp(`[ \\t]*${esc(MARK_OPEN)}[\\s\\S]*?${esc(MARK_CLOSE)}\\n?`, "g");
-  return src.replace(re, "");
-}
-
-function resourceBlock(): string {
-  const json = JSON.stringify(RESOURCE_MAP, null, 2).replace(/\n/g, "\n  ");
-  return `${MARK_OPEN}\n<script>window.__resources = ${json};</script>\n${MARK_CLOSE}\n`;
-}
-
-export interface InjectResult { out: string; injected: boolean; reason?: string }
-
-/** ③ 在第一个引 support.js 的 <script> 之前插入映射块。幂等：先删旧块再写新块。 */
-export function injectResources(src: string): InjectResult {
-  const body = stripResourceBlock(src);
-  const m = body.match(/[ \t]*<script[^>]*\bsrc\s*=\s*["'][^"']*support\.js["'][^>]*>\s*<\/script>/i);
-  if (!m || m.index === undefined) {
-    return { out: body, injected: false, reason: "找不到引 support.js 的 script 标签，没有注入点" };
-  }
-  return { out: body.slice(0, m.index) + resourceBlock() + body.slice(m.index), injected: true };
-}
-
-/** ①②③ 一起做。返回改写后的内容与做了什么。 */
+/** ①② 一起做。返回改写后的内容与做了什么。 */
 /** 模板区 `<x-dc>…</x-dc>` 的范围。打地址只走这里 —— head 里的 script/link 不是设计节点。 */
 function templateRange(src: string): [number, number] {
   const open = /<x-dc(?:\s(?:"[^"]*"|'[^']*'|[^>"'])*)?>/i.exec(src);
@@ -92,10 +72,6 @@ export function prepareForDisk(p: Project, content: string, relPath?: string) {
   const fixed = fixDsDepth(p, out, depth);
   if (fixed !== out) { out = fixed; steps.push(`修正 @ds 相对深度（子目录稿，补 ${"../".repeat(depth)}）`); }
 
-  const r = injectResources(out);
-  out = r.out;
-  steps.push(r.injected ? "注入 __resources 离线映射" : `未注入 __resources（${r.reason}）`);
-
   // ⚠️ 节点地址必须是**最后一步**。
   // 地址是「规范化后的开标签」的哈希，而 @ds 展开会改 helmet link 的 href ——
   // 也就是改开标签。放在展开之后打，盘上那份重新算一遍才能得到同一个 id
@@ -103,7 +79,10 @@ export function prepareForDisk(p: Project, content: string, relPath?: string) {
   const st = stampNodes(out, ...templateRange(out));
   if (st.count) { out = st.out; steps.push(`打节点地址 ${st.count} 处（${NODE_ATTR}）`); }
 
-  return { content: out, steps, injected: r.injected, nodes: st.count };
+  /* ⚠️ 返回里原来还有 `injected`（`__resources` 注过没有）—— 跟着一起删。
+     核过：`git grep injected` 在 `server/src` 里**零个读者**（`serve.ts` 那个同名变量是别的事）。
+     > 留一个没人读的字段，下一个人会以为它有意义。 */
+  return { content: out, steps, nodes: st.count };
 }
 
 

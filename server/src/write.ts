@@ -118,7 +118,7 @@ export async function writeDraft(
      用户的原话：「哪怕限制了 AI 工具的权限，也无法保证相关文件在其他编辑器里没有被修改。」 */
   const rescued = await commitExternalChanges(p.dir, relPath);
 
-  // ① 归一化 + @ds 展开 + __resources 注入
+  // ① 归一化 + @ds 展开（`__resources` 注入 2026-10-24 删了，见 `normalize.ts` 头）
   const prep = prepareForDisk(p, content, relPath);
 
   // ② 落盘即校验（校验的是**改写后**的内容，也就是真正会落盘的那份）
@@ -184,7 +184,7 @@ export async function writeDraft(
      ⚠️ 这一档**只给「内容来自用户现有的稿」那条路**（copy / duplicate）。
      空白稿 / 模板 / 新建项目首稿照旧抛 —— 那些内容是我们自己生成的，
      带 error 就真是我们的 bug。**同一个判断，按内容的来源分档，不是按方便分档。**
-     归一化 / `@ds` 展开 / `__resources` 注入 / 节点地址 / 快照 **一样都不跳**。 */
+     归一化 / `@ds` 展开 / 节点地址 / 快照 **一样都不跳**。 */
   if (hasError && !opts?.allowErrors) {
     return {
       outcome: {

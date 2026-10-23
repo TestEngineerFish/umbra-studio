@@ -1211,9 +1211,20 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
      dup?.newPath === "坏稿副本.dc.html", dupWhy || dup?.newPath);
   ok("**而且照实说副本带着几条 error**（不说的话用户以为复制出来是干净的）",
      (dup?.carriedErrors ?? 0) === errs.length, String(dup?.carriedErrors ?? "没说"));
-  ok("副本也走了写入口（有 `__resources`）",
-     existsSync(join(D2, "坏稿副本.dc.html"))
-     && /__resources|umbradesign:resources/.test(await readFile(join(D2, "坏稿副本.dc.html"), "utf8")));
+  /* ⚠️ 原来这一条的证据是「有 `__resources`」—— 那一套 2026-10-24 整个删了。
+     换成**写入口真正留下的那件东西**：v1 快照。
+     `writeAtomic` 直写不会有快照，所以它和原来那个代理钉的是同一道闸，
+     而且比代理更直接（代理只说明「注入器跑过」，快照说明「版本历史存在」）。 */
+  const { snapDir: snapDirOf } = await import("./history.js");
+  let dupSnaps = 0;
+  /* ⚠️ **只数版本文件** —— 同目录还有 `vN.src.gz`，按文件个数数的话
+     「存快照」那一步整个拆掉它也绿（`lifecycletest` 那边同一处病，反向验证抓到的）。 */
+  try {
+    dupSnaps = (await import("node:fs")).readdirSync(snapDirOf(proj92, "坏稿副本.dc.html"))
+      .filter((n) => /^[vs]\d+\.json$/.test(n)).length;
+  } catch { dupSnaps = 0; }
+  ok("副本也走了写入口（**有 v1 快照** —— `writeAtomic` 直写不会有）",
+     existsSync(join(D2, "坏稿副本.dc.html")) && dupSnaps > 0, `${dupSnaps} 份快照`);
 
   /* ── ② 引用改不成时回执必须说（issue #92）──
      ⚠️⚠️ **2026-10-23（M16-7c-2d）换了拒因，而判据本身一个字没放松。**

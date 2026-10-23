@@ -496,15 +496,19 @@ function checkControlInTable(d: Draft, f: string): Diagnostic[] {
         out.push(err(E.CONTROL_IN_TABLE, f, { kind: "tag", name: tag },
           `<${tag}> 直接落在 <${host}> 的骨架里 —— HTML 解析会把它搬到 <${host}> 外面`,
           { ...d.at(abs),
-            /* ⚠️ 文案别说死「静默不渲染」——**现在有一条异步回退路兜着**：
-               没有 `__resources` 的稿会 `fetch(location.href)` 再按字符串切一次模板，
-               绕过了 DOM 解析。但那条路**只在没有 `__resources` 时走**，
-               而 `__resources` 是写入口必注的（断网白屏那条纪律）。
-               所以这是**一颗定时的雷**，不是「现在就坏」——说准了它才治得对。 */
+            /* ⚠️⚠️ **这条文案 2026-10-24 改回「现在就坏」了，而理由是一次机制下线。**
+               原来它刻意说成「一颗定时的雷，不是现在就坏」：那时 `support.js` 对
+               **没有 `__resources`** 的稿有一条异步回退路（`fetch(location.href)`
+               再按字符串切一次模板，绕过 DOM 解析），而写入口必注 `__resources` ——
+               所以「看着好的」和「落盘之后坏的」真的是两种状态。
+               现在 `support.js` 和 `__resources` 两件都没了（C3 / 本轮），
+               `.dc.html` 由 html 插件在 iframe 里渲染，**那条回退路不存在了** ——
+               于是不再有「现在看着是好的」这一档。
+               > **一条判据的文案里写着一个前提时，那个前提下线了，文案就开始骗人** ——
+               > 而它骗得很体面：它让人以为自己还有时间。 */
             fix: `改用 div + CSS grid 排版（ui/S1-稿件索引.dc.html 就是这么做的，全稿零 <table>）；` +
                  `确实要 table 就把 <${tag}> 提到 <${host}> 外面，在 renderVals() 里把行拼好。` +
-                 `⚠️ 现在可能看着是好的 —— 没有 __resources 的稿靠一条 fetch 回退路绕过了它，` +
-                 `而经写入口落盘（注入 __resources）或离线时那条路不生效，表就空了` }));
+                 `⚠️ 这是现在就坏，不是以后才坏：解析一搬走，表就是空的` }));
       }
       if (close < 0) break;
       open.lastIndex = close;

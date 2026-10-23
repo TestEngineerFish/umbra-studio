@@ -1,6 +1,6 @@
 /** 泛型文件层（M8-1 / M8-2，doc/01 §4.2）。
  *
- *  `.dc.html` 有自己那条唯一写入口（`write_draft`：归一化 → `@ds` 展开 → `__resources` →
+ *  `.dc.html` 有自己那条唯一写入口（`write_draft`：归一化 → `@ds` 展开 →
  *  节点地址 → 语义快照 → changelog）。别的文件没有那套语义，但**同样不能裸写**：
  *  要有写前校验、要留得住上一版。所以这里给它们一条对应的路：
  *
@@ -706,7 +706,7 @@ export async function writeAnyFile(p: Project, rel: string, content: string | Bu
   if (kindOf(clean) === "dc") {
     throw new ToolError(err(X.IO, clean, { kind: "file", name: basename(clean) },
       "`.dc.html` 不走这条路",
-      { fix: "设计稿用 write_draft：它会归一化、展开 @ds、注入 __resources、打节点地址、存语义快照、写 changelog。这条路一样都不做。" }));
+      { fix: "设计稿用 write_draft：它会归一化、展开 @ds、打节点地址、存语义快照、写 changelog。这条路一样都不做。" }));
   }
   const noWrite = denyReason(clean);
   if (noWrite) {
@@ -1108,7 +1108,7 @@ export async function moveFile(p: Project, fromRel: string, toRel: string): Prom
   /* 引用改写：每份文件里写的是相对它自己的路径，所以按它的位置重算。
      ⚠️⚠️ **2026-10-23（M16-7c-2d）改走第二条写入口 `writeAnyFile`**（geek-99 定）。
      原来走 `writeDraft` —— 那是**设计稿**那条写入口，它会做归一化 / `@ds` 展开 /
-     `__resources` 注入 / 节点地址。C3 之后引用方是 `.md` / `.html` / `.css`，
+     节点地址。C3 之后引用方是 `.md` / `.html` / `.css`，
      那一套加工对它们**全是错的**（它甚至会按 dc 的规矩校验这份文件）。
      第二条写入口给的是同样要紧的那几样：**写前校验 · 快照 · 并发闸**。
      > 「唯一写入口」从来是两条：稿走第一条，别的文件走第二条 ——

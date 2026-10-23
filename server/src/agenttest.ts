@@ -209,7 +209,7 @@ async function main() {
         console.log(`   ✗ 回退失败: ${r.write.refused}`);
         failed++;
       } else {
-        // 验证回退后关键内容是否恢复（不是比大小，因为 write_draft 会注入 __resources）
+        // 验证回退后关键内容是否恢复（不是比大小，因为 write_draft 还会打节点地址）
         const revertedContent = await readFile(join(TEST_PROJECT, "测试.dc.html"), "utf8");
         if (revertedContent.includes("background:#0066ff")) {
           console.log(`   ✓ 回退成功，按钮颜色恢复为 #0066ff（原始: #0066ff，改后: #00cc66）`);

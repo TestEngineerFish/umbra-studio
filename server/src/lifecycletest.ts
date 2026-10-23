@@ -178,14 +178,18 @@ async function step2_createDrafts() {
   await checkNoMissingImports("创建后");
 
   /* ── 新建的稿**真的走了写入口**（issue #71，2026-10-05）──
-     `create_draft` 给 AI 的说明写的是「走的是唯一写入口（归一化 → @ds 展开 →
-     `__resources` 注入 → 快照），所以断网也能打开」，而实现是三条路都
-     `writeAtomic` 直写 —— 实测**四样一个都没有**。
+     `create_draft` 给 AI 的说明写的是「走的是唯一写入口（归一化 → @ds 展开 → 快照），
+     所以断网也能打开」，而实现是三条路都 `writeAtomic` 直写 —— 实测**四样一个都没有**。
      ⚠️ 这一步原来只断言「文件存在」，所以**测不出来**（回归盲区）。
 
-     后果都是实打实的：没有 `__resources` → `support.js` 去 unpkg 拉 React →
-     **断网白屏**（§十五 实测踩过）· 没有节点地址 → **点选不可用**（#31 同族）·
-     没有 v1 快照 → `startsAtV1: true` 这个返回值名不副实。 */
+     后果都是实打实的：没有节点地址 → **点选不可用**（#31 同族）·
+     没有 v1 快照 → `startsAtV1: true` 这个返回值名不副实。
+
+     ⚠️⚠️ **原来这里拿「有没有 `__resources`」当「走了写入口」的证据，2026-10-24 换掉了** ——
+     那一套整个删了（`normalize.ts` 头上有全文）。换成的不是另一个代理，是**那件事本身**：
+     节点地址 + v1 快照，而且**每个目录各验一遍**。
+     > **一个代理指标消失的时候，不要去找下一个代理** —— 先问一句
+     > 「我本来想证明的那件事，能不能直接量到」。这里能：快照数就是个数。 */
   {
     const { snapDir } = await import("./history.js");
     const { readdirSync, readFileSync: readFileSyncLocal } = await import("node:fs");
@@ -193,17 +197,20 @@ async function step2_createDrafts() {
       const abs = join(p.dir, rel);
       const t = existsSync(abs) ? readFileSyncLocal(abs, "utf8") : "";
       const dir = rel.includes("/") ? join(p.dir, rel.split("/").slice(0, -1).join("/")) : p.dir;
+      /* ⚠️⚠️ **只数版本文件，不数目录里的文件个数**（2026-10-24 反向验证抓到）。
+         原来是 `readdirSync(...).length` —— 而同一个目录里除了 `v1.json` 还有 `v1.src.gz`，
+         于是我把「存快照」那一步整个拆掉之后，这条判据**照样绿**（读数「2 份」）。
+         > **一个「有东西就算过」的判准，在数算错的时候照样绿。**
+         判据只认真值：版本就是 `vN.json` / `sN.json`（稿是 v、泛型文件是 s）。 */
       let snaps = 0;
-      try { snaps = readdirSync(snapDir(p, rel)).length; } catch { snaps = 0; }
+      try { snaps = readdirSync(snapDir(p, rel)).filter((n) => /^[vs]\d+\.json$/.test(n)).length; } catch { snaps = 0; }
       return {
-        res: /__resources|umbradesign:resources/.test(t),
         node: /data-ud-node/.test(t),
         rt: existsSync(join(dir, "support.js")),
         snaps,
       };
     };
     const a = check("登录页.dc.html");
-    expect(a.res, `新建的稿有 \`__resources\`（没有它断网白屏）：${a.res}`);
     expect(a.node, `新建的稿打了节点地址（没有它点选不可用）：${a.node}`);
     /* ⚠️ 原来这里是 `expect(a.rt, "同目录分发了运行时 support.js")` ——
        C3（M16-7c-2a）删掉 `ensureRuntimeBeside` 之后**反过来了**：不该有。
@@ -217,7 +224,11 @@ async function step2_createDrafts() {
     await createDraft(p, "新子目录/深一层.dc.html", { kind: "blank" });
     const b = check("新子目录/深一层.dc.html");
     expect(!b.rt, `**新子目录里也没有运行时**（同一个「按目录」的性质，反过来钉）：${!b.rt}`);
-    expect(b.res, `子目录里的稿也有 \`__resources\`：${b.res}`);
+    /* ⚠️ 子目录那一份原来钉的是「也有 `__resources`」。换成**直接量那两件事**，
+       而且两条都留着 —— 「根目录走了写入口」不代表「子目录也走了」，
+       这一节存在的理由就是这个「按目录」的性质。 */
+    expect(b.node, `子目录里的稿也打了节点地址：${b.node}`);
+    expect(b.snaps > 0, `子目录里的稿也有 v1 快照（真走了写入口，不是 writeAtomic 直写）：${b.snaps} 份`);
 
     /* ── 来源不许跨出项目（issue #69，p0）+ 副本名不许是路径（issue #70）── */
     const { duplicateDraft } = await import("./project.js");

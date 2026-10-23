@@ -82,7 +82,7 @@ export interface CliSpec {
    *  | `open` | **默认全放行，而且我们没给它我们的 MCP** —— 用户让它改稿时它**只有**自带写工具可用 | gemini（`--yolo` = 自动批准所有动作）· opencode（默认 edit / bash 不问） |
    *
    *  `blocked` 之外的，`note` 里**必须**说出来 —— 有判据钉着（`apitest`）。
-   *  那种改动绕过纪律①（归一化 / `@ds` 展开 / `__resources` / 节点地址 / 快照），
+   *  那种改动绕过纪律①（归一化 / `@ds` 展开 / 节点地址 / 快照），
    *  **没有快照、退不回去**；兜底只有事后的 `bypassedDrafts()`（会话里记一条）。 */
   directWrite: "blocked" | "unavoidable" | "open";
 }
@@ -464,7 +464,7 @@ export async function build(o: CliRunOptions): Promise<Built> {
            ⚠️ **这一条 2026-09-28 换过，并更正了 §65.6 的一条错结论。**
            原来用 `--approve-for-me`（= 自动审批 + **workspace-write** 沙箱），
            于是 codex **自带的 `apply_patch` / shell 能直接改项目里任何文件** ——
-           跳过归一化 / `@ds` 展开 / `__resources` 注入 / 节点地址，**没有快照退不回去**，
+           跳过归一化 / `@ds` 展开 / 节点地址，**没有快照退不回去**，
            而且版本号不变 → 变更卡显示为空（纪律① 被整体绕过）。
            §65.6 当时记的是「别用 `approval_policy=never`，MCP 会不可用」——
            **那个结论错了**（或者只在不带 `--sandbox` 时成立）。2026-09-28 实测：

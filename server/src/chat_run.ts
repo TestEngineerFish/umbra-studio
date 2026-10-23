@@ -561,7 +561,7 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
   /* ⚠️ **也记内容哈希**（issue #29，2026-09-28）。
      通道 B 的 CLI 里 codex / cursor-agent **自带写文件的工具**，模型觉得
      `apply_patch` 更顺手时就会绕开我们的写入口 —— 那样没有快照、没有归一化、
-     没有 `__resources`，**而且版本号不变**。
+     没有节点地址，**而且版本号不变**。
      下面的审计靠「版本号变了没」判断改动，于是这种改动会让变更卡**显示为空**，
      界面等于在说「这一轮什么都没改」。
      **界面说谎比功能缺失糟**（和 issue #35 那条「假回执」是同一族）。
@@ -709,7 +709,7 @@ export async function runChatSend(p: Project, a: ChatSendArgs): Promise<Envelope
     await addMessage(p.dir, session.id, { role: "system",
       content: `⚠️ 这一轮有 ${bypassed.length} 份稿是**被 ${bSpec.label} 直接改的**，没走${productName}的写入口：${bypassed.join("、")}。\n`
         + `所以它们**没有快照，退不回去**，变更卡上也看不到这次改动（那不是「没改」，是我们拿不到前后两版）。\n`
-        + `这几份稿还可能缺 __resources（断网会白屏）和节点地址（点选用不了）—— 在它上面点一次「加上地址」可以补回来。\n`
+        + `这几份稿还可能缺节点地址（点选用不了）—— 在它上面点一次「加上地址」可以补回来。\n`
         + `要根治：在设置里把这条通道换成 Claude Code（它只放行${productName}的工具），或者让 AI 一律用 write_draft / write_file。` });
   }
 
