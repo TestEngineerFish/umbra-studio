@@ -89,6 +89,7 @@ for (const n of wasHttpOnly) {
     rename_draft: "M16-8 ①：并进 move_file。并的理由是量出来的 —— 前端的改名 / 移动 / 拖拽走的全是 file_move，这件的调用方是零；而它真正做的那件事（改写 <dc-import name> 的引用）move_file 原来不做，现在住在 refs.ts 的 dcImportsFollow 里，由 moveFile 调。落盘也从 writeAtomic 改走第二条写入口（原来没有快照、没有并发闸）",
     move_draft: "M16-8 ①：同上，并进 move_file。它收「目标目录」而 move_file 收「完整目标路径」—— 重名顺延序号那一档因此没了，口径统一成「目标已存在就拒」（显式胜过聪明）",
     delete_draft: "M16-8 ③：并进 trash_file（回收站布局本来就是同一套 <时间戳>/<原相对路径>）。唯一的调用方是 ui/S1-稿件索引.dc.html，而那份稿 C3 已经删了。⚠️ 它回执里的 impact 没了 —— 那件事改成单独问 delete_impact（M16-8 ⑤），而且必须这样：delete_impact 要在文件还在盘上的时候问",
+    duplicate_draft: "M16-8 ②：改名 copy_file 并搬进 cap/files.ts。它 2026-10-24 通用化了（后缀跟着源走、二进制逐字节复制），而名字还写着 draft —— 一个只对一种扩展名成立的名字挂在一件对任何文件成立的能力上。> 名字是契约的一部分：模型会按名字判断该不该调它，而「它叫 duplicate_draft，我这是个 .md」是一个完全合理的推断，只不过是错的。实测 ../UmbraPC 整仓零命中，不用跨仓同步",
     restore_draft: "M16-8 ③：改名 restore_trashed_by_name（和 trash_file / restore_trashed 一族对齐）。旧名带着「稿」字，而它收的从来是任何文件的文件名",
     /* MCP 侧原来**同时有** chat_list 和 list_chats、chat_get 和（没有）——
        前者是 HTTP 路由名混进了工具名。统一成动作在前的 list_chats / get_chat */
@@ -99,7 +100,7 @@ for (const n of wasHttpOnly) {
     check_browser: "C3：它只回答「render_check 会用哪个浏览器」，随 render_check 走。⚠️ findBrowser 这个函数没删，搬去了 browser.ts —— app/actxtest 还要它",
     check_runtime: "C3：报告「哪个放稿的目录缺 support.js 与两个 React UMD」，而那三个文件连往哪拷都没有了（ensureRuntimeBeside 一起删）",
     /* ── M16-8 ⑥（2026-10-24）：`create_draft` 与模板那一摊 ── */
-    create_draft: "M16-8 ⑥：四档来源里三档在造设计稿（<x-dc> 骨架 · <dc-import> 包装 · .dc.html 模板），C3 定的是设计稿那一整套删掉；第四档「复制现有稿」交给 duplicate_draft。界面入口改成「新建文件…」走 write_file —— 删之前量过：那是界面上唯一能新建文件的入口",
+    create_draft: "M16-8 ⑥：四档来源里三档在造设计稿（<x-dc> 骨架 · <dc-import> 包装 · .dc.html 模板），C3 定的是设计稿那一整套删掉；第四档「复制现有稿」交给 duplicate_draft（同日 ② 改名 copy_file）。界面入口改成「新建文件…」走 write_file —— 删之前量过：那是界面上唯一能新建文件的入口",
     list_templates: "M16-8 ⑥：模板是 .dc.html 模板，唯一消费者是 create_draft 的 template 档，随它退场。⚠️ 用户项目里已存在的 .umbrastudio/templates/ 文件不动、不迁移",
     save_as_template: "M16-8 ⑥：同上（模板那一摊整体退场）",
     delete_template: "M16-8 ⑥：同上（模板那一摊整体退场）",

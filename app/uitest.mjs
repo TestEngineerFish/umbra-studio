@@ -1394,6 +1394,54 @@ console.log("\n删掉被引用的稿：撤销那一行说「会断几处」（M1
       await closeCtx();
     } else console.log("  · 树里没有非稿件文件，这一条没验到");
   } else ok(false, "树里找不到 .dc.html 行");
+
+  /* ── 真点一下，看它到底复制出来没有（2026-10-24）──
+     ⚠️⚠️ **上面两条只看菜单里的那几个字，从来没点过它** —— 而这一天
+     `duplicate_draft` 改名成了 `copy_file`，前端那行 `core.post("duplicate_draft", …)`
+     要是忘了改，**上面两条照样全绿**：菜单项是前端自己画的，和路由存不存在无关。
+     症状只会是控制台一条 404，而「零 error」那条判据在别的节里。
+     > **「能力在」和「够得着」是两件事**（M14-3 那条）—— 而这里还有第三层：
+     > **「够得着」和「点了真有用」也是两件事。**
+     自带样本，不碰用户的文件；副本名按 `duplicateDraft` 的规则是「<基名> 副本<原后缀>」。 */
+  {
+    const SRC = "_uitest复制源.md", CP = "_uitest复制源 副本.md";
+    const mk = await pg.evaluate(async (n) => {
+      const x = window.__UD_APP;
+      const r = await fetch(`${x.url.replace(/\/$/, "")}/__ud/file_write?token=${encodeURIComponent(x.token)}`,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: n, content: "# 复制源\n", expectSha256: "0" }) });
+      return (await r.json()).ok;
+    }, SRC);
+    const onDisk2 = async (n) => pg.evaluate(async (nm) => {
+      const x = window.__UD_APP;
+      const r = await fetch(`${x.url.replace(/\/$/, "")}/__ud/files?token=${encodeURIComponent(x.token)}&dir=`).then((y) => y.json()).catch(() => null);
+      return (r?.data?.entries ?? []).some((e) => e.name === nm);
+    }, n);
+    ok(mk === true, "（样本有效性）复制源建出来了", String(mk));
+    if (mk) {
+      await settleTree(SRC);
+      const row = pg.locator('[role="treeitem"]').filter({ hasText: SRC }).first();
+      await row.click({ button: "right" }); await pg.waitForTimeout(400);
+      await pg.locator('[role="menu"]').getByText("复制一份", { exact: true }).click();
+      await pg.waitForTimeout(1500);
+      ok(await onDisk2(CP) === true,
+         "**点「复制一份」真的在盘上多出一份副本**（上面两条只看菜单里的字 —— 路由改名它们一声不响）",
+         `找 ${CP}：${(await onDisk2(CP)) ? "在" : "✗ 不在"}`);
+      /* ⚠️ 顺带钉住「后缀跟着源走」—— 这是 ② 通用化修的那个缺陷
+         （原来一律补 `.dc.html`，`.md` 的副本叫 `xxx.md 副本.dc.html`）。
+         光验「多出一份」的话，那个旧缺陷在这条判据下照样绿。 */
+      ok(await onDisk2("_uitest复制源.md 副本.dc.html") === false,
+         "**而且不是那个旧名字**（`xxx.md 副本.dc.html` —— ② 修的正是它）");
+    }
+    /* 收尾：两份都清掉，连回收站一起 */
+    await pg.evaluate(async (names) => {
+      const x = window.__UD_APP;
+      const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(x.token)}`;
+      const post = (r, b) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((y) => y.json());
+      for (const n of names) await post("file_trash", { path: n }).catch(() => {});
+      const t = await fetch(u("trash")).then((y) => y.json()).catch(() => null);
+      for (const it of t?.data?.items ?? []) if (names.includes(it.originalName)) await post("trash_purge", { trashPath: it.trashPath });
+    }, [SRC, CP, "_uitest复制源.md 副本.dc.html"]);
+  }
 }
 
 /* 在**项目名**上右键 = 空白处菜单。树一满就没有空白区可点，所以列头这条路是主入口。 */
@@ -5463,7 +5511,8 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > 它已经不该存在（从分母里拿掉）· **它该跑、也还存在，只是今天前提没成立** ——
    > 把第三种算成第二种，就等于亲手把缺口抹平。
 
-   ⚠️⚠️ **457 = 455 + 2（M16-8 ③ 加的两条「删除是延后落实的」），而这个数必须跟着加 ——
+   ⚠️⚠️ **460 = 455 + 2（M16-8 ③ 的两条「删除是延后落实的」）+ 3（M16-8 ② 的「真点一下复制」），
+   而这个数必须跟着加 ——
    不加的话这道闸会被我自己新加的判据悄悄填平。**
    实测当场撞到：上一轮 ran = **453**，闸正确地报「少跑了 2 条」（那 2 条是刻意留在分母里的 ◨）；
    我加了 2 条之后 ran = 455 = 基线，于是它**一声不响地全绿了** ——
@@ -5472,7 +5521,7 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > 它分不清「缺的那 2 条补上了」和「别处多了 2 条」。
    > 所以**加判据时把这个数加上去，和删判据时把它减下来，是同一条纪律的两半**；
    > 而加的那一半更容易忘，因为忘了的后果是「全绿」。 */
-const EXPECT_AT_LEAST = 457;
+const EXPECT_AT_LEAST = 460;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

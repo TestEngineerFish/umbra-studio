@@ -1200,7 +1200,7 @@ console.log("\n⑱ 把外部文件复制进项目（场景 ③）");
        `${r1.errors?.[0]?.message} · 项目外面那个位置：${ex8(escape) ? "✗ 真被建出来了" : "没有东西"}`);
     const r2 = await cp8({ sources: [j8(proj, "图", "封面.png")] });
     ok(r2.ok === false && /本来就在项目里/.test(r2.errors?.[0]?.message ?? ""),
-       "**拒：源本来就在项目里**（那是「项目内复制」，有 duplicate_draft 管，走这条会绕过引用改写）", r2.errors?.[0]?.message);
+       "**拒：源本来就在项目里**（那是「项目内复制」，有 `copy_file` 管 —— M16-8 ② 之前叫 `duplicate_draft`）", r2.errors?.[0]?.message);
     const r3 = await cp8({ sources: [j8(out, "不存在的东西.png")] });
     ok(r3.ok === false && /不在/.test(r3.errors?.[0]?.message ?? ""), "**拒：源路径不在**", r3.errors?.[0]?.message);
     await md8(j8(proj, ".git"), { recursive: true });

@@ -2,7 +2,6 @@ import { z } from "zod";
 import { join } from "node:path";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
-import { duplicateDraft } from "../project.js";
 import { deleteDraftImpact, isDcPath } from "../refs.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
@@ -20,15 +19,21 @@ const p = (c: CapCtx) => c.project!;
 
 /* ⚠️⚠️ **这个文件 2026-10-24（M16-8 ③④）之后只剩两件，而它们住在这里的理由各不相同：**
  *
- *  | 件 | 为什么还在这儿 |
- *  | --- | --- |
- *  | `get_delete_impact` | 它**真的只对 `.dc.html` 成立**（查 `<dc-import name=…>`）。⑤ 定的：不并进 `list_file_refs` |
- *  | `duplicate_draft` | 它 2026-10-24（②）**已经通用化了**，按问题分该进 `files.ts` —— 而它的**对外名还带 `draft`**，改名要和 UmbraPC 同步，所以搬家要等那一次一起做 |
+ *  搬走的三批，每一批的理由都不一样：
+ *  · **①③（并名）**：`rename_draft` / `move_draft` → `move_file` · `delete_draft` → `trash_file` ·
+ *    `restore_draft` → 改名 `restore_trashed_by_name`；
+ *  · **③④（纯搬家）**：回收站五件 + `create_folder` → `cap/files.ts`
+ *    （它们和 dc 一点关系都没有，只是历史上住在这个文件里）；
+ *  · **②（通用化之后改名）**：`duplicate_draft` → **`copy_file`**，也进了 `cap/files.ts`。
  *
- *  搬走的：回收站五件 + `create_folder` → `cap/files.ts`（它们和 dc 一点关系都没有，
- *  只是历史上住在这个文件里）。
+ *  **剩下这一件为什么还在**：`get_delete_impact` **真的只对 `.dc.html` 成立**
+ *  （它查的是 `<dc-import name=…>`）。⑤ 定的：不并进 `list_file_refs` ——
+ *  两件都叫「谁引用了它」，而「引用」在它们嘴里是两种关系。
+ *
  *  > **一个文件的名字说的是它当初装了什么，而不是它现在装着什么** ——
- *  > 而「按名字猜这里面是什么」会让下一个人去 `files.ts` 找回收站，找不到。 */
+ *  > 而「按名字猜这里面是什么」会让下一个人去 `files.ts` 找回收站，找不到。
+ *  ⚠️ 所以这个文件现在**只装 `<dc-import>` 那一件事**。再往里加东西之前先问一句：
+ *  它是不是只对 `.dc.html` 成立？不是的话它该去 `files.ts`。 */
 
 /** 模板名 → 绝对路径。模板存在项目自己的 `.umbrastudio/templates/` 下 */
 
@@ -52,7 +57,7 @@ const p = (c: CapCtx) => c.project!;
    它有四档来源，而其中三档都是**在造设计稿**：空白骨架（`<x-dc>` + 运行时那一套）·
    包装一个组件（`<dc-import>`）· 套模板（`.dc.html` 模板）。
    C3 定的是「`.dc.html` 只留预览，设计稿那一整套删掉」，所以这三档跟着走。
-   第四档「复制现有稿」交给 **② `duplicate_draft`**（2026-10-24 已通用化：后缀跟着源走 +
+   第四档「复制现有稿」交给 **② `copy_file`**（2026-10-24 通用化 + 改名：后缀跟着源走 +
    二进制逐字节复制）—— 两件能力回答同一个问题，留一件。
    ⚠️ 它的 summary 里还写着「`__resources` 注入」，而那一套 2026-10-24 已经删了 ——
    **一句假话随它一起去掉**（而不是改对它：改对一句没人该再读的话没有意义）。
@@ -75,17 +80,6 @@ const p = (c: CapCtx) => c.project!;
    而且落盘改走第二条写入口（原来是 `writeAtomic` 直写，**没有快照也没有并发闸**）。
    > **并掉一件能力之前要先量它做了什么，而不是看它的名字像不像另一件。**
    闸的对账见 `moveFile` 里逐条的注释：只读闸和目标端的 `isInsideReal` 是**补上的**。 */
-
-defineCap({
-  name: "duplicate_draft", title: "复制一份稿", scope: "project",
-  summary: "复制成新稿。不给新名就是「<原名> 副本」。",
-  input: { path: z.string(), newName: z.string().optional() },
-  http: { method: "POST" },
-  run: async ({ path, newName }, c) => {
-    const r = await duplicateDraft(p(c), path, newName ? { newName } : {});
-    return envelope(r, [], { newPath: r.newPath });
-  },
-});
 
 defineCap({
   name: "get_delete_impact", title: "删之前先看影响面（只看 `<dc-import>` 那种引用）", scope: "project",

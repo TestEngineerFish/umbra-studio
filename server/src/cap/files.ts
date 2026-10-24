@@ -7,7 +7,7 @@ import { writeDraft } from "../write.js";
 import { draftKindOf, parseDraft } from "../draft.js";
 import { isEditable, markEditable } from "../records.js";
 /* ── M16-8 ③④ 搬来的那六件要这些（实现仍在 `refs.ts` / `project.ts`，这一次不碰）── */
-import { createFolder } from "../project.js";
+import { createFolder, duplicateDraft } from "../project.js";
 import { emptyTrash, listTrash, purgeTrash, restoreDraft } from "../refs.js";
 import { isInside } from "../pathguard.js";
 import { existsSync } from "node:fs";
@@ -315,7 +315,8 @@ defineCap({
     }
 
     /* ⚠️ **源不许就是项目里的东西**：那不是「复制进来」，那是「在项目里复制」——
-       有 `duplicate_draft` 管那件，而走这条路会绕过它的引用改写。 */
+       有 `copy_file` 管那件（M16-8 ② 改名前叫 `duplicate_draft`），
+       而走这条路会绕过它的重名顺延与快照。 */
     const flat: Array<{ abs: string; rel: string; size: number }> = [];
     for (const src of sources) {
       const sAbs = resolve(src);
@@ -324,7 +325,7 @@ defineCap({
       }
       if (isInside(proj.dir, sAbs)) {
         throw new ToolError(err(X.BAD_INPUT, src, { kind: "path", name: src },
-          "这一份本来就在项目里", { fix: "项目内复制用 duplicate_draft（设计稿）或 move_file（别的）—— 它们会把引用一起改对。" }));
+          "这一份本来就在项目里", { fix: "项目内复制一份用 copy_file；要挪位置或改名用 move_file（它会把引用一起改对）。" }));
       }
       flat.push(...await flattenSource(sAbs));
     }
@@ -714,4 +715,32 @@ defineCap({
   input: {},
   http: { route: "trash_empty", method: "POST" },
   run: async (_i, c) => envelope(await emptyTrash(p(c))),
+});
+
+/* ══════════════ 项目内复制一份（M16-8 ②，2026-10-24 从 `duplicate_draft` 改名搬来）══════════════ */
+/* ⚠️⚠️ **改名的理由**：它 2026-10-24 通用化了（后缀跟着源走、二进制逐字节复制），
+   而名字还写着 `draft` —— 一个只对一种扩展名成立的名字，挂在一件对任何文件成立的能力上。
+   > **名字是契约的一部分。** 一件能力通用化之后名字不跟着改，模型会按名字判断该不该调它 ——
+   而「它叫 `duplicate_draft`，我这是个 `.md`」是一个完全合理的推断，只不过是错的。
+   ⚠️ 实测 `../UmbraPC` 整仓 `duplicate_draft` / `duplicateDraft` **零命中**，所以这次不用跨仓同步
+   （geek-99 和我各核了一遍）。
+   ⚠️ **实现的函数名没改**（`project.ts` 的 `duplicateDraft`）—— 和上一批同一条口径：
+   > **一次提交里只放一种改动。** 改对外名是一件事，改内部函数名是另一件。
+   ⚠️ **入参形状也没改**（`path` + `newName?`，而 `move_file` 是 `from` + `to`）——
+   同上，而且 `newName` 的语义是「基名，后缀跟着源走」，换成 `to` 会悄悄改掉那个语义。
+   ⚠️ **和 `copy_into_project` 分工**：那一件是「从项目**外面**复制进来」，
+   这一件是「在项目**里面**复制一份」。两件的拒因互相指向对方。 */
+defineCap({
+  name: "copy_file", title: "在项目里复制一份", scope: "project",
+  summary: [
+    "在项目里复制一份。**后缀跟着源走**（`.md` 的副本还是 `.md`），二进制按字节复制。",
+    "不给 `newName` 就是「<原名> 副本」；重名自动顺延序号，**永不覆盖**。",
+    "⚠️ 从项目**外面**复制进来是另一件：`copy_into_project`。",
+  ].join("\n"),
+  input: { path: z.string(), newName: z.string().optional().describe("新的基名，不用带后缀（后缀跟着源走）") },
+  http: { method: "POST" },
+  run: async ({ path, newName }, c) => {
+    const r = await duplicateDraft(p(c), path, newName ? { newName } : {});
+    return envelope(r, [], { newPath: r.newPath });
+  },
 });
