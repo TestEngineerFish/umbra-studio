@@ -631,7 +631,9 @@ export function serveStop(dir: string): { stopped: boolean } {
   return { stopped: true };
 }
 
-/** 这个项目当前的服务信息（没起就是 null）—— build_index 要拿令牌注入壳页面 */
+/** 这个项目当前的服务信息（没起就是 null）—— build_index 要拿令牌注入壳页面
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+ */
 /** ⚠️ 参数是**项目目录**，不是项目名（issue #20）。 */
 export function serveOf(dir: string): ServeInfo | null {
   const r = running.get(keyOf(dir));

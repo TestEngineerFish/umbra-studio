@@ -23,7 +23,9 @@ function isExecutableFile(p: string): boolean {
   } catch { return false; }
 }
 
-/** 浏览器可执行文件：环境变量 → 常见路径。找不到返回 null（**不猜、不下载**）。 */
+/** 浏览器可执行文件：环境变量 → 常见路径。找不到返回 null（**不猜、不下载**）。
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+ */
 export function findBrowser(): { path: string; from: string } | null {
   const envPath = process.env.UMBRASTUDIO_CHROMIUM;
   if (envPath && isExecutableFile(envPath)) return { path: envPath, from: "UMBRASTUDIO_CHROMIUM" };

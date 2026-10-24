@@ -37,7 +37,9 @@ function split(v: string): [number[], string] {
   return [core.split(".").map((x) => Number(x) || 0), i >= 0 ? v.slice(i + 1) : ""];
 }
 
-/** 一组版本里最高的那个（空数组给 undefined）。 */
+/** 一组版本里最高的那个（空数组给 undefined）。
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+ */
 export function highestVersion(vs: string[]): string | undefined {
   return [...vs].sort(compareVersion).pop();
 }

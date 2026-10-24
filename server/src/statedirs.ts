@@ -38,9 +38,9 @@ export type AssetKind = typeof ASSET_KINDS[number];
 export const CACHE_KINDS = ["checks", "shots"] as const;
 export type CacheKind = typeof CACHE_KINDS[number];
 
-/** 这个项目的旁数据根目录。**只有迁移和清理该直接用它** ——
- *  别处一律用下面带 kind 的那几个，否则 B 段又变成「十几处各拼一次」。 */
-export const udDirOf = (projectDir: string): string => join(projectDir, UD_DIRNAME);
+/* ⚠️ 这里原来有 `udDirOf(projectDir)`（项目里那个旁数据根目录），注释写着
+   「**只有迁移和清理该直接用它**」。2026-10-24 删掉，因为**那两件都没了**：
+   Q72 砍掉了存量迁移，而「清理」走的是 `purge.ts` 自己那一套。 */
 
 /** ⓐ 资产目录。**B1 之后它不在用户的目录里了** —— `STATE_ROOT/.umbrastudio/records/<随机 ID>/<kind>`。
  *
@@ -51,31 +51,31 @@ export const udDirOf = (projectDir: string): string => join(projectDir, UD_DIRNA
  *  ⚠️ 仍然是**同步**的，所以 20 多个调用点一个字都不用改（`records.ts` 文件头解释了为什么）。 */
 export const assetDir = (projectDir: string, what: AssetKind): string => join(recordDirOf(projectDir), what);
 
-/** B1 之前资产在哪。**只给「看看旧的那份还在不在」用**（旧目录不迁也不删，Q72）。 */
-export const legacyAssetDir = (projectDir: string, what: AssetKind): string => join(projectDir, UD_DIRNAME, what);
-
 /** ⓑ 缓存根。**B2 之后也在记录里**：`records/<ID>/cache/`。
  *  单独一层 `cache/` 不是整洁，是**安全线**：「清缓存」现在可以整层删，
  *  而资产在它的**兄弟**目录里 —— 结构上就不可能被带走。
  *  （白名单那道闸留着不动，两层防线。） */
 export const cacheRoot = (projectDir: string): string => join(recordDirOf(projectDir), "cache");
 
+/* ⚠️⚠️ **这里原来有四个 `legacy*`（`legacyAssetDir` / `legacyCacheDir` / `legacyCommentsFile` /
+   `legacyIndexDataFile`），注释都写着「只给「看看旧的那份还在不在」用」——
+   而**没有任何人看过**。2026-10-24 四个一起删（geek-99 定）。
+
+   ⚠️ **而那个事实要留下来**：B1/B2 之前的旁数据**真的还躺在用户项目的
+   `<项目>/.umbrastudio/` 下**（Q72 定了「不迁也不删」，2026-10-21 实测这台机器
+   四个项目共 547 KB）。删掉的只是「读它的函数」，不是那些文件。
+   > **「我们不管它」和「它不存在」是两件事** —— 而把读它的函数删掉之后，
+   > 代码里再没有任何东西提醒下一个人那些文件还在。这段注释就是那个提醒。 */
+
 /** ⓑ 缓存目录。 */
 export const cacheDir = (projectDir: string, what: CacheKind): string => join(cacheRoot(projectDir), what);
-
-/** B2 之前缓存在哪。只给「看看旧的那份还在不在」用。 */
-export const legacyCacheDir = (projectDir: string, what: CacheKind): string => join(projectDir, UD_DIRNAME, what);
 
 /** 评论是**一个文件**不是目录（所以单列，不塞进 `AssetKind` 里假装它是目录）。
  *  它也是 ⓐ 资产，B1 跟着搬进记录目录。 */
 export const commentsFile = (projectDir: string): string => join(recordDirOf(projectDir), "comments.json");
-/** B1 之前评论在哪。只给「看看旧的那份还在不在」用。 */
-export const legacyCommentsFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "comments.json");
 
 /** 索引数据（ⓑ）。 */
 export const indexDataFile = (projectDir: string): string => join(cacheRoot(projectDir), "index-data.json");
-/** B2 之前索引数据在哪。只给「看看旧的那份还在不在」用。 */
-export const legacyIndexDataFile = (projectDir: string): string => join(projectDir, UD_DIRNAME, "index-data.json");
 
 /** 缓存文件**当 URL 用**的那个形式（`render.ts` 回的 `shot` 会进 `index-data.json`
  *  的 `thumb`，而 **S1 索引页把它直接 `<img src>`**）。

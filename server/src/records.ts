@@ -219,7 +219,9 @@ export function existingRecordIdFor(projectDir: string): string | null {
   return load().records.find((r) => r.dir === dir)?.id ?? null;
 }
 
-/** 全部记录（拷贝，外面改不动缓存）。 */
+/** 全部记录（拷贝，外面改不动缓存）。
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+ */
 export const allRecords = (): RecordEntry[] => load().records.map((r) => ({ ...r }));
 
 /** 把一条记录连同它的目录删掉（「忘掉这一个」走这里）。回 `true` = 真删了点什么。 */
@@ -340,6 +342,16 @@ const editableFlag = (projectDir: string): string => join(recordDirOf(projectDir
  *  · 有 `snapshots/` —— 我们已经改过它的文件，历史就在那儿。
  *  ⚠️ **`staged` / `chats` / `cache` 不算**：前者是「还没落盘」，后两者不代表「动过文件」。
  *  这是一次性的认，认完就落标记，不会每次都算。 */
+/** ### 为什么判准是「`project.json` 在不在」（2026-10-24 从 `project.ts` 搬来的论证）
+ *
+ *  它是**用户显式接管**留下的那一个标记（`create_project` / `adopt_project` 写它），
+ *  而**打开一个目录不写它**。
+ *  ⚠️ 别拿「`.dc.html` 多不多」之类的启发式判 —— 那会让「我只是想看一眼别人发来的稿」
+ *  变成「我们在他的下载文件夹里铺了一摊」（2026-10-21 sam 真踩到过：
+ *  用「新建项目」打开 `Geek/doc`，我们往他的文档目录铺了 780 KB 的脚手架）。
+ *  **显式胜过聪明。**
+ *  ⚠️ 原来 `project.ts` 有一个 `isDesignProject()` 实现同一条判准，而它零调用方 ——
+ *  一条判准两份实现，迟早在其中一份上被改歪。 */
 export function isEditable(projectDir: string): boolean {
   const dir = resolve(projectDir);
   const id = existingRecordIdFor(dir);

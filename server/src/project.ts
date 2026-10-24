@@ -22,7 +22,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  *  **只读资产**看这里：`runtime/`、`ui/`、`app/dist`、`doc/`。
  *  打包后它是 `<app>/Contents/Resources/core`，本来就该只读。 */
 export const TOOL_ROOT = resolve(HERE, "..", "..");
-export const RUNTIME_DIR = join(TOOL_ROOT, "runtime");
 
 /** **可写状态**看这里：`ai_config.json`、`workspace.json`、`projects/`、`.archived/`。
  *
@@ -44,11 +43,12 @@ export const RUNTIME_DIR = join(TOOL_ROOT, "runtime");
  *  我们往他的文档目录部署了 780 KB 的设计工具脚手架 —— 他要的只是看一份 `.md`。
  *
  *  ### 判准：`project.json` 在不在
- *  它是**用户显式接管**留下的那一个标记（`create_project` / `adopt_project` 写它），
- *  而**打开一个目录不写它**。
- *  ⚠️ 别拿「`.dc.html` 多不多」之类的启发式判 —— 那会让「我只是想看一眼别人发来的稿」
- *  变成「我们在他的下载文件夹里铺了一摊」。**显式胜过聪明。** */
-export const isDesignProject = (dir: string): boolean => existsSync(join(resolve(dir), "project.json"));
+ *  ⚠️⚠️ **这段论证 2026-10-24 搬去了 `records.ts` 的 `isEditable`** —— 这里原来有一个
+ *  `isDesignProject(dir)`，而它**零调用方**：同一条判准在 `isEditable` 里自己实现了一份
+ *  （存量那条路的 `existsSync(join(dir, "project.json"))`），所以这个函数是**第二份实现**。
+ *  删掉函数，**而论证跟着活着的那一份走**。
+ *  > **一段论证不该跟着它当初依附的那个函数一起死** ——
+ *  > 它解释的是「为什么判准是这个」，而那个判准还在生效，只是换了实现它的地方。 */
 
 export const STATE_ROOT = process.env.UMBRASTUDIO_STATE_DIR
   ? resolve(process.env.UMBRASTUDIO_STATE_DIR)

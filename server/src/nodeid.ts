@@ -113,7 +113,3 @@ export function stampNodes(src: string, tplStart: number, tplEnd: number): { out
   return { out, count: refs.length };
 }
 
-/** 剥掉所有地址属性 —— 从落盘副本回到源稿形态时用 */
-export function unstampNodes(src: string): string {
-  return src.replace(new RegExp(`\\s*${NODE_ATTR}\\s*=\\s*("[^"]*"|'[^']*')`, "g"), "");
-}

@@ -180,9 +180,16 @@ defineCap({
   },
 });
 
-/** 注入点：测试里换成假 fetch。正式跑用全局 fetch。 */
-export let packageFetch: PackageFetch = (u, i) => fetch(u, i) as unknown as ReturnType<PackageFetch>;
-export function setPackageFetch(f: PackageFetch): void { packageFetch = f; }
+/** 下载插件包用的 fetch。
+ *
+ *  ⚠️ 这里原来是 `export let` + 一个 `setPackageFetch()` 注入点，注释写着
+ *  「测试里换成假 fetch」—— 而**没有任何测试在用它**（`acquiretest` / `catalogtest`
+ *  走的是各自那条注入 fetch 的路）。2026-10-24 删掉那个 setter（geek-99 定）。
+ *  ⚠️ 跟着改成 `const` 并去掉 `export`：没有写入者的 `let` 在读的人眼里是
+ *  「有东西会重新赋值它」，而那件事已经不会发生了。
+ *  > **一个过期的接缝比没有接缝糟** —— 下一个要注入 fetch 的人会先去用它，
+ *  > 然后发现它和这个文件之外的世界没有连接。 */
+const packageFetch: PackageFetch = (u, i) => fetch(u, i) as unknown as ReturnType<PackageFetch>;
 
 const pluginErr = (code: string, message: string, id: string, fix?: string) =>
   ({ level: "error", code, message, where: "(plugin)", at: { kind: "key", name: id }, fix }) as never;

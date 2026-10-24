@@ -7,14 +7,10 @@
 
 export interface Pos { line: number; col: number }
 
-/** 把绝对下标换成 1 起的行列 */
-export function posOf(src: string, index: number): Pos {
-  let line = 1, last = -1;
-  for (let i = 0; i < index && i < src.length; i++) {
-    if (src.charCodeAt(i) === 10) { line++; last = i; }
-  }
-  return { line, col: index - last };
-}
+/* ⚠️ 这里原来有 `posOf(src, index)`（下标 → 行列），而它被下面那个 `lineIndex`
+   取代了（「建一次、查多次，避免 O(n²)」—— 正是 `posOf` 那个 O(n) 循环的问题）。
+   2026-10-24 删掉：零调用方，而留着它等于摆着一个**正确但慢**的选项。
+   > **一个被取代的实现留在原地，下一个人有一半概率选中它** —— 而两个都"对"。 */
 
 /** 行号表：建一次、查多次，避免 O(n²) */
 export function lineIndex(src: string): (index: number) => Pos {

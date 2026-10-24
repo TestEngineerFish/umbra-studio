@@ -109,7 +109,9 @@ export function storageOf(body: unknown): StorageBrief | null {
   return { used, limit, pct: Math.min(100, Math.round(pct)), warn, tier };
 }
 
-/** 字节 → 给人看：<1 MB 写 KB，≥1 GB 写 GB（两位小数去尾零），<100 MB 留一位小数。与 PC / iOS 同一条规矩（设计侧 234 §四）。 */
+/** 字节 → 给人看：<1 MB 写 KB，≥1 GB 写 GB（两位小数去尾零），<100 MB 留一位小数。与 PC / iOS 同一条规矩（设计侧 234 §四）。
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+ */
 export function fmtBytes(b: number): string {
   if (!(b > 0)) return "0";
   const mb = b / 1048576;

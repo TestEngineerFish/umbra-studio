@@ -261,11 +261,17 @@ export function kindDef(id: FileKind): KindDef {
 
 /** 全部种类。**是函数不是常量了**（M11-2）——
  *  以前是个模块加载时算好的数组，插件装上之后它不会变，
- *  前端那条「每种 kind 都有模块认领」的自检就会漏掉插件加的种类。 */
+ *  前端那条「每种 kind 都有模块认领」的自检就会漏掉插件加的种类。
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+  */
 export const allKinds = (): readonly FileKind[] => [...REG.map((k) => k.id), BUILTIN.dir, BUILTIN.other];
 
-export const KIND_LABEL = (id: FileKind): string => kindDef(id).label;
-export const KIND_ICON = (id: FileKind): string => kindDef(id).icon;
+/* ⚠️ 这里原来有 `KIND_LABEL` / `KIND_ICON`（kind → 名字 / 图标），2026-10-24 删掉 ——
+   全仓零命中（`server` / `app` / `plugins` / `shell` / `fixtures` 都 grep 过）。
+   ⚠️ **来历没定住，照实说**：`doc/00` §3836 那张「同一件事有几份实现」的表里记着
+   `DirView.tsx` 自己也有一份 `KIND_ICON` / `KIND_LABEL`，所以这两条**多半**是
+   前端改用自己那一份之后留下的 —— 但我没把那次改动定位到，所以这只是推断。
+   `kindDef(id).label` / `.icon` 还在，要用随时拿得到。 */
 
 /** 是不是**文本**：决定能不能读正文、能不能做摘录。
  *

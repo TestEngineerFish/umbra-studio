@@ -140,7 +140,9 @@ export function isOutsideLink(base: string, abs: string): boolean {
 export const isUnderRoot = (root: string, dir: string, p: PlatformPath = path): boolean =>
   isInside(root, dir, p);
 
-/** 这个绝对路径所在目录相对项目根的那一段（`.` = 项目根自己）。平台无关。 */
+/** 这个绝对路径所在目录相对项目根的那一段（`.` = 项目根自己）。平台无关。
+ *  ⚠️ **为判据开的接缝** —— 生产侧零调用，只有回归在用（2026-10-24 量过）。
+ */
 export function dirKeyOf(abs: string, projectDir: string, p: PlatformPath = path): string {
   const rel = p.relative(projectDir, p.dirname(abs));
   return rel === "" ? "." : rel;
