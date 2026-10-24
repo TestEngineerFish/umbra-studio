@@ -8,6 +8,13 @@
     "rootDir": "src",
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    /* ⚠️ 2026-10-24 打开（geek-99 定）。打开那一刻报 **154 处**，全是 M11-7 搬能力、
+       C3 和 M16-8 退场留下的残渣：109 处 import 绑定 + 17 处死常量 / 死局部 +
+       级联出来的若干。清完零残留，**行为零变化**（17 套服务端回归一个数都没变）。
+       它拦的是「删掉一处定义之后，引用它的 import 静默留着」那一类 ——
+       而那一类原来只能靠人记得去清，于是它攒到了 154。
+       ⚠️ 它**管不了「导出了但没人调」** —— 那要另外的工具（ts-prune / knip）。 */
+    "noUnusedLocals": true,
     "exactOptionalPropertyTypes": false,
     "declaration": false,
     "sourceMap": true,

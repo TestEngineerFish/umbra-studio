@@ -9,7 +9,7 @@
  *
  * 用法：node dist/selftest.js [项目名]
  */
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 import { buildProject, listDrafts, listProjectDirs, loadProject, projectsRoot, TOOL_ROOT } from "./project.js";
 import { getIcon, getToken, listComponents, listIcons, searchTokens } from "./assets.js";

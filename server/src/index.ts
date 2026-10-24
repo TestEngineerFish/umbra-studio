@@ -4,8 +4,7 @@
  * 第一批：检索类 + validate_draft。
  * 写入类（write_draft / patch_draft）、render_check、语义 diff 在后面几批。
  */
-import { dirKeyOf, suggestedNameOf } from "./pathguard.js";
-import { readFile } from "node:fs/promises";
+import { suggestedNameOf } from "./pathguard.js";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -13,34 +12,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { envelope, toContent, ToolError, err, type Envelope } from "./envelope.js";
 import { X } from "./codes.js";
-import {
-  TOOL_ROOT, buildProject, createProject, duplicateDraft, createFolder,
-  updateProject, archiveProject, deleteProject,
-  draftPath, listDrafts, listProjectDirs, loadProject, projectsRoot,
-  type Project,
-} from "./project.js";
-import { getComponent, getIcon, getToken, listComponents, listIcons, searchTokens } from "./assets.js";
-import { validateDraft } from "./validate.js";
-import { patchDraft, writeDraft } from "./write.js";
-import { getAiConfig, setAiConfig, getChannelA, getChannelB, mergeChannel, type AiConfig } from "./ai_config.js";
-import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.js";
-import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
+import { createProject, loadProject, projectsRoot } from "./project.js";
+import { getAiConfig, setAiConfig, mergeChannel, type AiConfig } from "./ai_config.js";
 import { runChatSend } from "./chat_run.js";
 import { invokeVerb, listVerbs, onVerbsChanged, watchVerbState, zodShapeOf } from "./plugin/verbs.js";
-import { listComments } from "./comments.js";
-import {
-  changesSince, diffDrafts, listVersions, projectChangesSince, readSnapshot,
-  resolveSnapshot, toMarkdown,
-} from "./history.js";
 import { serveStart, serveStatus, serveStop } from "./serve.js";
 import { isToolPage } from "./files.js";
-import { listFiles, readAnyFile, writeAnyFile, moveFile, listSnapshotMeta } from "./files.js";
-import { locateNode } from "./locate.js";
-import { revertTo, setProp } from "./edit.js";
-import { touchProject, listRecentProjects, removeRecentProject, clearRecentProjects } from "./workspace.js";
-import { buildRefGraph, listReferences, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
-import { globalSearch } from "./search.js";
-import { setTokenValue } from "./token_edit.js";
+import { touchProject } from "./workspace.js";
 import { exportProject, importProject } from "./export.js";
 
 import { capsFor, type CapCtx } from "./cap/index.js";

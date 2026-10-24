@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProject } from "./project.js";
-import { listVersions, snapDir } from "./history.js";
+import { snapDir } from "./history.js";
 import { readdir } from "node:fs/promises";
 import {
   countTypes, lineDelta, listFiles, listSnapshotMeta, listSnapshots, moveFile,
@@ -451,7 +451,6 @@ ok("路径锁在项目内（.. 被吃掉，不是写到父目录）",
 {
   const { execFileSync } = await import("node:child_process");
   const { createHash } = await import("node:crypto");
-  const { execFileSync: xs } = await import("node:child_process");
   const { commitExternalChanges, isDirty } = await import("./gitkeep.js");
   const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
   /* ⚠️ `-c core.quotepath=false`：不加的话 git 会把非 ASCII 路径转义成
@@ -1972,8 +1971,13 @@ console.log("\n⑮ 指向项目外的符号链接（issue #140）");
    ③ 改写方向对：往深一层挪，相对路径要多一段 `../` —— 不是把绝对路径塞进去 */
 {
   const { mkdtemp: mkdU, writeFile: wfU, rm: rmU, mkdir: mdU, readFile: rfU } = await import("node:fs/promises");
-  const { tmpdir: tdU } = await import("node:os");
-  /* ⚠️ 这两个在 （顶部已 import），不在  —— 第一版照名字猜错了地方。 */
+  /* ⚠️ `join` / `tmpdir` **顶部已经 import 了**，这里不要再本地解构一份 ——
+     原来这个块里有 `const { tmpdir: tdU } = await import("node:os")`，而下面用的是顶部那个
+     `tmpdir`，于是 `tdU` 一次都没被读。 */
+  /* ⚠️ 顺带补全上面这句话：它在 2026-10-24 之前写的是
+     「这两个在 （顶部已 import），不在  ——」，**两个模块名都空着**，谁都读不懂。
+     > **一句话里缺了主语和宾语，比没有这句话糟** —— 它占着「这里有解释」的位置，
+     > 而下一个人会以为自己漏看了什么。 */
   const DU = await mkdU(join(tmpdir(), "umbrastudio-ftref-"));
   await wfU(join(DU, "project.json"), JSON.stringify({ name: "ftref", title: "ftref" }), "utf8");
   await mdU(join(DU, "pics"), { recursive: true });

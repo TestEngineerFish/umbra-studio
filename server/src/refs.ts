@@ -214,7 +214,6 @@ export async function dcImportsFollow(
   newRel: string,
   write: (rel: string, next: string, prevText: string) => Promise<void>,
 ): Promise<DcImportsFollowed> {
-  const oldAbs = resolve(p.dir, oldRel);
   const newAbs = resolve(p.dir, newRel);
   const updatedFiles: Array<{ rel: string; oldName: string; newName: string }> = [];
   const ownUpdated: Array<{ oldName: string; newName: string }> = [];
@@ -343,7 +342,6 @@ export async function deleteDraft(
 ): Promise<DeleteDraftResult> {
   const { draftPath } = await import("./project.js");
   const { mkdir } = await import("node:fs/promises");
-  const { existsSync } = await import("node:fs");
 
   const abs = draftPath(p, path);
   const impact = await deleteDraftImpact(p, path);

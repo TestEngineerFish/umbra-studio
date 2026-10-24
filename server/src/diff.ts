@@ -36,13 +36,10 @@ export interface DiffResult {
 
 const LEVEL_ORDER: Level[] = ["L1", "L2", "L3", "L4"];
 const CALLABLE = /^on[A-Z]|Ref$/;
-/* ⚠️ **写成转义序列，不要字面 NUL 字节**（2026-09-30）。
-   原来这里是一个真 NUL，于是 `file` 把整份源码判成 `data`，
-   而 ugrep / ripgrep 这类带「跳过二进制」的工具会整个跳掉这个文件 ——
-   grep 它永远返回「什么都没有」而不是报错。**这是判据层面的缺陷，不是运行时的**。
-   转义序列跑起来一模一样，而文件又是纯文本了。 */
-const SEP = "\u0000";
-
+/* ⚠️ 这里原来有一个当分隔符用的 `const SEP = "\u0000"`，2026-10-24 删掉（已经没有读者）。
+   **那条教训没有跟着走** —— 「源码里不许有裸 NUL」现在由 `captest` 那道闸守着，
+   而它扫的是全仓，不只是这一个文件。
+   > **一条写在注释里的教训，和一道执行它的闸，只有后者会在下一次被违反时出声。** */
 const j = (v: unknown): string | null =>
   v === undefined || v === null ? null : typeof v === "string" ? v : JSON.stringify(v);
 

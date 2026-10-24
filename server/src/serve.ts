@@ -5,10 +5,10 @@
  *
  * 服务活在 MCP server 进程里，跨工具调用保持运行 —— 起一次，浏览器里一直能开。
  */
-import { existsSync, statSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { extname, normalize, resolve, relative, sep } from "node:path";
+import { extname, normalize, resolve, sep } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { emit, subscribe } from "./events.js";
 import { X } from "./codes.js";
@@ -19,8 +19,7 @@ import { cacheRoot } from "./statedirs.js";
 import { isToolPage } from "./files.js";
 import { API_PREFIX, handleApi, newToken, type ApiCtx } from "./api.js";
 import { pluginDirOf, registerPluginKinds } from "./plugin/store.js";
-import { BUILTIN, kindOf } from "./shared/kinds.js";
-import { isInside, isInsideReal, resolveInside } from "./pathguard.js";
+import { isInsideReal, resolveInside } from "./pathguard.js";
 import { studioName } from "./shared/brand.js";
 
 const MIME: Record<string, string> = {

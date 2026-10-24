@@ -1961,7 +1961,6 @@ console.log("\n㉖ `get_delete_impact` 只答 `<dc-import>` 那种引用（M16-8
 {
   const { mkdtemp: mkdt6, writeFile: wf6, rm: rm6 } = await import("node:fs/promises");
   const { join: j6 } = await import("node:path");
-  const { tmpdir: td6 } = await import("node:os");
   /* ⚠️ `realpathSync`：macOS 的 `/var` 是软链，不解的话 `abs.slice(p.dir.length + 1)`
      会把相对路径切歪（本仓库记过的那个坑）。 */
   const T6 = await mkdt6(j6(realpathSync(osTmpdir()), "umbrastudio-refs-"));

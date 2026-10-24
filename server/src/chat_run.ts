@@ -4,49 +4,28 @@
 import { createHash } from "node:crypto";
 import { failHint } from "./ai_fail.js";
 import { readFile } from "node:fs/promises";
-import { join, basename } from "node:path";
-import { existsSync } from "node:fs";
-import { envelope, toContent, ToolError, err, type Envelope } from "./envelope.js";
+import { join } from "node:path";
+import { envelope, err, type Envelope } from "./envelope.js";
 import { X } from "./codes.js";
-import {
-  TOOL_ROOT, buildProject, createProject, duplicateDraft, createFolder,
-  updateProject, archiveProject, deleteProject,
-  draftPath, listDrafts, listProjectDirs, loadProject, projectsRoot,
-  type Project,
-} from "./project.js";
-import { getComponent, getIcon, getToken, listComponents, listIcons, searchTokens } from "./assets.js";
-import { validateDraft } from "./validate.js";
-import { patchDraft, writeDraft } from "./write.js";
-import { getAiConfig, setAiConfig, channelSupportsImage, getChannelA, getChannelB, getOpenAiChannel, looksLikeQuotaProblem, type AiConfig } from "./ai_config.js";
+import { TOOL_ROOT, listDrafts, type Project } from "./project.js";
+import { getAiConfig, channelSupportsImage, getChannelA, getChannelB, getOpenAiChannel, looksLikeQuotaProblem } from "./ai_config.js";
 import { chat, type ToolDef, type ToolCall, type ChatMessage } from "./provider.js";
-import { createChat, loadChat, saveChat, listChats, deleteChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
+import { createChat, loadChat, addMessage, type ChatSession, type ChatEntry } from "./chat.js";
 import { parseStub, runStubRound } from "./chat_stub.js";
 import { runLocalCli, specOf } from "./local_cli.js";
-import {
-  changesSince, diffDrafts, listVersions, projectChangesSince, readSnapshot,
-  resolveSnapshot, toMarkdown,
-} from "./history.js";
-import { serveStart, serveStatus, serveStop } from "./serve.js";
+import { diffDrafts, listVersions } from "./history.js";
 import { locateNode } from "./locate.js";
 import { listFiles, listSnapshotMeta, moveFile, readAnyFile, readSnapshotContent, revertFile, writeAnyFile } from "./files.js";
-import { revertTo, setProp } from "./edit.js";
-import { touchProject, listRecentProjects, removeRecentProject, clearRecentProjects } from "./workspace.js";
-import { buildRefGraph, listReferences, deleteDraft, deleteDraftImpact, listTrash, restoreDraft } from "./refs.js";
-import { globalSearch } from "./search.js";
-import { setTokenValue } from "./token_edit.js";
-import { exportProject, importProject } from "./export.js";
 import { invokeVerb, isVerb, listVerbs, verbToolDef } from "./plugin/verbs.js";
 import { allCaps } from "./cap/registry.js";   // 只取表，不在这里装配（装配在 index.ts / api.ts，免得和 cap/chat.ts 绕成环）
 import { productName, studioName } from "./shared/brand.js";
 
-/* 与 index.ts 的 GUIDES 同一张表（写稿规则文档索引）。不从 index.ts 引 —— 那会形成循环导入。 */
-const GUIDES: Record<string, { file: string; note: string }> = {
-  template: { file: "03-渲染与交互逻辑.md", note: "模板语言的精确语义（框架语义，与项目无关）" },
-  logic: { file: "03-渲染与交互逻辑.md", note: "逻辑类契约与渲染时序" },
-  interaction: { file: "06-写稿规则.md", note: "本项目的写法约定（交互、规模、收尾）" },
-  checklist: { file: "06-写稿规则.md", note: "开工前与收尾的自检" },
-  tokens: { file: "06-写稿规则.md", note: "取值从哪来、@ds 别名怎么写" },
-};
+/* ⚠️⚠️ 这里原来有一份 `GUIDES`（写稿规则文档的映射表），而它是**同一个死常量的第 N 份副本**：
+   C3（M16-7c-2b）已经在 `index.ts` 里删过它并写清了理由（那件 `get_syntax_guide`
+   7b 就删了，`doc/` 也跟着从打包清单里撤了），**而这两个文件里的副本漏下了**。
+   2026-10-24 `noUnusedLocals` 那一轮才量到。
+   > **一处定义被删掉的时候，它的副本不会报错 —— 副本的全部代价就在这里。**
+   > 而「删一处定义」和「删一处定义的所有副本」在当时看起来是同一件事。 */
 
 export interface ChatSendArgs {
   message: string;

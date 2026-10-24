@@ -8,7 +8,7 @@
  */
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createProject, loadProject, listDrafts, buildProject, updateProject, archiveProject, blankDraft } from "./project.js";
 /* ⚠️ `createDraft` 2026-10-24 退场（M16-8 ⑥）。这一套原来用它造夹具稿，现在走

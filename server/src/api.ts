@@ -28,34 +28,24 @@
 import { suggestedNameOf } from "./pathguard.js";
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listCssVars } from "./cssvars.js";
-import { locateNode } from "./locate.js";
-import { revertTo, setProp, type SlotKind } from "./edit.js";
-import { validateDraft } from "./validate.js";
-import { listComponents, listIcons, searchTokens } from "./assets.js";
 import { get as getJob, start as startJob, view as jobView, running as runningJob } from "./jobs.js";
-import { changesSince, diffDrafts, humanTime, listVersions, projectChangesSince, readVersionMeta, snapDir, toMarkdown, workspaceState } from "./history.js";
+import { snapDir } from "./history.js";
 import { gunzipSync } from "node:zlib";
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { draftPath, isDesignProject, listDrafts, type Project } from "./project.js";
+import { type Project } from "./project.js";
 import { isEditable } from "./records.js";
 import { resolveDraft } from "./locate.js";
 import { readFile } from "node:fs/promises";
-import { relative, sep } from "node:path";
 import { ToolError } from "./envelope.js";
 import { httpRoutes, type CapCtx } from "./cap/index.js";
 import { z } from "zod";
 import { isToolPage } from "./files.js";
-import { countTypes, listFiles, listSnapshotMeta, moveFile, readAnyFile, referencesOf, revertFile, trashFile, writeAnyFile } from "./files.js";
 import { runChatSend } from "./chat_run.js";
-import { updateProject, archiveProject, deleteProject, listProjectDirs, buildProject, createProject } from "./project.js";
-import { listRecentProjects, touchProject } from "./workspace.js";
-import { listTrash, restoreDraft, purgeTrash, emptyTrash, deleteDraft } from "./refs.js";
-import { listChats, loadChat, createChat } from "./chat.js";
-import { listComments, addComment, updateComment, deleteComment } from "./comments.js";
+import { buildProject, createProject } from "./project.js";
+import { touchProject } from "./workspace.js";
+import { createChat } from "./chat.js";
 import { getAiConfig } from "./ai_config.js";
-import { readCheck, sha256 } from "./check.js";
 
 
 /** 进程级作业表（`jobs.ts`）的锁键：**按项目目录，不按项目名**（issue #153）。

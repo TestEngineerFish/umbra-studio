@@ -45,8 +45,8 @@
  */
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import { writeAtomic } from "./normalize.js";
 
 /** 整段的起止标记。**带标记才认得出、才撤得掉**（geek-99 的要求）。 */

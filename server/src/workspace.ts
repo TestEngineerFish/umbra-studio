@@ -9,10 +9,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { STATE_ROOT } from "./project.js";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
 const UD_DIR = join(STATE_ROOT, ".umbrastudio");
 const WORKSPACE_FILE = join(UD_DIR, "workspace.json");
 

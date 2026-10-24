@@ -8,14 +8,13 @@
  */
 import { readdir, readFile, stat, rename, cp, mkdir } from "node:fs/promises";
 import { hasRepo } from "./gitkeep.js";
-import { isInside, isInsideReal, plainNameProblem, resolveInside } from "./pathguard.js";
+import { isInsideReal, plainNameProblem } from "./pathguard.js";
 import { existsSync, cpSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve, relative, dirname, basename, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { X } from "./codes.js";
-import { emit } from "./events.js";
 import { err, ToolError } from "./envelope.js";
-import { assetDir, UD_DIRNAME } from "./statedirs.js";
+import { UD_DIRNAME } from "./statedirs.js";
 import { sweepTmpUnder } from "./tmpfiles.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -440,14 +439,13 @@ export async function createProject(
     );
   }
 
-  // 目录存在但不是空的（有非隐藏文件）→ 警告但还是继续
-  let isClean = true;
-  if (existsSync(dir)) {
-    try {
-      const entries = await readdir(dir, { withFileTypes: true });
-      isClean = entries.every((e) => e.name.startsWith("."));
-    } catch { /* 读不了就当不知道 */ }
-  }
+  /* ⚠️⚠️ 这里原来有一段算 `isClean`（目录里有没有非隐藏文件）的代码，注释写着
+     「→ 警告但还是继续」，**而那个警告一处都没发出去** —— 算完就扔。
+     2026-10-24 删掉，而且不是「补上那个警告」：M14-4 B3 之后「打开一个已经有东西的目录」
+     是**正常路径**（打开普通目录写 0 个文件，要写先 `adopt_project`），
+     所以「这个目录不是空的」已经不是一件值得警告的事。
+     > **一段只剩测量、没有后续动作的代码，记录的是一个被放弃的意图** ——
+     > 而它看起来像一个还没接线的功能，于是下一个人会去把它接上。 */
 
   await mkdir(dir, { recursive: true });
 

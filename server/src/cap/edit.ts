@@ -1,16 +1,8 @@
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { envelope } from "../envelope.js";
-import { draftPath, TOOL_ROOT } from "../project.js";
-import { locateNode, resolveDraft } from "../locate.js";
 /* ⚠️ 注意：`server/src/edit.ts` 是**改一处**的实现，本文件是 `cap/edit.ts`（能力声明）。
    同名不同层，别看串了 —— 实现在 `src/edit.ts`，声明在这儿。 */
-import { revertTo, setProp, type SlotKind } from "../edit.js";
-import { patchDraft, writeDraft } from "../write.js";
-import { validateDraft } from "../validate.js";
-import { readCheck, sha256 } from "../check.js";
-import { workspaceState } from "../history.js";
+import { revertTo } from "../edit.js";
 import { defineCap } from "./registry.js";
 import { originOf, type CapCtx } from "./types.js";
 
@@ -25,10 +17,12 @@ import { originOf, type CapCtx } from "./types.js";
  */
 const p = (c: CapCtx) => c.project!;
 
-/** 稿路径：**一律走 `resolveDraft`**（宽松，认相对路径也认文件名）。
- *  MCP 侧原来直接用 `draftPath`（严格），HTTP 侧用 `resolveDraft` ——
- *  同一件事两种严格度，而宽松那种是超集，没有理由不统一。 */
-const rel = (c: CapCtx, file: string) => resolveDraft(p(c), file);
+/* ⚠️ 这里原来有一个 `const rel = (c, file) => resolveDraft(p(c), file)` ——
+   注释写着「稿路径一律走 `resolveDraft`（宽松）；MCP 侧原来直接用 `draftPath`（严格），
+   同一件事两种严格度」。**而它一处都没被调过**，所以那条「统一」从来没落地。
+   2026-10-24 删掉它，同时把这件事记下来：这个文件里每一件能力自己解析路径。
+   > **一个为了「统一两种写法」而写的辅助函数，没有人调它的时候，
+   > 它记录的是一个意图，不是一条规则** —— 而读的人会把它当成规则。 */
 
 
 defineCap({
@@ -46,12 +40,10 @@ defineCap({
   },
 });
 
-/** 写稿规则的出处。**不属于任何项目** —— 它是工具自带的文档 */
-const GUIDES: Record<string, { file: string; note: string }> = {
-  template: { file: "02-dc-html 格式说明.md", note: "模板语法与结构" },
-  logic: { file: "03-渲染与交互逻辑.md", note: "逻辑类、渲染期与交互期" },
-  interaction: { file: "03-渲染与交互逻辑.md", note: "同 logic" },
-  checklist: { file: "06-写稿规则.md", note: "写稿前后的自查清单" },
-  tokens: { file: "06-写稿规则.md", note: "取值怎么用 tokens" },
-};
+/* ⚠️⚠️ 这里原来有一份 `GUIDES`（写稿规则文档的映射表），而它是**同一个死常量的第 N 份副本**：
+   C3（M16-7c-2b）已经在 `index.ts` 里删过它并写清了理由（那件 `get_syntax_guide`
+   7b 就删了，`doc/` 也跟着从打包清单里撤了），**而这两个文件里的副本漏下了**。
+   2026-10-24 `noUnusedLocals` 那一轮才量到。
+   > **一处定义被删掉的时候，它的副本不会报错 —— 副本的全部代价就在这里。**
+   > 而「删一处定义」和「删一处定义的所有副本」在当时看起来是同一件事。 */
 

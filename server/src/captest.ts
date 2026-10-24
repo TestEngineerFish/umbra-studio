@@ -287,7 +287,7 @@ for (const n of wasHttpOnly) {
    ⚠️ 排除注释行 —— 本仓库注释里提 `.umbrastudio/` 的地方有三十多处，
    把它们算进来这条判据会永远红，然后被人删掉。 */
 {
-  const { readdirSync, readFileSync, statSync } = await import("node:fs");
+  const { readdirSync, readFileSync } = await import("node:fs");
   const { join: j, relative: rel } = await import("node:path");
   const ROOT = new URL("../src", import.meta.url).pathname;
   const offenders: string[] = [];

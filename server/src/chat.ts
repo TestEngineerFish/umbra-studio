@@ -5,7 +5,7 @@
  */
 
 import { emit } from "./events.js";
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { writeAtomic } from "./normalize.js";

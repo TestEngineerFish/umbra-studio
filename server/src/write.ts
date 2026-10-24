@@ -10,11 +10,10 @@
  */
 import { emit } from "./events.js";
 import { isInside } from "./pathguard.js";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
-import { execFile } from "node:child_process";
 import { X } from "./codes.js";
 import { err, ToolError, warn, type Diagnostic } from "./envelope.js";
 import { isEditable } from "./records.js";   // M14-7 那道闸的判准

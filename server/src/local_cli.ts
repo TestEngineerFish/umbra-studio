@@ -384,7 +384,14 @@ export function claudeEnvFor(src: NodeJS.ProcessEnv, baseUrl: string, apiKey: st
  *  「打包版才会炸」的那一半，而它原来**没有任何判据** —— 要测就得能拿到它构造的东西，
  *  而不是去真跑一家 CLI（那要装、要登录、要花钱）。 */
 export async function build(o: CliRunOptions): Promise<Built> {
-  const spec = specOf(o.cli);
+  /* ⚠️⚠️ **这一行留着，而且不要写成 `const spec = …`**（2026-10-24 `noUnusedLocals` 那一轮）。
+     `specOf` 对不认识的 CLI **会抛**，所以这是一道**校验**，不是一个没用的变量：
+     `build()` 是 `export` 出去的（为判据开的，见上面那段注释），也就是一个公开入口 ——
+     生产路径上 `runLocalCli` 已经先校验过，而直接调 `build()` 的人没有。
+     > **`noUnusedLocals` 说的是「这个值没人读」，它说不了「这次调用没有副作用」** ——
+     > 删 `const x = f()` 这一整行和删掉 `const x =` 这几个字，是两种不同的改动，
+     > 而编译器分不清你要哪一种。 */
+  specOf(o.cli);
   const localLogin = !o.baseUrl?.trim() || !o.apiKey?.trim();
   /* 起子进程前要**清掉两族环境变量**，都是「父进程可能正被某个 AI CLI 起着」引出来的：
    *

@@ -1,4 +1,3 @@
-import { kindOf } from "../shared/kinds.js";
 import { z } from "zod";
 import { realpath, stat } from "node:fs/promises";
 import { basename, posix, relative, sep } from "node:path";
@@ -7,7 +6,7 @@ import { X } from "../codes.js";
 import { denyReason, isToolArtifactPath, recordCreatedFile } from "../files.js";
 import { isInside, resolveInside } from "../pathguard.js";
 import type { Project } from "../project.js";
-import { convertEngine, FORMATS, formatOfPath, normalizeTarget } from "../convert/index.js";
+import { convertEngine, FORMATS, normalizeTarget } from "../convert/index.js";
 import { extOf } from "../convert/formats.js";
 import { defineCap } from "./registry.js";
 import { originOf, type CapCtx } from "./types.js";

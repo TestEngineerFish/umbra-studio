@@ -21,14 +21,13 @@ const TEST_PROJECT = join(TOOL_ROOT, "test-agent-project");
 
 // ── 导入编译后的模块 ──
 
-let loadProject: (dir: string) => Promise<any>, listDrafts: any;
+let loadProject: (dir: string) => Promise<any>;
 let listVersions: any, diffDrafts: any;
 
 async function importModules() {
-  const { buildProject: bp, listDrafts: ld } = await import("./project.js");
+  const { buildProject: bp } = await import("./project.js");
   // buildProject 接受绝对路径，适合测试
   loadProject = async (dir: string) => bp(dir);
-  listDrafts = ld;
   const { listVersions: lv, diffDrafts: dd } = await import("./history.js");
   listVersions = lv; diffDrafts = dd;
 }

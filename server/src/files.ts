@@ -30,7 +30,7 @@ import { type VersionOrigin, snapDir } from "./history.js";
 import { isInside, isInsideReal, isOutsideLink, relPathProblem } from "./pathguard.js";
 import { dcImportsFollow, dcImportsOf } from "./refs.js";
 import { writeAtomic } from "./normalize.js";
-import { listDrafts, type Project } from "./project.js";
+import { type Project } from "./project.js";
 
 /* 类型联合也只有一份（`shared/kinds.ts`）。这儿曾经自己写了一遍，
    加 `json` 时它没跟上，编译器当场就抓出来了 —— 这正是统一的用处。 */
@@ -1459,7 +1459,6 @@ export async function referencesOf(p: Project, rel: string): Promise<{ refs: Arr
 
 // ──────────────────────── 内部 ────────────────────────
 
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const clean = (rel: string) => rel.split(/[\\/]/).filter((x) => x && x !== "." && x !== "..").join("/");
 
 /** 把调用方给的路径规范成「相对项目根的干净路径」。

@@ -6,7 +6,6 @@
 
 import { Project, listDrafts } from "./project.js";
 import { readFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
 
 export interface SearchHit {
   file: string;

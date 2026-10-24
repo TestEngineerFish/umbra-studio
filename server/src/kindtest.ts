@@ -332,7 +332,6 @@ const fakePlugin = async (id: string, kinds: unknown[]) => {
      mdRow ? `kinds = ${JSON.stringify(mdRow.kinds)}` : "它一种 kind 都没登记上");
 
   /* ── 反面：`dc` 谁都认领不到，连出厂插件也不行 ── */
-  const { checkManifest } = await import("./plugin/manifest.js");
   /* ⚠️ 这份清单**其余部分全合法** —— 只有「认领 dc」这一处违规。
      不然它会因为别的原因被拒，而判据看起来照样绿（§142.4：撞在别的机制上）。 */
   /* ⚠️⚠️ **「认领一个关着的内置 kind 会在装的时候被拒」这一条今天测不到，照实说。**

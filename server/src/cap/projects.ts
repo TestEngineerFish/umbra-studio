@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import { envelope } from "../envelope.js";
 import {
   archiveProject, buildProject, deleteProject, listDrafts, listProjectDirs, projectsRoot, updateProject,

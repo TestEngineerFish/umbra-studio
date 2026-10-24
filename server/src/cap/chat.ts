@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { envelope } from "../envelope.js";
 import { deleteChat, listChats, loadChat, renameChat, setChatChannel } from "../chat.js";
-import { getAiConfig, setAiConfig } from "../ai_config.js";
+import { getAiConfig } from "../ai_config.js";
 import { defineCap } from "./registry.js";
 import type { CapCtx } from "./types.js";
 

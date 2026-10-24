@@ -1,12 +1,9 @@
 import { z } from "zod";
-import { join, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import { envelope } from "../envelope.js";
 import { listDrafts } from "../project.js";
 import { resolveDraft } from "../locate.js";
-import {
-  changesSince, diffDrafts, humanTime, listVersions, projectChangesSince,
-  readVersionMeta, resolveSnapshot, toMarkdown,
-} from "../history.js";
+import { changesSince, diffDrafts, humanTime, listVersions, projectChangesSince, readVersionMeta, toMarkdown } from "../history.js";
 import { addComment, deleteComment, listComments, markCommentsSent, updateComment } from "../comments.js";
 import { listReferences } from "../refs.js";
 import { listSnapshotMeta, walkProjectFiles } from "../files.js";

@@ -8,7 +8,6 @@ import { dirname, join, resolve } from "node:path";
 import { E, W } from "./codes.js";
 import { err, warn, type Diagnostic } from "./envelope.js";
 import { auditRenderVals, parseDraft, type Draft } from "./draft.js";
-import { matchBrace } from "./scan.js";
 import type { Project } from "./project.js";
 
 const VOID_TAGS = new Set(["area","base","br","col","embed","hr","img","input","link","meta",
@@ -458,7 +457,6 @@ function checkControlInTable(d: Draft, f: string): Diagnostic[] {
   const out: Diagnostic[] = [];
   const tpl = d.src.slice(d.template.start, d.template.end);
   const HOSTS = ["table", "select", "optgroup"];
-  const CONTROL = /<(sc-if|sc-for|dc-import|x-import)\b/gi;
   for (const host of HOSTS) {
     const open = new RegExp(`<${host}\\b`, "gi");
     let m: RegExpExecArray | null;
