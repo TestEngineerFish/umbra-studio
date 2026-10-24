@@ -2,12 +2,15 @@ import { useEffect, useState } from "react";
 
 /** 页面内提示：host.notify 在浏览器里的退化路径也落到这里（监听 ud-toast） */
 export function Toasts() {
-  const [items, setItems] = useState<{ id: number; title: string; body?: string; kind?: string }[]>([]);
+  const [items, setItems] = useState<{ id: number; title: string; body?: string; kind?: string; action?: ToastAction }[]>([]);
   useEffect(() => {
     const on = (e: Event) => {
       const d = (e as CustomEvent).detail ?? {}; const id = Date.now() + Math.random();
-      setItems((xs) => [...xs, { id, title: d.title ?? String(d), body: d.body, kind: d.kind }]);
-      window.setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== id)), 3200);
+      setItems((xs) => [...xs, { id, title: d.title ?? String(d), body: d.body, kind: d.kind, action: d.action }]);
+      /* ⚠️ **带动作的提示不自动消失** —— 3.2 秒之后那颗钮就没了，
+         而用户正要去做的事（装一个工具再回来点它）比 3.2 秒长得多。
+         > **一个会自己消失的提示上放一颗按钮，等于把那颗按钮藏起来。** */
+      if (!d.action) window.setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== id)), 3200);
     };
     window.addEventListener("ud-toast", on); return () => window.removeEventListener("ud-toast", on);
   }, []);
@@ -22,12 +25,29 @@ export function Toasts() {
           : t.kind === "warn" ? "border-warnBorder text-warn"
           : "border-border text-text"}`}>
           <div className="font-semibold">{t.title}</div>{t.body && <div className="text-muted mt-0.5">{t.body}</div>}
+          {/* ⚠️ **形制待设计侧定**（`doc/24` §四十一）：这是「最朴素」的那一版 ——
+              一行文字钮 + 一个关闭。位置、是否该进这个浮层、要不要和 `list_convert_targets`
+              的 `hint`（一行安装命令）并排，都归设计侧。 */}
+          {t.action && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <button data-ud="toast-action" className="btn sm"
+                onClick={() => { setItems((xs) => xs.filter((x) => x.id !== t.id)); t.action!.run(); }}>
+                {t.action.label}
+              </button>
+              <button data-ud="toast-close" className="btn sm ghost"
+                onClick={() => setItems((xs) => xs.filter((x) => x.id !== t.id))}>关掉</button>
+            </div>
+          )}
         </div>
       ))}
     </div>
   );
 }
-export function toast(title: string, body?: string, kind?: "error" | "warn" | "ok") { window.dispatchEvent(new CustomEvent("ud-toast", { detail: { title, body, kind } })); }
+/** 提示上可以带**一个**动作。带了就不自动消失（见上面那段注释）。 */
+export interface ToastAction { label: string; run: () => void }
+export function toast(title: string, body?: string, kind?: "error" | "warn" | "ok", action?: ToastAction) {
+  window.dispatchEvent(new CustomEvent("ud-toast", { detail: { title, body, kind, action } }));
+}
 
 
 /** `move_file` 的回执里**要看的那几个字段**（issue #99）。

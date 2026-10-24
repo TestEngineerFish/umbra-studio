@@ -222,7 +222,24 @@ pg.on("console", (m) => { if (m.type() === "error") classify(m.text()); });
    **不带 URL**。而那条判据红了之后第一句话一定是「哪个 404？」，
    于是只能靠猜或者另起一个探针。**一条说不出「是哪一个」的判据，红了也用不上。** */
 const bad4xx = [];
-pg.on("response", (r) => { if (r.status() >= 400) bad4xx.push(`${r.status()} ${r.url().replace(/[?&]token=[^&]*/, "")}`); });
+/* ⚠️⚠️ **POST 的要连请求体一起记**（2026-10-24）。原来只记 URL，而本项目的写类路由
+   （`file_trash` / `file_write` / `file_move` …）**路径在请求体里** ——
+   于是「4xx 里没有一条指向回归自己的样本」那条判据对这一整族**天生看不见**，
+   而一条 `400 /__ud/file_trash` 看起来完全不像是判据自己打的。
+   实测就是这么藏住一条的：清理去删一个不存在的文件，报出来只有一个路由名。
+   > **一条判据声称「它不是我们造的」，而它看的那个字段里根本没有「是谁」。** */
+pg.on("response", (r) => {
+  if (r.status() < 400) return;
+  let what = "";
+  try {
+    const body = r.request().postData();
+    if (body) {
+      const j = JSON.parse(body);
+      what = j.path ?? j.file ?? j.from ?? j.trashPath ?? j.dir ?? "";
+    }
+  } catch { /* 不是 JSON 就算了 */ }
+  bad4xx.push(`${r.status()} ${r.url().replace(/[?&]token=[^&]*/, "")}${what ? `  body.path=${what}` : ""}`);
+});
 /* ⚠️ `pageerror` 也走 `classify` —— 原来它自己判一遍 NOISE，于是上面拆出去的那两类
    **从这个出口原样漏回「零 error」里**（实测第三种形态就是从这儿来的）。
    加前缀是为了读数里看得出是哪个出口。 */
@@ -1008,11 +1025,19 @@ const openImgSample = async () => {
  *  > **「清理器认得它」和「谁该负责清它」是两个问题。**
  *  ⚠️ 要连回收站一起 purge：`file_trash` 只是搬进回收站，
  *  留在那儿的话每跑一轮堆一条（收尾第二条判据正是钉这个的）。 */
+/*  ⚠️⚠️ **「幂等」原来只对我们这一侧成立，对 HTTP 不成立**（2026-10-24 量到）：
+ *  上面那句注释写着「幂等，在最后一个用它的节之后调一次」，而对**已经不在**的文件
+ *  调 `file_trash` 回 **400** —— 于是第二次调用在控制台里留一条 4xx，
+ *  而「零 error」那条判据**红在判据自己的清理上**。
+ *  ⚠️ 它藏了很久，因为「4xx 里没有一条指向回归自己的样本」那条判据**看的是 URL**，
+ *  而 `file_trash` 的路径在**请求体**里 —— 那条判据对 POST 这一族天生看不见。
+ *  > **一条「幂等」的断言要说清对谁幂等** —— 对调用方幂等（不抛）不等于对服务端幂等（不报错）。 */
 const dropImgSample = async () => await pg.evaluate(async (name) => {
   const b = window.__UD_APP;
   const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
   const post = (r, body) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  await post("file_trash", { path: name }).catch(() => {});
+  const here = (await fetch(u("files") + "&dir=").then((x) => x.json()).catch(() => null))?.data?.entries ?? [];
+  if (here.some((e) => e.name === name)) await post("file_trash", { path: name }).catch(() => {});
   const t = await fetch(u("trash")).then((x) => x.json()).catch(() => null);
   for (const it of t?.data?.items ?? []) {
     if (it.originalName === name) await post("trash_purge", { trashPath: it.trashPath }).catch(() => {});
@@ -1432,12 +1457,19 @@ console.log("\n删掉被引用的稿：撤销那一行说「会断几处」（M1
       ok(await onDisk2("_uitest复制源.md 副本.dc.html") === false,
          "**而且不是那个旧名字**（`xxx.md 副本.dc.html` —— ② 修的正是它）");
     }
-    /* 收尾：两份都清掉，连回收站一起 */
+    /* 收尾：两份都清掉，连回收站一起。
+       ⚠️⚠️ **只删真在盘上的那几个** —— 名单里第三个（`xxx.md 副本.dc.html`）是**旧缺陷的名字**，
+       修好之后它永远不存在，而对不存在的文件调 `file_trash` 回 **400**。
+       第一版无条件删，于是「零 error」那条判据**红在我的清理上**，
+       而它报出来只有一个路由名（4xx 原来不记请求体）—— 查了三轮才定位到。
+       > **「无条件清理」说的是不看判据的结论，不是「不看盘上有没有」** ——
+       > 这条纪律本文件里写着两处，而我在同一天第三次违反它。 */
     await pg.evaluate(async (names) => {
       const x = window.__UD_APP;
       const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(x.token)}`;
       const post = (r, b) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((y) => y.json());
-      for (const n of names) await post("file_trash", { path: n }).catch(() => {});
+      const here = (await fetch(u("files") + "&dir=").then((y) => y.json()).catch(() => null))?.data?.entries ?? [];
+      for (const n of names) { if (here.some((e) => e.name === n)) await post("file_trash", { path: n }).catch(() => {}); }
       const t = await fetch(u("trash")).then((y) => y.json()).catch(() => null);
       for (const it of t?.data?.items ?? []) if (names.includes(it.originalName)) await post("trash_purge", { trashPath: it.trashPath });
     }, [SRC, CP, "_uitest复制源.md 副本.dc.html"]);
@@ -2551,9 +2583,14 @@ console.log("\n控制台");
 {
   const seen = [...new Set(bad4xx)];
   const ofSample = seen.filter((s) => {
-    const m = /[?&](?:file|path)=([^&\s]*)/.exec(s);
+    /* ⚠️ **`body.path=` 也要认**（2026-10-24）：写类路由的路径在请求体里，
+       上面那个 `pg.on("response")` 现在把它记进来了。只认 URL 的话，
+       `400 /__ud/file_trash` 这一族**永远不被认成「判据自己造的」** ——
+       而实测它正是判据自己造的（清理去删一个不存在的文件）。
+       > **一条判据声称「它不是我们造的」，而它看的那个字段里根本没有「是谁」。** */
+    const m = /[?&](?:file|path)=([^&\s]*)|body\.path=(.+)$/.exec(s);
     if (!m) return false;
-    let v = m[1];
+    let v = m[1] ?? m[2] ?? "";
     try { v = decodeURIComponent(v); } catch { /* 解不开就按原样试 */ }
     const base = v.split("/").pop() ?? "";
     return SAMPLE_PATS.some((re) => re.test(base));
@@ -5416,6 +5453,105 @@ console.log("\n收尾：没给用户留东西（纪律⑥）");
      fpNow === CHATS_FP ? CHATS_FP.slice(0, 60) : `跑前 ${CHATS_FP}\n       跑后 ${fpNow}`);
 }
 
+/* ── 转换失败那条提示上的「重新检测」（M17 零碎，2026-10-24）──
+   ⚠️⚠️ **这一条钉的是一个「没接线的产品入口」被接上了**：`forgetTools()`
+   （「用户装完工具后重新检测，60 秒缓存不等了」）在 2026-10-24 之前**一处调用方都没有** ——
+   「未使用的导出」那一轮量出的 18 条里，只有它不是垃圾。
+   > **「能力在」和「够得着」是两件事** —— 而这一次它连 MCP 面都上不去，只是一个 export。
+
+   ⚠️ **样本是一次真失败，不是造出来的状态**：写一个扩展名是 `.gif` 而字节不是 GIF 的文件，
+   `convert_file` 走 sips **真的失败**（实测退出码 13）。
+   · 用这个扩展名是因为那颗「转成 PNG 再编辑」只对**存不回原格式**的那几种出现
+     （`!canEncode(path)`：gif / bmp / ico / avif）；
+   · 不拿「机器上没装某个工具」当样本：
+     > **一条依赖「这台机器恰好缺点什么」的判据，在装齐的机器上会静默跳过。**
+
+   ⚠️ 验到三件，缺一件就说不清：① 那颗钮**出现了**（只在失败时）· ② 点它**真的打到了
+   `convert_recheck`**（不是只把提示关掉）· ③ 带动作的提示**不自动消失** ——
+   第三件是形制里唯一一条功能性的：3.2 秒之后那颗钮就没了，
+   而用户要做的事（去装一个工具再回来）比 3.2 秒长得多。 */
+console.log("\n转换失败那条提示上的「重新检测」（M17）");
+{
+  const BAD = "_uitest坏图.gif";
+  const made = await pg.evaluate(async (name) => {
+    const b = window.__UD_APP;
+    const u = (r) => `${b.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(b.token)}`;
+    const w = await fetch(u("file_write"), { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: name, content: "bm90IGEgZ2lm", encoding: "base64", expectSha256: "0" }) });
+    return (await w.json()).ok === true;
+  }, BAD);
+  ok(made === true, "（样本有效性）那个字节不是 GIF 的 `.gif` 建出来了", String(made));
+  if (made) {
+    await settleTree(BAD);
+    await closeMarket();
+    const opened = await openByName(BAD);
+    ok(opened === true, "（前提）打开了它 —— 没打开的话下面几条测的是别的文件", String(opened));
+    if (opened) {
+      /* ⚠️⚠️ **先 `openEdit()`** —— 这颗钮住在**默认收起**的编辑栏里（第九轮起的口径）。
+         不点开的话它在 DOM 里、`isVisible()` 还回 **true**，而**碰不到**：
+         收起时是高度 0 + `overflow:hidden`，而
+         > **`overflow:hidden` 只是裁掉它，子元素自己的 box 还在**（`doc/00` §165 原话）。
+         第一版漏了这一句，症状是 `click` 卡在「waiting for element to be visible,
+         enabled and stable」30 秒后抛 —— 而 box 量出来**完全稳定**，所以那句报错指错了方向。
+         定住它的是 `document.elementFromPoint(box 中心)`：回的是正文容器，**不是这颗钮**。
+         > **「它在 DOM 里」「看不看得见」「碰不碰得到」是三个不同的问题**（§165 那条，又一次）——
+         > 而 `click` 的报错措辞只说得出前两个。 */
+      await openEdit();
+      const btn = pg.locator('[data-ud="img-to-png"]');
+      const hasBtn = await btn.count();
+      const reachable = await btn.evaluate((b) => {
+        const r = b.getBoundingClientRect();
+        const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return el === b || b.contains(el);
+      }).catch(() => false);
+      ok(hasBtn === 1 && reachable === true,
+         "（前提）工具栏上有「转成 PNG 再编辑」**而且碰得到**（它只对存不回原格式的那几种出现）",
+         `${hasBtn} 颗 · 碰得到=${reachable}`);
+      if (hasBtn === 1 && reachable) {
+        const hits = [];
+        const onReq = (r) => { if (r.url().includes("convert_recheck")) hits.push(r.method()); };
+        pg.on("request", onReq);
+        await btn.click();
+        await pg.waitForTimeout(2500);
+        const act = pg.locator('[data-ud="toast-action"]');
+        const actN = await act.count();
+        ok(actN >= 1, "**转换失败时那条提示上出现了「重新检测」**（原来只有一句「没有能转这种图的工具」）",
+           actN ? await act.first().innerText().catch(() => "(读不到)") : "✗ 一颗都没有");
+        if (actN >= 1) {
+          await pg.waitForTimeout(3600);
+          ok(await pg.locator('[data-ud="toast-action"]').count() >= 1,
+             "**带动作的提示不自动消失**（3.6 秒之后那颗钮还在 —— 会消失的提示上放按钮等于把它藏起来）");
+          await pg.locator('[data-ud="toast-action"]').first().click();
+          await pg.waitForTimeout(2500);
+          ok(hits.length >= 1, "**点它真的打到了 `convert_recheck`**（不是只把提示关掉）",
+             hits.length ? `${hits.length} 次 ${hits.join(" ")}` : "✗ 一次都没打到");
+        }
+        pg.off("request", onReq);
+        await pg.locator('[data-ud="toast-close"]').first().click().catch(() => {});
+      }
+    }
+  }
+  /* ⚠️⚠️ **只删真在盘上的那几个。**（`_uitest坏图.png` 只在转换**成功**时才存在，
+     而这一节要的恰恰是失败 —— 所以它通常不在。）
+     对不在的那个调 `file_trash` 回 **400**，于是「零 error」那条判据
+     **红在我的清理上**。而这条纪律我一小时前刚写进另一处清理的注释里：
+     > **「无条件清理」说的是不看判据的结论，不是「不看盘上有没有」。**
+     第一版就这么红了一次 —— 照实记。 */
+  await pg.evaluate(async (names) => {
+    const x = window.__UD_APP;
+    const u = (r) => `${x.url.replace(/\/$/, "")}/__ud/${r}?token=${encodeURIComponent(x.token)}`;
+    const post = (r, b) => fetch(u(r), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((y) => y.json());
+    const here = (await fetch(u("files") + "&dir=").then((y) => y.json()).catch(() => null))?.data?.entries ?? [];
+    for (const n of names) {
+      if (!here.some((e) => e.name === n)) continue;
+      await post("file_trash", { path: n }).catch(() => {});
+    }
+    const t = await fetch(u("trash")).then((y) => y.json()).catch(() => null);
+    for (const it of t?.data?.items ?? []) if (names.includes(it.originalName)) await post("trash_purge", { trashPath: it.trashPath });
+  }, [BAD, "_uitest坏图.png"]);
+}
+
+
 /* ── 总数本身也是一条判据（2026-10-07）──
    ⚠️ 实测踩到：加了 7 条，总数从 408 变成 **414** 而不是 415 —— 有一条**静默没跑**，
    而那一轮**全绿**。「总数少一条没人看」这件事 §159.3 ① 已经吃过一次
@@ -5521,7 +5657,7 @@ console.log(`\n⑬ 设置 › ${platformName}账号：画哪一支登录入口�
    > 它分不清「缺的那 2 条补上了」和「别处多了 2 条」。
    > 所以**加判据时把这个数加上去，和删判据时把它减下来，是同一条纪律的两半**；
    > 而加的那一半更容易忘，因为忘了的后果是「全绿」。 */
-const EXPECT_AT_LEAST = 460;
+const EXPECT_AT_LEAST = 466;
 {
   const ran = pass + fail;
   if (ran < EXPECT_AT_LEAST) {

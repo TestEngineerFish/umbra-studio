@@ -6,7 +6,7 @@ import { X } from "../codes.js";
 import { denyReason, isToolArtifactPath, recordCreatedFile } from "../files.js";
 import { isInside, resolveInside } from "../pathguard.js";
 import type { Project } from "../project.js";
-import { convertEngine, FORMATS, normalizeTarget } from "../convert/index.js";
+import { convertEngine, forgetTools, FORMATS, normalizeTarget } from "../convert/index.js";
 import { extOf } from "../convert/formats.js";
 import { defineCap } from "./registry.js";
 import { originOf, type CapCtx } from "./types.js";
@@ -77,6 +77,36 @@ async function guarded(fn: () => Promise<Envelope<unknown>>): Promise<Envelope<u
 }
 
 const KNOWN = FORMATS.map((f) => f.id).join(" / ");
+
+/* ⚠️⚠️ **`forgetTools` 2026-10-24 接上界面（M17 零碎，geek-99 定）。**
+   它是「用户装完工具后重新检测（60 秒缓存不等了）」，而在这天之前
+   **一处调用方都没有** —— 「未使用的导出」那一轮量出来的 18 条里，
+   只有这一条不是垃圾：它是一个**没接线的产品入口**。
+   > **「能力在」和「够得着」是两件事**（M14-3 那条，第三次）——
+   > 而这一次它连「能力」都只是一个 export，连 MCP 面都上不去。
+
+   ### 为什么用户会需要它
+   转换工具（sips / ffmpeg / pandoc / LibreOffice）的探测结果缓存 60 秒。
+   用户看到「这台机器上没有能转这种图的工具」→ 去装 → 回来再点，
+   **在 60 秒内点的那几次仍然说没装**。而他不知道有这个缓存，
+   于是他得到的结论是「装了也没用」。
+   > **一个为了省时间而存在的缓存，在用户按提示去做事之后，变成了「它在骗我」。**
+
+   ⚠️ **`scope: "global"`**：装了什么工具是**这台机器**的事，不是某个项目的事。
+   ⚠️ 这一件**只清缓存，不自己探测** —— 探测在下一次 `convertEngine()` 时发生，
+   而那一次由调用方发起（界面重试一次转换、模型重问一次 `list_convert_targets`）。
+   > **把「忘掉」和「重新量」做成一件，就得替调用方决定「量哪一个文件」** ——
+   > 而那是它才知道的事。 */
+defineCap({
+  name: "recheck_convert_tools", title: "重新检测转换工具", scope: "global",
+  summary: [
+    "**丢掉「这台机器装了哪些转换工具」的缓存**（默认缓存 60 秒）。装完 ffmpeg / pandoc / LibreOffice 之后调它。",
+    "它只清缓存，不自己探测 —— 下一次 `list_convert_targets` 或 `convert_file` 会重新探一遍。",
+  ].join("\n"),
+  input: {},
+  http: { route: "convert_recheck", method: "POST" },
+  run: async () => { forgetTools(); return envelope({ forgotten: true }, [], { forgotten: true }); },
+});
 
 defineCap({
   name: "list_convert_targets", title: "一个文件能转成什么格式", scope: "project",
