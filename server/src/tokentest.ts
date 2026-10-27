@@ -13,12 +13,19 @@
  *  线上 10-19 起 `/auth/config` 回 `{"provider":"local","managed_by":"center"}`，
  *  走的是邮箱 + 密码 + **不透明长串令牌，没有刷新令牌**。
  *
- *  于是这个文件分成两半，**两半都要留着**：
- *  - ①–⑧ 测 **OIDC 那条路**（刷新令牌、7 天整点过期）。线上已经不走它，但 Casdoor
- *    10-26 才下线、服务端还留着回退开关 `switch.sh oidc` —— **那条路还在，判据就得在**。
- *    随 OIDC 代码一起删（对接说明 §三.3）。
- *  - ⑨⑩ 测**线上现在真正走的那条**：不透明令牌。⑩ 是失效判准，
- *    也就是「什么时候才允许清掉用户的登录」。 */
+ *  ⚠️⚠️ **2026-10-27：OIDC 那半删了。** Casdoor 已下线（geek-99 在服务器上核过服务是
+ *  inactive），按对接说明 §三 3 删掉 `oidc.ts` / `oidc_pkce.ts` / `renew()` /
+ *  `loginStart()` / `tokenExpMs` 那一摊，而**这个文件的 ①–⑧ 和 ⑬ 随它一起走**
+ *  （上一版这里就写着「那条路还在，判据就得在 …… 随 OIDC 代码一起删」）。
+ *
+ *  现在这个文件只测**线上真正走的那条**：邮箱 + 密码 + 不透明长串令牌，没有刷新令牌。
+ *  - ⑨ 密码登录的分档（bad / locked / offline / other）
+ *  - ⑩ **失效判准** —— 也就是「什么时候才允许清掉用户的登录」。
+ *    ⚠️ 其中 ⓕ 是删 OIDC 当天新加的：**存量 `refreshToken` 不改变任何行为**。
+ *    删除时有两道守卫把「有刷新令牌」当成「OIDC 那条路还在、会有人续期」的替身，
+ *    两道都拆了，而那个字段还留在 `account.json` 里（对接说明 §四：存储格式不改）。
+ *  - ⑪ 第二个失效信号（任意状态码带 `x-umbra-session: invalid`，含 200）
+ *  - ⑫ 改密码 / 改显示名 */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,9 +33,8 @@ import { join } from "node:path";
 const STATE = await mkdtemp(join(tmpdir(), "umbra-tokentest-"));
 process.env.UMBRASTUDIO_STATE_DIR = STATE;
 
-const { AccountService, LoginFail, tokenExpMs, TOKEN_RENEW_SKEW_MS, isSessionInvalid, isSessionInvalidHeader } = await import("./account.js");
+const { AccountService, LoginFail, isSessionInvalid, isSessionInvalidHeader } = await import("./account.js");
 type LoginFail = InstanceType<typeof LoginFail>;
-const { OidcLogin } = await import("./oidc.js");
 const { getAccount, setAccount } = await import("./account.js");
 
 let pass = 0, fail = 0;
@@ -37,124 +43,24 @@ const ok = (c: boolean, what: string, detail = "") => {
   else { fail++; console.log(`  ✗ ${what}${detail ? " — " + detail : ""}`); }
 };
 
-/** 造一枚 JWT 形状的令牌（只有 payload 有意义，签名随便）。 */
-const jwt = (name: string, expSec: number) =>
-  ["e30", Buffer.from(JSON.stringify({ sub: name, exp: expSec })).toString("base64url"), "sig"].join(".");
-const nowSec = Math.floor(Date.now() / 1000);
-const OLD = jwt("old", nowSec - 180);          // 已经过期 3 分钟（用户实际碰到的那一枚）
-const SOON = jwt("soon", nowSec + 20);         // 20 秒后过期（在提前量之内）
-const FRESH = jwt("fresh", nowSec + 7 * 86400);
-const NEW = jwt("new", nowSec + 7 * 86400);
 const BASE = "https://umbra.tokentest.invalid";
-const CFG = { provider: "oidc", issuer: "https://auth.invalid", client_id: "c", authorization_endpoint: "https://auth.invalid/a", token_endpoint: "https://auth.invalid/t" };
-
-/** 假服务端：认 `valid` 里的令牌；记下每次请求带的令牌。 */
-function world(opts: { valid: string[]; refresh: "ok" | "reject" | "network"; configDown?: boolean }) {
-  const seen: Array<{ path: string; token: string }> = [];
-  let refreshes = 0;
-  const oidc = new OidcLogin(async () => {
-    refreshes++;
-    await new Promise((r) => setTimeout(r, 30));
-    if (opts.refresh === "network") throw new Error("fetch failed");
-    if (opts.refresh === "reject") return { ok: false, status: 400, json: async () => ({ error: "invalid_grant" }) };
-    return { ok: true, status: 200, json: async () => ({ access_token: NEW, refresh_token: "RT2", expires_in: 604800 }) };
-  });
-  const fetchFn = async (url: string, init: { headers?: Record<string, string> }) => {
-    const path = url.slice(BASE.length);
-    const token = (init.headers?.Authorization ?? "").replace(/^Bearer /, "");
-    seen.push({ path, token });
-    const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body });
-    if (path === "/auth/config") { if (opts.configDown) throw new Error("fetch failed"); return json(200, CFG); }
-    if (!opts.valid.includes(token)) return json(401, { detail: "unauthorized" });
-    if (path === "/auth/me") return json(200, { user: { id: 1, name: "sam" } });
-    if (path === "/membership") return json(200, { gift_plugins: ["com.umbra.pdf"], discount_pct: 100 });
-    if (path === "/plugins/license") return json(200, {});      // 缺 payload：只为看「有没有拿新令牌去要」
-    return json(404, {});
-  };
-  return { svc: new AccountService(oidc, fetchFn as never), seen, refreshes: () => refreshes };
-}
-const signIn = (token: string, refreshToken = "RT1") => setAccount({ serverUrl: BASE, accessToken: token, refreshToken, user: { id: 1, name: "sam" } as never, signedInAt: "2026-10-10T01:56:30Z" });
+/* ⚠️ 这里原来还有一整套 OIDC 的夹具（JWT 造枚器、四种过期档位、`world()` 那个带
+   `OidcLogin` 的假 IdP），2026-10-27 随 ①–⑧ 一起删。 */
+/* ⚠️ `signIn()` 那个 helper 也随 ①–⑧ 删了 —— 余下几节各自写自己的登录态
+   （它们要的 `refreshToken` / `signedInAt` 各不相同，共用一个 helper 反而要加参数）。 */
 
 console.log("登录令牌过期自动刷新");
 
-/* ── 纯函数 ── */
-ok(tokenExpMs(FRESH) === (nowSec + 7 * 86400) * 1000 && tokenExpMs("not-a-jwt") === null && tokenExpMs("a.b.c") === null, "tokenExpMs：认 JWT 的 exp，不是 JWT 给 null");
-ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也要时间）", `${TOKEN_RENEW_SKEW_MS} ms`);
+/* ⚠️⚠️ **①–⑧ 和上面那两条纯函数判据，2026-10-27 随 OIDC 一起删**（这个文件头上
+   2026-10-21 就写着「那条路还在，判据就得在 …… 随 OIDC 代码一起删」）。
+   它们测的是：`tokenExpMs` 认 JWT 的 `exp` · 提前量 · 过期先刷新 · 并发只刷一次 ·
+   401 刷新重试 · 刷新令牌被拒才清 · 断网不清 · 购买也走同一条。
+   **这八条的共同前提是「有一张刷新令牌」**，而线上那张不透明令牌没有。
+   > **一条判据的前提消失之后，它不会变红，它会变成一条永远绿的判据** ——
+   > 而永远绿的判据会让人以为那条路还被守着。
 
-/* ① 用户碰到的那一幕：令牌已过期 → 取许可证不再说「登录已失效」，而是先刷新、拿新令牌去要 */
-{
-  await signIn(OLD);
-  const w = world({ valid: [NEW], refresh: "ok" });
-  const r = await w.svc.fetchLicense();
-  ok(!/登录已失效/.test(r.why) && w.refreshes() === 1, "**令牌过期 3 分钟：取许可证先刷新，不报「登录已失效」**", r.why || "ok");
-  ok(w.seen.filter((x) => x.path === "/plugins/license").every((x) => x.token === NEW), "取许可证带的是**新**令牌（过期那枚根本没发出去）");
-  const a = await getAccount();
-  ok(a.accessToken === NEW && a.refreshToken === "RT2", "新令牌和新的刷新令牌都落盘了");
-}
-
-/* ② 并发：市场一打开 perks 与 fetchLicense 同时发 —— 只刷新一次 */
-{
-  await signIn(OLD);
-  const w = world({ valid: [NEW], refresh: "ok" });
-  const [p, l] = await Promise.all([w.svc.perks(), w.svc.fetchLicense(), w.svc.perks()]);
-  ok(w.refreshes() === 1, "**三个请求同时撞上过期：只刷新一次**（刷新令牌一次一换的 IdP 上，各刷各的会互相作废）", `刷新 ${w.refreshes()} 次`);
-  ok(p.ok && p.gift.includes("com.umbra.pdf") && !/登录已失效/.test(l.why), "三个都成了");
-}
-
-/* ③ 快过期（20 秒后）也先刷新 */
-{
-  await signIn(SOON);
-  const w = world({ valid: [SOON, NEW], refresh: "ok" });
-  const t = await w.svc.bearer();
-  ok(t === NEW && w.refreshes() === 1, "**还有 20 秒才过期：bearer() 也先换新的**（服务端 AI 用它，原来一过期 AI 请求全 401）");
-}
-
-/* ④ 令牌没过期、但服务端提前不认了（吊销 / 换了密钥）→ 401 → 刷新一次再试 */
-{
-  await signIn(FRESH);
-  const w = world({ valid: [NEW], refresh: "ok" });
-  const p = await w.svc.perks();
-  const tries = w.seen.filter((x) => x.path === "/membership").map((x) => x.token === FRESH ? "旧" : x.token === NEW ? "新" : "?");
-  ok(p.ok && tries.join(",") === "旧,新", "**没到期但回 401：刷新后重试一次**", tries.join(" → "));
-}
-
-/* ⑤ 刷新令牌也被拒了 → 这才是真的登录失效：清登录、照实说 */
-{
-  await signIn(OLD);
-  const w = world({ valid: [NEW], refresh: "reject" });
-  const r = await w.svc.fetchLicense();
-  const st = await w.svc.status();
-  ok(/登录已失效/.test(r.why), "刷新令牌被 IdP 拒了：取许可证说「登录已失效」（不是「没登录」—— 他明明登过）", r.why);
-  ok(!st.signedIn && /失效/.test(st.lastError), "**界面这时如实显示「没登录」**（原来令牌死了还显示已登录）", `signedIn=${st.signedIn} · ${st.lastError}`);
-}
-
-/* ⑥ 断网：问不到服务端 → 不清登录（网好了还能刷） */
-{
-  await signIn(OLD);
-  const w = world({ valid: [NEW], refresh: "ok", configDown: true });
-  await w.svc.perks();
-  ok((await getAccount()).accessToken === OLD && (await w.svc.status()).signedIn, "断网时刷新不了：**不清登录**");
-  const w2 = world({ valid: [NEW], refresh: "network" });
-  await w2.svc.perks();
-  ok((await getAccount()).refreshToken === "RT1", "换令牌那一步网络失败：也不清登录");
-}
-
-/* ⑦ 没有刷新令牌：过期就是过期，照实说，不发无谓的刷新 */
-{
-  await signIn(OLD, "");
-  const w = world({ valid: [NEW], refresh: "ok" });
-  const r = await w.svc.fetchLicense();
-  ok(w.refreshes() === 0 && /登录已失效/.test(r.why), "没有刷新令牌：不尝试刷新，报「登录已失效」");
-}
-
-/* ⑧ 购买也走同一条 */
-{
-  await signIn(OLD);
-  const w = world({ valid: [NEW], refresh: "ok" });
-  let msg = "";
-  try { await w.svc.buyPlugin("com.umbra.pdf"); } catch (e) { msg = (e as Error).message; }
-  ok(!/登录已失效/.test(msg) && w.seen.some((x) => x.path.endsWith("/buy") && x.token === NEW), "购买：先刷新再用新令牌买", msg || "ok");
-}
+   ⚠️ 删掉的条数要**从基线里减掉**，不然「有意删掉」和「静默跳过」在读数上分不开
+   （`uitest` / `apitest` 那条口径）。这个文件没有下界闸，所以读数直接从 50 掉到下面那个数。 */
 
 /* ⑨ 服务端是 local（2026-10-19 接账号中心之后）：邮箱密码登录。不透明令牌没有 exp —— 不刷新、照用；失败按分档说 */
 {
@@ -177,7 +83,7 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
     if (path === "/membership") return init.headers?.Authorization === `Bearer ${LOCAL}` ? json(200, { gift_plugins: [], discount_pct: 100 }) : json(401, {});
     return json(404, {});
   };
-  const svc = new AccountService(new OidcLogin(async () => { throw new Error("不该刷新"); }), fetchFn as never);
+  const svc = new AccountService(fetchFn as never);
   ok(await svc.probeProvider() === "local", "probeProvider 认出 local");
   let msg = "";
   let kind = "", wait = -1;
@@ -188,7 +94,7 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
   ok(/42 秒/.test(msg) && kind === "locked" && wait === 42, "试太多：带上等多少秒、kind=locked", msg);
   await svc.forgotPassword("sam@example.com");
   ok(calls.includes("/auth/forgot"), "忘了密码：发到 /auth/forgot");
-  const down = new AccountService(new OidcLogin(), (async () => { throw new Error("ECONNREFUSED"); }) as never);
+  const down = new AccountService((async () => { throw new Error("ECONNREFUSED"); }) as never);
   try { await down.loginPassword("sam@example.com", "x", BASE); } catch (e) { grab(e); }
   ok(kind === "offline" && msg === `连不上 ${BASE}`, "连不上：kind=offline，第一段写地址", msg);
   const st = await svc.loginPassword("sam@example.com", "right password");
@@ -227,8 +133,11 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
       }
       return json(404, {});
     };
-    const oidc = new OidcLogin(async () => { refreshes++; throw new Error("不该刷新"); });
-    return { svc: new AccountService(oidc, fetchFn as never), refreshes: () => refreshes };
+    /* ⚠️ `refreshes` 这个计数器留着，而它现在**恒为 0** —— 它钉的是
+       「这条路一次都不去刷新」，而 2026-10-27 之后连刷新的代码都没了。
+       > **一个恒为 0 的计数器，在那条路刚被删掉的这一次是最该留着的** ——
+       > 它是「真的没有人去刷新」的读数，不是一句推断。 */
+    return { svc: new AccountService(fetchFn as never), refreshes: () => refreshes };
   };
   const signInOpaque = () => setAccount({ serverUrl: BASE, accessToken: TOK, refreshToken: "", user: { id: 1, name: "sam" } as never, signedInAt: "2026-10-21T00:00:00Z" });
 
@@ -270,9 +179,36 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
      && isSessionInvalid(res(200, { "x-umbra-error": "session_invalid" })) === false,
      "判准纯函数：状态码和头都要对，**读不到头一律不算失效**");
 
-  /* ⓕ 令牌是不透明长串：认不出 exp，所以永远不会去「预判过期」 */
-  ok(tokenExpMs(TOK) === null && tokenExpMs("opaque.two.parts.only") === null,
-     "不透明令牌：`tokenExpMs` 回 null —— 不预判过期，只靠服务端那个头");
+  /* ⓕ ⚠️⚠️ **存量 `refreshToken` 不改变任何行为**（2026-10-27 删 OIDC 时新加的那一条）。
+     原来这里是「`tokenExpMs` 对不透明令牌回 null」，而那个函数随 OIDC 删了。
+     换成一条**更要紧**的：删 OIDC 时有**两道守卫**把「有刷新令牌」当成
+     「OIDC 那条路还在、会有人续期」的替身 ——
+     `noteSessionInvalid()` 的 `if (a.refreshToken) return;` 与
+     `check()` 的 `if (a.refreshToken || sessionInvalid)`。两道都删了，
+     而**存量 `account.json` 里真的可能躺着一张 Casdoor 时代的刷新令牌**
+     （对接说明 §四：存储格式不改，那个字段还在）。
+     > **一个判准的前提被别处改掉了，而它自己不会报错** —— 这次「别处」就是同一个提交。
+     ⚠️ 这一条问**行为**不问文本：带着一张旧刷新令牌，两种 401 的结果要和没有它时一样。
+     不这么问的话，只能靠 grep 源码里有没有 `refreshToken`，而那种判据改个写法就瞎了。 */
+  {
+    const LEGACY = { serverUrl: BASE, accessToken: TOK, refreshToken: "RT-存量",
+      user: { id: 1, name: "sam" } as never, signedInAt: "2026-10-21T00:00:00Z" };
+    const plain = checkWorld(() => ({ status: 401 }));                 // 401，不带失效头
+    await setAccount(LEGACY);
+    await plain.svc.check();
+    const a1 = await getAccount();
+    ok(a1.accessToken === TOK && plain.refreshes() === 0,
+       "**带着存量刷新令牌，普通 401 照旧不清登录**（删掉的那一支会让它「任何 401 都清」）",
+       `令牌还在=${a1.accessToken === TOK} · 刷新次数=${plain.refreshes()}`);
+
+    const dead = checkWorld(() => ({ status: 401, hdr: { "x-umbra-error": "session_invalid" } }));
+    await setAccount(LEGACY);
+    await dead.svc.check();
+    const a2 = await getAccount();
+    ok(a2.accessToken === "" && a2.refreshToken === "",
+       "**而真失效时照旧清掉，连那张旧刷新令牌一起**（删掉的那道守卫会让它永远不被处置）",
+       `accessToken=${JSON.stringify(a2.accessToken)} · refreshToken=${JSON.stringify(a2.refreshToken)}`);
+  }
 }
 
 
@@ -300,8 +236,11 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
       if (path === "/membership") return json(reply.status, { gift_plugins: [], discount_pct: 100 }, reply.hdr ?? {});
       return json(404, {});
     };
-    const oidc = new OidcLogin(async () => { refreshes++; throw new Error("不该刷新"); });
-    return { svc: new AccountService(oidc, fetchFn as never), refreshes: () => refreshes };
+    /* ⚠️ `refreshes` 这个计数器留着，而它现在**恒为 0** —— 它钉的是
+       「这条路一次都不去刷新」，而 2026-10-27 之后连刷新的代码都没了。
+       > **一个恒为 0 的计数器，在那条路刚被删掉的这一次是最该留着的** ——
+       > 它是「真的没有人去刷新」的读数，不是一句推断。 */
+    return { svc: new AccountService(fetchFn as never), refreshes: () => refreshes };
   };
 
   /* ⓐ 最要紧的一条：**一个 200 响应把我们登出** */
@@ -377,7 +316,7 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
       const r = reply(path, body);
       return json(r.status, r.body ?? {}, r.hdr ?? {});
     };
-    return { svc: new AccountService(new OidcLogin(async () => { throw new Error("不该刷新"); }), fetchFn as never), sent };
+    return { svc: new AccountService(fetchFn as never), sent };
   };
 
   /* ⓐ 改密码成功：回「下线了几台」，而且**这一台的登录一个字没动** */
@@ -442,118 +381,10 @@ ok(TOKEN_RENEW_SKEW_MS >= 30_000, "提前量至少 30 秒（请求在路上也�
 /* ══════════════════════════════════════════════════════════════════════
    ⑬ `renew()` 的两条竞态（issue #171 / #170）
 
-   `renew()` 中间有**三次网络往返**（`/auth/config` → IdP token → `/auth/me`），
-   而 `setAccount` 是 `{...当前文件, ...patch}` 合并。于是：
-   · **#171** 刷新途中点「退出登录」→ 界面先显示未登录，**一两秒后又变回已登录**
-     （而 `logout` 吊销的是**旧**那枚令牌，新换的那枚和新刷新令牌没被吊销）；
-   · **#170** 服务端或 IdP 短暂 **5xx** → 除 network 之外一律清登录 →
-     **本机登录被清掉**，而用户什么都没做错、手上那枚刷新令牌也还好着。
-   ══════════════════════════════════════════════════════════════════════ */
-console.log("\n⑬ renew() 的两条竞态（issue #171 / #170）");
-{
-  /* ── #171 ⓐ 刷新途中退出登录：刷新结果**不许复活它** ── */
-  {
-    let kick: (() => void) | null = null;
-    const gate = new Promise<void>((r) => { kick = r; });
-    const oidc = new OidcLogin(async () => {
-      await gate;                                   // 停在这里，等判据把 logout 做完
-      return { ok: true, status: 200, json: async () => ({ access_token: "复活的令牌", refresh_token: "RT9", expires_in: 604800 }) };
-    });
-    const svc = new AccountService(oidc, (async (url: string, init: { headers?: Record<string, string> }) => {
-      const path = url.slice(BASE.length);
-      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
-      if (path === "/auth/config") return json(200, CFG);
-      if (path === "/auth/me") return json(200, { user: { id: 1, name: "sam" } });
-      return json(200, {});
-    }) as never);
-    await signIn("T1");
-    const p1 = svc.renew();                          // 开始刷新，卡在 gate 上
-    await new Promise((r) => setTimeout(r, 20));
-    await svc.logout();                              // 用户点「退出登录」
-    const afterLogout = (await svc.status()).signedIn;
-    kick!();                                          // 刷新这才回来
-    const renewed = await p1;
-    const st = await svc.status();
-    ok(afterLogout === false, "（前提）logout 当场就把登录清了", String(afterLogout));
-    ok(st.signedIn === false,
-       "**刷新途中退出登录，刷新结果不许把它复活**（原来一两秒后又变回已登录）",
-       `signedIn=${st.signedIn} · renew 回 ${renewed}`);
-    const a = await getAccount();
-    ok(a.accessToken === "" && a.refreshToken === "",
-       "**新换到的那枚令牌也没落盘**（不然它没被吊销、却躺在文件里）",
-       JSON.stringify({ at: a.accessToken, rt: a.refreshToken }));
-  }
+/* ⚠️ ⑬（`renew()` 的两条竞态，issue #171 / #170）2026-10-27 随 OIDC 删 ——
+   `renew()` 这个函数不存在了，而它测的两条竞态都发生在「刷新途中」。
+   > **一条竞态判据的价值，等于那两件事还能不能同时发生。** */
 
-  /* ── #171 ⓑ 刷新途中完成一场新登录：旧结果不许盖掉它 ── */
-  {
-    let kick: (() => void) | null = null;
-    const gate = new Promise<void>((r) => { kick = r; });
-    const oidc = new OidcLogin(async () => {
-      await gate;
-      return { ok: true, status: 200, json: async () => ({ access_token: "旧刷新换到的", refresh_token: "RT-old", expires_in: 604800 }) };
-    });
-    const svc = new AccountService(oidc, (async (url: string) => {
-      const path = url.slice(BASE.length);
-      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
-      if (path === "/auth/config") return json(200, CFG);
-      if (path === "/auth/me") return json(200, { user: { id: 1, name: "sam" } });
-      return json(200, {});
-    }) as never);
-    await signIn("T1");
-    const p2 = svc.renew();
-    await new Promise((r) => setTimeout(r, 20));
-    await signIn("新登录的令牌", "RT-new");          // 另一场登录落盘了
-    kick!();
-    await p2;
-    const a = await getAccount();
-    ok(a.accessToken === "新登录的令牌" && a.refreshToken === "RT-new",
-       "**刷新途中的新登录不被旧刷新结果盖掉**", JSON.stringify({ at: a.accessToken, rt: a.refreshToken }));
-  }
-
-  /* ── #170 对面 5xx / 429 / 超时：**不清登录** ──
-     ⚠️ 两个方向的代价不对称：误清 = 用户被踢出去重新登录（**没有东西兜**）；
-     误留 = 界面多说一会儿「已登录」，而下一次请求照样会发现失效
-     （`x-umbra-session` 那层报信兜着）。 */
-  for (const [label, mk] of [
-    ["503", () => ({ ok: false, status: 503, json: async () => ({}) })],
-    ["500", () => ({ ok: false, status: 500, json: async () => ({}) })],
-    ["429", () => ({ ok: false, status: 429, json: async () => ({}) })],
-  ] as const) {
-    await signIn("T1");
-    const svc = new AccountService(new OidcLogin(async () => mk() as never), (async (url: string) => {
-      const path = url.slice(BASE.length);
-      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
-      if (path === "/auth/config") return json(200, CFG);
-      return json(200, {});
-    }) as never);
-    const r = await svc.renew();
-    const a = await getAccount();
-    ok(r === false && a.refreshToken === "RT1" && a.accessToken === "T1",
-       `**IdP 回 ${label} 时不清登录**（对面「此刻不舒服」≠「这枚令牌废了」）`,
-       JSON.stringify({ renew: r, at: a.accessToken, rt: a.refreshToken }));
-    const le = (await svc.status()).lastError ?? "";
-    ok(/暂时刷新不了/.test(le),
-       `${label}：而且说得出「暂时刷新不了」而不是「登录失效」`,
-       le);
-  }
-
-  /* ── 反方向：IdP **明确拒了这枚令牌**（400 invalid_grant）→ 该清就清 ──
-     ⚠️ 没有这一条的话，上面那几条可以用「renew 什么都不做」糊过去。 */
-  {
-    await signIn("T1");
-    const svc = new AccountService(new OidcLogin(async () => ({ ok: false, status: 400, json: async () => ({ error: "invalid_grant" }) } as never)), (async (url: string) => {
-      const path = url.slice(BASE.length);
-      const json = (st: number, b: unknown) => ({ ok: st < 300, status: st, json: async () => b });
-      if (path === "/auth/config") return json(200, CFG);
-      return json(200, {});
-    }) as never);
-    const r = await svc.renew();
-    const a = await getAccount();
-    ok(r === false && a.accessToken === "" && a.refreshToken === "",
-       "**IdP 明确拒了这枚刷新令牌（400 invalid_grant）→ 照旧清登录**（不然上面几条可以靠「什么都不做」糊过去）",
-       JSON.stringify({ at: a.accessToken, rt: a.refreshToken }));
-  }
-}
 
 await rm(STATE, { recursive: true, force: true });
 console.log(`\n${fail ? "✗" : "✓"} 令牌刷新 ${pass}/${pass + fail}`);

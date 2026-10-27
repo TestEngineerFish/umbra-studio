@@ -85,6 +85,17 @@ for (const n of wasHttpOnly) {
   const RETIRED: Record<string, string> = {
     diff_drafts: "并进 list_changes（它的 from/to 是超集）",
     get_changes_since: "并进 list_changes（单份稿）与 list_project_changes（整个项目）",
+    /* ── Casdoor 下线（2026-10-27）：OIDC 那条路整条删 ──
+       ⚠️⚠️ **下面这一条是文档，不是闸** —— 而这件事本身是一个发现：
+       这道闸的基准是 `git show HEAD:server/src/index.ts` 里的 `registerTool("…")`，
+       而 `account_login` 是 **`faces: ["http"]`**（只在 HTTP 面，不上 MCP），
+       所以它**从来不在基准里**，删掉它这道闸一声不响。实测 `grep -c` = 0。
+       > **这道闸守的是「MCP 工具别搬丢」，而不是「能力别搬丢」** ——
+       > 只在 HTTP 面的能力删掉之后，没有任何东西会红。
+       ⏳ 要不要给 HTTP-only 的能力也装一道同形的闸（基准取 `httpRoutes()`），
+       是另一件事，没顺手做。条目留给 geek-99 定。
+       登记在这里的理由不变：**这是「为什么这件能力没了」唯一该去找的地方**。 */
+    account_login: "2026-10-27：开浏览器走 OIDC 授权码 + PKCE 那条路，随 Casdoor 下线一起删（账号中心对接说明 §三 3 点名）。线上 10-19 起 /auth/config 恒回 local，登录只剩 account_login_password（邮箱 + 密码）。⚠️ 删之前核过：进 OIDC 要同时满足两道独立前提 —— 服务端回 provider: oidc 且给全端点 · 本机 refreshToken 非空；账号中心那条路后者恒为空串",
     /* ── M16-8 ① / ③（2026-10-24）：生命周期那四件并进文件面 ── */
     rename_draft: "M16-8 ①：并进 move_file。并的理由是量出来的 —— 前端的改名 / 移动 / 拖拽走的全是 file_move，这件的调用方是零；而它真正做的那件事（改写 <dc-import name> 的引用）move_file 原来不做，现在住在 refs.ts 的 dcImportsFollow 里，由 moveFile 调。落盘也从 writeAtomic 改走第二条写入口（原来没有快照、没有并发闸）",
     move_draft: "M16-8 ①：同上，并进 move_file。它收「目标目录」而 move_file 收「完整目标路径」—— 重名顺延序号那一档因此没了，口径统一成「目标已存在就拒」（显式胜过聪明）",

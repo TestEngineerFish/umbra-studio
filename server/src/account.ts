@@ -16,7 +16,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { STATE_ROOT } from "./project.js";
 import { writeAtomic } from "./normalize.js";
-import { OidcFail, OidcLogin, type FetchLike, type OidcClientConfig, type OidcTokens } from "./oidc.js";
+/** 出网。缺省 Node 全局 fetch；回归里换成假的。
+ *  ⚠️ 2026-10-27 从 `oidc.ts` 搬过来 —— 那个文件随 Casdoor 下线一起删了，
+ *  而这里是它**唯一**的消费者（`plugin/catalog.ts` 自己有一份同名的）。
+ *  不为一个类型另开一个文件。 */
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) =>
+  Promise<{ ok: boolean; status: number; json(): Promise<unknown>; headers?: { get(name: string): string | null } }>;
 import { licenseIsFor, licenseTextOf, discountPctOf } from "./plugin/acquire.js";
 import { loadLicense, saveLicenseText, type Grant, type LicenseCheck } from "./plugin/license.js";
 
@@ -73,14 +78,15 @@ export interface AccountStatus {
   /** 最近一次登录 / 核对失败的原因（给人看的一句）；成功后清空。 */
   lastError: string;
   /** 服务端说它怎么登录（问到过才有）。 */
-  provider: "oidc" | "local" | "unknown";
+  /** ⚠️ `"oidc"` 这一档 2026-10-27 去掉了（Casdoor 下线，账号中心对接说明 §三 3）。
+   *  `/auth/config` 回什么都按 local 画 —— 说明里原话：「删的时候把它当「未知 provider → 按 local 画」处理就行」。
+   *  `"unknown"` 留着：它是「还没问到」，而前端首帧要靠它决定别抢着画错的那一支。 */
+  provider: "local" | "unknown";
   /** 通道 A 是不是走 Umbra 服务端 AI（`ai_config.channelA.useAccount`）。 */
   serverAi: boolean;
 }
 
-interface AuthConfigDTO extends Partial<OidcClientConfig> { provider: string }
-
-/** `/auth/config` 回的形状 → 能不能走 oidc。缺字段按 local，不猜。 */
+interface AuthConfigDTO { provider: string }
 /** `GET /membership` 回包 → 赠送插件 id 列表（纯判据）。只认字符串、去空、去重；不是数组就是 `[]`。 */
 export function giftPluginIdsOf(body: unknown): string[] {
   const raw = (body as { gift_plugins?: unknown } | null)?.gift_plugins;
@@ -120,24 +126,17 @@ export function fmtBytes(b: number): string {
   return `${mb >= 100 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
 }
 
-export function oidcConfigOf(d: AuthConfigDTO | null): OidcClientConfig | null {
-  if (!d || d.provider !== "oidc" || !d.client_id || !d.authorization_endpoint || !d.token_endpoint || !d.issuer) return null;
-  return { issuer: d.issuer, client_id: d.client_id, authorization_endpoint: d.authorization_endpoint,
-    token_endpoint: d.token_endpoint, end_session_endpoint: d.end_session_endpoint, scope: d.scope };
-}
+/* ⚠️⚠️ **这里原来有三样，2026-10-27 随 OIDC 一起删**（Casdoor 下线，账号中心对接说明 §三 3）：
+   `oidcConfigOf()`（`/auth/config` → 能不能走 oidc）· `tokenExpMs()`（Casdoor 那张 JWT 的 `exp`）·
+   `TOKEN_RENEW_SKEW_MS`（提前多久先刷新）。
 
-/** 访问令牌（Casdoor 签的 JWT）的过期时刻，毫秒；不是 JWT / 没有 `exp` → null（那就不预判，只靠 401 兜底）。**纯函数**。 */
-export function tokenExpMs(token: string): number | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const p = JSON.parse(Buffer.from(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")) as { exp?: unknown };
-    return typeof p.exp === "number" && Number.isFinite(p.exp) ? p.exp * 1000 : null;
-  } catch { return null; }
-}
+   线上 10-19 起是**不透明长串令牌，没有刷新令牌**，所以「预判过期 → 先刷新」这件事
+   **没有对象**：`tokenExpMs` 对不透明令牌恒回 null，那个分支从来进不去。
+   > **一段只在「另一个对端存在时」才成立的逻辑，在那个对端消失之后不会报错，
+   > 它只是变成一条永远不走的路** —— 而永远不走的路会被下一个人当成「还支持那种登录」。
 
-/** 提前多久就当它快过期、先刷新（毫秒）。请求在路上也要时间，卡着点用会在服务端那头刚好过期。 */
-export const TOKEN_RENEW_SKEW_MS = 60_000;
+   现在失效只认一个信号：服务端的 `x-umbra-session: invalid` / `401 + x-umbra-error: session_invalid`
+   （`isSessionInvalid`，下面那两个常量）。 */
 
 /** Umbra 服务端的**通用错误码头**。
  *
@@ -206,21 +205,19 @@ export class LoginFail extends Error {
 
 export class AccountService {
   private lastError = "";
-  /** 正在进行的那一次刷新（合并并发）：市场一打开 `perks` 和 `fetchLicense` 是同时发的，
-   *  各刷各的话，刷新令牌一次一换的 IdP 会让后到的那一次拿着已作废的刷新令牌失败、把登录清掉。 */
-  private renewing: Promise<boolean> | null = null;
   private provider: AccountStatus["provider"] = "unknown";
-  /** 正在进行的那一场登录的代号（0 = 没有）。⚠️ 「这场登录做完没」是这里自己的状态，不借 `oidc.pending`（issue #137）：
-   *  回调一到 `oidc.pending` 就是 false，而换令牌、核 `/auth/me`、落盘还没做 —— 前端轮询落在这段窗口里
-   *  会看到 `pending:false, signedIn:false, lastError:""`，当成「没登上」停下来，之后写的失败原因也被吞。
-   *  用代号不用布尔：再开一场会作废上一场，上一场的收尾不该把新一场的标记放下。 */
-  private inFlight = 0;
-  private loginGen = 0;
+  /* ⚠️ 这里原来还有三个只为 OIDC 存在的字段，2026-10-27 一起删：
+     `renewing`（合并并发刷新 —— 没有刷新令牌就没有并发刷新）·
+     `inFlight` / `loginGen`（「浏览器那场登录做完没」的代号，issue #137）。
+     ⚠️ `inFlight` 那个代号的教训**不随它死**：它当初替掉的是 `oidc.pending`，
+     因为「回调一到就 false，而换令牌 / 核 `/auth/me` / 落盘还在路上」。
+     > **一个「忙不忙」的标志要盖住整条路，而不是它的第一段** ——
+     > 密码登录这条路是一次 `await`，没有那段窗口，所以现在不需要它。 */
 
   /** 打 Umbra 的那个 fetch，**已经包过一层「回来先报一次信」**（见构造函数）。 */
   private fetchFn: FetchLike;
 
-  constructor(private oidc = new OidcLogin(), rawFetch: FetchLike = (u, i) => fetch(u, i) as unknown as ReturnType<FetchLike>,
+  constructor(rawFetch: FetchLike = (u, i) => fetch(u, i) as unknown as ReturnType<FetchLike>,
               private log: (line: string) => void = () => {}) {
     /* ⚠️ **把报信装在 fetch 本身上，不是在六个调用点各加一行。**
        `this.fetchFn(` 现在有六处（`/auth/config` · `/auth/login` · `/auth/forgot` ·
@@ -242,13 +239,17 @@ export class AccountService {
    *  **去重靠状态本身而不是一个布尔标志** —— 本机已经没有令牌了就什么都不做。
    *  （标志会和真实状态分叉：令牌换了而标志没重置，下一次真失效就被它吃掉。）
    *
-   *  ⚠️ **有刷新令牌时不在这里清**：那是 OIDC 回退路，它有自己的「先用刷新令牌续一次、
-   *  换不到才清」（`renew()`）。在这里抢着清会把那条路的静默续期废掉。
-   *  这个分支随 OIDC 在 Casdoor 下线后一起删。 */
+   *  ⚠️⚠️ **2026-10-27 删掉了一道守卫，而它是这次删除里最该说清的一处。**
+   *  原来这里有 `if (a.refreshToken) return;`，注释写着「OIDC 回退路：交给 `renew()`」——
+   *  也就是它把「有刷新令牌」当成「OIDC 那条路还在，会有人续期」的**替身**。
+   *  `renew()` 删掉之后，那个替身开始撒谎：存量 `account.json` 里躺着一张
+   *  Casdoor 时代的刷新令牌时，这道守卫会让会话失效信号**永远不被处置** ——
+   *  没有人续期，也没有人清，用户停在一个「看着已登录而其实没有」的状态里。
+   *  > **一个判准的前提被别处改掉了，而它自己不会报错**（`doc/00` §24.6 那一族）——
+   *  > 而这一次「别处」就是同一个提交。 */
   private async noteSessionInvalid(where: string): Promise<void> {
     const a = await getAccount();
     if (!a.accessToken) return;                     // 已经清过了 —— 天然去重
-    if (a.refreshToken) return;                     // OIDC 回退路：交给 renew()
     await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
     this.lastError = "登录已经失效（服务端说这条会话不作数了），重新登录一次";
     this.log(`[account] 会话失效 → 已清本机登录（信号来自 ${where.replace(/\?.*$/, "")}）`);
@@ -259,7 +260,7 @@ export class AccountService {
     const { getAiConfig } = await import("./ai_config.js");
     const serverAi = !!(await getAiConfig()).channelA?.useAccount;
     return { serverUrl: a.serverUrl, signedIn: !!a.accessToken && !!a.user, user: a.user, signedInAt: a.signedInAt,
-      pending: this.oidc.pending || this.inFlight !== 0, lastError: this.lastError, provider: this.provider, serverAi };
+      pending: false, lastError: this.lastError, provider: this.provider, serverAi };
   }
 
   /** 通道 A 切到 / 切回 Umbra 服务端 AI。开：`useAccount: true`（端点 / 密钥取配置那一刻现算，文件里不存令牌）；
@@ -282,98 +283,31 @@ export class AccountService {
     return this.status();
   }
 
-  /** 用刷新令牌换一枚新的访问令牌（2026-10-17：令牌 7 天整点过期，原来只有 `check()` 会刷新，
-   *  取许可证 / 查会员 / 购买 / 服务端 AI 都拿着过期令牌直接 401，界面却还显示「已登录」）。
-   *  - 并发合并成一次（`renewing`）；
-   *  - 服务端 `/auth/config` 都问不到（断网）→ 回 false，**不清登录**（网好了还能刷）；
-   *  - IdP 拒了刷新令牌（过期 / 吊销）或新令牌服务端不认 → 清掉本机登录、写 `lastError`，回 false —— 界面这时才如实显示「没登录」。 */
-  async renew(): Promise<boolean> {
-    if (this.renewing) return this.renewing;
-    this.renewing = (async () => {
-      const a = await getAccount();
-      if (!a.refreshToken) return false;
-      let cfg: OidcClientConfig | null;
-      try { cfg = oidcConfigOf(await this.authConfig(a.serverUrl)); } catch { return false; }
-      if (!cfg) return false;
-      try {
-        const t = await this.oidc.refresh(cfg, a.refreshToken);
-        const user = await this.me(a.serverUrl, t.accessToken);
-        /* ⚠️⚠️ **写回之前核一次「世界还是不是我出发时那个世界」**（issue #171）。
-           这中间有**三次网络往返**（`/auth/config` → IdP token → `/auth/me`），
-           而 `setAccount` 是 `{...当前文件, ...patch}` 合并 —— patch 里带着
-           `accessToken` 和 `user`，于是：
-           · 用户在刷新途中点「退出登录」→ 界面先显示未登录，**一两秒后又变回已登录**
-             （而 `signedInAt` 是空的，且 `logout` 吊销的是**旧**那枚令牌，
-             新换的那枚和新刷新令牌**没被吊销**）；
-           · 刷新途中完成了一场**新登录** → 旧的刷新结果把新令牌盖掉。
-           > **一个跨了三次 await 的写回，必须问一句「我读到的那一版还在吗」** ——
-           > 这和写文件的 sha256 写前校验是同一件事，只是这里的「文件」是登录状态。 */
-        const now = await getAccount();
-        if (now.accessToken !== a.accessToken) {
-          this.log("[account] 刷新完成时登录状态已经变了（退出登录 / 新登录），这次不写回");
-          return !!now.accessToken && !!now.user;
-        }
-        await setAccount({ accessToken: t.accessToken, refreshToken: t.refreshToken || a.refreshToken, user });
-        this.lastError = "";
-        this.log("[account] 访问令牌已刷新");
-        return true;
-      } catch (e) {
-        const f = e as OidcFail & { status?: number };
-        if (f?.reason === "network" || /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND/i.test((e as Error).message)) return false;
-        /* ⚠️⚠️ **对面「此刻不舒服」不等于「这个令牌废了」**（issue #170）。
-           原来除了 network 一律清登录，于是服务端或 IdP 短暂 **5xx**、
-           或者刷新超时，**本机登录就被清掉了** —— 而用户什么都没做错，
-           手上那枚刷新令牌也还好着。
-           > 两个方向的代价不对称：**误清 = 用户被踢出去重新登录**（没有东西兜）；
-           > **误留 = 界面多说一会儿「已登录」，下一次请求照样会发现失效**
-           > （那一头有 `x-umbra-session` 兜着，Q69/§162 装的那层报信）。
-           > **所以只在 IdP 明确拒了这枚令牌时才清。** */
-        const transient = f?.reason === "timeout"
-          || (typeof f?.status === "number" && f.status >= 500)
-          || (typeof f?.status === "number" && f.status === 429);
-        if (transient) {
-          this.lastError = `暂时刷新不了（${f.status ?? f.reason}），稍后再试`;
-          this.log(`[account] 刷新失败但不清登录：${f.status ?? f.reason}`);
-          return false;
-        }
-        /* 清之前也要核一次 —— 刷新途中完成的新登录不该被这一条清掉（#171 的另一半） */
-        const now2 = await getAccount();
-        if (now2.accessToken !== a.accessToken) {
-          this.log("[account] 刷新失败，但登录状态已经换了一版，不动它");
-          return !!now2.accessToken && !!now2.user;
-        }
-        await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
-        this.lastError = "登录已经失效，重新登录一次";
-        return false;
-      }
-    })();
-    try { return await this.renewing; } finally { this.renewing = null; }
-  }
+  /* ⚠️ `renew()`（用刷新令牌静默续期）2026-10-27 随 OIDC 删。线上那张不透明令牌
+     **没有刷新令牌**，所以这条路一次都没走过；失效只认服务端那个头。 */
 
-  /** 一枚现在能用的访问令牌：快过期（`exp` 前 `TOKEN_RENEW_SKEW_MS`）就先刷新。没登录回 null。
-   *  刷新失败但旧令牌还没真过期 → 照用旧的（让服务端说了算）。 */
-  async usableToken(now = Date.now()): Promise<{ serverUrl: string; token: string } | null> {
-    let a = await getAccount();
+  /** 一枚现在能用的访问令牌。没登录回 null。
+   *
+   *  ⚠️ 2026-10-27 去掉了「快过期就先刷新」那一段（随 OIDC）。线上那张是**不透明长串**，
+   *  认不出 `exp`，所以**预判不出来**；它什么时候作废只有服务端知道。
+   *  > **一个预判只在「能看懂凭据」时成立** —— 看不懂的时候它不是保守一点，而是完全不工作，
+   *  > 而那条路还摆在那儿会让人以为过期这件事有人管。 */
+  async usableToken(): Promise<{ serverUrl: string; token: string } | null> {
+    const a = await getAccount();
     if (!a.accessToken) return null;
-    const exp = tokenExpMs(a.accessToken);
-    if (exp !== null && exp - now < TOKEN_RENEW_SKEW_MS && a.refreshToken) {
-      if (await this.renew()) a = await getAccount();
-      else if (exp <= now) { a = await getAccount(); if (!a.accessToken) return null; }
-    }
     return { serverUrl: a.serverUrl, token: a.accessToken };
   }
 
-  /** 带登录令牌请求服务端：先拿可用令牌，**回 401 就刷新一次再试**（令牌在路上过期 / 服务端提前吊销）。
-   *  没登录回 null（调用方按「没登录」说）。 */
+  /** 带登录令牌请求服务端。没登录回 null（调用方按「没登录」说）。
+   *
+   *  ⚠️ 2026-10-27 去掉了「401 就刷新一次再试」（随 OIDC —— 没有刷新令牌，重试拿的是同一张）。
+   *  401 现在原样回给调用方；**真失效那一路由 `fetchFn` 那层包装认头处理**
+   *  （`noteSessionInvalid`），所以「会话没了」照旧会被清掉，而一个网关的 401 不会。 */
   private async authedFetch(path: string, init: { method: string; headers?: Record<string, string>; body?: string }): Promise<Awaited<ReturnType<FetchLike>> | null> {
     const tk = await this.usableToken();
     if (!tk) return null;
     const go = (token: string) => this.fetchFn(`${tk.serverUrl}${path}`, { ...init, headers: { Accept: "application/json", ...(init.headers ?? {}), Authorization: `Bearer ${token}` } } as never);
-    const r = await go(tk.token);
-    if (r.status !== 401) return r;
-    if (!(await this.renew())) return r;
-    const again = await getAccount();
-    return again.accessToken ? go(again.accessToken) : r;
+    return await go(tk.token);
   }
 
   /** 当前会员带来的两样（服务端 `GET /membership`，一次请求）：随会员赠送的插件 id（后台「赠送插件」页配的）
@@ -410,39 +344,15 @@ export class AccountService {
     const r = await this.fetchFn(`${serverUrl}/auth/config`, { method: "GET", headers: { Accept: "application/json" } });
     if (!r.ok) throw new Error(`这台服务器没有 /auth/config（${r.status}），多半是老版本`);
     const d = (await r.json()) as AuthConfigDTO;
-    this.provider = d.provider === "oidc" ? "oidc" : "local";
+    /* ⚠️ 不管回什么都按 local（账号中心对接说明 §三 3 的原话：
+       「删的时候把它当「未知 provider → 按 local 画」处理就行」）。 */
+    this.provider = "local";
     return d;
   }
 
-  /** 开一场登录：回授权地址，调用方去开浏览器；换到令牌后自己核 `/auth/me` 并落盘。
-   *  `serverUrl` 给了就用它（并在登录成功后记住），没给用存着的。 */
-  async loginStart(serverUrl?: string): Promise<{ url: string }> {
-    const base = (serverUrl || (await getAccount()).serverUrl).replace(/\/+$/, "");
-    this.lastError = "";
-    let cfg: OidcClientConfig | null;
-    try {
-      cfg = oidcConfigOf(await this.authConfig(base));
-    } catch (e) {
-      throw new Error(`连不上 ${base}：${(e as Error).message}`);
-    }
-    /* ⚠️ 2026-10-21 改掉了这句的后半 —— 原文写「要等服务端切到 Casdoor 之后」，
-       而那个未来**不会来了**：账号中心对接说明定了 Casdoor 不用，线上 10-19 起
-       `/auth/config` 永远回 `local`。这条路留着只是为了 10-26 前的回退开关。 */
-    if (!cfg) throw new Error("这台服务器用的是邮箱 + 密码登录（/auth/config 说是 local）—— 用上面那个表单登，不走浏览器这条路。");
-    const { url, done } = await this.oidc.start(cfg);
-    const gen = ++this.loginGen;
-    this.inFlight = gen;
-    void done.then(
-      async (t) => { await this.finish(base, cfg!, t); },
-      (e) => {
-        const reason = (e as OidcFail)?.reason || "network";
-        if (reason !== "cancelled") this.lastError = reason === "timeout" ? "等了 5 分钟浏览器没回来，再按一次重新开始"
-          : reason === "state" ? "回来的不是这一次登录的回调，已经丢掉；再按一次重新开始" : `IdP 没有通过：${(e as Error).message}`;
-        this.log(`[account] 登录没完成：${reason}`);
-      },
-    ).finally(() => { if (this.inFlight === gen) this.inFlight = 0; });   // 落盘 / 写完 lastError 之后才放下
-    return { url };
-  }
+  /* ⚠️ `loginStart()`（开浏览器走授权码 + PKCE）2026-10-27 随 OIDC 删，
+     连同它的 `finish()` 与能力 `account_login`、设置页那颗「打开浏览器登录」。
+     账号中心对接说明 §三 3 点名的就是这几样。 */
 
   /** 服务端是 local（2026-10-19 起 Umbra 接账号中心后就是这一种，对端上仍叫 local）：邮箱 + 密码登录。
    *  `POST /auth/login` 回一张长效不透明令牌（没有刷新令牌；`tokenExpMs` 认不出 exp → 不会去刷新，失效时服务端 401、界面照实显示没登录）。
@@ -568,20 +478,7 @@ export class AccountService {
     return this.provider;
   }
 
-  /** 换到令牌之后：问服务端我是谁，成了就落盘。 */
-  private async finish(serverUrl: string, _cfg: OidcClientConfig, t: OidcTokens): Promise<void> {
-    try {
-      const user = await this.me(serverUrl, t.accessToken);
-      await setAccount({ serverUrl, accessToken: t.accessToken, refreshToken: t.refreshToken, user, signedInAt: new Date().toISOString() });
-      this.lastError = "";
-      this.log(`[account] 已登录：user ${user.id}`);
-      /* 登上就把许可证取回来（失败不报错：市场打开时还会再试一次） */
-      void this.syncLicense();
-    } catch (e) {
-      this.lastError = `换到了令牌，但服务端不认：${(e as Error).message}`;
-      this.log(`[account] /auth/me 失败：${(e as Error).message}`);
-    }
-  }
+
 
   private async me(serverUrl: string, token: string): Promise<AccountUser> {
     const r = await this.fetchFn(`${serverUrl}/auth/me`, { method: "GET", headers: { Accept: "application/json", Authorization: `Bearer ${token}` } });
@@ -602,30 +499,20 @@ export class AccountService {
       this.lastError = "";
     } catch (e) {
       if ((e as Error).message !== "401") { this.lastError = `核对失败：${(e as Error).message}`; return this.status(); }
-      let renewed = false;
-      try {
-        const cfg = oidcConfigOf(await this.authConfig(a.serverUrl));
-        if (cfg && a.refreshToken) {
-          const t = await this.oidc.refresh(cfg, a.refreshToken);
-          const user = await this.me(a.serverUrl, t.accessToken);
-          await setAccount({ accessToken: t.accessToken, refreshToken: t.refreshToken || a.refreshToken, user });
-          renewed = true;
-          this.lastError = "";
-        }
-      } catch { /* 下面按失效处理 */ }
-      /* 清不清登录，两条路的**证据**不一样（账号中心对接说明 2026-10-21 §二）：
-         - 有刷新令牌（OIDC 回退路）：「IdP 拒了这张刷新令牌」本身就是证据 —— 照旧清；
-         - 没有刷新令牌（不透明令牌，线上 10-19 起走这条）：唯一的证据是服务端那个头。
-         ⚠️ **原来这里对后者是「任何 401 都清」** —— `a.refreshToken` 是空串，
-         上面那个 `if` 进不去，`renewed` 永远 false，于是一个网关的 401
-         就能把用户的登录清掉，而他什么都没做错。 */
-      if (!renewed) {
-        if (a.refreshToken || (e as MeFail).sessionInvalid === true) {
-          await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
-          this.lastError = "登录已经失效，重新登录一次";
-        } else {
-          this.lastError = `服务端回了 401，但没说是会话失效（没有 ${UMBRA_ERROR_HEADER}: session_invalid）—— 本机的登录没有清掉`;
-        }
+      /* 清不清登录：**唯一的证据是服务端那个头**（账号中心对接说明 2026-10-21 §二）。
+         ⚠️⚠️ **2026-10-27 这里去掉了 `a.refreshToken ||`，而它是这次删除里第二道
+         「前提被改掉的守卫」**。那一支的原意是「OIDC 回退路上，IdP 拒了这张刷新令牌
+         本身就是证据 —— 照旧清」；而刷新这件事已经不存在了，于是它退化成
+         「存量 `account.json` 里躺着一张 Casdoor 时代的刷新令牌 → **任何 401 都清登录**」，
+         而那正是 2026-10-21 专门修掉的那个缺陷的复活。
+         > **一个「有另一条路会处理」的条件，在那条路被删掉之后，意思正好反过来。**
+         ⚠️ `refreshToken` 这个字段**留在文件里**（对接说明 §四：不改存储格式），
+         但从此**没有任何判断读它** —— `tokentest` 有一条钉这件事。 */
+      if ((e as MeFail).sessionInvalid === true) {
+        await setAccount({ accessToken: "", refreshToken: "", user: null, signedInAt: "" });
+        this.lastError = "登录已经失效，重新登录一次";
+      } else {
+        this.lastError = `服务端回了 401，但没说是会话失效（没有 ${UMBRA_ERROR_HEADER}: session_invalid）—— 本机的登录没有清掉`;
       }
     }
     return this.status();
@@ -633,7 +520,6 @@ export class AccountService {
 
   /** 登出：先告诉服务端（它吊销这一条），**服务端失败也要清本机**。 */
   async logout(): Promise<AccountStatus> {
-    this.oidc.cancel("cancelled");
     const a = await getAccount();
     if (a.accessToken) {
       try {
@@ -719,4 +605,4 @@ export class AccountService {
 }
 
 /** 核心进程里只有一个账号服务。 */
-export const account = new AccountService(new OidcLogin(undefined, (l) => console.error(l)), undefined, (l) => console.error(l));
+export const account = new AccountService(undefined, (l) => console.error(l));

@@ -772,96 +772,16 @@ console.log("\n⑨ 打桩的那一轮：该认的认、不该认的一个都不�
  *  下一次给「被拒」这类回执写判据时回来看一眼这句。 */
 
 
-console.log("\n⑫ 账号：OIDC 授权码 + PKCE（一·a，2026-10-10）—— 一条都不碰真 IdP、不写 account.json");
-{
-  const http = await import("node:http");
-  const { createHash } = await import("node:crypto");
-  const pk = await import("./oidc_pkce.js");
-  const { OidcLogin } = await import("./oidc.js");
-  const S256 = (v: string) => pk.b64url(createHash("sha256").update(v).digest());
-  const { verifier, challenge } = pk.pkcePair();
-  ok(verifier.length >= 43 && challenge === S256(verifier), "challenge = base64url(sha256(verifier))");
-  const CFG = { issuer: "https://idp.test", client_id: "cid", authorization_endpoint: "https://idp.test/login/oauth/authorize",
-    token_endpoint: "https://idp.test/api/login/oauth/access_token" };
-  const body = new URLSearchParams(pk.tokenRequestBody(CFG, { code: "c", redirectUri: "http://127.0.0.1:1/callback", verifier: "v" }));
-  ok(body.get("grant_type") === "authorization_code" && body.get("code_verifier") === "v" && !body.has("client_secret"),
-     "换令牌带 verifier、**不带 client_secret**（公开客户端）");
-  // 一趟：假 IdP（fetch）+ 自己去打回调端口，验 verifier 真的被带到 token 端点
-  let seen = "";
-  const calls: URLSearchParams[] = [];
-  const login = new OidcLogin(async (_u, i) => {
-    const b = new URLSearchParams(i.body || ""); calls.push(b);
-    const good = b.get("code") === "CODE" && S256(b.get("code_verifier") || "") === seen;
-    return { ok: good, status: good ? 200 : 400, json: async () => good
-      ? { access_token: "AT", refresh_token: "RT", expires_in: 1 }
-      : { error: "invalid_grant", error_description: "verifier is invalid" } };
-  });
-  const { url, done } = await login.start(CFG, 5000);
-  const au = new URL(url); seen = au.searchParams.get("code_challenge") || "";
-  ok(au.origin + au.pathname === CFG.authorization_endpoint && au.searchParams.get("code_challenge_method") === "S256"
-     && /^http:\/\/127\.0\.0\.1:\d+\/callback$/.test(au.searchParams.get("redirect_uri") || ""), "授权地址：S256 + 回环回调", url);
-  await (await fetch(`${au.searchParams.get("redirect_uri")}?code=CODE&state=${au.searchParams.get("state")}`)).text();
-  const t = await done;
-  ok(t.accessToken === "AT" && t.refreshToken === "RT", "回调 → 换到令牌");
-  ok(calls[0]?.get("redirect_uri") === au.searchParams.get("redirect_uri"), "redirect_uri 一字不差带到 token 端点");
-  // state 不对的回调不认，且不发换令牌请求
-  const calls2: unknown[] = [];
-  const l2 = new OidcLogin(async () => { calls2.push(1); return { ok: true, status: 200, json: async () => ({ access_token: "X" }) }; });
-  const s2 = await l2.start(CFG, 5000); const u2 = new URL(s2.url);
-  await (await fetch(`${u2.searchParams.get("redirect_uri")}?code=CODE&state=WRONG`)).text();
-  let r2 = ""; try { await s2.done; } catch (e) { r2 = (e as { reason: string }).reason; }
-  ok(r2 === "state" && calls2.length === 0, "state 不对：不认、不换令牌");
-  // 再开一场作废上一场；超时
-  const l3 = new OidcLogin(async () => ({ ok: true, status: 200, json: async () => ({}) }));
-  const a = await l3.start(CFG, 5000); const b2 = await l3.start(CFG, 60);
-  let ra = ""; try { await a.done; } catch (e) { ra = (e as { reason: string }).reason; }
-  let rb = ""; try { await b2.done; } catch (e) { rb = (e as { reason: string }).reason; }
-  ok(ra === "cancelled" && rb === "timeout", "再开一场作废上一场（cancelled）；浏览器不回来是 timeout");
-  // 账号那几件：状态不回令牌；服务端是 local 时照实说、不起登录、不记地址
-  const st = (await (await fetch(u("account"))).json()) as { ok: boolean; data: Record<string, unknown> };
-  ok(st.ok && typeof st.data.signedIn === "boolean" && !("accessToken" in st.data) && !("refreshToken" in st.data), "account：状态里没有令牌");
-  const fake = http.createServer((_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ provider: "local" })); });
-  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", () => r()));
-  const fakeUrl = `http://127.0.0.1:${(fake.address() as { port: number }).port}`;
-  const lg = (await (await post("account_login", { serverUrl: fakeUrl })).json()) as { ok: boolean; errors: { code: string; message: string }[] };
-  /* ⚠️ 2026-10-21 这条判据改过一次：原来钉的是报错里有没有「OIDC」这个词，
-     而那句话的原文是「要等服务端切到 Casdoor 之后才能从这里登录」——
-     账号中心对接说明定了 **Casdoor 不用了**，那个未来不会来，话本身就错了。
-     判据要钉的是**这道闸**（local 上不起 OIDC 登录）**加上「它告诉了用户该怎么办」**，
-     不是那一句具体措辞（`doc/11` Q69 · `00` §161.5 同族）。
-     ⚠️ `account_login` 这件能力在 Casdoor 下线后随 OIDC 一起删，这条判据跟着删。 */
-  const lgMsg = lg.errors?.[0]?.message ?? "";
-  ok(!lg.ok && lg.errors?.[0]?.code === "E_ACCOUNT_LOGIN" && /local/.test(lgMsg) && /邮箱|密码/.test(lgMsg),
-     "服务端是 local → 不起 OIDC 登录，而且说清了该走哪条路", lgMsg);
-  fake.close();
-  const st2 = (await (await fetch(u("account"))).json()) as { data: { serverUrl: string; pending: boolean } };
-  ok(st2.data.serverUrl !== fakeUrl && st2.data.pending === false, "没登上不记这次给的地址、也没留一场在等");
+/* ⚠️⚠️ **⑫（账号：OIDC 授权码 + PKCE）2026-10-27 整节删 —— 12 条**。
+   Casdoor 下线（账号中心对接说明 §三 3），`oidc.ts` / `oidc_pkce.ts` 两个文件都没了。
+   这一节里有一条值得单独说一句：**「服务端是 local → 不起 OIDC 登录」**那条判据
+   原来钉的是「这道闸 + 它告诉了用户该怎么办」，而它自己的注释就写着
+   「`account_login` 这件能力在 Casdoor 下线后随 OIDC 一起删，这条判据跟着删」。
+   > **一条判据在自己身上写下退场条件，是它能被干净删掉的唯一办法** ——
+   > 不写的话下一个人只会看到一条红，而不知道该修产品还是该删判据。
+   ⚠️ 删了多少条就从 `EXPECT_AT_LEAST` 里减掉多少（那条闸只拦变少，而
+   **「有意删掉」和「静默跳过」必须在读数上分得开**）。 */
 
-  /* ── 回调已到、收尾还没做完的那段窗口里，状态不许是「没在登、也没登上、也没错」（issue #137）──
-     原来 `pending` 借的是 `oidc.pending`：回调一到就 false，而换令牌 + `/auth/me` + 落盘还在路上，
-     前端轮询落在这里就停下、显示「未登录」，之后写的失败原因也被吞。
-     这里让 `/auth/me` 故意慢 600ms 并回 500 —— 走失败那一支，**不写 account.json**。 */
-  {
-    const { AccountService } = await import("./account.js");
-    const base = "http://umbra.apitest.invalid";
-    const svc = new AccountService(
-      new OidcLogin(async () => ({ ok: true, status: 200, json: async () => ({ access_token: "AT", refresh_token: "RT", expires_in: 60 }) })),
-      async (url: string) => {
-        if (url.endsWith("/auth/config")) return { ok: true, status: 200, json: async () => ({ provider: "oidc", ...CFG }) };
-        if (url.endsWith("/auth/me")) { await new Promise((r) => setTimeout(r, 600)); return { ok: false, status: 500, json: async () => ({}) }; }
-        return { ok: false, status: 404, json: async () => ({}) };
-      });
-    const { url: lu } = await svc.loginStart(base);
-    const lau = new URL(lu);
-    await (await fetch(`${lau.searchParams.get("redirect_uri")}?code=CODE&state=${lau.searchParams.get("state")}`)).text();
-    await new Promise((r) => setTimeout(r, 100));
-    const mid = await svc.status();
-    ok(mid.pending === true && mid.lastError === "", "**回调已到、/auth/me 还在路上：pending 仍是 true**（原来已经是 false，前端就此停下）", `pending=${mid.pending}`);
-    await new Promise((r) => setTimeout(r, 900));
-    const end = await svc.status();
-    ok(end.pending === false && /服务端不认/.test(end.lastError), "收尾做完：pending 放下、失败原因写上了（轮询这时才停，原因不会被吞）", end.lastError.slice(0, 40));
-  }
-}
 
 
 console.log(`\n⑬ 通道 A 走${platformName}服务端 AI（一·c）—— 不出网，改完把配置放回去`);
@@ -2122,6 +2042,7 @@ console.log("\n㉗ 按文件名从回收站恢复（restore_trashed_by_name）")
    1 条 + 「换一件无关的能力也拦得住」那一组 2 条）· **+4 = ㉖**（`get_delete_impact`
    只答 `<dc-import>` 那种引用：三条拒 + 两条对照 + 一条「盘上没有是另一种拒」）· **−9 = ⑦ 整节拿掉**（模板名那一组：它钉的攻击面随
    `list_templates` / `save_as_template` / `delete_template` 三件退场一起消失，M16-8 ⑥）。
+   ⚠️ **2026-10-27：−12 = ⑫ 整节删**（账号 OIDC 授权码 + PKCE，随 Casdoor 下线）→ **221**。
    合计 **215**；**M16-8 ① / ③ 这一批 +5（⑲ⓑ′ 只读闸两条路各两条 + 拒因一致那条）
    +13（㉗ 按文件名恢复整节）= 233**，而 233 正是实跑的总数（231 过 + 2 条没登录）。
    ⚠️ 原来这个数停在 215 而实跑 224 —— 那不影响这道闸（它只拦变少），
@@ -2131,7 +2052,7 @@ console.log("\n㉗ 按文件名从回收站恢复（restore_trashed_by_name）")
    所以删判据时改这个数不是收尾工作，是那个动作的一部分。
    ⚠️ 我先算成 221 —— 漏数了 ㉖ 自己那一节里新增的第六条（两条对照我当成一条算了）。
    实跑 222 把它顶出来了：**总数本身也是一条判据**，而它这次抓的是我的算术。 */
-const EXPECT_AT_LEAST = 233;
+const EXPECT_AT_LEAST = 221;
 const miss = NOT_RUN.length;
 const total = pass + fail + miss;
 let silent = 0;

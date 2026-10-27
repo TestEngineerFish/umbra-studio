@@ -511,20 +511,24 @@ function PasswordLogin({ core, serverUrl, onSignedIn }: { core: Core; serverUrl:
   </form>;
 }
 
-function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) {
+/* ⚠️ `host` 这个 prop 2026-10-27 去掉了：它唯一的用途是 `login()` 里的
+   `host.openExternal(授权地址)`，而那条路随 OIDC 删了。 */
+function AccountPanel({ core }: { core: Core }) {
   type Status = { serverUrl: string; signedIn: boolean; user: { id: number; display_name?: string; email?: string; name?: string; is_owner?: boolean } | null; pending: boolean; lastError: string; provider: string; serverAi: boolean };
   const [st, setSt] = useState<Status | null>(null);
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState("");
   const [editServer, setEditServer] = useState(false);
-  /* 服务端怎么登录：`local`（邮箱密码 —— 接账号中心之后线上就是这一种）/ `oidc`（打开浏览器）/ `unknown`（还没问到）。
-     ⚠️ **判的是 `!== "oidc"` 而不是 `=== "local"`**（2026-10-21 改）：初值是 `unknown`，
-     按 `=== "local"` 判的话**打开设置页的第一帧画的是「打开浏览器登录」**，一个网络往返之后才跳成密码表单；
-     而 `/auth/config` 问不到时（断网）就一直停在错的那一支。
-     回退期间的代价问过 Umbra 主会话：「开了回退开关」和「同时又问不到 /auth/config」是两件坏事同时发生，
-     概率很低，撞上了也只是密码表单登不上、等问到就自己切回去；
-     而闪一下 / 断网停在错的那一支是**天天都会遇到**的。 */
-  const [provider, setProvider] = useState("unknown");
+  /* ⚠️⚠️ **这里原来有一个 `provider` 状态 + 一次 `account_provider` 请求，2026-10-27 一起删。**
+     它唯一的用途是在「密码表单」和「打开浏览器登录」之间选一支，而后者随 Casdoor
+     下线删了（账号中心对接说明 §三 3）—— 只剩一支，就不需要先问一次再画。
+     ⚠️ **我差点把它留着**，注释里还写了「设置页还显示它」—— 那句话是我没核就写的，
+     `provider` 在界面上**一处都没显示过**。编译器当场报了 `TS6133`。
+     > **一句「这个还有别的用处」的理由，要在写下它之前就查清，而不是在它救了一段代码之后。**
+     能力 `account_provider` 本身**留着**（它答的是一个模型会问的真问题），但前端不再调它。
+     ⚠️ 那条「判 `!== "oidc"` 而不是 `=== "local"`」的教训不随它死：
+     > **一个「还没问到」的初值，按「等于目标值」判就会先画错的那一支再跳回来** ——
+     > 而断网时它永远跳不回来。所以当时写的是排除式。这一次只剩一支，那个坑物理上没了。 */
   // 存储容量那一行（Umbra 草案 §十一）：只看不管。null = 没登录 / 老服务端，整行不画。
   type Storage = { used: number; limit: number; pct: number; warn: "ok" | "warn" | "critical" | "full"; tier: string | null };
   const [storage, setStorage] = useState<Storage | null>(null);
@@ -543,7 +547,6 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     setStorage(sr.ok && sr.data ? sr.data.storage : null);
   }, [core]);
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { void core.get<{ provider: string }>("account_provider").then((r) => { if (r.ok && r.data) setProvider(r.data.provider); }); }, [core, st?.serverUrl]);
   // 登录进行中：每 1.5 秒看一眼，登上 / 失败 / 5 分钟就停。
   useEffect(() => {
     if (!busy) return;
@@ -563,12 +566,6 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     }, 1500);
     return () => clearInterval(t);
   }, [busy, core, load]);
-  const login = async () => {
-    setBusy(true);
-    const r = await core.post<{ url: string }>("account_login", {});
-    if (!r.ok || !r.data?.url) { setBusy(false); toast(r.errors?.[0]?.message || "登录没开始"); void load(); return; }
-    if (host) await host.openExternal(r.data.url); else window.open(r.data.url, "_blank", "noopener");
-  };
   const logout = async () => { const r = await core.post<Status>("account_logout", {}); if (r.ok && r.data) setSt(r.data); };
   const saveServer = async () => {
     const r = await core.post<Status>("account_server", { serverUrl: server });
@@ -600,10 +597,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     <div className="flex items-center gap-2">
       {st?.signedIn
         ? <button className="btn" onClick={logout}>退出登录</button>
-        : provider !== "oidc"
-          ? <PasswordLogin core={core} serverUrl={st?.serverUrl || ""} onSignedIn={(d) => { setSt(d as Status); toast(`已登录${platformName}账号`); void load(); }} />
-          : <button data-ud="account-oidc-login" className="btn primary" disabled={busy} onClick={login}>{busy ? "等浏览器那边登录…" : "打开浏览器登录"}</button>}
-      {busy && provider === "oidc" && <span className="text-muted text-xs">浏览器没有自动打开的话，再按一次。</span>}
+        : <PasswordLogin core={core} serverUrl={st?.serverUrl || ""} onSignedIn={(d) => { setSt(d as Status); toast(`已登录${platformName}账号`); void load(); }} />}
       {/* ⚠️ `lastError` **一律显示，不按 provider 过滤**（2026-10-21 改）：它现在承载的是
           「这条会话为什么失效了」（`noteSessionInvalid` / `check()` 写的），而那是两种登录方式
           都会发生的事。原来写的是 `provider !== "local"`，于是密码登录模式下
@@ -613,7 +607,7 @@ function AccountPanel({ core, host }: { core: Core; host: HostAdapter | null }) 
     </div>
     {/* 登录之后才有的两行（2026-10-21，Q74 ①②）：显示名与改密码。形制照上面「服务端」那一行。 */}
     {st?.signedIn && <DisplayNameRow core={core} value={st.user?.display_name || ""} onSaved={() => void load()} />}
-    {st?.signedIn && provider !== "oidc" && <PasswordRow core={core} />}
+    {st?.signedIn && <PasswordRow core={core} />}
     {st?.signedIn && storage && (
       <div className="flex items-center gap-2 text-xs">
         <span className="text-muted shrink-0">存储</span>
@@ -1099,7 +1093,11 @@ function DangerPanel({ core, info, onProjectGone }: { core: Core; info: ProjInfo
 }
 
 
-export function SettingsSheet({ core, host, projectCore, layout, setLayout, onClose, onProjectGone }: { core: Core | null; host: HostAdapter | null; projectCore: Core | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void;
+/* ⚠️ `host` 这个 prop 2026-10-27 去掉了：它一路传下来只为 `AccountPanel` 的
+   「打开浏览器登录」，而那条路随 OIDC 删了。留着它是一个**没有读者的入参**，
+   而 `noUnusedLocals` 刚打开（2026-10-24），它会当场报出来 —— 这是那个开关第一次
+   在新改动上生效。 */
+export function SettingsSheet({ core, projectCore, layout, setLayout, onClose, onProjectGone }: { core: Core | null; projectCore: Core | null; layout: LayoutState; setLayout: (l: LayoutState) => void; onClose: () => void;
   /** 归档 / 删除之后**这个项目已经不在盘上了** —— 由 `App` 把它从打开的项目里摘掉。
    *  ⚠️ **不走 `closeProject`**：那条路会先问「有没有未落盘的 / 有没有一轮在跑」，
    *  而目录都没了，那两个检查只会把「关掉它」变成做不到的事（而未落盘的也救不回来）。 */
@@ -1124,7 +1122,7 @@ export function SettingsSheet({ core, host, projectCore, layout, setLayout, onCl
             那是每天要点好几次的东西，埋进设置面板不合适。 */}
         <span className="text-muted">外观</span><div className="seg self-start">{(["system", "light", "dark"] as const).map((t) => <button key={t} className={layout.theme === t ? "on" : ""} onClick={() => setLayout({ ...layout, theme: t })}>{{ system: "跟随系统", light: "浅色", dark: "深色" }[t]}</button>)}</div>
       </div>
-      {core && <AccountPanel core={core} host={host} />}
+      {core && <AccountPanel core={core} />}
       {core && <CliPicker core={core} />}
       {core && <FileTreePanel core={core} />}
       {core && <PluginLimitsPanel core={core} />}

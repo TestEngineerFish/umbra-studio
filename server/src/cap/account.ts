@@ -31,20 +31,8 @@ defineCap({
   run: async () => envelope(await account.check()),
 });
 
-defineCap({
-  name: "account_login", title: "开始登录（开浏览器）", scope: "global",
-  summary: "问服务端怎么登录，是 OIDC 就起回环端口、回授权地址；前端拿地址开系统浏览器，然后轮询 account 看结果。",
-  input: { serverUrl: z.string().optional().describe(`这一次用哪台 ${platformName}服务端；不给用存着的`) },
-  faces: ["http"],
-  http: { route: "account_login", method: "POST" },
-  run: async ({ serverUrl }) => {
-    try {
-      return envelope(await account.loginStart(serverUrl));
-    } catch (e) {
-      return envelope({ url: "" }, [err("E_ACCOUNT_LOGIN", (e as Error).message)]);
-    }
-  },
-});
+/* ⚠️ `account_login`（开浏览器那条）2026-10-27 随 OIDC 退场 —— 账号中心对接说明 §三 3 点名的一样。
+   登录只剩 `account_login_password`（邮箱 + 密码），线上 10-19 起本来就只有这一条。 */
 
 defineCap({
   name: "account_login_password", title: "用邮箱密码登录", scope: "global",
