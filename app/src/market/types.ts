@@ -20,7 +20,7 @@ export interface MarketRow {
   brief: string;
   formats: string[];
   kinds: string[];
-  permissions: { files?: string[]; net?: string[] };
+  permissions: { files?: string[]; net?: string[]; local?: Array<{ id: string; label: string }> };
   size?: string; updated?: string;
   tools?: MarketTool[];
   state: PluginState;
@@ -64,7 +64,7 @@ export interface InstalledRow {
   unsigned: boolean;
   kinds: string[];
   surfaces: string[];
-  permissions: { files?: string[]; net?: string[] };
+  permissions: { files?: string[]; net?: string[]; local?: Array<{ id: string; label: string }> };
   ok: boolean;
   problems: Array<{ field: string; why: string }>;
   /** 授权态（M11-12）：**装了 ≠ 能用**。
@@ -83,9 +83,10 @@ export interface InstalledRow {
  *  「让人敢装的是它**做不了什么**，所以不允许的两行比允许的那行更重要」。 */
 export interface PermRow { allow: boolean; label: string; note: string }
 
-export function permRows(p: { files?: string[]; net?: string[] }): PermRow[] {
+export function permRows(p: { files?: string[]; net?: string[]; local?: Array<{ id: string; label: string }> }): PermRow[] {
   const files = p.files ?? [];
   const net = p.net ?? [];
+  const local = p.local ?? [];
   return [
     files.includes("write")
       ? { allow: true, label: "读写当前项目里的文件", note: `每一下都经过${productName}，出不了项目目录` }
@@ -95,6 +96,15 @@ export function permRows(p: { files?: string[]; net?: string[] }): PermRow[] {
     net.length
       ? { allow: true, label: `联网 · 只连 ${net.join("、")}`, note: "别的地址一律发不出去" }
       : { allow: false, label: "联网 · 不允许", note: "它发不出任何网络请求" },
+    /* ── 连本机程序（2026-10-30，契约 Studio `doc/S8`）──
+       ⚠️⚠️ **风险说明那句由这里写死，不用插件给的 `label`。**
+       `label` 是插件自己写的，它**可以写「本机的记事本」**；而这一行是用户决定装不装的依据。
+       > **一句用来让人判断风险的话，不能由被判断的那一方来写。**
+       插件的 `label` 只作补充（附在后面，并说清是它自己说的）。 */
+    local.length
+      ? { allow: true, label: `连接本机程序 · 只连 127.0.0.1`,
+          note: `连不到互联网，也拿不到那个程序的端口和口令；装好后还要你在设置里单独允许一次。插件说它要连的是：${local.map((e) => e.label).join("、")}` }
+      : { allow: false, label: "连接本机程序 · 不允许", note: "它连不到你电脑上的任何程序" },
     /* ⚠️ `exec` 第一期没有，但**这一行照样写**（设计侧第十轮）：
        写成「Umbra 不给任何插件这个权限」，以后开放了再改成按清单来。
        不写的话用户会想「那它还能干什么」—— 列出来的空白比不列更让人安心。 */

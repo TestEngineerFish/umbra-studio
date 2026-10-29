@@ -373,3 +373,144 @@ defineCap({
     return envelope({ core, verbs, failures: sandboxFailures() }, [], { core: core.length, verbs: verbs.length, exposed: verbs.filter((v) => v.exposed).length });
   },
 });
+
+/* ══════════════════ 本机桥接（2026-10-30，契约 `doc/S8`）══════════════════
+   五件：两件**只给插件**（`faces: []`），三件给界面管授权。
+
+   ⚠️⚠️ **为什么两件桥能力是 `faces: []`** —— 这是整段里最该想清楚的一处：
+   授权是按 `(插件, 端点)` 发的，而**模型和前端不是插件**，它们不在那张授权表里。
+   给它们开个面，等于「用户允许了插件 A 连 SketchUp」顺带变成「谁都能连」。
+   > **一张按身份发的许可，只要有一个不带身份的入口，就等于没发。**
+   `hostCall` 不走门面、直接调 `cap.run`，所以 `faces: []` 照样调得到（关④ 只查注册表里有没有）。 */
+defineCap({
+  name: "local.status", title: "本机端点配好了没", scope: "global",
+  summary: "读握手文件看那个本机程序在不在跑。**不会去连**。只给声明过 permissions.local 的插件调。",
+  input: { endpoint: z.string() },
+  faces: [],
+  run: async ({ endpoint }, c) => {
+    const { localStatus } = await import("../plugin/localbridge.js");
+    const { localGranted } = await import("../plugin/grants.js");
+    const st = localStatus(endpoint);
+    /* ⚠️ 授权态也一起回 —— 插件要据此在自己 UI 里说「去设置里允许」，
+       而让它靠一次失败的 `local.call` 去发现这件事，是把一次错误当成一次查询。 */
+    const pid = c.pluginId ?? "";
+    const g = st.paired ? localGranted(pid, endpoint, st.app!, st.version) : { ok: false as const, why: st.why ?? "" };
+    return envelope({ ...st, granted: g.ok, why: st.paired ? (g.ok ? undefined : g.why) : st.why },
+      [], { paired: st.paired, connected: st.connected, granted: g.ok });
+  },
+});
+
+defineCap({
+  name: "local.call", title: "往本机端点发一帧 JSON-RPC", scope: "global",
+  summary: "发一次调用、等一次响应。超时 min(timeoutMs ?? 15s, 30s)。只给声明过 permissions.local 的插件调。",
+  input: {
+    endpoint: z.string(),
+    method: z.string(),
+    params: z.unknown().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  },
+  faces: [],
+  run: async ({ endpoint, method, params, timeoutMs }, c) => {
+    const { localCall, localStatus, LocalError, LOCAL_CODES } = await import("../plugin/localbridge.js");
+    const { localGranted } = await import("../plugin/grants.js");
+    const pid = c.pluginId ?? "";
+    /* ⚠️ **授权在连接之前核** —— 顺序反了的话，没授权的插件也能让我们去连一次，
+       而「连上了又拒」在对端的日志里和一次真调用长得一样。 */
+    const st = localStatus(endpoint);
+    if (!st.paired) {
+      return envelope(null, [{ level: "error", code: LOCAL_CODES.NOT_PAIRED, message: st.why ?? "没配对",
+        where: "(local)", at: { kind: "key", name: endpoint }, fix: "把那个程序打开，它会自己写好握手文件" } as never]);
+    }
+    const g = localGranted(pid, endpoint, st.app!, st.version);
+    if (!g.ok) {
+      return envelope(null, [{ level: "error", code: LOCAL_CODES.NOT_GRANTED, message: g.why,
+        where: "(local)", at: { kind: "key", name: endpoint },
+        fix: "打开设置 → 插件 → 本机连接，允许这个插件连它" } as never]);
+    }
+    try {
+      return envelope(await localCall(endpoint, method, params, timeoutMs));
+    } catch (e) {
+      const le = e as InstanceType<typeof LocalError>;
+      const code = typeof le?.code === "string" ? le.code : LOCAL_CODES.DISCONNECTED;
+      return envelope(null, [{ level: "error", code, message: le?.message ?? String(e),
+        where: "(local)", at: { kind: "key", name: endpoint }, ...(le?.fix ? { fix: le.fix } : {}) } as never]);
+    }
+  },
+});
+
+/* ── 给界面管授权的三件。**不给插件面**（`faces: ["http"]`）——
+   插件自己给自己发许可，这道闸就不存在了。 */
+defineCap({
+  name: "list_local_requests", title: "哪些插件要连本机程序", scope: "global",
+  summary: "列已装插件里声明过 permissions.local 的那些：插件、端点、插件自己写的 label、对端在不在跑、允许过没有。设置页「本机连接」那一块用它。",
+  input: {},
+  faces: ["http"],
+  http: { route: "local_requests", method: "GET" },
+  run: async () => {
+    const { localStatus } = await import("../plugin/localbridge.js");
+    const { localGranted } = await import("../plugin/grants.js");
+    const rows: Array<Record<string, unknown>> = [];
+    for (const p of await listInstalled()) {
+      for (const e of p.manifest.permissions.local ?? []) {
+        const st = localStatus(e.id);
+        const g = st.paired ? localGranted(p.manifest.id, e.id, st.app!, st.version) : { ok: false as const, why: "" };
+        rows.push({
+          plugin: p.manifest.id, pluginName: p.manifest.name, endpoint: e.id,
+          /* ⚠️ `label` 是**插件自己写的**，界面要标明这一点（它可以写「本机的记事本」）。
+             风险说明那句由界面写死，不从这里来。 */
+          label: e.label, transport: e.transport,
+          paired: st.paired, app: st.app, version: st.version, pid: undefined,
+          granted: g.ok, why: st.paired ? (g.ok ? undefined : g.why) : st.why,
+        });
+      }
+    }
+    return envelope({ rows }, [], { count: rows.length, granted: rows.filter((r) => r.granted).length });
+  },
+});
+
+defineCap({
+  name: "grant_local", title: "允许一个插件连本机程序", scope: "global",
+  summary: [
+    "用户在设置里确认之后调它。记下 `(插件, 端点)` + 当时对端的 app 与主版本号。",
+    "⚠️ 对端没在跑就拒 —— 要让用户在确认那一刻看到的是**真的在跑的那一个**（app / version 摆给他核对）。",
+  ].join("\n"),
+  input: { plugin: z.string(), endpoint: z.string() },
+  faces: ["http"],
+  http: { route: "local_grant", method: "POST" },
+  run: async ({ plugin, endpoint }) => {
+    const { localStatus } = await import("../plugin/localbridge.js");
+    const { grantLocal } = await import("../plugin/grants.js");
+    const found = (await listInstalled()).find((x) => x.manifest.id === plugin);
+    if (!found) return envelope(null, [pluginErr("E_PLUGIN_NOT_FOUND", `没装插件 ${plugin}`, plugin)]);
+    /* ⚠️ **只能给清单里声明过的端点发许可** —— 不然界面上一个拼错的名字就成了一张空头许可，
+       而它会一直躺在授权表里。 */
+    if (!(found.manifest.permissions.local ?? []).some((e) => e.id === endpoint)) {
+      return envelope(null, [pluginErr("E_LOCAL_NOT_DECLARED", `${plugin} 的清单里没有端点 ${endpoint}`, plugin,
+        "只能给它自己声明过的端点发许可")]);
+    }
+    const st = localStatus(endpoint);
+    if (!st.paired) {
+      return envelope(null, [pluginErr("E_LOCAL_NOT_PAIRED", st.why ?? "对端没在跑", plugin,
+        "先把那个程序打开 —— 确认那一刻要能核对它报的 app 与版本")]);
+    }
+    return envelope(grantLocal(plugin, endpoint, st.app!, st.version), [], { granted: true });
+  },
+});
+
+defineCap({
+  name: "revoke_local", title: "收回「连本机程序」的许可", scope: "global",
+  summary: "把 `(插件, 端点)` 那张许可删掉。下一次插件调 local.call 就回 E_LOCAL_NOT_GRANTED。",
+  input: { plugin: z.string(), endpoint: z.string() },
+  faces: ["http"],
+  http: { route: "local_revoke", method: "POST" },
+  run: async ({ plugin, endpoint }) => {
+    const { revokeLocal } = await import("../plugin/grants.js");
+    const { closeAllLocal } = await import("../plugin/localbridge.js");
+    const had = revokeLocal(plugin, endpoint);
+    /* ⚠️ **收回许可要把连接也断掉** —— 不断的话池子里那条还活着，
+       而下一次调用会复用它：许可已经没了，而**那一条连接是在有许可的时候建的**。
+       > **一道闸装在「开始用」那一刻，而不装在「正在用」上，就只拦得住新来的人。** */
+    closeAllLocal();
+    return envelope({ revoked: had }, [], { revoked: had });
+  },
+});

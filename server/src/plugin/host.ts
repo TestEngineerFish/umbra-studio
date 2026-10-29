@@ -22,7 +22,7 @@ import type { PluginManifest } from "./manifest.js";
  *  包括将来新加的。黑名单的问题是「加了一件危险能力但忘了拉黑」，
  *  而那种疏漏不会有任何症状，直到出事。
  */
-const ALLOWED: Record<string, { need: "read" | "write"; cap?: string }> = {
+const ALLOWED: Record<string, { need: "read" | "write" | "local"; cap?: string }> = {
   list_files:         { need: "read" },
   read_file:          { need: "read" },
   list_file_versions: { need: "read" },
@@ -52,6 +52,13 @@ const ALLOWED: Record<string, { need: "read" | "write"; cap?: string }> = {
      对插件叫 `file.convert`（`doc/20` 里一直这么写），注册表里叫 `convert_file`：MCP / 模型的工具名不许带点。
      原名 `media.transcode`，2026-10-18 放宽成通用的转换（不只音视频）。 */
   "file.convert":       { need: "write", cap: "convert_file" },
+  /* ── 本机桥接（2026-10-30，契约 `doc/S8`）──
+     ⚠️ **要 `local`，不借 `files`** —— 连本机的另一个程序和读写项目文件是两件事，
+     权限不该借。借了的话「只读插件」也能连 SketchUp，而用户在市场上看到的是「只读」。
+     ⚠️ 两件都是 `faces: []` 的能力（只给插件，MCP / HTTP 两面都没有）——
+     桥的授权是按 `(插件, 端点)` 发的，而模型和前端不是插件，它们不在那张授权表里。 */
+  "local.status":       { need: "local" },
+  "local.call":         { need: "local" },
   /* 能转成什么（含「没装 X」的原因与安装命令）。只读：它只看文件名和本机装了哪些工具 */
   list_convert_targets: { need: "read" },
 };
@@ -72,11 +79,21 @@ export async function hostCall(ctx: HostCtx, name: string, input: unknown): Prom
     return deny(`插件调不到能力 ${name}`,
       "插件只能调白名单里的宿主能力（见 server/src/plugin/host.ts 的 ALLOWED）。要新增请走宿主侧，别绕");
   }
-  /* 关②：清单里声明过没有。声明了 read 却调 write 的，拒 */
-  const have = ctx.manifest.permissions.files ?? [];
-  if (!have.includes(rule.need)) {
-    return deny(`${ctx.manifest.id} 的清单里没声明 files:"${rule.need}"，调不了 ${name}`,
-      `在 manifest.json 的 permissions.files 里加 "${rule.need}"，用户装的时候会看到这一条`);
+  /* 关②：清单里声明过没有。声明了 read 却调 write 的，拒。
+     ⚠️ `local` 这一档查的是 `permissions.local`，**不是 `files`**（2026-10-30）——
+     见上面白名单那一段的理由。 */
+  if (rule.need === "local") {
+    const locals = ctx.manifest.permissions.local ?? [];
+    if (!locals.length) {
+      return deny(`${ctx.manifest.id} 的清单里没声明 permissions.local，调不了 ${name}`,
+        "在 manifest.json 的 permissions.local 里声明端点（见 Studio doc/S8），用户装的时候会看到这一条");
+    }
+  } else {
+    const have = ctx.manifest.permissions.files ?? [];
+    if (!have.includes(rule.need)) {
+      return deny(`${ctx.manifest.id} 的清单里没声明 files:"${rule.need}"，调不了 ${name}`,
+        `在 manifest.json 的 permissions.files 里加 "${rule.need}"，用户装的时候会看到这一条`);
+    }
   }
   /* 关③：范围。第一期只有 project —— 插件看不到别的项目，也看不到用户主目录 */
   if ((ctx.manifest.permissions.scope ?? "project") !== "project") {
@@ -89,7 +106,9 @@ export async function hostCall(ctx: HostCtx, name: string, input: unknown): Prom
   /* 跑。`via: "plugin"` 会让变更记录写「插件」而不是 AI 或人手改 ——
      混在一起的话，用户看到「AI 改的」会去翻会话记录，而那一次根本没有会话。 */
   try {
-    return await cap.run(input as never, { project: ctx.project, via: "plugin" });
+    /* ⚠️ `pluginId` 要带上 —— 本机桥接的许可按 `(插件, 端点)` 发，
+       不带的话核许可那一刻拿到的是空身份（见 `cap/types.ts` 那段）。 */
+    return await cap.run(input as never, { project: ctx.project, via: "plugin", pluginId: ctx.manifest.id });
   } catch (e) {
     /* ⚠️ **`ToolError` 要原样往下传，不能重新包。**（2026-10-23 核 Q80 时量到的）
        原来这里一律 `err(X.IO, …, e.message)`，于是 **`e.diagnostic` 整个被丢掉** ——

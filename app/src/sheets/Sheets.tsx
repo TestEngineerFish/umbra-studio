@@ -627,6 +627,93 @@ function AccountPanel({ core }: { core: Core }) {
   </section>;
 }
 
+/** 设置里的「本机连接」块（2026-10-30，契约 Studio `doc/S8` §五）。
+ *
+ *  插件要连本机开着的另一个程序（第一期：SketchUp 的 Ruby 扩展），而
+ *  **它自己弹不了权限** —— 插件跑在沙箱 / iframe 里，所以这一下确认只能在这里。
+ *
+ *  ⚠️⚠️ **这一屏上最要紧的设计决定：风险说明那句是这里写死的。**
+ *  `label` 是插件自己写的，它**可以写「本机的记事本」**。
+ *  > **一句用来让人判断风险的话，不能由被判断的那一方来写。**
+ *  所以固定那句在上、插件那句在下并标注「插件说」，再摆出对端自己报的 app / 版本
+ *  让用户核对「确实是我开着的那个」。
+ *
+ *  ⚠️ 对端没在跑时**不给开关** —— 确认那一刻要能核对真的在跑的那一个，
+ *  服务端那道闸也拒（`grant_local` 核 `paired`），这里只是别让用户点一个必然失败的东西。 */
+type LocalRow = {
+  plugin: string; pluginName: string; endpoint: string; label: string; transport: string;
+  paired: boolean; app?: string; version?: string; granted: boolean; why?: string;
+};
+
+/** 宿主写死的那句。**不从插件来。** */
+const LOCAL_RISK = "它会连接你这台电脑上的一个本机程序，只能连 127.0.0.1 —— 连不到互联网，也拿不到那个程序的端口和口令。";
+
+function LocalBridgePanel({ core }: { core: Core }) {
+  const [rows, setRows] = useState<LocalRow[] | null>(null);
+  const [arming, setArming] = useState("");          // "plugin__endpoint"：第一下亮确认，第二下才真允许
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    const r = await core.get<{ rows: LocalRow[] }>("local_requests");
+    setRows(r.ok && r.data ? r.data.rows : []);
+  }, [core]);
+  useEffect(() => { void load(); }, [load]);
+  /* 一个插件都没声明过 local：**整块不画**。
+     ⚠️ 不画成一块空的 —— 绝大多数人装的插件里没有这一类，给他一块永远是空的东西只是噪声。 */
+  if (!rows || !rows.length) return null;
+  const act = async (row: LocalRow, on: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await core.post<{ revoked?: boolean }>(on ? "local_grant" : "local_revoke", { plugin: row.plugin, endpoint: row.endpoint });
+      if (!r.ok) toast(on ? "没能允许" : "没能收回", r.errors?.[0]?.message ?? "", "error");
+      else toast(on ? `已允许 ${row.pluginName} 连 ${row.app ?? row.endpoint}` : "已收回", on ? undefined : "下一次它要连会被拒", "ok");
+      setArming("");
+      await load();
+    } finally { setBusy(false); }
+  };
+  return (
+    <section className="rounded-lg border border-border bg-panel p-3 flex flex-col gap-2.5" data-ud="local-bridge">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <h3 className="text-sm font-semibold shrink-0">本机连接</h3>
+        <span className="text-[11px] text-muted flex-1 min-w-[12rem]">这些插件要和你电脑上开着的另一个程序通信。默认一个都不允许。</span>
+      </div>
+      {rows.map((row) => {
+        const key = `${row.plugin}__${row.endpoint}`;
+        const armed = arming === key;
+        return (
+          <div key={key} className="flex flex-col gap-1 border-t border-border pt-2 first:border-t-0 first:pt-0" data-ud="local-row" data-ud-key={key}>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="flex-1 min-w-0 truncate">
+                <span className="font-semibold">{row.pluginName}</span>
+                <span className="text-muted"> → {row.app ?? row.endpoint}{row.version ? ` ${row.version}` : ""}</span>
+              </span>
+              {row.granted
+                ? <button className="btn sm" disabled={busy} data-ud="local-revoke" onClick={() => void act(row, false)}>收回</button>
+                : row.paired
+                  ? armed
+                    ? <button className="btn sm primary" disabled={busy} data-ud="local-confirm" onClick={() => void act(row, true)}>确定允许</button>
+                    : <button className="btn sm" disabled={busy} data-ud="local-arm" onClick={() => setArming(key)}>允许…</button>
+                  : <span className="text-muted shrink-0" data-ud="local-not-paired">没在跑</span>}
+            </div>
+            {/* 宿主写死那句 —— 它在插件那句之上 */}
+            <div className="text-[11px] text-muted leading-snug">{LOCAL_RISK}</div>
+            <div className="text-[11px] leading-snug" style={{ color: "var(--tool-warn)" }} data-ud="local-label">
+              插件说它要连的是：{row.label}
+            </div>
+            {!row.paired && row.why && <div className="text-[11px] text-muted leading-snug">{row.why}</div>}
+            {row.paired && !row.granted && row.why && <div className="text-[11px] text-muted leading-snug">{row.why}</div>}
+            {armed && (
+              <div className="text-[11px] leading-snug" style={{ color: "var(--tool-warn)" }}>
+                再点一次「确定允许」。核对一下上面那个程序名和版本是不是你自己开着的那一个。
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 /** 设置里的「插件沙箱」块（2026-10-19，服务端 `plugin/limits.ts`）。
  *
  *  几项限额原来写死在核心里（128 MB / 10 秒 / 100 MB / 文本 2 MB），插件因此只吃得下二三十 MB 的文件。
@@ -1126,6 +1213,7 @@ export function SettingsSheet({ core, projectCore, layout, setLayout, onClose, o
       {core && <CliPicker core={core} />}
       {core && <FileTreePanel core={core} />}
       {core && <PluginLimitsPanel core={core} />}
+      {core && <LocalBridgePanel core={core} />}
       {core && <StoragePanel core={core} projectCore={projectCore} />}
       {/* 项目那三块（M16-6）。⚠️ 没开项目时这句话也要跟着改 ——
           原来写的是「还有设计系统、限额、回收站与危险操作」，而前两块已经没有入口了

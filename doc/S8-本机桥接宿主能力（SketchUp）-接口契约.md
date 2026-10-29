@@ -236,3 +236,44 @@ PC §1.1 核过协议）。
 | **Studio** | 新 `server/src/plugin/localbridge.ts`（帧编解码 + 连接池 + 超时 + 握手核查）· `plugin/host.ts` 的 `ALLOWED` 加两条 + 关② 认 `local` · `plugin/grants.ts`（授权标记）· `market/types.ts` 的 `permRows` · 设置页「本机连接」那一块 · 新 `localbridgetest.ts` |
 | **umbra-plugins** | `sdk/PLUGIN-SPEC.md`（§二 权限表 · §三 白名单表 · 新 §3.2）· `sdk/manifest.schema.json` 的 `$defs/permissions` |
 | **UmbraPC** | ⏳ §1.4 那条「不走 umbra-plugins」要跟着改（不是这一批做）|
+
+---
+
+## 十、宿主侧落地读数（2026-10-30 实测）
+
+能力数 **97 → 102**（两件桥 + 三件管授权）· `localbridgetest` **34/34**（新建）·
+`plugintest` 101/101 · `captest` **321/321**（311 → 321）· `apitest` 219/221 ·
+`kindtest` 85/85 · `verbtest` 27/27 · `tsc` 两侧 0 错。按口径没跑全套、没打包。
+
+umbra-plugins 侧（`a34ff20`，**本地提交，没推** —— 推那个仓没拿到授权）：
+`sdk/manifest.schema.json` + `sdk/PLUGIN-SPEC.md` + `HOST_ALLOWED` 镜像 + V8，
+校验器回归 **104 → 110**。
+
+### 10.1 落地时自己造出来又修掉的两处
+
+**① `CapCtx` 里没有 `pluginId`。** 许可按 `(插件, 端点)` 发，而 `hostCall` 原来只传
+`{ project, via: "plugin" }` —— 第一版我就那么写了，`pluginId` 取到的是空字符串，
+于是**那张按身份发的许可核的是一个空身份**。这一次落在「偏严」那一边（谁都核不过），
+而方向反过来同样容易。
+> **一张按身份发的许可，必须有一条能把身份带到核许可那一刻的路。**
+
+**② `dropGrantsOf` 写出来时没有调用方。** 那正是上一批刚清过的那一类，
+而它守着一条真的安全性质：卸掉再装回同一个 id，不该继承上一次的许可 ——
+而重装的那一份可以是另一个作者的同名包。已接进 `store.ts` 的 `uninstall`，
+并有两条判据（清掉它自己那张 / 不连带清别人的）。
+> **一张按 id 发的许可，在那个 id 可以被别人重新占用时，不能比它的持有者活得更久。**
+
+### 10.2 判据层量到的两条
+
+**① `rmSync(path, { force: true })` 对一条悬空符号链接什么都不做。**
+它按 `existsSync` 判，而那一件**跟随链接**、于是说「不存在」，在 `force` 模式下直接返回；
+而 `lstatSync` 说链接还在。第一版栽在这里：下一条判据的 `writeFileSync` 顺着那条链接
+写到了别处，于是读数是「握手文件是一条符号链接」—— **而那是上一条判据的样本**。
+> **`existsSync` 跟随链接，`lstatSync` 不跟随 —— 一个「它不存在」的读数，在悬空链接上是假的。**
+改用 `unlinkSync`，并加了一条「那条链接真的删掉了」的样本有效性判据。
+
+**② 崩了也要清。** 第一次跑崩在一个 `require()` 上（这个文件是 ESM + 顶层 await），
+收尾那几行压根没跑，临时目录留在盘上。补 `uncaughtException` 兜底，
+反向验证（故意抛）读数：紧急清理跑了、残留 0 个。
+> **「清理必须跑」这条纪律，正常收尾只覆盖了「我跑完了」那一半。**
+（`packtest` 2026-10-24 为同一件事加过一次，`doc/24` §40.4 ③ —— 这是第二次。）

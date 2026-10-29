@@ -141,6 +141,14 @@ export async function uninstall(id: string): Promise<boolean> {
   if (!existsSync(dir)) return false;
   /* 只删插件自己的目录。**插件改过的文件不动** —— 那是用户的东西（`doc/20` §6.4） */
   await rm(dir, { recursive: true, force: true });
+  /* ⚠️⚠️ **本机连接的许可要跟着删**（2026-10-30，契约 `doc/S8`）。
+     不删的后果很具体：卸掉再装回同一个 id，它**静默继承了上一次的许可** ——
+     而用户以为「卸了就等于收回了」。而重装的那一份可以是另一个作者的同名包。
+     > **一张按 id 发的许可，在那个 id 可以被别人重新占用时，不能比它的持有者活得更久。**
+     ⚠️ 同时断掉连接：许可没了而池子里那条连接是在有许可时建的（同 `revoke_local` 那一处）。 */
+  const { dropGrantsOf } = await import("./grants.js");
+  const { closeAllLocal } = await import("./localbridge.js");
+  if (dropGrantsOf(id) > 0) closeAllLocal();
   return true;
 }
 

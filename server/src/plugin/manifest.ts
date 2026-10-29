@@ -46,6 +46,14 @@ export interface PluginManifest {
      *  所以 B 面这一侧是防呆强度，别在界面上把它说成隔离。
      *  ⚠️ 第一期**非空的 net 还没实现**：现在任何值都当"不许"处理。 */
     net?: string[];
+    /** 连本机的另一个程序（2026-10-30，契约 `doc/S8`）。**和 `net` 并列的另一个槽位，不是放开联网。**
+     *
+     *  `id` 是端点名（也是握手文件名 `<id>.json`），`label` 给用户看。
+     *  ⚠️ **没有 `host` / `port`** —— 地址写死 `127.0.0.1`，端口由握手文件给。
+     *  清单里出现这两个字段**当场拒装**（下面那道闸），和 `exec` 同一个办法：
+     *  忽略它会让插件作者以为写了有用。
+     *  ⚠️ 这里只有「声明过」，**能不能真连还要用户在设置里单独允许一次**（`plugin/grants.ts`）。 */
+    local?: Array<{ id: string; transport: "tcp-jsonrpc"; label: string }>;
   };
   /** UI 面的入口 HTML（相对插件目录）。`surfaces` 含 `ui` 时必须有 */
   ui?: string;
@@ -180,6 +188,34 @@ export function checkManifest(m: unknown): { ok: boolean; problems: ManifestProb
   /* P1：连槽位都不留。清单里写了 exec 就当场拒 —— 不是忽略它，
      忽略会让插件作者以为写了有用，进而依赖一个不存在的能力。 */
   if ("exec" in perm) bad("permissions.exec", "插件不许起子进程（doc/20 P1）。要外部程序请用宿主提供的受限能力");
+
+  /* ── permissions.local（2026-10-30，契约 `doc/S8`）── */
+  if (perm.local !== undefined) {
+    if (!Array.isArray(perm.local) || !perm.local.length) {
+      bad("permissions.local", "要是非空数组；不需要就整个别写（空数组和没写一样，而「写了空的」会让人以为声明过了）");
+    } else {
+      const seen = new Set<string>();
+      for (const [i, raw] of perm.local.entries()) {
+        const at = `permissions.local[${i}]`;
+        if (typeof raw !== "object" || !raw) { bad(at, "要是对象 { id, transport, label }"); continue; }
+        const e = raw as Record<string, unknown>;
+        /* ⚠️ **`host` / `port` 出现就拒**，和 `exec` 同一条理由：地址写死在宿主，
+           端口由握手文件给。静默忽略会让插件作者以为改得动。 */
+        for (const k of ["host", "port", "address", "url"]) {
+          if (k in e) bad(`${at}.${k}`, `不许出现 —— 只能连 127.0.0.1，端口由握手文件给（见 doc/S8 §四）`);
+        }
+        if (typeof e.id !== "string" || !/^[a-z][a-z0-9_]{1,31}$/.test(e.id)) {
+          bad(`${at}.id`, `要合 ^[a-z][a-z0-9_]{1,31}$（它也是握手文件名，得到 ${JSON.stringify(e.id)}）`);
+        } else if (seen.has(e.id)) bad(`${at}.id`, `和前面重了：${e.id}`);
+        else seen.add(e.id);
+        if (e.transport !== "tcp-jsonrpc") bad(`${at}.transport`, `第一期只有 "tcp-jsonrpc"（得到 ${JSON.stringify(e.transport)}）`);
+        /* `label` 要进确认弹窗的一行里：一行、1–60 字 */
+        if (typeof e.label !== "string" || !/^[^\r\n]{1,60}$/.test(e.label)) {
+          bad(`${at}.label`, "要是一行 1–60 字的话（它会摆进那次确认里给用户看）");
+        }
+      }
+    }
+  }
 
   if (p.length) return { ok: false, problems: p };
   const mm = x as unknown as PluginManifest;

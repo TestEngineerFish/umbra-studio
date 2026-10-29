@@ -51,6 +51,18 @@ export const X = {
    *  只能把拒因原文抛给用户。
    *  > **一个通用错误码会把「有出路的拒绝」和「真的出错了」混成一件事。** */
   NOT_EDITABLE: "E_NOT_EDITABLE",
+  /* ── 本机桥接（2026-10-30，契约 `doc/S8`）──
+     ⚠️ **七种拒分开立码，不共用一个。** 理由就是上面 `NOT_EDITABLE` 那段：
+     插件要按码分支，而「没声明」「没授权」「对端没在跑」三件事**用户要做的动作完全不同**
+     （改清单 / 去设置里允许 / 把 SketchUp 打开）。合成一个码，插件只能把原文抛给用户。
+     > **一个通用错误码会把「有出路的拒绝」和「真的出错了」混成一件事。** */
+  LOCAL_NOT_DECLARED: "E_LOCAL_NOT_DECLARED",
+  LOCAL_NOT_GRANTED: "E_LOCAL_NOT_GRANTED",
+  LOCAL_NOT_PAIRED: "E_LOCAL_NOT_PAIRED",
+  LOCAL_TIMEOUT: "E_LOCAL_TIMEOUT",
+  LOCAL_DISCONNECTED: "E_LOCAL_DISCONNECTED",
+  LOCAL_FRAME_TOO_BIG: "E_LOCAL_FRAME_TOO_BIG",
+  LOCAL_REMOTE: "E_LOCAL_REMOTE",
   IO: "E_IO",
 } as const;
 

@@ -26,7 +26,7 @@ export interface CatalogEntry {
   brief: string;
   /** 它认领哪些扩展名 —— 市场按这个筛，也用来回答「有没有插件能编辑 .xyz」 */
   formats: string[];
-  permissions: { files?: string[]; net?: string[] };
+  permissions: { files?: string[]; net?: string[]; local?: Array<{ id: string; label: string }> };
   size?: string;
   updated?: string;
   /** `.umbraplugin` 安装包的下载地址（**只认 https**，`validateCatalog` 不合的丢掉）。内置的没有；
