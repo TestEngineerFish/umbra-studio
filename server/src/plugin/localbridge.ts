@@ -158,6 +158,8 @@ interface Conn {
   idle: NodeJS.Timeout | null;
   /** 握手文件的身份（`app` + 主版本）—— 换了就不复用这条连接 */
   ident: string;
+  /** 这条连接的令牌。**每一帧都要带**（见下面 `send` 那段）。只在内存里，从不进日志。 */
+  token: string;
 }
 
 export class LocalError extends Error {
@@ -188,13 +190,23 @@ function touch(endpoint: string, c: Conn): void {
   c.idle.unref?.();
 }
 
-/** 连上并握手。**`hello` 这一帧带令牌，之后每帧都不带。**
+/** 连上并握手。**第一帧是 `hello`，而每一帧都带 `token`。**
  *
- *  ⚠️ 这是对 PC §1.2「每个请求都要带令牌」的一处**收紧而不是放松**：
- *  > **一个秘密出现的次数越多，它被记下来的机会就越多。**
- *  一条 socket 是一次 accept 的单一流，认一次等价；而每帧都带，令牌就会出现在
- *  对端每一条调试日志、每一次崩溃转储里。
- *  ⚠️ **扩展侧的契约**：`hello` 这一帧不许进日志（写在 S8 §六）。 */
+ *  ⚠️⚠️ **2026-10-30 这里改过一次，而改的理由值得记全。**
+ *  S8 §六 第一版写的是「令牌只在 `hello` 发一次」，理由是
+ *  「一个秘密出现的次数越多，它被记下来的机会就越多」。
+ *  而 umbra-plugins 的 Ruby 扩展（`8fdd28e`，同一分钟提交）**按每帧带实现并测过**
+ *  （它的 `offline_test.rb` 有一条「同一连接下一帧照样要带令牌」，还有「不带就回 -32001 并断开」）。
+ *
+ *  **根因是我的**：hello-once 这个决定只写进了 S8，**没写进我交出去的那份接口**，
+ *  而对方是照接口开工的。
+ *  > **一个在「接口已确认」之后才写进文档的决定，对已经照接口开工的人不存在。**
+ *
+ *  **按每帧带对齐**，三条理由：① 他们两侧（扩展 + `su.mjs` 客户端）都实现并测过了，
+ *  负面样本齐全；② 每帧自带凭据是**无状态**的，少一类「这条连接认证过没有」的错；
+ *  ③ 那条安全顾虑**换成契约条款守**（S8 §六：两侧都不许把帧原文写进日志）——
+ *  而它已经在两边生效：`su.mjs` 输出里 token 打码，这里从不记录帧。
+ *  ⚠️ `hello` 这一帧**留着**：它回 `{bridge, tools}`，是「真的连上了而且是它」的那一下核对。 */
 async function connect(endpoint: string, hs: Handshake): Promise<Conn> {
   const sock = await new Promise<Socket>((res, rej) => {
     /* ⚠️ **地址写死 `127.0.0.1`** —— 不从握手文件读，不从清单读。
@@ -204,7 +216,7 @@ async function connect(endpoint: string, hs: Handshake): Promise<Conn> {
     s.once("error", onErr);
     s.once("connect", () => { s.off("error", onErr); res(s); });
   });
-  const c: Conn = { sock, reader: new FrameReader(), waiting: new Map(), nextId: 1, idle: null, ident: identOf(hs) };
+  const c: Conn = { sock, reader: new FrameReader(), waiting: new Map(), nextId: 1, idle: null, ident: identOf(hs), token: hs.token };
   sock.on("data", (chunk: Buffer) => {
     let frames: unknown[];
     try { frames = c.reader.push(chunk); }
@@ -232,7 +244,7 @@ async function connect(endpoint: string, hs: Handshake): Promise<Conn> {
   touch(endpoint, c);
   /* 握手：令牌不对对端会回 error 并断开 */
   try {
-    await send(endpoint, c, "hello", { token: hs.token }, 5_000);
+    await send(endpoint, c, "hello", {}, 5_000);
   } catch (e) {
     drop(endpoint, e as Error);
     /* ⚠️ **拒因不带令牌，也不带对端那句原话里可能夹的令牌** —— 只说「口令不对」 */
@@ -246,7 +258,9 @@ async function connect(endpoint: string, hs: Handshake): Promise<Conn> {
  *  > 超时意味着**我们不知道流走到哪了**，下一帧可能是上一次那半截。 */
 function send(endpoint: string, c: Conn, method: string, params: unknown, ms: number): Promise<unknown> {
   const id = c.nextId++;
-  const frame = encodeFrame({ jsonrpc: "2.0", id, method, params: params ?? {} });
+  /* ⚠️ **`token` 是顶层字段，每一帧都带**（和 Ruby 扩展对齐，见 `connect` 上面那段）。
+     ⚠️ 这一帧**从不进日志** —— 那是 S8 §六 的契约条款，也是这个做法唯一的代价所在。 */
+  const frame = encodeFrame({ jsonrpc: "2.0", id, method, params: params ?? {}, token: c.token });
   return new Promise<unknown>((res, rej) => {
     const timer = setTimeout(() => {
       c.waiting.delete(id);

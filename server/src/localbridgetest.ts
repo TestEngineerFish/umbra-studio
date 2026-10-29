@@ -69,25 +69,27 @@ async function fake(handle: (m: string, p: unknown) => unknown, opts: { token?: 
   const seen: string[] = [];
   const srv = createServer((sock: Socket) => {
     const reader = new bridge.FrameReader();
-    let helloed = false;
     sock.on("data", (chunk: Buffer) => {
       let frames: unknown[];
       try { frames = reader.push(chunk); } catch { sock.destroy(); return; }
       for (const f of frames) {
-        const r = f as { id: number; method: string; params?: { token?: string } };
+        const r = f as { id: number; method: string; token?: string; params?: unknown };
         seen.push(r.method);
+        /* ⚠️⚠️ **假对端照 Ruby 扩展那一版：每一帧都要带顶层 `token`，不带 / 不对就
+           回 -32001 并断开**（它的 `offline_test.rb` 三条钉着这件事）。
+           第一版我这里是「只在 hello 核一次」—— 比真对端**宽松**，
+           于是宿主那边「只在 hello 带令牌」的写法在这个假对端上**照样全绿**。
+           > **一个比真对端宽松的假对端，会让判据对着一个不存在的世界说「通过」** ——
+           > 而这正是跨仓协议最容易在集成那天才炸的地方。 */
+        if (r.token !== (opts.token ?? TOKEN)) {
+          sock.write(bridge.encodeFrame({ jsonrpc: "2.0", id: r.id, error: { code: -32001, message: "bad token" } }));
+          sock.destroy();
+          return;
+        }
         if (r.method === "hello") {
-          const want = opts.token ?? TOKEN;
-          if (r.params?.token !== want) {
-            sock.write(bridge.encodeFrame({ jsonrpc: "2.0", id: r.id, error: { code: -32001, message: "bad token" } }));
-            sock.destroy();
-            return;
-          }
-          helloed = true;
-          sock.write(bridge.encodeFrame({ jsonrpc: "2.0", id: r.id, result: { ok: true, app: APP } }));
+          sock.write(bridge.encodeFrame({ jsonrpc: "2.0", id: r.id, result: { bridge: "0.1.0-test", app: APP, tools: ["ping"] } }));
           continue;
         }
-        if (!helloed) { sock.destroy(); return; }
         const out = handle(r.method, r.params);
         if (out === "hang") continue;                       // 不回 —— 让它超时
         if (out === "kill") { sock.destroy(); return; }
@@ -133,7 +135,13 @@ console.log("本机桥接");
   grants.grantLocal(PLUG, "sketchup", APP, "2024.0.1");
   const r = await call(ctxOf(PLUG, EP), { endpoint: "sketchup", method: "ping", params: {} });
   ok(r.ok === true && (r.data as { pong?: string })?.pong === "ping", "① 授权之后 `local.call` 拿到 result", JSON.stringify(r.data ?? r.errors?.[0]?.message));
-  ok(f.seen[0] === "hello", "① **第一帧是 hello**（令牌只在建连接时发一次，不是每帧都带）", f.seen.join(" → "));
+  ok(f.seen[0] === "hello", "① **第一帧是 hello**（连上之后先核一下「是它」）", f.seen.join(" → "));
+  /* ⚠️⚠️ 这一条钉的是 2026-10-30 那次协议对齐：**每一帧都带顶层 `token`**。
+     假对端照 Ruby 扩展那一版，任何一帧不带就 -32001 + 断开 —— 所以上面那次
+     `ping` 能拿到 result，本身就证明第二帧也带了令牌。这里再把它写成一条明的：
+     > **一条「两边都实现了同一个协议」的判据，要让假的那一侧和真的那一侧一样严。** */
+  ok(f.seen.includes("ping") && f.seen.length === 2,
+     "① **第二帧也带着令牌过了**（假对端照真扩展：任何一帧不带令牌就 -32001 并断开）", f.seen.join(" → "));
   bridge.closeAllLocal();
   await f.close();
 }
