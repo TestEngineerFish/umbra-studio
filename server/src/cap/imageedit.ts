@@ -7,7 +7,7 @@ import { freeName, resolveProjectFile, writeAnyFile } from "../files.js";
 import { getAiConfig, setAiConfig, type ImageEditConfig } from "../ai_config.js";
 import { editImage, extOfMime, ImageEditError, imageEditStatus } from "../imageedit/index.js";
 import { defineCap } from "./registry.js";
-import type { CapCtx } from "./types.js";
+import { originOf, type CapCtx } from "./types.js";
 
 /** 「图像编辑」这个角色的能力（2026-10-30，出效果图；sam 定先接国内模型）。
  *
@@ -164,8 +164,17 @@ defineCap({
     const name = freeName(dirAbs, want);
     const rel = dirRel ? `${dirRel}/${name}` : name;
     /* **走第二条写入口**（纪律①）：写前校验、v1 快照、能回退、changelog 记「谁改的」。
-       裸 `writeFile` 的话这张图在版本历史里不存在，而「退回上一版」在它身上永远是空的。 */
-    await writeAnyFile(proj, rel, out.bytes);
+       裸 `writeFile` 的话这张图在版本历史里不存在，而「退回上一版」在它身上永远是空的。
+       ⚠️⚠️ **`origin` 一定要传**（2026-10-30 第一次真出图时量到漏了）：不传就默认
+       「人手改」，于是**模型出的每一张效果图都记成人是手画的**。
+       这正是 `doc/00` §93 记过的那一条（「谁改的」从写死的 `"人手改"` 改成 `originOf(via)`）——
+       **我读过那条教训，然后在一件新能力上原样重犯了。**
+       > 54 条判据一条都没红：它们验了「快照在不在」，**没验「快照说是谁写的」**。
+       > **一条判据验到了那件东西存在，不等于验到了它说得对。** */
+    await writeAnyFile(proj, rel, out.bytes, {
+      origin: originOf(c.via),
+      note: `由 ${src.rel} 出效果图（${out.provider} ${out.model}）`,
+    });
 
     const diags = out.real ? [] : [{
       level: "warning", code: "W_IMAGE_EDIT_FAKE",

@@ -171,6 +171,23 @@ console.log("\n④ 假适配器：整条链路（打桩的意义就在这里）"
     "**它有版本历史**（走裸 writeFile 的话这里是空的）", `${snaps2.length} 版 · ${snaps2[0]?.version ?? "-"}`);
 }
 
+console.log("\n④.5 快照记的「谁改的」要对（**不是「人手改」**）");
+{
+  /* ⚠️ 2026-10-30 第一次真出图时量到的：`writeAnyFile` 原来没传 `origin`，
+     于是模型出的每一张效果图都记成「人手改」。`doc/00` §93 记过同一条，
+     而这件新能力原样重犯了。
+     ⚠️ 原来那条快照判据验的是「`s1` 在不在」—— **存在不等于说得对**，
+     所以它在缺陷下照样绿。这一条验的是**内容**。 */
+  const r = await run("edit_image", { image: "图/视口.png", prompt: "记一下是谁写的" }, project);
+  const v = await run("list_file_versions", { path: String(r.data?.path) }, project);
+  const s1 = (v.data?.snapshots as Array<{ src?: string }> | undefined)?.[0];
+  ok(s1?.src === "AI", "经 MCP 出的效果图，快照记的是 `AI` 而不是「人手改」", s1?.src);
+  /* ⚠️ **把世界放回去。** 第一版没清，于是下一节的「第二次顺延成 (1)」当场红成 `(2)` ——
+     我这一节多出来的那张图把它的夹具改了（§143.6「样本互相毁夹具」）。
+     > **判据之间是有耦合的，而耦合的方向是「先跑的那个改了后跑的那个的世界」。** */
+  await rm(join(projDir, "图", String(r.data?.path).split("/").pop()!));
+}
+
 console.log("\n⑤ 重名顺延，永不覆盖");
 {
   const r = await run("edit_image", { image: "图/视口.png", prompt: "再来一张" }, project);
