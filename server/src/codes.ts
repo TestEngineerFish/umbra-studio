@@ -63,6 +63,15 @@ export const X = {
   LOCAL_DISCONNECTED: "E_LOCAL_DISCONNECTED",
   LOCAL_FRAME_TOO_BIG: "E_LOCAL_FRAME_TOO_BIG",
   LOCAL_REMOTE: "E_LOCAL_REMOTE",
+  /* ── 图像编辑（2026-10-30，出效果图）──
+     同一条理由（上面那两段）：**用户要做的动作不同就分开立码**。
+     「没配图像编辑模型」要去填配置 · 「对端拒了」多半是密钥或模型 id ·
+     「太大了」要换一张 · 「等太久了」可以重试 —— 四件事里只有最后一件适合重试，
+     合成一个码的话插件只能一律建议「再试一次」。 */
+  IMAGE_EDIT_NOT_CONFIGURED: "E_IMAGE_EDIT_NOT_CONFIGURED",
+  IMAGE_EDIT_REMOTE: "E_IMAGE_EDIT_REMOTE",
+  IMAGE_EDIT_TOO_BIG: "E_IMAGE_EDIT_TOO_BIG",
+  IMAGE_EDIT_TIMEOUT: "E_IMAGE_EDIT_TIMEOUT",
   IO: "E_IO",
 } as const;
 

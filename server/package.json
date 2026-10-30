@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "长尾雀 Studio MCP server —— 本地设计稿工具，见 ../doc/00-MCP 工具契约.md",
+  "description": "\u957f\u5c3e\u96c0 Studio MCP server \u2014\u2014 \u672c\u5730\u8bbe\u8ba1\u7a3f\u5de5\u5177\uff0c\u89c1 ../doc/00-MCP \u5de5\u5177\u5951\u7ea6.md",
   "engines": {
     "node": ">=20"
   },
@@ -44,7 +44,8 @@
     "prefstest": "npm run build && node dist/prefstest.js",
     "plaintest": "npm run build && node dist/plaintest.js",
     "localbridgetest": "tsc -p . && node dist/localbridgetest.js",
-    "installplugin": "npm run build && node dist/installplugin.js"
+    "installplugin": "npm run build && node dist/installplugin.js",
+    "imageedittest": "npm run build && node dist/imageedittest.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",

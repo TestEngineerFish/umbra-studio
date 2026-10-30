@@ -74,6 +74,21 @@ export function envelope<T>(
   return { ok: errors.length === 0, data, errors, warnings, stats };
 }
 
+/** 跑一件能力，把 `ToolError` **装回信封**。
+ *
+ *  ⚠️ 为什么能力自己要装：插件那条路（`plugin/host.ts` 的 `hostCall`）只认信封，
+ *  而 MCP / HTTP 两个门面各自有一层 catch。抛出去的话，错误码和出路在插件侧会降级
+ *  （`host.ts` 那段注释量过这件事）。
+ *  ⚠️ 2026-10-30 从 `cap/convert.ts` 搬到这里（原来是那个文件的私有函数）——
+ *  第二件要用它的能力出现了（图像编辑），而它一行业务都没有。 */
+export async function guarded(fn: () => Promise<Envelope<unknown>>): Promise<Envelope<unknown>> {
+  try { return await fn(); }
+  catch (e) {
+    if (e instanceof ToolError) return envelope(e.data, [e.diagnostic]);
+    throw e;
+  }
+}
+
 /** 工具抛出的、带结构化诊断的失败。index.ts 捕获后装进信封。 */
 export class ToolError extends Error {
   constructor(readonly diagnostic: Diagnostic, readonly data: unknown = null) {

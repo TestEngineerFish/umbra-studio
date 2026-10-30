@@ -2,7 +2,7 @@ import { z } from "zod";
 import { envelope, err, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
 import { getPluginLimits } from "../plugin/limits.js";
-import { countTypes, denyReason, WALK_MAX, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, normalizeRel, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
+import { countTypes, denyReason, freeName, WALK_MAX, fileSizeOf, isTextual, lineDelta, listFiles, listSnapshotMeta, moveFile, normalizeRel, readAnyFile, readFileRange, readSnapshotBytes, readSnapshotContent, referencesOf, revertFile, sha256, trashFile, writeAnyFile } from "../files.js";
 import { writeDraft } from "../write.js";
 import { draftKindOf, parseDraft } from "../draft.js";
 import { isEditable, markEditable } from "../records.js";
@@ -241,18 +241,6 @@ const COPY_MAX_FILES = 200;
  *  ⚠️ 和 `convert/output.ts` 的 `reserveOutput` 同一个口径（「成品在源文件旁、
  *  重名顺延、永不覆盖」）—— **两处同一个承诺就该是同一个算法**，
  *  不然用户会发现「转换不覆盖，而拖进来覆盖了」。 */
-function freeName(dirAbs: string, base: string): string {
-  const dot = base.indexOf(".", base.startsWith(".") ? 1 : 0);
-  const stem = dot < 0 ? base : base.slice(0, dot);
-  const ext = dot < 0 ? "" : base.slice(dot);
-  if (!existsSync(join(dirAbs, base))) return base;
-  for (let i = 1; i < 1000; i++) {
-    const cand = `${stem} (${i})${ext}`;
-    if (!existsSync(join(dirAbs, cand))) return cand;
-  }
-  throw new ToolError(err(X.IO, base, { kind: "file", name: base },
-    "这个名字后面一千个顺延号都占着了", { fix: "换个目标目录，或者先清一下。" }));
-}
 
 /** 把一个源路径摊平成「相对它自己的那一层」的文件清单（目录就递归）。 */
 async function flattenSource(abs: string): Promise<Array<{ abs: string; rel: string; size: number }>> {

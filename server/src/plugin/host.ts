@@ -61,6 +61,15 @@ const ALLOWED: Record<string, { need: "read" | "write" | "local"; cap?: string }
   "local.call":         { need: "local" },
   /* 能转成什么（含「没装 X」的原因与安装命令）。只读：它只看文件名和本机装了哪些工具 */
   list_convert_targets: { need: "read" },
+  /* ── 图像编辑 / 出效果图（2026-10-30）──
+     SketchUp 插件以后要加一个动词：把 `export_view` 导出的底图 + 一句风格提示交过来。
+     ⚠️ **要 write**（同 `file.convert` 那条）：它往项目里新建了一个文件。
+     ⚠️ 密钥、端点、超时、大小上限**全在宿主**；插件只递「哪张图、什么提示、多狠」——
+     给它端点就等于给它一条出网的路，而插件沙箱连 `fetch` 都没有（`doc/20` P1）。
+     对插件叫 `image.edit`（带点，和 `file.convert` 一个写法），注册表里叫 `edit_image`。
+     `image.status` 只读：插件要在面板上先说「还没配图像模型」而不是让用户点了才知道。 */
+  "image.edit":         { need: "write", cap: "edit_image" },
+  "image.status":       { need: "read", cap: "image_edit_status" },
 };
 
 export interface HostCtx {

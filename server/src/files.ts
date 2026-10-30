@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { BASE64_SAFE_MAX } from "./b64limit.js";
 import { commitAfterWrite, commitExternalChanges } from "./gitkeep.js";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, posix, relative, sep } from "node:path";
 import { gzip as gzipCb, gunzip as gunzipCb } from "node:zlib";
 import { promisify } from "node:util";
@@ -27,7 +27,7 @@ const gzip = promisify(gzipCb);
 import { X } from "./codes.js";
 import { err, ToolError } from "./envelope.js";
 import { type VersionOrigin, snapDir } from "./history.js";
-import { isInside, isInsideReal, isOutsideLink, relPathProblem } from "./pathguard.js";
+import { isInside, isInsideReal, isOutsideLink, relPathProblem, resolveInside } from "./pathguard.js";
 import { dcImportsFollow, dcImportsOf } from "./refs.js";
 import { writeAtomic } from "./normalize.js";
 import { type Project } from "./project.js";
@@ -1570,4 +1570,75 @@ export async function walkProjectFiles(p: Project, max = 5000): Promise<{ files:
     }
   }
   return { files: out, truncated: out.length >= max };
+}
+
+
+/* ───────────────────────── 项目里的一个文件：真实路径 + 三道闸 ─────────────────────────
+   ⚠️⚠️ **这一段 2026-10-30 从 `cap/convert.ts` 搬到这里，一个字没改判断。**
+   搬的理由：图像编辑（出效果图）要问**同一个问题** ——
+   「调用方给的这个相对路径，对应项目里哪个真实文件，而它该不该让我动」。
+   留在 `cap/convert.ts` 里就得在第二件能力里**再写一遍**，而这是一段安全判断。
+   > **同一个问题的两份实现，必然在其中一份上先过期。**（Q77 那条的反面用法：
+   > 那次是「一个谓词在回答两个问题，该拆」；这次是「两处在问同一个问题，该合」。
+   > 判断合还是拆的依据只有一条：**这两个调用点问的是同一个问题吗。**） */
+
+/** 调用方给的路径 → 源文件的**真实**绝对路径 + 项目根的真实路径。
+ *
+ *  三道闸，**顺序不能换**：
+ *  ① 字面上不许跨出项目根（`pathguard.resolveInside` —— 全项目唯一那份判定，`..` / 绝对路径都在这里拦）；
+ *  ② **按真实路径再判一次**：项目里一个指向 `~/.ssh` 的软链，字面上在项目里、真身在外面。
+ *     不判这一条，「转换 / 出效果图」就能把项目外的文件读一份放进项目 —— 等于读了它。
+ *     ⚠️ 项目根自己也要 `realpath`：macOS 的临时目录 `/var` → `/private/var` 本身就是软链，
+ *     只解一边会把所有文件都判成「在外面」；
+ *  ③ 工具自己的目录（`.umbrastudio/`、`.git/`、`_runtime` …）里的东西不动 ——
+ *     成品会落在旁边，那里不是用户的地方。
+ *
+ *  ⚠️ 不用这个文件里的 `clean()`：它把 `..` **悄悄删掉**再拼（`../x` 变成 `x`），
+ *  对读写同一个文件没问题，对「在它旁边生成一份」就是
+ *  「用户说的是项目外的 x，我们动了项目里同名的另一个 x」。这里要的是**拒**。 */
+export async function resolveProjectFile(p: Project, rel: unknown): Promise<{ root: string; abs: string; rel: string }> {
+  const raw = typeof rel === "string" ? rel.trim() : "";
+  const badInput = (message: string, fix?: string): ToolError =>
+    new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name: "path" }, message, fix ? { fix } : undefined));
+  if (!raw) throw badInput("路径是空的", "给一个相对项目根的文件路径，比如 素材/封面.png");
+  let lexical: string;
+  try { lexical = resolveInside(p.dir, raw); }
+  catch { throw badInput(`路径跨出了项目目录：${raw}`, "只能动这个项目目录里的文件。"); }
+  const root = await realpath(p.dir);
+  const real = await realpath(lexical).catch(() => null);
+  if (!real) {
+    throw new ToolError(err(X.DRAFT_NOT_FOUND, raw, { kind: "file", name: raw }, `项目里没有文件 ${raw}`,
+      { fix: "先用 list_files 看看这一层有什么" }));
+  }
+  if (!isInside(root, real)) {
+    throw badInput(`${raw} 是一个指向项目外面的链接，不能用`, "只认真身在项目目录里的文件（软链指到外面的不算）。");
+  }
+  const st = await stat(real);
+  if (!st.isFile()) throw badInput(`${raw} 不是文件`, "这一件只认单个文件；目录要逐个来。");
+  const relReal = relative(root, real).split(sep).join(posix.sep);
+  /* 拒因按判准分档（Q77）—— 话的出处是 `denyReason`，这里不抄一份。 */
+  const deny = denyReason(relReal);
+  if (deny) throw badInput(`${relReal}：${deny.why}，不动它`, deny.fix);
+  return { root, abs: real, rel: relReal };
+}
+
+/** 一个目录里**还没被占用**的名字：`图.png` → `图 (1).png` → `图 (2).png`…
+ *
+ *  ⚠️ 2026-10-30 从 `cap/files.ts` 搬到这里（原来是 `copy_into_project` 的私有函数）：
+ *  「复制进来」和「在源文件旁边生成一份」用的是**同一条重名规矩**，
+ *  而这条规矩一旦有两份实现，就会出现「这条路顺延、那条路覆盖」。
+ *  ⚠️ 它是 `existsSync` 判断，**不是原子占位**（`convert/output.ts` 的 `reserveOutput` 用 `wx` 占位）。
+ *  两件事都要知道：在**同一进程内**顺序调用它是对的；真要防两个进程同时抢同一个名字，
+ *  用那边那个。这里的调用方（复制进来 / 出效果图）紧接着就走写入口，窗口只有几毫秒。 */
+export function freeName(dirAbs: string, base: string): string {
+  const dot = base.indexOf(".", base.startsWith(".") ? 1 : 0);
+  const stem = dot < 0 ? base : base.slice(0, dot);
+  const ext = dot < 0 ? "" : base.slice(dot);
+  if (!existsSync(join(dirAbs, base))) return base;
+  for (let i = 1; i < 1000; i++) {
+    const cand = `${stem} (${i})${ext}`;
+    if (!existsSync(join(dirAbs, cand))) return cand;
+  }
+  throw new ToolError(err(X.IO, base, { kind: "file", name: base },
+    "这个名字后面一千个顺延号都占着了", { fix: "换个目标目录，或者先清一下。" }));
 }

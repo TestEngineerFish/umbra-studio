@@ -1,11 +1,8 @@
 import { z } from "zod";
-import { realpath, stat } from "node:fs/promises";
 import { basename, posix, relative, sep } from "node:path";
-import { envelope, err, ToolError, type Envelope } from "../envelope.js";
+import { envelope, err, guarded, ToolError } from "../envelope.js";
 import { X } from "../codes.js";
-import { denyReason, isToolArtifactPath, recordCreatedFile } from "../files.js";
-import { isInside, resolveInside } from "../pathguard.js";
-import type { Project } from "../project.js";
+import { isToolArtifactPath, recordCreatedFile, resolveProjectFile } from "../files.js";
 import { convertEngine, forgetTools, FORMATS, normalizeTarget } from "../convert/index.js";
 import { extOf } from "../convert/formats.js";
 import { defineCap } from "./registry.js";
@@ -31,50 +28,9 @@ const p = (c: CapCtx) => c.project!;
 const bad = (name: string, message: string, fix?: string): ToolError =>
   new ToolError(err(X.BAD_INPUT, "(input)", { kind: "key", name }, message, fix ? { fix } : undefined));
 
-/** 调用方给的路径 → 源文件的**真实**绝对路径 + 项目根的真实路径。
- *
- *  三道闸，**顺序不能换**：
- *  ① 字面上不许跨出项目根（`pathguard.resolveInside` —— 全项目唯一那份判定，`..` / 绝对路径都在这里拦）；
- *  ② **按真实路径再判一次**：项目里一个指向 `~/.ssh` 的软链，字面上在项目里、真身在外面。
- *     不判这一条，`file.convert("链/id_rsa", "txt")` 就能把项目外的文件转一份放进项目 —— 等于读了它。
- *     ⚠️ 项目根自己也要 `realpath`：macOS 的临时目录 `/var` → `/private/var` 本身就是软链，只解一边会把所有文件都判成「在外面」；
- *  ③ 工具自己的目录（`.umbrastudio/`、`.git/`、`_runtime` …）里的东西不转 —— 成品会落在旁边，那里不是用户的地方。
- *
- *  ⚠️ 不用 `files.ts` 的 `clean()` 那一套：它把 `..` **悄悄删掉**再拼（`../x` 变成 `x`），
- *  对读写同一个文件没问题，对转换就是「用户说的是项目外的 x，我们转了项目里同名的另一个 x」。这里要的是拒。 */
-async function resolveSource(proj: Project, rel: unknown): Promise<{ root: string; abs: string; rel: string }> {
-  const raw = typeof rel === "string" ? rel.trim() : "";
-  if (!raw) throw bad("path", "路径是空的", "给一个相对项目根的文件路径，比如 素材/封面.png");
-  let lexical: string;
-  try { lexical = resolveInside(proj.dir, raw); }
-  catch { throw bad("path", `路径跨出了项目目录：${raw}`, "只能转换项目目录里的文件。"); }
-  const root = await realpath(proj.dir);
-  const real = await realpath(lexical).catch(() => null);
-  if (!real) {
-    throw new ToolError(err(X.DRAFT_NOT_FOUND, raw, { kind: "file", name: raw }, `项目里没有文件 ${raw}`,
-      { fix: "先用 list_files 看看这一层有什么" }));
-  }
-  if (!isInside(root, real)) {
-    throw bad("path", `${raw} 是一个指向项目外面的链接，不能转换`, "只能转换真身在项目目录里的文件（软链指到外面的不算）。");
-  }
-  const st = await stat(real);
-  if (!st.isFile()) throw bad("path", `${raw} 不是文件`, "转换只认单个文件；目录要逐个转。");
-  const relReal = relative(root, real).split(sep).join(posix.sep);
-  /* 拒因按判准分档（Q77）—— 原来一句话兼管「我们的产物」和 `.git`，
-     而 `.git` 不是「工具自己的文件」。话的出处在 `files.ts` 的 `denyReason`，不在这里抄一份。 */
-  const noConv = denyReason(relReal);
-  if (noConv) throw bad("path", `${relReal}：${noConv.why}，不转`, noConv.fix);
-  return { root, abs: real, rel: relReal };
-}
-
-/** 跑一件能力，把 `ToolError` 装回信封 —— 插件那条路（`hostCall`）只认信封，抛出去会被包成一句笼统的「出错」，错误码就丢了。 */
-async function guarded(fn: () => Promise<Envelope<unknown>>): Promise<Envelope<unknown>> {
-  try { return await fn(); }
-  catch (e) {
-    if (e instanceof ToolError) return envelope(e.data, [e.diagnostic]);
-    throw e;
-  }
-}
+/* ⚠️ 路径三道闸（`resolveProjectFile`）与「装回信封」（`guarded`）2026-10-30 搬去了
+   `files.ts` / `envelope.ts` —— 图像编辑要问同一个问题，留在这里就得再写一遍。
+   判断搬哪儿的依据写在 `files.ts` 那一段：**两处在问同一个问题吗。** */
 
 const KNOWN = FORMATS.map((f) => f.id).join(" / ");
 
@@ -118,7 +74,7 @@ defineCap({
   input: { path: z.string().describe("相对项目根的文件路径") },
   http: { route: "convert_targets", method: "GET" },
   run: ({ path }, c) => guarded(async () => {
-    const src = await resolveSource(p(c), path);
+    const src = await resolveProjectFile(p(c), path);
     const r = await convertEngine().targets([src.abs]);
     if (!r.from.length) {
       return envelope({ path: src.rel, from: null, targets: [] }, [err(X.BAD_INPUT, src.rel, { kind: "file", name: basename(src.rel) },
@@ -148,7 +104,7 @@ defineCap({
     const proj = p(c);
     const target = normalizeTarget(to);
     if (!target) throw bad("to", `不认识目标格式「${to}」`, `能写的：${KNOWN}`);
-    const src = await resolveSource(proj, path);
+    const src = await resolveProjectFile(proj, path);
     /* 预判成品的名字（第 0 个候选）：落在工具自己的名字上（`index.dc.html` 这种）就不转 ——
        引擎的占位只保证不覆盖，不知道哪些名字是工具留给自己的。 */
     const predicted = posix.join(posix.dirname(src.rel), `${basename(src.rel).replace(/\.[^./\\]+$/, "")}.${extOf(target)}`);

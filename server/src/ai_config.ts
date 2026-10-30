@@ -59,11 +59,41 @@ export function channelBUsesLocalLogin(cfg: ChannelBConfig): boolean {
  *  （`/api/plan` 下还有一条 Anthropic 形状的 `/v1/messages`，我们用 OpenAI 那条）。 */
 export type ChannelCConfig = ChannelAConfig;
 
+/** 「图像编辑」这个角色（2026-10-30，出效果图）：**给一张图 + 一句提示，回另一张图**，
+ *  要求保持原图的结构（墙在哪、窗在哪不许动）。
+ *
+ *  ⚠️⚠️ **它不是第四条会话通道。** 三条通道（A/B/C）答的是「和谁对话」，`defaultChannel` 在它们之间选；
+ *  图像编辑是**另一种模型、另一张价目表、另一套入参**。塞进那个联合里的后果有两条：
+ *  ① `defaultChannel: "d"` 会让每一处「取当前通道去对话」的代码拿到一个不会聊天的东西；
+ *  ② 引擎选择器里会多出一个「选了就不能对话」的选项。
+ *  > **一个联合类型的成员，必须在它所有的使用点上都说得通** —— 说不通就该是另一个字段。
+ *  （Q49 那次做过同一个判断：打桩通道也**没有**往 `a|b|c` 上加一档。）
+ */
+export interface ImageEditConfig {
+  /** 哪家适配器（表在 `imageedit/index.ts`）。`fake` 是**打桩**：不联网、原图照回、回执明说。 */
+  provider: "ark" | "fake";
+  /** 端点。留空用适配器自己的默认（方舟是 `https://ark.cn-beijing.volces.com/api/v3`）。 */
+  baseUrl?: string;
+  /** ⚠️ 密钥。和三条通道一样只存本地，不进日志、不进项目文件、不进仓库。 */
+  apiKey?: string;
+  /** 模型 id。**不硬编码**（各家都在换代），填错时对端那句话原样转给用户。 */
+  model: string;
+  /** 密钥**取自哪条通道**，文件里不存第二份。只认 `"c"` —— 火山方舟的 API Key 是账号级的，
+   *  Agent Plan 订阅（通道 C）和按量计费的图像接口用的是同一把。
+   *  ⚠️ 设了它就**只认那一条路**：取不到就报错，不偷偷回落到 `apiKey`
+   *  （静默回落的话，「我以为在用通道 C 那把」会变成一句假话）。 */
+  keyFrom?: "c";
+  /** 回包尺寸，写法随各家（方舟可写 `2K` / `1024x1024` / `adaptive`）。不给就用对端默认。 */
+  size?: string;
+}
+
 export interface AiConfig {
   channelA: ChannelAConfig | null;
   channelB: ChannelBConfig | null;
   channelC?: ChannelCConfig | null;
   defaultChannel: "a" | "b" | "c";
+  /** 图像编辑角色（见上）。`null` = 没配，**不等于「用假的」**（理由在 `getImageEdit()`）。 */
+  imageEdit?: ImageEditConfig | null;
 }
 
 const DEFAULT_CONFIG: AiConfig = {
@@ -71,6 +101,7 @@ const DEFAULT_CONFIG: AiConfig = {
   channelB: null,
   channelC: null,
   defaultChannel: "a",
+  imageEdit: null,
 };
 
 export async function getAiConfig(): Promise<AiConfig> {
@@ -129,6 +160,34 @@ export async function getChannelC(): Promise<ChannelCConfig> {
 }
 
 /** A 与 C 同形（都是 OpenAI 兼容），取哪一条只看通道名 */
+/** 取图像编辑的配置，**把密钥解析好**。没配 / 配不全一律抛，而抛的那句话要能照着做。
+ *
+ *  ⚠️⚠️ **没配时拒，不回落到打桩适配器。** 回落的话用户拿到的是一张
+ *  「看着是效果图而其实是原图」的文件，而他会把它当成模型的输出。
+ *  > **一个看起来像 AI 而其实不是的回答，比没有回答糟**（§161.3 那条的图片版）。
+ */
+export async function getImageEdit(): Promise<ImageEditConfig & { apiKey: string; keySource: string }> {
+  const cfg = await getAiConfig();
+  const ie = cfg.imageEdit;
+  if (!ie || !ie.provider) {
+    throw new Error("还没配「图像编辑」模型。填法：set_image_edit_config provider=ark model=<方舟的模型 id> keyFrom=c"
+      + "（keyFrom=c 表示复用通道 C 那把火山方舟密钥，不另存一份）");
+  }
+  /* 打桩适配器不要密钥。它**必须是显式选的**（`provider: "fake"`），所以这不是一条暗门。 */
+  if (ie.provider === "fake") return { ...ie, apiKey: "", keySource: "假适配器（不联网）" };
+  if (!ie.model.trim()) {
+    throw new Error(`图像编辑配了 provider=${ie.provider} 却没给 model —— 模型 id 以对端控制台的模型列表为准，我们不硬编码`);
+  }
+  if (ie.keyFrom === "c") {
+    const k = (cfg.channelC?.apiKey ?? "").trim();
+    if (!k) throw new Error("图像编辑的密钥配的是「取通道 C 那把」，而通道 C 现在没有密钥 —— 先配通道 C，或者给图像编辑单独填 apiKey");
+    return { ...ie, apiKey: k, keySource: "通道 C（火山方舟）那把" };
+  }
+  const own = (ie.apiKey ?? "").trim();
+  if (!own) throw new Error("图像编辑还没有密钥：给 apiKey，或者写 keyFrom=c 复用通道 C 那把火山方舟密钥");
+  return { ...ie, apiKey: own, keySource: "自己填的" };
+}
+
 export async function getOpenAiChannel(ch: "a" | "c"): Promise<ChannelAConfig> {
   return ch === "c" ? getChannelC() : getChannelA();
 }
