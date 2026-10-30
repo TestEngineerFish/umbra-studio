@@ -79,7 +79,7 @@ defineCap({
     apiKey: z.string().optional().describe("API 密钥（只存本地、不回显）"),
     baseUrl: z.string().optional().describe("端点，留空用适配器默认（方舟 https://ark.cn-beijing.volces.com/api/v3）"),
     keyFrom: z.enum(["c"]).nullish().describe("密钥取自哪条通道：\"c\" = 通道 C 那把方舟密钥；给 null 清掉这项"),
-    size: z.string().optional().describe("回包尺寸，写法随各家（方舟可写 2K / 1024x1024 / adaptive）"),
+    size: z.string().optional().describe("回包尺寸，写法随各家（方舟按模型给可选值：Seedream 4.5 是 2K / 4K；也能写「宽x高」如 2048x1024）"),
   },
   faces: ["mcp", "http"],
   http: { route: "image_edit_config", method: "POST" },

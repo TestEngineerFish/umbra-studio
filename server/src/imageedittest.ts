@@ -212,6 +212,15 @@ console.log("\n⑨ 方舟适配器：回包的另一种形状与四种失败");
   ok(rec.seen.length === 2 && rec.seen[1]!.url === "https://cdn.example/a.png" && Buffer.compare(out.bytes, PNG1) === 0,
     "对端只给 URL 时跟着下载（**两样都认**）", rec.seen.length);
 
+  /* ⚠️ **`b64_json` 带 `data:` 前缀的那一种**（2026-10-30 核文档时留下的缺口：
+     文档只写「图片的 Base64 信息」，没说带不带前缀）。不剥前缀的话解出来是垃圾字节，
+     而报出来的是「不是我们认得的图片格式」—— **一条真因离报错点很远的路**。
+     裸 base64 那一支在上面 ⑧ 已经钉着，这里钉带前缀的。 */
+  const rp = recorder([{ body: JSON.stringify({ data: [{ b64_json: `data:image/png;base64,${PNG1.toString("base64")}` }] }) }]);
+  const outp = await arkEditor.edit({ bytes: JPG1, mime: "image/jpeg", prompt: "x" }, { apiKey: "k", model: "m" }, deps(rp.fetchFn));
+  ok(Buffer.compare(outp.bytes, PNG1) === 0 && outp.mime === "image/png",
+    "`b64_json` 带 `data:` 前缀时**先剥前缀再解**（文档没说它带不带）", `${outp.bytes.length} 字节 · ${outp.mime}`);
+
   /* 对端拒：原话要在错误里 */
   const r2 = recorder([{ ok: false, status: 400, body: JSON.stringify({ error: { message: "The model doubao-x does not exist" } }) }]);
   let caught: unknown = null;

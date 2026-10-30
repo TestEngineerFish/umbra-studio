@@ -19,8 +19,11 @@ const EDITORS: Record<ImageEditConfig["provider"], ImageEditor> = {
   fake: fakeEditor,
 };
 
-/** 原图上限。比插件那套的二进制上限小得多 —— 这一张图要整个 base64 进 HTTP 身子里
- *  （+33%），而对端自己也有限制（方舟文档是 10 MB）。 */
+/** 原图上限。比插件那套的二进制上限小得多 —— 这一张图要整个 base64 进 HTTP 身子里（+33%）。
+ *  ⚠️ **这 10 MB 是我们自己定的，不是对端的限制**：2026-10-30 核过方舟文档，
+ *  它写的是「大小不超过 30MB」、格式 jpeg / png / webp / bmp / tiff / gif / heic / heif。
+ *  原来这里的注释写成「方舟文档是 10 MB」，**把我们的选择说成了对端的规定** ——
+ *  那种话会让下一个人以为「改不动」。要放宽就改这个数，对端还有 20 MB 的余量。 */
 export const IMAGE_IN_MAX = 10 * 1048576;
 /** 回包上限。 */
 export const IMAGE_OUT_MAX = 20 * 1048576;

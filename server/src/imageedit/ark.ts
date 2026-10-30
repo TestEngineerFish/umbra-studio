@@ -12,9 +12,24 @@
  *  万相 0.14 元/张，同一个数量级。
  *
  *  ⚠️ **模型 id 不写死**（配置里填）。方舟的模型按日期带后缀、会换代，写死的那天它就过期了。
- *  ⚠️ 下面这些字段**没有用真密钥验过**（没有 key，不替用户花钱）：`image` 收 data URL、
- *  `response_format: "b64_json"`、`watermark`。所以三件事都做了保守处理：
- *  回包 **`b64_json` 和 `url` 两样都认**、把对端的原话原样转出来、超时与上限都在我们这边。
+ *
+ *  ### 字段的来历（2026-10-30 核过官方「图片生成 API」文档）
+ *  | 字段 | 文档怎么写 |
+ *  | --- | --- |
+ *  | `image` | `string / string[]`，「支持 URL 或 Base64 编码」；base64 要写成 `data:image/<格式>;base64,<…>`，**`<格式>` 要小写** |
+ *  | `response_format` | `url`（默认）/ `b64_json` |
+ *  | `watermark` | **默认 `true`**（右下角「AI 生成」字样），可以给 `false` |
+ *  | `size` | 按模型给可选值（4.5 是 `2K` / `4K`），也能写 `宽x高` |
+ *  | 改动强度 | **文档里没有这一档** —— 所以 `supportsStrength: false` 有文档依据，不是猜的 |
+ *
+ *  ⚠️ **文档没说的那一条，我们两头都认**：`b64_json` 回的是裸 base64 还是带 `data:` 前缀，
+ *  文档只写「图片的 Base64 信息」。裸的照原样解，带前缀的**先把前缀剥掉** ——
+ *  不剥的话 `Buffer.from(…, "base64")` 会把前缀也当 base64 解成垃圾字节，
+ *  而报出来的症状是「对端回的不是我们认得的图片格式」：**真因离报错点很远**。
+ *
+ *  ⚠️⚠️ **到 2026-10-30 为止，一次成功的真请求都没有过** —— 所以上面那张表是**文档依据，不是读数**。
+ *  当天拿 sam 的钥匙真跑了一次，对端回 **401**：那把是 Agent Plan 订阅域的钥匙（见下面 `ARK_FIX`）。
+ *  回包的两种形状、四种失败由注入的假 `fetch` 钉着（`imageedittest` ⑧⑨）。
  */
 import { ImageEditError, sniffImageMime, type ImageEditor } from "./types.js";
 
@@ -38,6 +53,20 @@ const remoteWhy = (status: number, raw: string): string => {
   const msg = (j.error?.message ?? j.message ?? "").trim();
   return msg ? `${msg}（HTTP ${status}）` : `HTTP ${status}：${raw.slice(0, 200) || "（空回包）"}`;
 };
+
+/** 对端拒了之后给的那句出路。**两件事分开说**，因为用户要做的动作不同。
+ *
+ *  ⚠️⚠️ **方舟有两域钥匙，而它们不通用**（2026-10-30 实测三条端点）：
+ *  Agent Plan 订阅那把是 `ark-` 开头，在 `…/api/plan/v1` 上认得出账号（回包带账号 id），
+ *  而**按量的图像接口 `/api/v3` 给它回 401 `AuthenticationError`**。
+ *  > 所以「通道 C 已经有方舟密钥」**不等于**图像编辑能用那把 ——
+ *  > `doc/24` §四十四 选 provider 时把这一条写成了「账号级 API Key 通用」，那是推断，而它是错的。
+ *  ⚠️ 这句话只在**对端已经拒了之后**出现，不做成一道事前的闸：
+ *  按前缀猜钥匙的域，等方舟哪天换了前缀就变成「拦住一把好钥匙」，
+ *  而那种拦法用户没有任何办法绕过去。 */
+const ARK_FIX = "① 模型 id 以方舟控制台的模型列表为准；"
+  + "② 如果是 401：图像走的是**按量端点** `/api/v3`，要方舟控制台「API Key 管理」里那把（UUID 形状）——"
+  + " Agent Plan 订阅那把（`ark-` 开头）这条接口不认。填法：set_image_edit_config apiKey=<按量那把>";
 
 export const arkEditor: ImageEditor = {
   id: "ark",
@@ -71,7 +100,7 @@ export const arkEditor: ImageEditor = {
       });
       status = r.status;
       raw = await r.text();
-      if (!r.ok) throw new ImageEditError("remote", remoteWhy(status, raw), "多半是密钥或模型 id —— 对端原话见上。模型 id 以方舟控制台的模型列表为准");
+      if (!r.ok) throw new ImageEditError("remote", remoteWhy(status, raw), ARK_FIX);
     } catch (e) {
       if (e instanceof ImageEditError) throw e;
       /* `abort` 和「网线断了」要分开说：一个可以重试，一个要查网络。 */
@@ -90,7 +119,9 @@ export const arkEditor: ImageEditor = {
     let bytes: Buffer;
     let note: string | undefined;
     if (first.b64_json) {
-      bytes = Buffer.from(first.b64_json, "base64");
+      /* ⚠️ 带 `data:…;base64,` 前缀的先剥掉 —— 文档没说它带不带（见文件头那条）。
+         多剥一次对裸 base64 是无害的（正则匹配不上），少剥一次是一张「坏图」。 */
+      bytes = Buffer.from(first.b64_json.replace(/^data:[^;,]*;base64,/i, ""), "base64");
     } else if (first.url) {
       /* 对端只给 URL 那一支：**两样都认**（见文件头那段）。
          ⚠️ 下载也要带超时和上限 —— 这一步同样是网络。 */
