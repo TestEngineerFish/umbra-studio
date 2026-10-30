@@ -170,8 +170,10 @@ export async function getImageEdit(): Promise<ImageEditConfig & { apiKey: string
   const cfg = await getAiConfig();
   const ie = cfg.imageEdit;
   if (!ie || !ie.provider) {
-    throw new Error("还没配「图像编辑」模型。填法：set_image_edit_config provider=ark model=<方舟的模型 id> keyFrom=c"
-      + "（keyFrom=c 表示复用通道 C 那把火山方舟密钥，不另存一份）");
+    throw new Error("还没配「图像编辑」模型。填法：set_image_edit_config provider=ark model=<方舟的模型 id> apiKey=<按量的 API Key>"
+      + "（⚠️ 方舟的钥匙分两域，图像走按量端点 /api/v3：要控制台「API Key 管理」里那把；"
+      + "Agent Plan 订阅那把 ark- 开头，这条接口回 401 —— 2026-10-30 实测。"
+      + "keyFrom=c 是复用通道 C 那把、文件里不另存一份，仅当通道 C 配的也是按量 key 时可用）");
   }
   /* 打桩适配器不要密钥。它**必须是显式选的**（`provider: "fake"`），所以这不是一条暗门。 */
   if (ie.provider === "fake") return { ...ie, apiKey: "", keySource: "假适配器（不联网）" };
@@ -181,10 +183,19 @@ export async function getImageEdit(): Promise<ImageEditConfig & { apiKey: string
   if (ie.keyFrom === "c") {
     const k = (cfg.channelC?.apiKey ?? "").trim();
     if (!k) throw new Error("图像编辑的密钥配的是「取通道 C 那把」，而通道 C 现在没有密钥 —— 先配通道 C，或者给图像编辑单独填 apiKey");
-    return { ...ie, apiKey: k, keySource: "通道 C（火山方舟）那把" };
+    /* ⚠️⚠️ **两样都填了的话 `keyFrom` 赢** —— 这个 `return` 就在读 `ie.apiKey` 之前。
+       优先级本身不改（改了等于让一份存量配置换个意思），但**不许静默**：
+       填了 apiKey 却没生效，用户看不到任何线索，而症状是「我换了钥匙还是 401」。
+       `keySource` 会出现在 `image_edit_status` 里 —— 也就是出图之前该问的那一句。
+       > **一个需要人记得删掉的字段，至少要在他忘了的时候说一声。** */
+    const alsoOwn = !!(ie.apiKey ?? "").trim();
+    return { ...ie, apiKey: k, keySource: alsoOwn
+      ? "通道 C（火山方舟）那把 ⚠️ imageEdit 里也填了 apiKey，而 keyFrom 优先 —— 那把没用上。要用它就把 keyFrom 删掉（set_image_edit_config keyFrom=null）"
+      : "通道 C（火山方舟）那把" };
   }
   const own = (ie.apiKey ?? "").trim();
-  if (!own) throw new Error("图像编辑还没有密钥：给 apiKey，或者写 keyFrom=c 复用通道 C 那把火山方舟密钥");
+  if (!own) throw new Error("图像编辑还没有密钥：给 apiKey —— 方舟控制台「API Key 管理」里新建一把**按量**的（图像走 /api/v3）。"
+    + "（keyFrom=c 是复用通道 C 那把、不另存一份，仅当通道 C 配的也是按量 key 时可用：订阅域那把 ark- 开头，图像接口回 401）");
   return { ...ie, apiKey: own, keySource: "自己填的" };
 }
 

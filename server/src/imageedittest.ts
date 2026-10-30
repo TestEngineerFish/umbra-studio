@@ -123,6 +123,22 @@ console.log("\n③ keyFrom=c：复用通道 C 那把，文件里不另存");
   ok(st.data?.configured === true && st.data?.keySource === "通道 C（火山方舟）那把", "密钥取自通道 C", st.data?.keySource);
   const cfg = await getAiConfig();
   ok(!(cfg.imageEdit?.apiKey ?? ""), "配置文件里**没有**第二份密钥", JSON.stringify(cfg.imageEdit?.apiKey ?? ""));
+  /* ⚠️ **两样都填了：`keyFrom` 赢，而这件事必须看得见**（2026-10-30 加）。
+     geek-99 核出这条优先级时给的处置是「让 sam 记得把 keyFrom 删掉」——
+     而一个需要人记得的步骤，他忘了的时候症状是「我换了钥匙还是 401」，没有任何线索。
+     ⚠️ 判据钉的是**出图之前该问的那一句（`image_edit_status`）里说没说**，
+     不是钉某个措辞：只要求它同时点到 `apiKey` 和「没用上」。 */
+  const both = await getAiConfig();
+  await setAiConfig({ ...both, imageEdit: { ...both.imageEdit!, apiKey: "k-自己填的", keyFrom: "c" } });
+  const st3 = await run("image_edit_status", {});
+  const ks = String(st3.data?.keySource ?? "");
+  ok(st3.data?.configured === true && ks.includes("apiKey") && ks.includes("没用上"),
+    "两样都填时：照旧用通道 C 那把，**而状态里说出 apiKey 没用上**（不许静默）", ks.slice(14, 56));
+  await setAiConfig({ ...(await getAiConfig()), imageEdit: { ...both.imageEdit!, apiKey: "", keyFrom: "c" } });
+  const st4 = await run("image_edit_status", {});
+  ok(String(st4.data?.keySource ?? "") === "通道 C（火山方舟）那把",
+    "（样本有效性）只填 keyFrom 时那句话不出现 —— 它不是一句常驻的噪音", st4.data?.keySource);
+
   /* 通道 C 的密钥被清掉 → 明确报错，**不偷偷回落到 apiKey** */
   await setAiConfig({ ...cfg, channelC: { baseUrl: "https://ark.example", apiKey: "", model: "mc" } });
   const st2 = await run("image_edit_status", {});

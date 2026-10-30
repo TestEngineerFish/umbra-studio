@@ -70,7 +70,9 @@ defineCap({
   summary: [
     "设「图像编辑」这个角色：`provider`（ark / fake）、`model`、密钥、端点、尺寸。",
     "密钥只存本地（`.umbrastudio/ai_config.json`），不进日志、不进项目、不进仓库，**回包里也不回显**。",
-    "`keyFrom: \"c\"` = 复用通道 C 那把火山方舟密钥，**文件里不另存一份**（换 key 只改一处）。",
+    "密钥给 `apiKey`：方舟控制台「**API Key 管理**」里那把 —— **图像走按量端点 `/api/v3`**。",
+    "⚠️ `keyFrom: \"c\"` = 复用通道 C 那把、文件里不另存一份，**只有通道 C 配的也是按量 key 时才能用**：",
+    "Agent Plan 订阅那把（`ark-` 开头）这条接口回 401（2026-10-30 实测）。**两样都填时 `keyFrom` 优先**。",
     "只改你点名的那几项，没传的原样保留；三条会话通道一个都不碰。",
   ].join("\n"),
   input: {
@@ -78,7 +80,7 @@ defineCap({
     model: z.string().optional().describe("模型 id，以对端控制台的模型列表为准（我们不硬编码）"),
     apiKey: z.string().optional().describe("API 密钥（只存本地、不回显）"),
     baseUrl: z.string().optional().describe("端点，留空用适配器默认（方舟 https://ark.cn-beijing.volces.com/api/v3）"),
-    keyFrom: z.enum(["c"]).nullish().describe("密钥取自哪条通道：\"c\" = 通道 C 那把方舟密钥；给 null 清掉这项"),
+    keyFrom: z.enum(["c"]).nullish().describe("密钥取自哪条通道：\"c\" = 通道 C 那把方舟密钥（⚠️ 仅当它也是按量 key；订阅域那把图像接口不认）；给 null 清掉这项，改用自己填的 apiKey"),
     size: z.string().optional().describe("回包尺寸，写法随各家（方舟按模型给可选值：Seedream 4.5 是 2K / 4K；也能写「宽x高」如 2048x1024）"),
   },
   faces: ["mcp", "http"],
@@ -169,7 +171,7 @@ defineCap({
       level: "warning", code: "W_IMAGE_EDIT_FAKE",
       message: "走的是**假适配器**：没有调用任何模型，这张图是原图的副本",
       where: rel, at: { kind: "file", name },
-      fix: "要真出图：set_image_edit_config provider=ark model=<方舟模型 id> keyFrom=c",
+      fix: "要真出图：set_image_edit_config provider=ark model=<方舟模型 id> apiKey=<方舟控制台「API Key 管理」里那把按量的>",
     } as never];
     return envelope({
       path: rel, from: src.rel, provider: out.provider, model: out.model, real: out.real,
