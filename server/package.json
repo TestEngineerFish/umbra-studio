@@ -43,7 +43,8 @@
     "actxtest": "npm run build && node dist/actxtest.js",
     "prefstest": "npm run build && node dist/prefstest.js",
     "plaintest": "npm run build && node dist/plaintest.js",
-    "localbridgetest": "tsc -p . && node dist/localbridgetest.js"
+    "localbridgetest": "tsc -p . && node dist/localbridgetest.js",
+    "installplugin": "npm run build && node dist/installplugin.js"
   },
   "dependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
